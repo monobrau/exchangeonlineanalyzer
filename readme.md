@@ -11,9 +11,9 @@ A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox ru
 ### Core Functionality
 - **📧 Inbox Rules Analysis**: Comprehensive analysis of Exchange Online inbox rules with suspicious activity detection
 - **🔍 Auto-Domain Detection**: Automatically detects organization domains from loaded mailboxes
-- **📊 XLSX Export**: Formatted Excel reports with conditional formatting and highlighting
+- **📊 XLSX Export**: Formatted Excel reports with conditional formatting and highlighting (now with improved column/row auto-fit)
 - **🎯 External Forwarding Detection**: Identifies rules forwarding emails to external domains
-- **🔒 Hidden Rules Detection**: Discovers hidden or system-generated rules
+- **🔒 Hidden Rules Detection**: Discovers hidden or system-generated rules (improved logic)
 
 ### Security Management
 - **👤 User Session Management**: Revoke active user sessions via Microsoft Graph
@@ -121,8 +121,9 @@ Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
 ### XLSX Report Features
 - **Conditional Formatting**: Highlights suspicious rules and external forwarding
 - **Comprehensive Data**: Includes rule details, mailbox forwarding, delegates, and permissions
+- **Column and Row Auto-Fit**: Columns are auto-fit first, then rows, for best display of wrapped/multi-line content
 - **Color Coding**: 
-  - 🟡 Yellow highlighting for hidden rules
+  - 🟡 Yellow highlighting for hidden rules (improved detection logic)
   - 🔴 Red highlighting for TRUE boolean values (suspicious indicators)
 
 ### Report Columns
@@ -194,6 +195,10 @@ Ensure Graph permissions are properly consented
 Enable verbose output by modifying the script's debug settings or checking console output for detailed error messages.
 
 ## 📝 Version History
+
+### v6.4 (Unreleased)
+- ✅ Improved Excel export formatting: columns are auto-fit first, then rows, for optimal readability.
+- ✅ Enhanced hidden inbox rule detection: expanded logic and debug output for more reliable detection and highlighting of hidden/system rules in exports.
 
 ### v6.3-FIXED-AUTODOMAINS-GRAPHCONTROL
 - ✅ Added automatic domain detection from mailbox UPNs
