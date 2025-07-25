@@ -45,6 +45,7 @@ function Connect-GraphService {
         [System.Windows.Forms.Form]$mainForm
     )
     try {
+        [System.Windows.Forms.MessageBox]::Show("Entered Connect-GraphService", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         if ($statusLabel) { $statusLabel.Text = "Connecting to Microsoft Graph..." }
         if ($mainForm) { $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor }
         # Use global script variables for scopes
@@ -52,13 +53,16 @@ function Connect-GraphService {
         if (-not $scopes) {
             $scopes = @("User.Read.All", "User.ReadWrite.All", "SecurityEvents.Read.All", "SecurityEvents.ReadWrite.All")
         }
+        [System.Windows.Forms.MessageBox]::Show("About to call Connect-MgGraph", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         # Connect to Graph
         $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop
+        [System.Windows.Forms.MessageBox]::Show("Returned from Connect-MgGraph", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         $global:graphConnectionAttempted = $true
         if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph." }
         return $true
     } catch {
         $ex = $_.Exception
+        [System.Windows.Forms.MessageBox]::Show("Connect-GraphService ERROR: $($ex.Message)", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         if ($statusLabel) { $statusLabel.Text = "Microsoft Graph connection failed." }
         Write-Error "Microsoft Graph connection failed: $($ex.Message)"
         return $false

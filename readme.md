@@ -11,14 +11,20 @@ A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox ru
 ### Core Functionality
 - **📧 Inbox Rules Analysis**: Comprehensive analysis of Exchange Online inbox rules with suspicious activity detection
 - **🔍 Auto-Domain Detection**: Automatically detects organization domains from loaded mailboxes
-- **📊 XLSX Export**: Formatted Excel reports with conditional formatting and highlighting (now with improved column/row auto-fit)
+- **📊 XLSX Export**: Formatted Excel reports with advanced formatting:
+  - User-friendly columns (MailboxOwner, RuleName, IsEnabled, IsHidden, etc.)
+  - All columns auto-fit for width
+  - Description column auto-fit for row height and wrapped text
+  - RuleID always exported as text (never scientific notation)
+  - Conditional formatting: TRUE values highlighted light red, IsHidden rows highlighted bright yellow
+  - SuspiciousKeywordsInName column: flags rules with suspicious keywords in the name
 - **🎯 External Forwarding Detection**: Identifies rules forwarding emails to external domains
 - **🔒 Hidden Rules Detection**: Discovers hidden or system-generated rules (improved logic)
 
 ### Security Management
 - **👤 User Session Management**: Revoke active user sessions via Microsoft Graph
 - **🚫 Sign-in Control**: Block/unblock user sign-ins through Azure AD
-- **📮 Sending Restrictions**: Manage user email sending restrictions
+- **📮 Sending Restrictions**: Manage user email sending restrictions (button now at top right)
 - **🔐 Permissions Audit**: View mailbox delegates and full access permissions
 
 ### Advanced Features
@@ -26,6 +32,7 @@ A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox ru
 - **🔌 Connectors Management**: View and manage inbound/outbound connectors
 - **📝 Rule Management**: Interactive interface to view and delete specific inbox rules
 - **📈 Progress Tracking**: Real-time progress indicators for long-running operations
+- **❓ Help Tab**: In-app Help tab displays the full README for user reference
 
 ## 📋 Prerequisites
 
@@ -99,8 +106,8 @@ Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
    - Single mailbox selection enables rule management features
 
 5. **Generate Reports**
-   - Click "Get Rules for Selected (Export)" to analyze and export rules
-   - Reports include suspicious rule detection and external forwarding analysis
+   - Click "Export Rules" to analyze and export rules
+   - Reports include suspicious rule detection, external forwarding analysis, and advanced formatting
 
 ### Advanced Features
 
@@ -116,15 +123,21 @@ Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
 - Select a single mailbox and click "Manage Rules" to view/delete specific rules
 - Interactive interface for rule administration
 
+#### Help Tab
+- Access the full README and documentation from the in-app Help tab
+
 ## 📊 Report Output
 
 ### XLSX Report Features
-- **Conditional Formatting**: Highlights suspicious rules and external forwarding
+- **User-Friendly Columns**: MailboxOwner, RuleName, IsEnabled, IsHidden, IsForwardingExternal, IsDeleting, IsMarkingAsRead, IsMovingToFolder, MoveToFolderName, SuspiciousKeywordsInName, Description, StopProcessingRules, Conditions, Actions, Exceptions, RuleID, etc.
+- **Conditional Formatting**: TRUE values highlighted light red, IsHidden rows highlighted bright yellow
+- **Suspicious Keyword Detection**: SuspiciousKeywordsInName column flags rules with keywords like invoice, payment, password, etc.
 - **Comprehensive Data**: Includes rule details, mailbox forwarding, delegates, and permissions
-- **Column and Row Auto-Fit**: Columns are auto-fit first, then rows, for best display of wrapped/multi-line content
+- **Column and Row Auto-Fit**: All columns auto-fit for width, Description column auto-fit for row height and wrapped text
+- **RuleID as Text**: RuleID is always exported and formatted as text (never scientific notation)
 - **Color Coding**: 
-  - 🟡 Yellow highlighting for hidden rules (improved detection logic)
-  - 🔴 Red highlighting for TRUE boolean values (suspicious indicators)
+  - 🟡 Yellow highlighting for hidden rules
+  - 🔴 Red highlighting for TRUE boolean values
 
 ### Report Columns
 - Mailbox owner and forwarding settings
@@ -197,7 +210,12 @@ Enable verbose output by modifying the script's debug settings or checking conso
 ## 📝 Version History
 
 ### v6.4 (Unreleased)
-- ✅ Improved Excel export formatting: columns are auto-fit first, then rows, for optimal readability.
+- ✅ Improved Excel export formatting: all columns auto-fit for width, Description column auto-fit for row height and wrapped text.
+- ✅ RuleID always exported and formatted as text (never scientific notation).
+- ✅ Conditional formatting: TRUE values highlighted light red, IsHidden rows highlighted bright yellow.
+- ✅ SuspiciousKeywordsInName column: flags rules with suspicious keywords in the name.
+- ✅ Help tab added to GUI for in-app documentation.
+- ✅ Manage Restricted Senders button moved to top right of Exchange tab.
 - ✅ Enhanced hidden inbox rule detection: expanded logic and debug output for more reliable detection and highlighting of hidden/system rules in exports.
 
 ### v6.3-FIXED-AUTODOMAINS-GRAPHCONTROL
@@ -254,3 +272,17 @@ For issues, questions, or feature requests:
 ---
 
 **Made with ❤️ for Exchange Online administrators**
+
+## Entra ID Investigator (Preview)
+A new tabbed interface for investigating Entra ID (Azure AD) accounts is now available. This feature is in preview and will be expanded in future updates.
+
+### Features
+- **Sign-in Logs (Export):** Export user sign-in logs to XLSX for forensic review.
+- **User Details & Roles:** View user account details, admin roles, and group memberships.
+- **User Audit Logs:** Review recent administrative actions for selected users.
+- **MFA Analysis:** Analyze and export user MFA status, including per-user, security defaults, and conditional access policies.
+
+### Requirements
+- Microsoft Graph PowerShell modules: Users, Reports, Identity.DirectoryManagement, Identity.SignIns
+- Delegated permissions: User.Read.All, AuditLog.Read.All, Directory.Read.All, Policy.Read.All, UserAuthenticationMethod.Read.All
+- Microsoft Excel (for XLSX export)
