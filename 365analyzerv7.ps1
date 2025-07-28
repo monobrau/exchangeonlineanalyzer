@@ -570,7 +570,7 @@ function UpdateEntraButtonStates {
     $entraUnblockUserButton.Enabled = $true
     $entraRevokeSessionsButton.Enabled = $true
     $entraResetPasswordButton.Enabled = $true
-    $entraManageRestrictedSendersButton.Enabled = $true
+    $entraOpenDefenderRestrictedUsersButton.Enabled = $true
     $entraRequirePwdChangeButton.Enabled = $true
     $entraRefreshRolesButton.Enabled = $true
     $entraViewAdminsButton.Enabled = $true
@@ -1984,12 +1984,7 @@ $manageTransportRulesButton.Width = 160
 $manageTransportRulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $manageTransportRulesButtonTooltip.SetToolTip($manageTransportRulesButton, "View and manage Exchange Online transport rules")
 
-$manageRestrictedSendersButton = New-Object System.Windows.Forms.Button
-$manageRestrictedSendersButton.Text = "Manage Restricted Users"
-$manageRestrictedSendersButton.Width = 160
-$manageRestrictedSendersButton.Enabled = $true
-$manageRestrictedSendersButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$manageRestrictedSendersButtonTooltip.SetToolTip($manageRestrictedSendersButton, "View and manage blocked sender addresses")
+
 
 # Add analyze selected button for Exchange Online tab
 $analyzeSelectedButton = New-Object System.Windows.Forms.Button
@@ -2419,12 +2414,13 @@ $entraResetPasswordButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraResetPasswordButtonTooltip.SetToolTip($entraResetPasswordButton, "Reset user password with memorable strong password (select one user)")
 
 # Add restricted senders management button for Entra ID tab
-$entraManageRestrictedSendersButton = New-Object System.Windows.Forms.Button
-$entraManageRestrictedSendersButton.Text = "Manage Restricted Senders"
-$entraManageRestrictedSendersButton.Width = 180
-$entraManageRestrictedSendersButton.Enabled = $false
-$entraManageRestrictedSendersButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$entraManageRestrictedSendersButtonTooltip.SetToolTip($entraManageRestrictedSendersButton, "Manage user email sending restrictions via security.microsoft.com (select one user)")
+$entraOpenDefenderRestrictedUsersButton = New-Object System.Windows.Forms.Button
+$entraOpenDefenderRestrictedUsersButton.Text = "Open Defender Restricted Users"
+$entraOpenDefenderRestrictedUsersButton.Width = 200
+$entraOpenDefenderRestrictedUsersButton.Enabled = $true
+$entraOpenDefenderRestrictedUsersButton.BackColor = [System.Drawing.Color]::LightBlue
+$entraOpenDefenderRestrictedUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$entraOpenDefenderRestrictedUsersButtonTooltip.SetToolTip($entraOpenDefenderRestrictedUsersButton, "Open Microsoft Defender Restricted Users page")
 
 # Add Select All/Deselect All buttons for Entra ID tab
 $entraSelectAllButton = New-Object System.Windows.Forms.Button
@@ -2532,7 +2528,7 @@ $exchangeTopRow2.Size = New-Object System.Drawing.Size(1200, 35)
 $exchangeTopRow2.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $exchangeTopRow2.WrapContents = $true
 $exchangeTopRow2.AutoSize = $true
-$exchangeTopRow2.Controls.AddRange(@($manageRulesButton, $analyzeSelectedButton, $manageConnectorsButton, $manageTransportRulesButton, $manageRestrictedSendersButton))
+$exchangeTopRow2.Controls.AddRange(@($manageRulesButton, $analyzeSelectedButton, $manageConnectorsButton, $manageTransportRulesButton))
 
 # Add search controls to the first row
 $exchangeTopRow1.Controls.Add($exchangeSearchLabel)
@@ -2628,7 +2624,7 @@ $entraTopRow2.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow2.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow2.WrapContents = $false
 $entraTopRow2.AutoSize = $false
-$entraTopRow2.Controls.AddRange(@($entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton, $entraManageRestrictedSendersButton))
+$entraTopRow2.Controls.AddRange(@($entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton, $entraOpenDefenderRestrictedUsersButton))
 
 # Add search controls to the top panel
 $entraSearchLabel = New-Object System.Windows.Forms.Label
@@ -3855,9 +3851,7 @@ $manageTransportRulesButton.add_Click({
     Show-TransportRulesViewer -mainForm $mainForm -statusLabel $statusLabel
 })
 
-$manageRestrictedSendersButton.add_Click({
-    Show-RestrictedSenderManagementDialog -ParentForm $mainForm -StatusLabelGlobal $statusLabel
-})
+
 
 $userMailboxGrid.add_CellContentClick({
     $mainForm.BeginInvoke([System.Action]{
@@ -4809,21 +4803,8 @@ $entraResetPasswordButton.add_Click({
     }
 })
 
-$entraManageRestrictedSendersButton.add_Click({
-    $entraUserGrid.EndEdit()
-    $selectedUpns = @()
-    for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
-        if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
-            $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
-        }
-    }
-    if ($selectedUpns.Count -ne 1) {
-        [System.Windows.Forms.MessageBox]::Show("Select exactly one user to manage restricted senders.", "Select One User", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        return
-    }
-    $selectedUpn = $selectedUpns[0]
-    Show-RestrictedSenderManagementDialog -UserPrincipalName $selectedUpn -ParentForm $mainForm -StatusLabelGlobal $statusLabel
+$entraOpenDefenderRestrictedUsersButton.add_Click({
+    Start-Process "https://security.microsoft.com/restrictedentities"
 })
 
 # Add click handlers for Select All/Deselect All buttons
