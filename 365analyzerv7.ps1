@@ -70,7 +70,7 @@ Safe-ImportModule "$PSScriptRoot\Modules\TransportRules.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\Connectors.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SessionRevocation.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SignInManagement.psm1"
-# Safe-ImportModule "$PSScriptRoot\Modules\RestrictedSender.psm1"  # Removed - now using web link approach
+Safe-ImportModule "$PSScriptRoot\Modules\RestrictedSender.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 
@@ -266,11 +266,12 @@ function Load-MailboxesOptimized {
         $deselectAllButton.Enabled = $true
         $disconnectButton.Enabled = $true
         $connectButton.Enabled = $false
+        $loadAllMailboxesButton.Enabled = $true
+        $searchMailboxesButton.Enabled = $true
         $manageRulesButton.Enabled = $true
         $analyzeSelectedButton.Enabled = $true
         $manageConnectorsButton.Enabled = $true
         $manageTransportRulesButton.Enabled = $true
-        # Removed manageRestrictedSendersButton - now using web link approach
         $blockUserButton.Enabled = $false
         $unblockUserButton.Enabled = $false
         
@@ -573,6 +574,10 @@ function UpdateEntraButtonStates {
     $entraRequirePwdChangeButton.Enabled = $true
     $entraRefreshRolesButton.Enabled = $true
     $entraViewAdminsButton.Enabled = $true
+    
+    # Load buttons are enabled when connected to Graph
+    $loadAllUsersButton.Enabled = $script:graphConnection
+    $searchUsersButton.Enabled = $script:graphConnection
 }
 
 # Function to generate professional report
@@ -1829,9 +1834,7 @@ $script:graphScopes = @(
     "SecurityIncident.Read.All",
     "SecurityIncident.ReadWrite.All",
     "ThreatIntelligence.Read.All",
-    "ThreatIntelligence.ReadWrite.All",
-    "SecurityActions.Read.All",
-    "SecurityActions.ReadWrite.All"
+    "ThreatIntelligence.ReadWrite.All"
 )
 
 # --- GUI Setup ---
@@ -1954,6 +1957,21 @@ $revokeSessionsButton.Width = 120
 $revokeSessionsButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $revokeSessionsButtonTooltip.SetToolTip($revokeSessionsButton, "Revoke all active sessions for selected user (requires Graph connection)")
 
+# Add load options for Exchange Online
+$loadAllMailboxesButton = New-Object System.Windows.Forms.Button
+$loadAllMailboxesButton.Text = "Load All Mailboxes"
+$loadAllMailboxesButton.Width = 150
+$loadAllMailboxesButton.Enabled = $false
+$loadAllMailboxesButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$loadAllMailboxesButtonTooltip.SetToolTip($loadAllMailboxesButton, "Load all mailboxes (may take time for large tenants)")
+
+$searchMailboxesButton = New-Object System.Windows.Forms.Button
+$searchMailboxesButton.Text = "Search Mailboxes"
+$searchMailboxesButton.Width = 150
+$searchMailboxesButton.Enabled = $false
+$searchMailboxesButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$searchMailboxesButtonTooltip.SetToolTip($searchMailboxesButton, "Search for specific mailboxes by name or email")
+
 $manageConnectorsButton = New-Object System.Windows.Forms.Button
 $manageConnectorsButton.Text = "Manage Connectors"
 $manageConnectorsButton.Width = 140
@@ -1966,7 +1984,12 @@ $manageTransportRulesButton.Width = 160
 $manageTransportRulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $manageTransportRulesButtonTooltip.SetToolTip($manageTransportRulesButton, "View and manage Exchange Online transport rules")
 
-# Removed manageRestrictedSendersButton - now using web link approach
+$manageRestrictedSendersButton = New-Object System.Windows.Forms.Button
+$manageRestrictedSendersButton.Text = "Manage Restricted Users"
+$manageRestrictedSendersButton.Width = 160
+$manageRestrictedSendersButton.Enabled = $true
+$manageRestrictedSendersButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$manageRestrictedSendersButtonTooltip.SetToolTip($manageRestrictedSendersButton, "View and manage blocked sender addresses")
 
 # Add analyze selected button for Exchange Online tab
 $analyzeSelectedButton = New-Object System.Windows.Forms.Button
@@ -2180,6 +2203,88 @@ function Filter-ExchangeGrid {
     }
 }
 
+# Function to filter Entra ID grid based on search text
+function Filter-EntraGrid {
+    param([string]$searchText)
+    
+    if ([string]::IsNullOrWhiteSpace($searchText)) {
+        # Show all rows if search is empty
+        for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
+            $entraUserGrid.Rows[$i].Visible = $true
+        }
+        return
+    }
+    
+    $searchText = $searchText.ToLower()
+    
+    # Filter rows based on search text
+    for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
+        $row = $entraUserGrid.Rows[$i]
+        $upn = $row.Cells["UserPrincipalName"].Value
+        $displayName = $row.Cells["DisplayName"].Value
+        
+        $visible = $false
+        if ($upn -and $upn.ToLower().Contains($searchText)) { $visible = $true }
+        if ($displayName -and $displayName.ToLower().Contains($searchText)) { $visible = $true }
+        
+        $row.Visible = $visible
+    }
+}
+
+# Function to show a simple input dialog
+function Show-InputDialog {
+    param(
+        [string]$Title = "Input",
+        [string]$Prompt = "Enter value:",
+        [string]$DefaultValue = ""
+    )
+    
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = $Title
+    $form.Size = New-Object System.Drawing.Size(400, 150)
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    
+    $label = New-Object System.Windows.Forms.Label
+    $label.Location = New-Object System.Drawing.Point(10, 20)
+    $label.Size = New-Object System.Drawing.Size(360, 20)
+    $label.Text = $Prompt
+    $form.Controls.Add($label)
+    
+    $textBox = New-Object System.Windows.Forms.TextBox
+    $textBox.Location = New-Object System.Drawing.Point(10, 45)
+    $textBox.Size = New-Object System.Drawing.Size(360, 20)
+    $textBox.Text = $DefaultValue
+    $form.Controls.Add($textBox)
+    
+    $okButton = New-Object System.Windows.Forms.Button
+    $okButton.Location = New-Object System.Drawing.Point(200, 75)
+    $okButton.Size = New-Object System.Drawing.Size(75, 23)
+    $okButton.Text = "OK"
+    $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $form.AcceptButton = $okButton
+    $form.Controls.Add($okButton)
+    
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(285, 75)
+    $cancelButton.Size = New-Object System.Drawing.Size(75, 23)
+    $cancelButton.Text = "Cancel"
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.CancelButton = $cancelButton
+    $form.Controls.Add($cancelButton)
+    
+    $textBox.Select()
+    $result = $form.ShowDialog($mainForm)
+    
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $textBox.Text
+    } else {
+        return $null
+    }
+}
+
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Width = 200
 
@@ -2198,6 +2303,21 @@ $entraConnectGraphButton.Text = "Connect Entra"
 $entraConnectGraphButton.Width = 140
 $entraConnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraConnectGraphButtonTooltip.SetToolTip($entraConnectGraphButton, "Connect to Microsoft Graph to load users and enable Entra ID features")
+
+# Add load options for Entra ID
+$loadAllUsersButton = New-Object System.Windows.Forms.Button
+$loadAllUsersButton.Text = "Load All Users"
+$loadAllUsersButton.Width = 150
+$loadAllUsersButton.Enabled = $false
+$loadAllUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$loadAllUsersButtonTooltip.SetToolTip($loadAllUsersButton, "Load all users (may take time for large tenants)")
+
+$searchUsersButton = New-Object System.Windows.Forms.Button
+$searchUsersButton.Text = "Search Users"
+$searchUsersButton.Width = 150
+$searchUsersButton.Enabled = $false
+$searchUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$searchUsersButtonTooltip.SetToolTip($searchUsersButton, "Search for specific users by name or email")
 
 $entraDisconnectGraphButton = New-Object System.Windows.Forms.Button
 $entraDisconnectGraphButton.Text = "Disconnect Entra"
@@ -2300,11 +2420,11 @@ $entraResetPasswordButtonTooltip.SetToolTip($entraResetPasswordButton, "Reset us
 
 # Add restricted senders management button for Entra ID tab
 $entraManageRestrictedSendersButton = New-Object System.Windows.Forms.Button
-$entraManageRestrictedSendersButton.Text = "Open Defender Restricted Users"
+$entraManageRestrictedSendersButton.Text = "Manage Restricted Senders"
 $entraManageRestrictedSendersButton.Width = 180
-$entraManageRestrictedSendersButton.Enabled = $true
+$entraManageRestrictedSendersButton.Enabled = $false
 $entraManageRestrictedSendersButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$entraManageRestrictedSendersButtonTooltip.SetToolTip($entraManageRestrictedSendersButton, "Open security.microsoft.com/restrictedentities in your browser")
+$entraManageRestrictedSendersButtonTooltip.SetToolTip($entraManageRestrictedSendersButton, "Manage user email sending restrictions via security.microsoft.com (select one user)")
 
 # Add Select All/Deselect All buttons for Entra ID tab
 $entraSelectAllButton = New-Object System.Windows.Forms.Button
@@ -2390,28 +2510,49 @@ $entraOpenLastExportButton.Enabled = $true
 # --- Exchange Online Tab Layout ---
 $exchangeTab = New-Object System.Windows.Forms.TabPage; $exchangeTab.Text = "Exchange Online"
 
-# Top action panel for Connect/Disconnect/Select All/Deselect All/Block/Unblock User/Revoke Sessions/Manage Rules
-$topActionPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+# Top action panel with two rows for better organization
+$topActionPanel = New-Object System.Windows.Forms.Panel
 $topActionPanel.Dock = 'Top'
-$topActionPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-$topActionPanel.WrapContents = $false
+$topActionPanel.Height = 80
 $topActionPanel.AutoSize = $true
-$topActionPanel.Controls.AddRange(@($connectButton, $disconnectButton, $selectAllButton, $deselectAllButton, $manageRulesButton, $analyzeSelectedButton, $manageConnectorsButton, $manageTransportRulesButton))
+
+# First row - Connection, Loading, and Selection
+$exchangeTopRow1 = New-Object System.Windows.Forms.FlowLayoutPanel
+$exchangeTopRow1.Location = New-Object System.Drawing.Point(5, 5)
+$exchangeTopRow1.Size = New-Object System.Drawing.Size(1200, 35)
+$exchangeTopRow1.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+$exchangeTopRow1.WrapContents = $true
+$exchangeTopRow1.AutoSize = $true
+$exchangeTopRow1.Controls.AddRange(@($connectButton, $disconnectButton, $loadAllMailboxesButton, $searchMailboxesButton, $selectAllButton, $deselectAllButton))
+
+# Second row - Analysis and Management
+$exchangeTopRow2 = New-Object System.Windows.Forms.FlowLayoutPanel
+$exchangeTopRow2.Location = New-Object System.Drawing.Point(5, 40)
+$exchangeTopRow2.Size = New-Object System.Drawing.Size(1200, 35)
+$exchangeTopRow2.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+$exchangeTopRow2.WrapContents = $true
+$exchangeTopRow2.AutoSize = $true
+$exchangeTopRow2.Controls.AddRange(@($manageRulesButton, $analyzeSelectedButton, $manageConnectorsButton, $manageTransportRulesButton, $manageRestrictedSendersButton))
+
+# Add search controls to the first row
+$exchangeTopRow1.Controls.Add($exchangeSearchLabel)
+$exchangeTopRow1.Controls.Add($exchangeSearchTextBox)
+
+# Add both rows to the top panel
+$topActionPanel.Controls.Add($exchangeTopRow1)
+$topActionPanel.Controls.Add($exchangeTopRow2)
 
 # Debug: Log button addition to panel
-Write-Host "Analyze Selected Button added to topActionPanel"
-Write-Host "Top Action Panel Controls Count: $($topActionPanel.Controls.Count)"
-
-# Add search to top action panel
-$topActionPanel.Controls.Add($exchangeSearchLabel)
-$topActionPanel.Controls.Add($exchangeSearchTextBox)
+Write-Host "Exchange Online buttons organized into two rows"
+Write-Host "Row 1 Controls Count: $($exchangeTopRow1.Controls.Count)"
+Write-Host "Row 2 Controls Count: $($exchangeTopRow2.Controls.Count)"
 
 $exchangeTab.Controls.Add($topActionPanel)
 
 # Panel for mailbox label and grid (fills remaining space)
 $mailboxPanel = New-Object System.Windows.Forms.Panel
 $mailboxPanel.Dock = 'Fill'
-$mailboxPanel.Padding = New-Object System.Windows.Forms.Padding(5, 5, 5, 5)
+$mailboxPanel.Padding = New-Object System.Windows.Forms.Padding(5, 85, 5, 5)
 $mailboxPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # Add label and grid to mailbox panel
@@ -2468,17 +2609,17 @@ $entraTab = New-Object System.Windows.Forms.TabPage; $entraTab.Text = "Entra ID 
 # Top action panel with two rows for better organization
 $entraTopPanel = New-Object System.Windows.Forms.Panel
 $entraTopPanel.Dock = 'Top'
-$entraTopPanel.Height = 80
-$entraTopPanel.AutoSize = $false
+$entraTopPanel.Height = 100
+$entraTopPanel.AutoSize = $true
 
 # First row - Connection and basic functions
 $entraTopRow1 = New-Object System.Windows.Forms.FlowLayoutPanel
 $entraTopRow1.Location = New-Object System.Drawing.Point(5, 5)
 $entraTopRow1.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow1.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-$entraTopRow1.WrapContents = $false
-$entraTopRow1.AutoSize = $false
-$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton))
+$entraTopRow1.WrapContents = $true
+$entraTopRow1.AutoSize = $true
+$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton))
 
 # Second row - User management functions
 $entraTopRow2 = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -2489,6 +2630,22 @@ $entraTopRow2.WrapContents = $false
 $entraTopRow2.AutoSize = $false
 $entraTopRow2.Controls.AddRange(@($entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton, $entraManageRestrictedSendersButton))
 
+# Add search controls to the top panel
+$entraSearchLabel = New-Object System.Windows.Forms.Label
+$entraSearchLabel.Text = "Search:"
+$entraSearchLabel.Width = 50
+$entraSearchLabel.Height = 20
+$entraSearchLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+$entraSearchTextBox = New-Object System.Windows.Forms.TextBox
+$entraSearchTextBox.Width = 200
+$entraSearchTextBox.Height = 20
+$entraSearchTextBox.PlaceholderText = "Type to filter users..."
+
+# Add search controls to the second row
+$entraTopRow2.Controls.Add($entraSearchLabel)
+$entraTopRow2.Controls.Add($entraSearchTextBox)
+
 # Add both rows to the top panel
 $entraTopPanel.Controls.Add($entraTopRow1)
 $entraTopPanel.Controls.Add($entraTopRow2)
@@ -2496,7 +2653,7 @@ $entraTopPanel.Controls.Add($entraTopRow2)
 # Panel for user grid
 $entraGridPanel = New-Object System.Windows.Forms.Panel
 $entraGridPanel.Dock = 'Fill'
-$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 85, 5, 15)
+$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 105, 5, 15)
 $entraGridPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # User grid
@@ -2633,130 +2790,17 @@ $entraConnectGraphButton.add_Click({
     try {
         if (Connect-EntraGraph) {
             $script:graphConnection = $true
-            try {
-                $users = Get-EntraUsers -MaxUsers 5000
-                $entraUserGrid.Rows.Clear()
-                
-                # Batch process users for better performance
-                $batchSize = 100
-                $totalUsers = $users.Count
-                $processedCount = 0
-                
-                for ($i = 0; $i -lt $users.Count; $i += $batchSize) {
-                    $batch = $users[$i..([Math]::Min($i + $batchSize - 1, $users.Count - 1))]
-                    
-                    foreach ($u in $batch) {
-                        try {
-                            # Only check licensing for users that might have licenses (skip service accounts, etc.)
-                            if ($u.UserPrincipalName -notlike "*#EXT#*" -and $u.UserPrincipalName -notlike "*service*" -and $u.UserPrincipalName -notlike "*admin*") {
-                                $userDetails = Get-MgUser -UserId $u.UserPrincipalName -Property AssignedLicenses -ErrorAction SilentlyContinue
-                                $isLicensed = $userDetails -and $userDetails.AssignedLicenses.Count -gt 0
-                            } else {
-                                $isLicensed = $false
-                            }
-                        } catch {
-                            $isLicensed = $false
-                        }
-                        
-                        $licensedText = if ($isLicensed) { "Licensed" } else { "Unlicensed" }
-                        
-                        # Get user roles for highlighting (optimized - only for first 50 users or high-priority accounts)
-                        $userRoles = @()
-                        $shouldCheckRoles = ($processedCount -le 50) -or ($u.UserPrincipalName -like "*admin*") -or ($u.DisplayName -like "*admin*")
-                        
-                        if ($shouldCheckRoles) {
-                            try {
-                                $userRoleMemberships = Get-MgUserMemberOf -UserId $u.UserPrincipalName -ErrorAction SilentlyContinue
-                                if ($userRoleMemberships) {
-                                    foreach ($role in $userRoleMemberships) {
-                                        if ($role.'@odata.type' -eq '#microsoft.graph.directoryRole') {
-                                            $userRoles += $role.DisplayName
-                                        }
-                                    }
-                                }
-                            } catch {
-                                # Role lookup failed, continue without roles
-                            }
-                        }
-                        
-                        $rolesText = if ($userRoles.Count -gt 0) { ($userRoles -join ", ") } else { "Click 'Refresh Roles' to view" }
-                        
-                        # Add row with role information
-                        $rowIndex = $entraUserGrid.Rows.Add()
-                        $entraUserGrid.Rows[$rowIndex].Cells["Select"].Value = $false
-                        $entraUserGrid.Rows[$rowIndex].Cells["UserPrincipalName"].Value = $u.UserPrincipalName
-                        $entraUserGrid.Rows[$rowIndex].Cells["DisplayName"].Value = $u.DisplayName
-                        $entraUserGrid.Rows[$rowIndex].Cells["Licensed"].Value = $licensedText
-                        $entraUserGrid.Rows[$rowIndex].Cells["Roles"].Value = $rolesText
-                        
-                        # Highlight high-privilege users
-                        $highPrivilegeRoles = @("Global Administrator", "Company Administrator", "Exchange Administrator", "SharePoint Administrator", "Security Administrator", "Compliance Administrator", "User Administrator", "Billing Administrator", "Helpdesk Administrator", "Service Support Administrator", "Power Platform Administrator", "Teams Administrator", "Intune Administrator", "Application Administrator", "Cloud Application Administrator", "Privileged Role Administrator", "Privileged Authentication Administrator")
-                        
-                        $hasHighPrivilege = $false
-                        foreach ($role in $userRoles) {
-                            if ($highPrivilegeRoles -contains $role) {
-                                $hasHighPrivilege = $true
-                                break
-                            }
-                        }
-                        
-                        if ($hasHighPrivilege) {
-                            $entraUserGrid.Rows[$rowIndex].DefaultCellStyle.BackColor = [System.Drawing.Color]::LightCoral
-                            $entraUserGrid.Rows[$rowIndex].DefaultCellStyle.ForeColor = [System.Drawing.Color]::DarkRed
-                        }
-                        $processedCount++
-                        
-                        # Update progress every 50 users
-                        if ($processedCount % 50 -eq 0) {
-                            $statusLabel.Text = "Loading users... ($processedCount/$totalUsers)"
-                            [System.Windows.Forms.Application]::DoEvents()
-                        }
-                    }
-                    
-                    UpdateEntraButtonStates
-                }
-                $statusLabel.Text = "Connected to Microsoft Graph. Users loaded."
-                
-                # Test role lookup for current user
-                try {
-                    $currentUser = Get-MgContext
-                    if ($currentUser) {
-                        $currentUserRoles = Get-MgUserMemberOf -UserId $currentUser.Account -ErrorAction SilentlyContinue
-                        Write-Host "Current user roles test: $($currentUserRoles.Count) roles found"
-                        if ($currentUserRoles) {
-                            foreach ($role in $currentUserRoles) {
-                                Write-Host "  - $($role.DisplayName)"
-                            }
-                        }
-                    }
-                } catch {
-                    Write-Host "Current user role test failed: $($_.Exception.Message)"
-                }
-                
-                $entraSignInExportButton.Enabled = $true; $entraDetailsFetchButton.Enabled = $true; $entraAuditFetchButton.Enabled = $true; $entraMfaFetchButton.Enabled = $true
-                # User management buttons are always enabled when connected to Graph
-                $entraBlockUserButton.Enabled = $true
-                $entraUnblockUserButton.Enabled = $true
-                $entraRevokeSessionsButton.Enabled = $true
-                # Note: Restricted senders button requires Exchange Online connection, not Graph
-                
-                # Force headers to be visible after data is loaded
-                $entraUserGrid.ColumnHeadersVisible = $true
-                $entraUserGrid.EnableHeadersVisualStyles = $true
-                $entraUserGrid.ColumnHeadersHeight = 25
-                $entraUserGrid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
-                $entraUserGrid.PerformLayout()
-                $entraUserGrid.Refresh()
-                
-                # Force the panel to refresh as well
-                $entraGridPanel.PerformLayout()
-                $entraGridPanel.Refresh()
-                
-                UpdateEntraButtonStates
-            } catch {
-                $statusLabel.Text = "Failed to load users: $($_.Exception.Message)"
-                [System.Windows.Forms.MessageBox]::Show("Failed to load users: $($_.Exception.Message)", "Graph Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
+            
+            # Enable load buttons and disable connect button
+            $loadAllUsersButton.Enabled = $true
+            $searchUsersButton.Enabled = $true
+            $entraDisconnectGraphButton.Enabled = $true
+            $entraConnectGraphButton.Enabled = $false
+            
+            Write-Host "Microsoft Graph connected. Load buttons enabled: LoadAll=$($loadAllUsersButton.Enabled), Search=$($searchUsersButton.Enabled)"
+            
+            $statusLabel.Text = "Connected to Microsoft Graph. Use 'Load All Users' or 'Search Users' to load data."
+            Show-Progress -message "Connected to Microsoft Graph successfully." -progress 100
         } else {
             # Check if this is a user cancellation
             $errorMessage = $_.Exception.Message
@@ -2791,6 +2835,187 @@ $entraConnectGraphButton.add_Click({
     }
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
     $entraConnectGraphButton.Enabled = $true
+})
+
+# Load All Users button handler
+$loadAllUsersButton.add_Click({
+    if (-not $script:graphConnection) {
+        [System.Windows.Forms.MessageBox]::Show("Please connect to Microsoft Graph first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    
+    try {
+        $statusLabel.Text = "Loading all users..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        
+        # Get all users with full details
+        $users = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
+        $entraUserGrid.Rows.Clear()
+        
+        $totalUsers = $users.Count
+        $processedCount = 0
+        
+        foreach ($u in $users) {
+            try {
+                # Check licensing
+                $isLicensed = $u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0
+                $licensedText = if ($isLicensed) { "Licensed" } else { "Unlicensed" }
+                
+                # Get user roles
+                $userRoles = @()
+                try {
+                    $userRoleMemberships = Get-MgUserMemberOf -UserId $u.UserPrincipalName -ErrorAction SilentlyContinue
+                    if ($userRoleMemberships) {
+                        foreach ($role in $userRoleMemberships) {
+                            if ($role.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                                $userRoles += $role.DisplayName
+                            }
+                        }
+                    }
+                } catch {
+                    # Role lookup failed, continue without roles
+                }
+                
+                $rolesText = if ($userRoles.Count -gt 0) { ($userRoles -join ", ") } else { "Click 'Refresh Roles' to view" }
+                
+                # Add row
+                $rowIndex = $entraUserGrid.Rows.Add()
+                $entraUserGrid.Rows[$rowIndex].Cells["Select"].Value = $false
+                $entraUserGrid.Rows[$rowIndex].Cells["UserPrincipalName"].Value = $u.UserPrincipalName
+                $entraUserGrid.Rows[$rowIndex].Cells["DisplayName"].Value = $u.DisplayName
+                $entraUserGrid.Rows[$rowIndex].Cells["Licensed"].Value = $licensedText
+                $entraUserGrid.Rows[$rowIndex].Cells["Roles"].Value = $rolesText
+                
+                $processedCount++
+                
+                # Update progress every 50 users
+                if ($processedCount % 50 -eq 0) {
+                    $statusLabel.Text = "Loading users... ($processedCount/$totalUsers)"
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
+            } catch {
+                # Skip users that cause errors
+                continue
+            }
+        }
+        
+        UpdateEntraButtonStates
+        $statusLabel.Text = "Loaded $processedCount users"
+        [System.Windows.Forms.MessageBox]::Show("Successfully loaded $processedCount users.", "Load Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+    } catch {
+        $statusLabel.Text = "Error loading users: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error loading users: $($_.Exception.Message)", "Load Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
+})
+
+# Search Users button handler
+$searchUsersButton.add_Click({
+    if (-not $script:graphConnection) {
+        [System.Windows.Forms.MessageBox]::Show("Please connect to Microsoft Graph first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    
+    $searchTerm = Show-InputDialog -Title "Search Users" -Prompt "Enter search term (name or email):"
+    if ([string]::IsNullOrWhiteSpace($searchTerm)) { return }
+    
+    Write-Host "Search term entered: '$searchTerm'"
+    
+    try {
+        $statusLabel.Text = "Searching for users..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        
+        # Search for users using the search term (Microsoft Graph supports startsWith and eq)
+        Write-Host "Searching for users with filter: startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')"
+        $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
+        
+        Write-Host "Found $($users.Count) users"
+        
+        if ($users.Count -eq 0) {
+            Write-Host "No users found with the current filter. Trying alternative search methods..."
+            
+            # Try alternative search methods using supported operators
+            try {
+                # Try exact match first
+                $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                Write-Host "Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
+                
+                $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                Write-Host "Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
+                
+                # Try case-insensitive search by getting all users and filtering client-side
+                $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $usersAlt3 = $allUsers | Where-Object { 
+                    $_.DisplayName -like "*$searchTerm*" -or $_.UserPrincipalName -like "*$searchTerm*" 
+                }
+                Write-Host "Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users"
+                
+                # Combine all results
+                $users = @($usersAlt1) + @($usersAlt2) + @($usersAlt3) | Sort-Object UserPrincipalName -Unique
+                Write-Host "Combined alternative searches: Found $($users.Count) users"
+            } catch {
+                Write-Host "Alternative searches also failed: $($_.Exception.Message)"
+            }
+            
+            if ($users.Count -eq 0) {
+                [System.Windows.Forms.MessageBox]::Show("No users found matching '$searchTerm'.", "No Results", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                return
+            }
+        }
+        
+        $entraUserGrid.Rows.Clear()
+        $processedCount = 0
+        
+        foreach ($u in $users) {
+            try {
+                # Check licensing
+                $isLicensed = $u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0
+                $licensedText = if ($isLicensed) { "Licensed" } else { "Unlicensed" }
+                
+                # Get user roles
+                $userRoles = @()
+                try {
+                    $userRoleMemberships = Get-MgUserMemberOf -UserId $u.UserPrincipalName -ErrorAction SilentlyContinue
+                    if ($userRoleMemberships) {
+                        foreach ($role in $userRoleMemberships) {
+                            if ($role.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                                $userRoles += $role.DisplayName
+                            }
+                        }
+                    }
+                } catch {
+                    # Role lookup failed, continue without roles
+                }
+                
+                $rolesText = if ($userRoles.Count -gt 0) { ($userRoles -join ", ") } else { "Click 'Refresh Roles' to view" }
+                
+                # Add row
+                $rowIndex = $entraUserGrid.Rows.Add()
+                $entraUserGrid.Rows[$rowIndex].Cells["Select"].Value = $false
+                $entraUserGrid.Rows[$rowIndex].Cells["UserPrincipalName"].Value = $u.UserPrincipalName
+                $entraUserGrid.Rows[$rowIndex].Cells["DisplayName"].Value = $u.DisplayName
+                $entraUserGrid.Rows[$rowIndex].Cells["Licensed"].Value = $licensedText
+                $entraUserGrid.Rows[$rowIndex].Cells["Roles"].Value = $rolesText
+                
+                $processedCount++
+            } catch {
+                # Skip users that cause errors
+                continue
+            }
+        }
+        
+        UpdateEntraButtonStates
+        $statusLabel.Text = "Loaded $processedCount users matching '$searchTerm'"
+        [System.Windows.Forms.MessageBox]::Show("Found and loaded $processedCount users matching '$searchTerm'.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+    } catch {
+        $statusLabel.Text = "Error searching users: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error searching users: $($_.Exception.Message)", "Search Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
 })
 $entraSignInExportButton.add_Click({
     $entraUserGrid.EndEdit()
@@ -3103,13 +3328,17 @@ $connectButton.add_Click({
         Connect-ExchangeOnline @authParams
         
         $script:currentExchangeConnection = $true
-        Show-Progress -message "Connected. Loading mailboxes..." -progress 25
+        Show-Progress -message "Connected to Exchange Online successfully." -progress 100
         
-        # Debug: Show what we're about to load
-        Write-Host "About to load mailboxes with QuickLoad strategy..."
+        # Enable load buttons and disable connect button
+        $loadAllMailboxesButton.Enabled = $true
+        $searchMailboxesButton.Enabled = $true
+        $disconnectButton.Enabled = $true
+        $connectButton.Enabled = $false
         
-        # Use optimized mailbox loading function with smart loading strategy
-        $mailboxCount = Load-MailboxesOptimized -MaxMailboxes 1000 -QuickLoad
+        Write-Host "Exchange Online connected. Load buttons enabled: LoadAll=$($loadAllMailboxesButton.Enabled), Search=$($searchMailboxesButton.Enabled)"
+        
+        $statusLabel.Text = "Connected to Exchange Online. Use 'Load All Mailboxes' or 'Search Mailboxes' to load data."
     } catch {
         # Check if this is a user cancellation (common error messages when user cancels auth)
         $errorMessage = $_.Exception.Message
@@ -3129,11 +3358,154 @@ $connectButton.add_Click({
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default 
     }
 })
+
+# Load All Mailboxes button handler
+$loadAllMailboxesButton.add_Click({
+    if (-not $script:currentExchangeConnection) {
+        [System.Windows.Forms.MessageBox]::Show("Please connect to Exchange Online first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    
+    try {
+        $statusLabel.Text = "Loading all mailboxes..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        
+        # Load all mailboxes with full analysis
+        $mailboxCount = Load-MailboxesOptimized -MaxMailboxes 10000 -LoadAll
+        
+        $statusLabel.Text = "Loaded $mailboxCount mailboxes"
+        [System.Windows.Forms.MessageBox]::Show("Successfully loaded $mailboxCount mailboxes.", "Load Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+    } catch {
+        $statusLabel.Text = "Error loading mailboxes: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error loading mailboxes: $($_.Exception.Message)", "Load Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
+})
+
+# Search Mailboxes button handler
+$searchMailboxesButton.add_Click({
+    if (-not $script:currentExchangeConnection) {
+        [System.Windows.Forms.MessageBox]::Show("Please connect to Exchange Online first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    
+    $searchTerm = Show-InputDialog -Title "Search Mailboxes" -Prompt "Enter search term (name or email):"
+    if ([string]::IsNullOrWhiteSpace($searchTerm)) { return }
+    
+    Write-Host "Search term entered: '$searchTerm'"
+    
+    try {
+        $statusLabel.Text = "Searching for mailboxes..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        
+        # Search for mailboxes using the search term
+        Write-Host "Searching for mailboxes with filter: DisplayName -like '*$searchTerm*' -or UserPrincipalName -like '*$searchTerm*'"
+        $mailboxes = Get-Mailbox -Filter "DisplayName -like '*$searchTerm*' -or UserPrincipalName -like '*$searchTerm*'" -ResultSize 100
+        
+        Write-Host "Found $($mailboxes.Count) mailboxes"
+        
+        if ($mailboxes.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No mailboxes found matching '$searchTerm'.", "No Results", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
+        }
+        
+        # Load the found mailboxes by updating the script variables and grid
+        $userMailboxGrid.Rows.Clear()
+        $script:allLoadedMailboxUPNs = @()
+        $script:allLoadedMailboxes = $mailboxes
+        
+        $mailboxCount = 0
+        foreach ($mbx in $mailboxes) {
+            $script:allLoadedMailboxUPNs += $mbx.UserPrincipalName
+            
+            # Get user details for sign-in status
+            try {
+                $user = Get-User -Identity $mbx.UserPrincipalName -ErrorAction SilentlyContinue
+                $signInBlocked = if ($user -and $user.AccountDisabled) { "Blocked" } else { "Allowed" }
+            } catch {
+                $signInBlocked = "Unknown"
+            }
+            
+            # Add row to grid
+            $rowIdx = $userMailboxGrid.Rows.Add()
+            $userMailboxGrid.Rows[$rowIdx].Cells["Select"].Value = $false
+            $userMailboxGrid.Rows[$rowIdx].Cells["UserPrincipalName"].Value = $mbx.UserPrincipalName
+            $userMailboxGrid.Rows[$rowIdx].Cells["DisplayName"].Value = $mbx.DisplayName
+            $userMailboxGrid.Rows[$rowIdx].Cells["SignInBlocked"].Value = $signInBlocked
+            $userMailboxGrid.Rows[$rowIdx].Cells["RecipientType"].Value = $mbx.RecipientTypeDetails
+            
+            # Initialize analysis values
+            $rulesCount = "0"
+            $hiddenRules = "0"
+            $suspiciousRules = "0"
+            $externalForwarding = "Unknown"
+            $delegates = "Unknown"
+            $fullAccess = "Unknown"
+            
+            # Perform analysis for UserMailbox type
+            if ($mbx.RecipientTypeDetails -eq "UserMailbox") {
+                try {
+                    $rules = Get-InboxRule -Mailbox $mbx.UserPrincipalName -IncludeHidden -ErrorAction SilentlyContinue
+                    if ($rules) {
+                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
+                        $rulesCount = $analysis.TotalRules.ToString()
+                        $hiddenRules = $analysis.SuspiciousHidden.ToString()
+                        $suspiciousRules = $analysis.SuspiciousVisible.ToString()
+                        $externalForwarding = if ($analysis.HasExternalForwarding) { "Yes" } else { "No" }
+                    }
+                } catch {
+                    # Keep default values if analysis fails
+                }
+                
+                # Analyze permissions
+                try {
+                    $delegates = Analyze-MailboxDelegates -UserPrincipalName $mbx.UserPrincipalName
+                    $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $mbx.UserPrincipalName
+                } catch {
+                    # Keep default values if analysis fails
+                }
+            } elseif ($mbx.RecipientTypeDetails -eq "SharedMailbox") {
+                $rulesCount = "N/A"
+                $hiddenRules = "N/A"
+                $suspiciousRules = "N/A"
+                $externalForwarding = "N/A"
+                # Still analyze permissions for shared mailboxes
+                try {
+                    $delegates = Analyze-MailboxDelegates -UserPrincipalName $mbx.UserPrincipalName
+                    $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $mbx.UserPrincipalName
+                } catch {
+                    # Keep default values if analysis fails
+                }
+            }
+            
+            $userMailboxGrid.Rows[$rowIdx].Cells["TotalRules"].Value = $rulesCount
+            $userMailboxGrid.Rows[$rowIdx].Cells["HiddenRules"].Value = $hiddenRules
+            $userMailboxGrid.Rows[$rowIdx].Cells["SuspiciousRules"].Value = $suspiciousRules
+            $userMailboxGrid.Rows[$rowIdx].Cells["ExternalForwarding"].Value = $externalForwarding
+            $userMailboxGrid.Rows[$rowIdx].Cells["Delegates"].Value = $delegates
+            $userMailboxGrid.Rows[$rowIdx].Cells["FullAccess"].Value = $fullAccess
+            
+            $mailboxCount++
+        }
+        
+        $statusLabel.Text = "Loaded $mailboxCount mailboxes matching '$searchTerm'"
+        [System.Windows.Forms.MessageBox]::Show("Found and loaded $mailboxCount mailboxes matching '$searchTerm'.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+    } catch {
+        $statusLabel.Text = "Error searching mailboxes: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error searching mailboxes: $($_.Exception.Message)", "Search Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
+})
 $disconnectButton.add_Click({
     $statusLabel.Text = "Disconnecting..."; $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     try { Disconnect-ExchangeOnline -Confirm:$false } catch {}
     $script:currentExchangeConnection = $null
     $userMailboxGrid.Rows.Clear(); $selectAllButton.Enabled = $false; $deselectAllButton.Enabled = $false; $disconnectButton.Enabled = $false; $connectButton.Enabled = $true
+    $loadAllMailboxesButton.Enabled = $false; $searchMailboxesButton.Enabled = $false
     $manageRulesButton.Enabled = $false; $manageConnectorsButton.Enabled = $false; $manageTransportRulesButton.Enabled = $false
     $statusLabel.Text = "Disconnected."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
@@ -3150,6 +3522,11 @@ $browseFolderButton.add_Click({
 # Search functionality
 $exchangeSearchTextBox.add_TextChanged({
     Filter-ExchangeGrid -searchText $exchangeSearchTextBox.Text
+})
+
+# Add search functionality for Entra ID
+$entraSearchTextBox.add_TextChanged({
+    Filter-EntraGrid -searchText $entraSearchTextBox.Text
 })
 $getRulesButton.add_Click({
     $selectedUpns = @()
@@ -3478,7 +3855,9 @@ $manageTransportRulesButton.add_Click({
     Show-TransportRulesViewer -mainForm $mainForm -statusLabel $statusLabel
 })
 
-# Removed manageRestrictedSendersButton click handler - now using web link approach
+$manageRestrictedSendersButton.add_Click({
+    Show-RestrictedSenderManagementDialog -ParentForm $mainForm -StatusLabelGlobal $statusLabel
+})
 
 $userMailboxGrid.add_CellContentClick({
     $mainForm.BeginInvoke([System.Action]{
@@ -3723,24 +4102,50 @@ $accountSelectorGroup.Controls.Add($unifiedAccountGrid)
 
 # Account selector buttons
 $refreshAccountsButton = New-Object System.Windows.Forms.Button
-$refreshAccountsButton.Text = "Refresh Account List"
-$refreshAccountsButton.Location = New-Object System.Drawing.Point(10, 160)
-$refreshAccountsButton.Size = New-Object System.Drawing.Size(150, 30)
-$refreshAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$refreshAccountsButton.Text = "🔄 Refresh Account List"
+$refreshAccountsButton.Location = New-Object System.Drawing.Point(10, 460)
+$refreshAccountsButton.Size = New-Object System.Drawing.Size(180, 35)
+$refreshAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$refreshAccountsButton.BackColor = [System.Drawing.Color]::LightBlue
+$refreshAccountsButton.ForeColor = [System.Drawing.Color]::DarkBlue
 
 $selectAllAccountsButton = New-Object System.Windows.Forms.Button
 $selectAllAccountsButton.Text = "Select All"
-$selectAllAccountsButton.Location = New-Object System.Drawing.Point(170, 160)
-$selectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 30)
+$selectAllAccountsButton.Location = New-Object System.Drawing.Point(200, 460)
+$selectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 35)
 $selectAllAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $deselectAllAccountsButton = New-Object System.Windows.Forms.Button
 $deselectAllAccountsButton.Text = "Deselect All"
-$deselectAllAccountsButton.Location = New-Object System.Drawing.Point(280, 160)
-$deselectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 30)
+$deselectAllAccountsButton.Location = New-Object System.Drawing.Point(310, 460)
+$deselectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 35)
 $deselectAllAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $accountSelectorGroup.Controls.AddRange(@($refreshAccountsButton, $selectAllAccountsButton, $deselectAllAccountsButton))
+
+# Connection status indicator
+$connectionStatusLabel = New-Object System.Windows.Forms.Label
+$connectionStatusLabel.Text = "Connection Status: Checking..."
+$connectionStatusLabel.Location = New-Object System.Drawing.Point(420, 460)
+$connectionStatusLabel.Size = New-Object System.Drawing.Size(350, 35)
+$connectionStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+$connectionStatusLabel.ForeColor = [System.Drawing.Color]::DarkGray
+$accountSelectorGroup.Controls.Add($connectionStatusLabel)
+
+# Function to update connection status
+function Update-ConnectionStatus {
+    $exchangeStatus = if ($script:currentExchangeConnection) { "✅ Exchange Online" } else { "❌ Exchange Online" }
+    $entraStatus = if ($script:graphConnection) { "✅ Entra ID" } else { "❌ Entra ID" }
+    $connectionStatusLabel.Text = "Connection Status: $exchangeStatus | $entraStatus"
+    
+    if ($script:currentExchangeConnection -and $script:graphConnection) {
+        $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Green
+    } elseif ($script:currentExchangeConnection -or $script:graphConnection) {
+        $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Orange
+    } else {
+        $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Red
+    }
+}
 
 # Generate Report button (moved down)
 $generateReportButton = New-Object System.Windows.Forms.Button
@@ -3768,8 +4173,37 @@ $tabControl.TabPages.Add($reportGeneratorTab)
 
 # Initialize unified account grid when Report Generator tab is first shown
 $reportGeneratorTab.add_Enter({
-    if ($unifiedAccountGrid.Rows.Count -eq 0) {
-        Update-UnifiedAccountGrid
+    try {
+        # Update connection status first
+        Update-ConnectionStatus
+        
+        # Check if we have data from both sources
+        $hasExchangeData = $script:allLoadedMailboxUPNs -and $script:allLoadedMailboxUPNs.Count -gt 0
+        $hasEntraData = $entraUserGrid.Rows.Count -gt 0
+        
+        if (-not $hasExchangeData -and -not $hasEntraData) {
+            $statusLabel.Text = "⚠️ No data available - please connect to Exchange Online and/or Entra ID first"
+            [System.Windows.Forms.MessageBox]::Show(
+                "No account data available for reports.`n`nPlease connect to Exchange Online and/or Entra ID first, then refresh the account list.",
+                "No Data Available",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return
+        }
+        
+        # Auto-refresh if grid is empty or if we have new data
+        if ($unifiedAccountGrid.Rows.Count -eq 0) {
+            $statusLabel.Text = "🔄 Auto-refreshing account list..."
+            Update-UnifiedAccountGrid
+            $accountCount = $unifiedAccountGrid.Rows.Count
+            $statusLabel.Text = "✅ Reports tab ready - $accountCount accounts loaded"
+        } else {
+            $statusLabel.Text = "📊 Reports tab ready - $($unifiedAccountGrid.Rows.Count) accounts available"
+        }
+        
+    } catch {
+        $statusLabel.Text = "❌ Error initializing reports tab: $($_.Exception.Message)"
     }
 })
 
@@ -3779,12 +4213,38 @@ $reportGeneratorTab.Controls.Add($reportGeneratorPanel)
 # Account selector button event handlers
 $refreshAccountsButton.add_Click({
     try {
-        $statusLabel.Text = "Refreshing account list..."
+        $statusLabel.Text = "🔄 Refreshing unified account list..."
+        $mainForm.Refresh()
+        
+        # Update connection status first
+        Update-ConnectionStatus
+        
+        # Clear the grid first
+        $unifiedAccountGrid.Rows.Clear()
+        
+        # Update the unified account grid with fresh data
         Update-UnifiedAccountGrid
-        $statusLabel.Text = "Account list refreshed"
+        
+        # Show success message with count
+        $accountCount = $unifiedAccountGrid.Rows.Count
+        $statusLabel.Text = "✅ Account list refreshed - $accountCount accounts loaded"
+        
+        # Show a brief success message
+        [System.Windows.Forms.MessageBox]::Show(
+            "Account list refreshed successfully!`n`nTotal accounts: $accountCount`n`nThis includes accounts from both Exchange Online and Entra ID.",
+            "Refresh Complete",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        
     } catch {
-        $statusLabel.Text = "Error refreshing account list: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error refreshing account list: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $statusLabel.Text = "❌ Error refreshing account list: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show(
+            "Error refreshing account list: $($_.Exception.Message)`n`nPlease ensure you are connected to both Exchange Online and Entra ID.",
+            "Refresh Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
     }
 })
 
@@ -4267,8 +4727,35 @@ $entraResetPasswordButton.add_Click({
     
     $userUpn = $selectedUpns[0]
     
-    # Generate memorable password
-    $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
+    # Generate memorable password with validation
+    try {
+        $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
+        
+        # Validate password was generated
+        if ([string]::IsNullOrWhiteSpace($newPassword)) {
+            throw "Password generation failed - generated password is null or empty"
+        }
+        
+        # Additional validation - ensure password meets minimum requirements
+        if ($newPassword.Length -lt 8) {
+            throw "Generated password is too short (length: $($newPassword.Length))"
+        }
+        
+        Write-Host "Generated password length: $($newPassword.Length)" -ForegroundColor Green
+        
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nTrying fallback password generation...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        
+        # Fallback password generation
+        try {
+            $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!"
+            Write-Host "Using fallback password: $newPassword" -ForegroundColor Yellow
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to generate fallback password: $($_.Exception.Message)", "Password Generation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $statusLabel.Text = "Password generation failed"
+            return
+        }
+    }
     
     try {
         # Reset user password via Microsoft Graph
@@ -4281,6 +4768,16 @@ $entraResetPasswordButton.add_Click({
             throw "Not connected to Microsoft Graph. Please connect first."
         }
         
+        # Validate user exists before attempting password reset
+        try {
+            $user = Get-MgUser -UserId $userUpn -ErrorAction Stop
+            if (-not $user) {
+                throw "User not found: $userUpn"
+            }
+        } catch {
+            throw "Failed to validate user $userUpn : $($_.Exception.Message)"
+        }
+        
         # Reset the password
         $passwordProfile = @{
             Password = $newPassword
@@ -4290,8 +4787,10 @@ $entraResetPasswordButton.add_Click({
         Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
         
         # Show success dialog with password
+        $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nThis password is memorable and secure. The user will be required to change it on next sign-in.`n`nCopy password to clipboard?"
+        
         $result = [System.Windows.Forms.MessageBox]::Show(
-            "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nThis password is memorable and secure. The user will be required to change it on next sign-in.`n`nCopy password to clipboard?",
+            $message,
             "Password Reset Successful",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Information
@@ -4311,7 +4810,20 @@ $entraResetPasswordButton.add_Click({
 })
 
 $entraManageRestrictedSendersButton.add_Click({
-    Start-Process "https://security.microsoft.com/restrictedentities"
+    $entraUserGrid.EndEdit()
+    $selectedUpns = @()
+    for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
+        if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
+            $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+        }
+    }
+    if ($selectedUpns.Count -ne 1) {
+        [System.Windows.Forms.MessageBox]::Show("Select exactly one user to manage restricted senders.", "Select One User", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    $selectedUpn = $selectedUpns[0]
+    Show-RestrictedSenderManagementDialog -UserPrincipalName $selectedUpn -ParentForm $mainForm -StatusLabelGlobal $statusLabel
 })
 
 # Add click handlers for Select All/Deselect All buttons
@@ -4679,15 +5191,59 @@ $entraResetPasswordButton.add_Click({
     $userUpn = $selectedUpns[0]
     $confirm = [System.Windows.Forms.MessageBox]::Show("Reset password for user $userUpn? This will generate a new password and require the user to change it at next sign-in.", "Confirm Password Reset", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
     if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
+    
+    # Generate memorable password with validation
+    try {
+        $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
+        
+        # Validate password was generated
+        if ([string]::IsNullOrWhiteSpace($newPassword)) {
+            throw "Password generation failed - generated password is null or empty"
+        }
+        
+        # Additional validation - ensure password meets minimum requirements
+        if ($newPassword.Length -lt 8) {
+            throw "Generated password is too short (length: $($newPassword.Length))"
+        }
+        
+        Write-Host "Generated password length: $($newPassword.Length)" -ForegroundColor Green
+        
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nTrying fallback password generation...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        
+        # Fallback password generation
+        try {
+            $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!"
+            Write-Host "Using fallback password: $newPassword" -ForegroundColor Yellow
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to generate fallback password: $($_.Exception.Message)", "Password Generation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $statusLabel.Text = "Password generation failed"
+            return
+        }
+    }
+    
     try {
         $statusLabel.Text = "Resetting password for $userUpn..."
         $mainForm.Refresh()
         $context = Get-MgContext -ErrorAction Stop
         if (-not $context) { throw "Not connected to Microsoft Graph. Please connect first." }
+        
+        # Validate user exists before attempting password reset
+        try {
+            $user = Get-MgUser -UserId $userUpn -ErrorAction Stop
+            if (-not $user) {
+                throw "User not found: $userUpn"
+            }
+        } catch {
+            throw "Failed to validate user $userUpn : $($_.Exception.Message)"
+        }
+        
         $passwordProfile = @{ Password = $newPassword; ForceChangePasswordNextSignIn = $true }
         Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
-        $result = [System.Windows.Forms.MessageBox]::Show("Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nThis password is memorable and secure. The user will be required to change it on next sign-in.`n`nCopy password to clipboard?", "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+        $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nThis password is memorable and secure. The user will be required to change it on next sign-in.`n`nCopy password to clipboard?"
+        
+        $result = [System.Windows.Forms.MessageBox]::Show($message, "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
         if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
             [System.Windows.Forms.Clipboard]::SetText($newPassword)
             [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -4797,29 +5353,12 @@ $entraDisconnectGraphButton.add_Click({
     try {
         Disconnect-MgGraph -ErrorAction Stop
         $script:graphConnection = $null
-        
-        # Clear the Entra user grid
         $entraUserGrid.Rows.Clear()
-        
-        # Disable buttons that require connection
-        $entraViewSignInLogsButton.Enabled = $false
-        $entraViewAuditLogsButton.Enabled = $false
-        $entraDetailsFetchButton.Enabled = $false
-        $entraMfaFetchButton.Enabled = $false
-        $entraBlockUserButton.Enabled = $false
-        $entraUnblockUserButton.Enabled = $false
-        $entraRevokeSessionsButton.Enabled = $false
-        $entraResetPasswordButton.Enabled = $false
-        $entraRequirePwdChangeButton.Enabled = $false
-        $entraRefreshRolesButton.Enabled = $false
-        $entraViewAdminsButton.Enabled = $false
-        $entraSelectAllButton.Enabled = $false
-        $entraDeselectAllButton.Enabled = $false
-        
-        # Re-enable connect button
+        $loadAllUsersButton.Enabled = $false
+        $searchUsersButton.Enabled = $false
         $entraConnectGraphButton.Enabled = $true
-        
-        $statusLabel.Text = "Disconnected from Microsoft Graph. Grid cleared."
+        $entraDisconnectGraphButton.Enabled = $false
+        $statusLabel.Text = "Disconnected from Microsoft Graph."
     } catch {
         $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -5011,36 +5550,66 @@ function New-XKCDPassword {
         [switch]$IncludeSeparator
     )
     
-    # Common words (expanded list)
-    $words = @(
-        "correct", "horse", "battery", "staple", "apple", "banana", "cherry", "dragon", "eagle", "forest",
-        "garden", "house", "island", "jungle", "knight", "lemon", "mountain", "ocean", "planet", "queen",
-        "river", "sunset", "tiger", "umbrella", "village", "window", "yellow", "zebra", "anchor", "bridge",
-        "castle", "diamond", "elephant", "firefly", "guitar", "hammer", "iceberg", "jacket", "kangaroo",
-        "lighthouse", "moonlight", "notebook", "octopus", "penguin", "rainbow", "sailboat", "telescope",
-        "volcano", "waterfall", "xylophone", "yacht", "zucchini", "butterfly", "caterpillar", "dolphin",
-        "flamingo", "giraffe", "hedgehog", "iguana", "jellyfish", "koala", "llama", "meerkat", "narwhal",
-        "ostrich", "panda", "quokka", "raccoon", "sloth", "toucan", "unicorn", "vulture", "walrus", "xenops"
-    )
-    
-    # Generate random words
-    $selectedWords = $words | Get-Random -Count $WordCount
-    
-    # Join with separator if requested
-    if ($IncludeSeparator) {
-        $separators = @("-", "_", ".", "!")
-        $password = ""
-        for ($i = 0; $i -lt $selectedWords.Count; $i++) {
-            $password += $selectedWords[$i]
-            if ($i -lt $selectedWords.Count - 1) {
-                $password += $separators | Get-Random
-            }
+    try {
+        # Common words (expanded list)
+        $words = @(
+            "correct", "horse", "battery", "staple", "apple", "banana", "cherry", "dragon", "eagle", "forest",
+            "garden", "house", "island", "jungle", "knight", "lemon", "mountain", "ocean", "planet", "queen",
+            "river", "sunset", "tiger", "umbrella", "village", "window", "yellow", "zebra", "anchor", "bridge",
+            "castle", "diamond", "elephant", "firefly", "guitar", "hammer", "iceberg", "jacket", "kangaroo",
+            "lighthouse", "moonlight", "notebook", "octopus", "penguin", "rainbow", "sailboat", "telescope",
+            "volcano", "waterfall", "xylophone", "yacht", "zucchini", "butterfly", "caterpillar", "dolphin",
+            "flamingo", "giraffe", "hedgehog", "iguana", "jellyfish", "koala", "llama", "meerkat", "narwhal",
+            "ostrich", "panda", "quokka", "raccoon", "sloth", "toucan", "unicorn", "vulture", "walrus", "xenops"
+        )
+        
+        # Validate word count
+        if ($WordCount -lt 1 -or $WordCount -gt 10) {
+            throw "Word count must be between 1 and 10"
         }
-    } else {
-        $password = $selectedWords -join ""
+        
+        # Generate random words
+        $selectedWords = $words | Get-Random -Count $WordCount
+        
+        # Validate selected words
+        if (-not $selectedWords -or $selectedWords.Count -eq 0) {
+            throw "Failed to generate random words"
+        }
+        
+        # Join with separator if requested
+        if ($IncludeSeparator) {
+            $separators = @("-", "_", ".", "!")
+            $password = ""
+            for ($i = 0; $i -lt $selectedWords.Count; $i++) {
+                $password += $selectedWords[$i]
+                if ($i -lt $selectedWords.Count - 1) {
+                    $password += $separators | Get-Random
+                }
+            }
+        } else {
+            $password = $selectedWords -join ""
+        }
+        
+        # Final validation
+        if ([string]::IsNullOrWhiteSpace($password)) {
+            throw "Generated password is null or empty"
+        }
+        
+        if ($password.Length -lt 8) {
+            throw "Generated password is too short (length: $($password.Length))"
+        }
+        
+        Write-Host "Generated XKCD password: $password (length: $($password.Length))" -ForegroundColor Green
+        return $password
+        
+    } catch {
+        Write-Host "Error in New-XKCDPassword: $($_.Exception.Message)" -ForegroundColor Red
+        
+        # Fallback to simple password generation
+        $fallbackPassword = "Secure" + (Get-Random -Minimum 1000 -Maximum 9999) + "!"
+        Write-Host "Using fallback password: $fallbackPassword" -ForegroundColor Yellow
+        return $fallbackPassword
     }
-    
-    return $password
 }
 
 # Function to generate pattern-based password
