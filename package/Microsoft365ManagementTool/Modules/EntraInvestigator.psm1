@@ -5,11 +5,10 @@ $script:requiredModules = @(
     "Microsoft.Graph.Users",
     "Microsoft.Graph.Reports",
     "Microsoft.Graph.Identity.DirectoryManagement",
-    "Microsoft.Graph.Identity.SignIns",
-    "Microsoft.Graph.Security"
+    "Microsoft.Graph.Identity.SignIns"
 )
 $script:requiredScopes = @(
-    "User.Read.All", "AuditLog.Read.All", "Organization.Read.All", "Directory.Read.All", "Policy.Read.All", "UserAuthenticationMethod.Read.All", "SecurityEvents.ReadWrite.All"
+    "User.Read.All", "AuditLog.Read.All", "Organization.Read.All", "Directory.Read.All", "Policy.Read.All", "UserAuthenticationMethod.Read.All"
 )
 
 function Test-EntraModules {
@@ -84,17 +83,9 @@ function Show-DebugTextBox {
 
 function Get-EntraUsers {
     [CmdletBinding()]
-    param(
-        [int]$MaxUsers = 5000,
-        [switch]$LoadAll
-    )
+    param()
     try {
-        if ($LoadAll) {
-            $result = Get-MgUser -All -Property UserPrincipalName,DisplayName,Id -ConsistencyLevel eventual | Sort-Object UserPrincipalName
-        } else {
-            # Load users in batches for better performance
-            $result = Get-MgUser -Top $MaxUsers -Property UserPrincipalName,DisplayName,Id -ConsistencyLevel eventual | Sort-Object UserPrincipalName
-        }
+        $result = Get-MgUser -All -Property UserPrincipalName,DisplayName,Id -ConsistencyLevel eventual | Sort-Object UserPrincipalName
         return $result
     } catch {
         Write-Error "Failed to fetch users: $_"

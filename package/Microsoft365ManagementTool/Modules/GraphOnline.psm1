@@ -54,8 +54,8 @@ function Connect-GraphService {
             $scopes = @("User.Read.All", "User.ReadWrite.All", "SecurityEvents.Read.All", "SecurityEvents.ReadWrite.All")
         }
         [System.Windows.Forms.MessageBox]::Show("About to call Connect-MgGraph", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        # Connect to Graph with ForceRefresh for admin consent
-        $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
+        # Connect to Graph
+        $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop
         [System.Windows.Forms.MessageBox]::Show("Returned from Connect-MgGraph", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         $global:graphConnectionAttempted = $true
         if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph." }
