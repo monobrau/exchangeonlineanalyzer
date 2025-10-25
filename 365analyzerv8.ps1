@@ -4681,9 +4681,9 @@ $profileCombo.Width = 100
 
 $containerLabel = New-Object System.Windows.Forms.Label
 $containerLabel.Text = "Container:"
-$containerLabel.Location = New-Object System.Drawing.Point(275, 25)
+$containerLabel.Location = New-Object System.Drawing.Point(250, 25)
 $containerCombo = New-Object System.Windows.Forms.ComboBox
-$containerCombo.Location = New-Object System.Drawing.Point(345, 22)
+$containerCombo.Location = New-Object System.Drawing.Point(320, 22)
 $containerCombo.Width = 200
 
 $openSignInsBtn = New-Object System.Windows.Forms.Button
