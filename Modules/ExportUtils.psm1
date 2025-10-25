@@ -2,49 +2,113 @@
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
 function Get-MfaCoverageReport {
     try {
-        # Security Defaults
+        # 1) Security Defaults status (authoritative)
         $secDefaultsEnabled = $false
         try {
-            $authMethodsPolicy = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy' -ErrorAction Stop
-            if ($authMethodsPolicy -and $authMethodsPolicy.isSoftwareOathEnabled -ne $null) { $secDefaultsEnabled = [bool]($authMethodsPolicy.isSoftwareOathEnabled -or $authMethodsPolicy.isModernAuthBlocked -eq $false) }
+            $secDefaults = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction Stop
+            if ($secDefaults -and $secDefaults.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$secDefaults.isEnabled }
         } catch {}
 
-        # Conditional Access (if present)
-        $caRequiresMfa = $false
+        # 2) Conditional Access policies requiring MFA (tenant-wide set)
+        $caPolicies = @()
         try {
-            $policies = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
-            if ($policies.value) {
-                foreach ($p in $policies.value) {
-                    $grant = $p.grantControls
-                    if ($grant -and ($grant.builtInControls -contains 'mfa')) { $caRequiresMfa = $true; break }
-                }
-            }
+            $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
+            if ($resp.value) { $caPolicies = $resp.value }
         } catch {}
 
-        # Users + Direct per-user MFA state (best-effort via strongAuthenticationMethods)
+        # Filter enabled policies that require MFA
+        $mfaPolicies = @()
+        foreach ($p in $caPolicies) {
+            $enabled = ($p.state -eq 'enabled')
+            if (-not $enabled) { continue }
+            $grant = $p.grantControls
+            $requiresMfa = $false
+            if ($grant) {
+                if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
+                # authenticationStrength also implies MFA, but skip for simplicity if missing
+            }
+            if ($requiresMfa) { $mfaPolicies += $p }
+        }
+
+        # 3) Users and per-user evaluation
         $users = @()
         try {
-            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName,strongAuthenticationDetail,strongAuthenticationMethods' -ErrorAction Stop
+            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+
+            # Directory roles map (for policy role assignment evaluation)
+            $roles = @(); $roleIdToName = @{}
+            try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
+            foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+
             foreach ($u in $userPage) {
                 $directMfa = $false
+                # Attempt to detect registered methods (requires UserAuthenticationMethod.Read.All). Best-effort.
                 try {
-                    if ($u.strongAuthenticationMethods) {
-                        $directMfa = ($u.strongAuthenticationMethods | Where-Object { $_.IsDefault -or $_.IsEnabled }).Count -gt 0
+                    $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
+                    if ($methods.value) {
+                        foreach ($m in $methods.value) {
+                            $otype = $m.'@odata.type'
+                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') {
+                                $directMfa = $true; break
+                            }
+                        }
                     }
                 } catch {}
-                $covered = ($directMfa -or $secDefaultsEnabled -or $caRequiresMfa)
+
+                # Determine if any MFA CA policy applies to this user
+                $userGroups = @()
+                $userRoles = @()
+                try {
+                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    foreach ($m in $mem) {
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
+                    }
+                } catch {}
+
+                $userCaRequiresMfa = $false
+                foreach ($p in $mfaPolicies) {
+                    $conds = $p.conditions
+                    if (-not $conds) { continue }
+                    $usersCond = $conds.users
+                    $incAll = $false
+                    $incUser = $false
+                    $excluded = $false
+
+                    if ($usersCond) {
+                        # Include
+                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
+                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
+                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
+
+                        # Exclude
+                        if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
+                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
+                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
+                    }
+
+                    $applies = ($incAll -or $incUser)
+                    if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
+                }
+
+                $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
                 $users += [pscustomobject]@{
                     DisplayName        = $u.displayName
                     UserPrincipalName  = $u.userPrincipalName
                     PerUserMfaEnabled  = $directMfa
                     SecurityDefaults   = $secDefaultsEnabled
-                    CARequiresMfa      = $caRequiresMfa
+                    CARequiresMfa      = $userCaRequiresMfa
                     MfaCovered         = $covered
                 }
             }
         } catch {}
 
-        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $caRequiresMfa; Users = $users }
+        $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
+        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users }
     } catch {
         Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"; return @{ SecurityDefaultsEnabled=$false; CAPoliciesRequireMfa=$false; Users=@() }
     }
@@ -503,10 +567,79 @@ function Get-GraphAuditLogs {
         $startUtc = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max(1,$DaysBack))
         $startIso = $startUtc.ToString("s") + "Z"
 
-        $all = New-Object System.Collections.Generic.List[object]
+        $raw = New-Object System.Collections.Generic.List[object]
         $page = Get-MgAuditLogDirectoryAudit -All -Filter "activityDateTime ge $startIso" -ErrorAction Stop
-        if ($page) { [void]$all.AddRange($page) }
-        return [System.Collections.ArrayList]$all
+        if ($page) { [void]$raw.AddRange($page) }
+
+        # Flatten for CSV detail richness
+        $flattened = New-Object System.Collections.Generic.List[object]
+
+        foreach ($r in $raw) {
+            try {
+                $userObj  = $r.InitiatedBy.User
+                $appObj   = $r.InitiatedBy.App
+                $ipAddr   = $null
+                if ($userObj -and $userObj.IpAddress) { $ipAddr = $userObj.IpAddress }
+
+                $targets = @()
+                if ($r.TargetResources) {
+                    foreach ($t in $r.TargetResources) {
+                        $tname = $t.DisplayName
+                        $tid   = $t.Id
+                        $ttype = $t.Type
+                        $targets += ("{0} ({1}, {2})" -f $tname,$tid,$ttype)
+                    }
+                }
+
+                $modProps = @()
+                if ($r.TargetResources -and $r.TargetResources[0] -and $r.TargetResources[0].ModifiedProperties) {
+                    foreach ($p in $r.TargetResources[0].ModifiedProperties) {
+                        $pname = $p.DisplayName
+                        $oldV  = $p.OldValue
+                        $newV  = $p.NewValue
+                        $modProps += ("{0}: '{1}' → '{2}'" -f $pname,$oldV,$newV)
+                    }
+                }
+
+                $details = @()
+                if ($r.AdditionalDetails) {
+                    foreach ($d in $r.AdditionalDetails) {
+                        $details += ("{0}={1}" -f $d.Key, $d.Value)
+                    }
+                }
+
+                $flattened.Add([pscustomobject]@{
+                    ActivityDateTime         = $r.ActivityDateTime
+                    ActivityDisplayName      = $r.ActivityDisplayName
+                    Category                 = $r.Category
+                    CorrelationId            = $r.CorrelationId
+                    Result                   = $r.Result
+                    ResultReason             = $r.ResultReason
+                    LoggedByService          = $r.LoggedByService
+                    IPAddress                = $ipAddr
+                    InitiatedByUserId        = if ($userObj) { $userObj.Id } else { $null }
+                    InitiatedByUPN           = if ($userObj) { $userObj.UserPrincipalName } else { $null }
+                    InitiatedByUserDisplay   = if ($userObj) { $userObj.DisplayName } else { $null }
+                    InitiatedByAppId         = if ($appObj) { $appObj.ServicePrincipalId } else { $null }
+                    InitiatedByAppDisplay    = if ($appObj) { $appObj.DisplayName } else { $null }
+                    TargetResources          = ($targets -join '; ')
+                    ModifiedProperties       = ($modProps -join '; ')
+                    AdditionalDetails        = ($details -join '; ')
+                    RawId                    = $r.Id
+                }) | Out-Null
+            } catch {
+                # If flattening fails for a record, fall back to a minimal projection
+                $flattened.Add([pscustomobject]@{
+                    ActivityDateTime    = $r.ActivityDateTime
+                    ActivityDisplayName = $r.ActivityDisplayName
+                    Category            = $r.Category
+                    Result              = $r.Result
+                    RawId               = $r.Id
+                }) | Out-Null
+            }
+        }
+
+        return [System.Collections.ArrayList]$flattened
     } catch {
         Write-Error "Failed to collect audit logs: $($_.Exception.Message)"
         return @()
