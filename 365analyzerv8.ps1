@@ -4676,15 +4676,15 @@ $profileLabel = New-Object System.Windows.Forms.Label
 $profileLabel.Text = "Firefox Profile:"
 $profileLabel.Location = New-Object System.Drawing.Point(15, 25)
 $profileCombo = New-Object System.Windows.Forms.ComboBox
-$profileCombo.Location = New-Object System.Drawing.Point(110, 22)
-$profileCombo.Width = 160
+$profileCombo.Location = New-Object System.Drawing.Point(120, 22)
+$profileCombo.Width = 190
 
 $containerLabel = New-Object System.Windows.Forms.Label
 $containerLabel.Text = "Container:"
 $containerLabel.Location = New-Object System.Drawing.Point(290, 25)
 $containerCombo = New-Object System.Windows.Forms.ComboBox
-$containerCombo.Location = New-Object System.Drawing.Point(355, 22)
-$containerCombo.Width = 160
+$containerCombo.Location = New-Object System.Drawing.Point(380, 22)
+$containerCombo.Width = 210
 
 $openSignInsBtn = New-Object System.Windows.Forms.Button
 $openSignInsBtn.Text = "Open Sign-in Logs"
@@ -4702,6 +4702,8 @@ $openCABtn.Location = New-Object System.Drawing.Point(150, 50)
 $openCABtn.Size = New-Object System.Drawing.Size(130, 25)
 
 $entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabel,$containerCombo,$openSignInsBtn,$openRestrictedBtn,$openCABtn))
+$profileCombo.BringToFront()
+$containerCombo.BringToFront()
 
 # Helper note about required extension
 $extNote = New-Object System.Windows.Forms.Label
