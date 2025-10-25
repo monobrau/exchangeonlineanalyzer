@@ -4772,6 +4772,31 @@ $refreshContainersBtn.add_Click({ & $loadFirefoxUi })
 $entraPortalGroup.Controls.Add($refreshContainersBtn)
 $refreshContainersBtn.BringToFront()
 
+$reloadDiskBtn = New-Object System.Windows.Forms.Button
+$reloadDiskBtn.Text = "Reload Disk"
+$reloadDiskBtn.Location = New-Object System.Drawing.Point(605, 20)
+$reloadDiskBtn.Size = New-Object System.Drawing.Size(90, 24)
+$reloadDiskBtn.add_Click({
+    try {
+        $ffStatusLabel.Text = "Reloading from disk..."
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction Stop
+        $basePath = Join-Path $env:APPDATA 'Mozilla\Firefox'
+        $profiles = Get-FirefoxProfiles
+        $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+        if (-not $prof) { $ffStatusLabel.Text = "Select a Firefox profile"; return }
+        $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path $basePath $prof.Path }
+        $cpath = Join-Path $ppath 'containers.json'
+        if (-not (Test-Path $cpath)) { $ffStatusLabel.Text = "containers.json not found: $cpath"; return }
+        $ts = (Get-Item $cpath).LastWriteTime
+        $containers = Get-FirefoxContainers -ProfilePath $ppath
+        $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+        $containerCombo.Items.Clear(); foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
+        if ($containerCombo.Items.Count -gt 0) { $containerCombo.SelectedIndex = 0 }
+        $ffStatusLabel.Text = ("Disk reload OK ({0}); {1} container(s)" -f $ts, $containerCombo.Items.Count)
+    } catch { $ffStatusLabel.Text = "Reload error: $($_.Exception.Message)" }
+})
+$entraPortalGroup.Controls.Add($reloadDiskBtn)
+
 # status label for diagnostics
 $ffStatusLabel = New-Object System.Windows.Forms.Label
 $ffStatusLabel.AutoSize = $true
