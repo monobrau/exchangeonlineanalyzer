@@ -4048,7 +4048,7 @@ $reportGeneratorPanel.Controls.Add($reportGeneratorDescLabel)
 $accountSelectorGroup = New-Object System.Windows.Forms.GroupBox
 $accountSelectorGroup.Text = "Account Selection"
 $accountSelectorGroup.Location = New-Object System.Drawing.Point(10, 100)
-$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 360)
+$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 330)
 $accountSelectorGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $accountSelectorGroup.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 
@@ -4063,7 +4063,7 @@ $accountSelectorGroup.Controls.Add($accountSelectorDescLabel)
 # Unified account grid
 $unifiedAccountGrid = New-Object System.Windows.Forms.DataGridView
 $unifiedAccountGrid.Location = New-Object System.Drawing.Point(10, 50)
-$unifiedAccountGrid.Size = New-Object System.Drawing.Size(760, 310)
+$unifiedAccountGrid.Size = New-Object System.Drawing.Size(760, 280)
 $unifiedAccountGrid.ReadOnly = $false
 $unifiedAccountGrid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
 $unifiedAccountGrid.MultiSelect = $true
@@ -4670,6 +4670,7 @@ $entraPortalGroup.Location = New-Object System.Drawing.Point(10, 480)
 $entraPortalGroup.Size = New-Object System.Drawing.Size(780, 110)
 $entraPortalGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $reportGeneratorPanel.Controls.Add($entraPortalGroup)
+$entraPortalGroup.BringToFront()
 
 $profileLabel = New-Object System.Windows.Forms.Label
 $profileLabel.Text = "Firefox Profile:"
