@@ -4676,15 +4676,15 @@ $profileLabel = New-Object System.Windows.Forms.Label
 $profileLabel.Text = "Firefox Profile:"
 $profileLabel.Location = New-Object System.Drawing.Point(15, 25)
 $profileCombo = New-Object System.Windows.Forms.ComboBox
-$profileCombo.Location = New-Object System.Drawing.Point(120, 22)
-$profileCombo.Width = 190
+$profileCombo.Location = New-Object System.Drawing.Point(115, 22)
+$profileCombo.Width = 150
 
 $containerLabel = New-Object System.Windows.Forms.Label
 $containerLabel.Text = "Container:"
-$containerLabel.Location = New-Object System.Drawing.Point(290, 25)
+$containerLabel.Location = New-Object System.Drawing.Point(275, 25)
 $containerCombo = New-Object System.Windows.Forms.ComboBox
-$containerCombo.Location = New-Object System.Drawing.Point(380, 22)
-$containerCombo.Width = 210
+$containerCombo.Location = New-Object System.Drawing.Point(345, 22)
+$containerCombo.Width = 200
 
 $openSignInsBtn = New-Object System.Windows.Forms.Button
 $openSignInsBtn.Text = "Open Sign-in Logs"
