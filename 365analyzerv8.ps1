@@ -4699,6 +4699,14 @@ $openCABtn.Size = New-Object System.Drawing.Size(100, 25)
 
 $entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabel,$containerCombo,$openSignInsBtn,$openRestrictedBtn,$openCABtn))
 
+# Helper note about required extension
+$extNote = New-Object System.Windows.Forms.Label
+$extNote.AutoSize = $true
+$extNote.Location = New-Object System.Drawing.Point(15, 50)
+$extNote.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
+$extNote.Text = "Requires Firefox add-on 'Open external links in a container'. If not installed, links open in a normal tab."
+$entraPortalGroup.Controls.Add($extNote)
+
 $entraPortalGroup.add_Enter({
     try {
         Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue

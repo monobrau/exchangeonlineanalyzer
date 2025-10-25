@@ -27,6 +27,15 @@ function Get-FirefoxContainers {
     } catch { return @() }
 }
 
+function Get-FirefoxProfilePathByName {
+    param([Parameter(Mandatory=$true)][string]$ProfileName)
+    $profiles = Get-FirefoxProfiles
+    $prof = $profiles | Where-Object { $_.Name -eq $ProfileName } | Select-Object -First 1
+    if (-not $prof) { return $null }
+    $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path (Join-Path $env:APPDATA 'Mozilla\Firefox') $prof.Path }
+    return $ppath
+}
+
 function Get-TenantIdentity {
     $result = [ordered]@{ TenantDisplayName=$null; Domains=@(); PrimaryDomain=$null }
     try {
@@ -96,10 +105,23 @@ function Open-FirefoxUrlInContainer {
         [Parameter(Mandatory=$true)][string]$ContainerName,
         [Parameter(Mandatory=$true)][string]$Url
     )
-    # Attempt container-aware open via extension protocol (requires appropriate helper extension installed)
+    # Attempt container-aware open via extension protocol (requires helper extension installed)
     $encoded = [System.Web.HttpUtility]::UrlEncode($Url)
-    $extUrl = "ext+container:name=$ContainerName&url=$encoded"
-    try { Open-FirefoxUrlInProfile -ProfileName $ProfileName -Url $extUrl } catch { Open-FirefoxUrlInProfile -ProfileName $ProfileName -Url $Url }
+
+    # 1) Preferred: single-argument form the user confirmed works
+    $primary = "ext+container:name=$ContainerName&url=$encoded"
+    try { Start-Process 'firefox.exe' -ArgumentList $primary -WindowStyle Normal | Out-Null; return } catch {}
+
+    # 2) Alternative key name some forks use
+    $alt = "ext+container:container=$ContainerName&url=$encoded"
+    try { Start-Process 'firefox.exe' -ArgumentList $alt -WindowStyle Normal | Out-Null; return } catch {}
+
+    # 3) Profile-targeted invocation as a fallback
+    try { Start-Process 'firefox.exe' -ArgumentList @('-P', $ProfileName, '-url', $primary) -WindowStyle Normal | Out-Null; return } catch {}
+    try { Start-Process 'firefox.exe' -ArgumentList @('-P', $ProfileName, '-new-tab', $primary) -WindowStyle Normal | Out-Null; return } catch {}
+
+    # 4) Final fallback: open plain URL in profile
+    Open-FirefoxUrlInProfile -ProfileName $ProfileName -Url $Url
 }
 
 function Open-EntraDeepLink {

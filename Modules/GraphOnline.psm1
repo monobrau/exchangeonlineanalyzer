@@ -169,14 +169,22 @@ function Connect-GraphService {
             $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
         } catch {
             $msg = $_.Exception.Message
-            if ($msg -match "Method not found|Could not load type|BaseAbstractApplicationBuilder.*WithLogging") {
+            # Retry without -ForceRefresh if not supported by module
+            if ($msg -match "parameter name 'ForceRefresh'|matches parameter name 'ForceRefresh'|ForceRefresh") {
+                try {
+                    $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop
+                } catch {
+                    throw
+                }
+            }
+            elseif ($msg -match "Method not found|Could not load type|BaseAbstractApplicationBuilder.*WithLogging") {
                 Write-Warning "Graph module conflict detected. Attempting automatic repair..."
                 if ($statusLabel) { $statusLabel.Text = "Fixing Graph modules..." }
                 $fixOk = $false
                 try { $fixOk = Fix-GraphModuleConflicts -statusLabel $statusLabel } catch {}
                 if ($fixOk) {
                     Write-Host "Retrying Graph connection after repair..." -ForegroundColor Yellow
-                    $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
+                    try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop } catch { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop }
                 } else {
                     throw
                 }
