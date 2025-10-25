@@ -4047,7 +4047,7 @@ $reportGeneratorPanel.Controls.Add($reportGeneratorDescLabel)
 $accountSelectorGroup = New-Object System.Windows.Forms.GroupBox
 $accountSelectorGroup.Text = "Account Selection"
 $accountSelectorGroup.Location = New-Object System.Drawing.Point(10, 100)
-$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 500)
+$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 450)
 $accountSelectorGroup.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 
 # Account selector description
@@ -4664,8 +4664,8 @@ $generateReportButton.add_Click({
 # --- Entra Portal Shortcuts (v8.1b) ---
 $entraPortalGroup = New-Object System.Windows.Forms.GroupBox
 $entraPortalGroup.Text = "Entra Portal Shortcuts (Preview)"
-$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 520)
-$entraPortalGroup.Size = New-Object System.Drawing.Size(780, 90)
+$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 470)
+$entraPortalGroup.Size = New-Object System.Drawing.Size(780, 100)
 $reportGeneratorPanel.Controls.Add($entraPortalGroup)
 
 $profileLabel = New-Object System.Windows.Forms.Label
