@@ -4714,6 +4714,7 @@ $entraPortalGroup.Controls.Add($extNote)
 $loadFirefoxUi = {
     try {
         Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+        $profilesIniPath = Join-Path $env:APPDATA 'Mozilla\Firefox\profiles.ini'
         $profiles = Get-FirefoxProfiles
         $profileCombo.Items.Clear()
         foreach ($p in $profiles) { [void]$profileCombo.Items.Add($p.Name) }
@@ -4733,6 +4734,7 @@ $loadFirefoxUi = {
                 }
             }
         }
+        if ($profiles.Count -eq 0) { $ffStatusLabel.Text = "No Firefox profiles found at: $profilesIniPath" } else { $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f $profiles.Count, ($containerCombo.Items.Count)) }
     } catch {}
 }
 
@@ -4743,6 +4745,14 @@ $refreshContainersBtn.Size = New-Object System.Drawing.Size(75, 24)
 $refreshContainersBtn.add_Click({ & $loadFirefoxUi })
 $entraPortalGroup.Controls.Add($refreshContainersBtn)
 $refreshContainersBtn.BringToFront()
+
+# status label for diagnostics
+$ffStatusLabel = New-Object System.Windows.Forms.Label
+$ffStatusLabel.AutoSize = $true
+$ffStatusLabel.Location = New-Object System.Drawing.Point(15, 100)
+$ffStatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
+$ffStatusLabel.Text = ""
+$entraPortalGroup.Controls.Add($ffStatusLabel)
 
 $entraPortalGroup.add_Enter({
     & $loadFirefoxUi
