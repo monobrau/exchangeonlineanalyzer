@@ -4738,7 +4738,7 @@ $loadFirefoxUi = {
 
 $refreshContainersBtn = New-Object System.Windows.Forms.Button
 $refreshContainersBtn.Text = "Refresh"
-$refreshContainersBtn.Location = New-Object System.Drawing.Point(520, 50)
+$refreshContainersBtn.Location = New-Object System.Drawing.Point(355, 50)
 $refreshContainersBtn.Size = New-Object System.Drawing.Size(75, 22)
 $refreshContainersBtn.add_Click({ & $loadFirefoxUi })
 $entraPortalGroup.Controls.Add($refreshContainersBtn)
