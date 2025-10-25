@@ -4713,29 +4713,53 @@ $entraPortalGroup.Controls.Add($extNote)
 
 $loadFirefoxUi = {
     try {
-        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
-        $profilesIniPath = Join-Path $env:APPDATA 'Mozilla\Firefox\profiles.ini'
-        $profiles = Get-FirefoxProfiles
-        $profileCombo.Items.Clear()
-        foreach ($p in $profiles) { [void]$profileCombo.Items.Add($p.Name) }
-        $default = ($profiles | Where-Object { $_.Default -eq $true } | Select-Object -First 1)
-        if ($default) { $profileCombo.SelectedItem = $default.Name } elseif ($profiles.Count -gt 0) { $profileCombo.SelectedItem = $profiles[0].Name }
+        $ffStatusLabel.Text = "Loading Firefox profiles..."
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction Stop
 
+        $profilesIniPath = Join-Path $env:APPDATA 'Mozilla\Firefox\profiles.ini'
+        $basePath = Join-Path $env:APPDATA 'Mozilla\Firefox'
+
+        $profiles = @()
+        try { $profiles = Get-FirefoxProfiles } catch { $ffStatusLabel.Text = "Error: Get-FirefoxProfiles failed: $($_.Exception.Message)"; return }
+
+        $profileCombo.Items.Clear()
+        foreach ($p in $profiles) { if ($p -and $p.Name) { [void]$profileCombo.Items.Add($p.Name) } }
+
+        $default = $null
+        try { $default = ($profiles | Where-Object { $_.Default -eq $true } | Select-Object -First 1) } catch {}
+        if ($default -and $default.Name) { $profileCombo.SelectedItem = $default.Name } elseif ($profileCombo.Items.Count -gt 0) { $profileCombo.SelectedIndex = 0 }
+
+        $containerCombo.Items.Clear()
         if ($profileCombo.SelectedItem) {
             $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
             if ($prof -and $prof.Path) {
-                $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path (Join-Path $env:APPDATA 'Mozilla\Firefox') $prof.Path }
-                $containers = Get-FirefoxContainers -ProfilePath $ppath
-                $containerCombo.Items.Clear(); foreach ($c in $containers) { [void]$containerCombo.Items.Add($c.name) }
-                if ($containers.Count -gt 0) {
-                    $tenant = Get-TenantIdentity
-                    $best = Select-BestContainer -Containers $containers -TenantIdentity $tenant
-                    if ($best) { $containerCombo.SelectedItem = $best.name } else { $containerCombo.SelectedIndex = 0 }
+                $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path $basePath $prof.Path }
+                if (Test-Path $ppath) {
+                    try {
+                        $containers = Get-FirefoxContainers -ProfilePath $ppath
+                        foreach ($c in $containers) { if ($c -and $c.name) { [void]$containerCombo.Items.Add($c.name) } }
+                        if ($containerCombo.Items.Count -gt 0) {
+                            $tenant = Get-TenantIdentity
+                            $best = $null
+                            try { $best = Select-BestContainer -Containers $containers -TenantIdentity $tenant } catch {}
+                            if ($best -and $best.name) { $containerCombo.SelectedItem = $best.name } else { $containerCombo.SelectedIndex = 0 }
+                        }
+                        $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count))
+                    } catch {
+                        $ffStatusLabel.Text = "Error loading containers: $($_.Exception.Message)"
+                    }
+                } else {
+                    $ffStatusLabel.Text = "Profile path not found: $ppath"
                 }
+            } else {
+                $ffStatusLabel.Text = "Selected profile has no path"
             }
+        } else {
+            if ($profiles.Count -eq 0) { $ffStatusLabel.Text = "No Firefox profiles found at: $profilesIniPath" } else { $ffStatusLabel.Text = "Select a Firefox profile" }
         }
-        if ($profiles.Count -eq 0) { $ffStatusLabel.Text = "No Firefox profiles found at: $profilesIniPath" } else { $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f $profiles.Count, ($containerCombo.Items.Count)) }
-    } catch {}
+    } catch {
+        $ffStatusLabel.Text = "Refresh error: $($_.Exception.Message)"
+    }
 }
 
 $refreshContainersBtn = New-Object System.Windows.Forms.Button
