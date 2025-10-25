@@ -25,6 +25,7 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users.Actions -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
+Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
 #>
 
 # Load Windows Forms assembly
@@ -1823,7 +1824,8 @@ $script:requiredGraphModules = @(
     @{Name="Microsoft.Graph.Authentication"; MinVersion="2.0"},
     @{Name="Microsoft.Graph.Users"; MinVersion="2.0"},
     @{Name="Microsoft.Graph.Users.Actions"; MinVersion="2.0"},
-    @{Name="Microsoft.Graph.Identity.SignIns"; MinVersion="2.0"}
+    @{Name="Microsoft.Graph.Identity.SignIns"; MinVersion="2.0"},
+    @{Name="Microsoft.Graph.Reports"; MinVersion="2.0"}
 )
 $script:graphScopes = @(
     "User.Read.All",
@@ -1835,7 +1837,9 @@ $script:graphScopes = @(
     "SecurityIncident.Read.All",
     "SecurityIncident.ReadWrite.All",
     "ThreatIntelligence.Read.All",
-    "ThreatIntelligence.ReadWrite.All"
+    "ThreatIntelligence.ReadWrite.All",
+    "AuditLog.Read.All",
+    "Directory.Read.All"
 )
 
 # --- GUI Setup ---
@@ -2321,6 +2325,14 @@ $entraDisconnectGraphButton.Width = 140
 $entraDisconnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDisconnectGraphButtonTooltip.SetToolTip($entraDisconnectGraphButton, "Disconnect from Microsoft Graph")
 
+$entraFixModulesButton = New-Object System.Windows.Forms.Button
+$entraFixModulesButton.Text = "Fix Module Conflicts"
+$entraFixModulesButton.Width = 160
+$entraFixModulesButton.Enabled = $true
+$entraFixModulesButton.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7) # Yellow/Orange color
+$entraFixModulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$entraFixModulesButtonTooltip.SetToolTip($entraFixModulesButton, "Fix Microsoft Graph module version conflicts that prevent connection")
+
 $entraOutputFolderLabel = New-Object System.Windows.Forms.Label
 $entraOutputFolderLabel.Text = "Export Folder:"
 $entraOutputFolderTextBox = New-Object System.Windows.Forms.TextBox
@@ -2616,7 +2628,7 @@ $entraTopRow1.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow1.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow1.WrapContents = $true
 $entraTopRow1.AutoSize = $true
-$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton))
+$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $entraFixModulesButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton))
 
 # Second row - User management functions
 $entraTopRow2 = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -4129,13 +4141,19 @@ $accountSelectorGroup.Controls.Add($connectionStatusLabel)
 
 # Function to update connection status
 function Update-ConnectionStatus {
-    $exchangeStatus = if ($script:currentExchangeConnection) { "✅ Exchange Online" } else { "❌ Exchange Online" }
-    $entraStatus = if ($script:graphConnection) { "✅ Entra ID" } else { "❌ Entra ID" }
+    # Robust checks
+    $exoConnected = $false
+    try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoConnected = $true } catch { $exoConnected = ($script:currentExchangeConnection -eq $true) }
+    $mgConnected = $false
+    try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true } } catch { $mgConnected = ($script:graphConnection -ne $null) }
+
+    $exchangeStatus = if ($exoConnected) { "✅ Exchange Online" } else { "❌ Exchange Online" }
+    $entraStatus = if ($mgConnected) { "✅ Entra ID" } else { "❌ Entra ID" }
     $connectionStatusLabel.Text = "Connection Status: $exchangeStatus | $entraStatus"
     
-    if ($script:currentExchangeConnection -and $script:graphConnection) {
+    if ($exoConnected -and $mgConnected) {
         $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Green
-    } elseif ($script:currentExchangeConnection -or $script:graphConnection) {
+    } elseif ($exoConnected -or $mgConnected) {
         $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Orange
     } else {
         $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Red
@@ -4159,6 +4177,298 @@ $incidentChecklistButton.Location = New-Object System.Drawing.Point(270, 620)
 $incidentChecklistButton.Size = New-Object System.Drawing.Size(250, 40)
 $incidentChecklistButton.BackColor = [System.Drawing.Color]::LightCoral
 $reportGeneratorPanel.Controls.Add($incidentChecklistButton)
+
+# Security Investigation Button
+$securityInvestigationButton = New-Object System.Windows.Forms.Button
+$securityInvestigationButton.Text = "🔍 Security Investigation Report"
+$securityInvestigationButton.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$securityInvestigationButton.Location = New-Object System.Drawing.Point(530, 620)
+$securityInvestigationButton.Size = New-Object System.Drawing.Size(250, 40)
+$securityInvestigationButton.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204) # Blue color
+$securityInvestigationButton.ForeColor = [System.Drawing.Color]::White
+$securityInvestigationButton.add_Click({
+    $statusLabel.Text = "🔍 Opening Security Investigation Report..."
+    $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+
+    try {
+        # Create Security Investigation form
+        $securityForm = New-Object System.Windows.Forms.Form
+        $securityForm.Text = "Security Investigation Report Generator"
+        $securityForm.Size = New-Object System.Drawing.Size(900, 700)
+        $securityForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $securityForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+        $securityForm.MaximizeBox = $true
+
+        # Create main panel
+        $securityMainPanel = New-Object System.Windows.Forms.Panel
+        $securityMainPanel.Dock = 'Fill'
+        $securityMainPanel.Padding = New-Object System.Windows.Forms.Padding(15)
+
+        # Title
+        $securityTitleLabel = New-Object System.Windows.Forms.Label
+        $securityTitleLabel.Text = "🔍 Comprehensive Security Investigation Report"
+        $securityTitleLabel.Font = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
+        $securityTitleLabel.Location = New-Object System.Drawing.Point(15, 15)
+        $securityTitleLabel.Size = New-Object System.Drawing.Size(500, 35)
+
+        # Description
+        $securityDescLabel = New-Object System.Windows.Forms.Label
+        $securityDescLabel.Text = "Generate comprehensive security analysis combining Exchange Online and Microsoft Graph data.`nThis report includes audit logs, sign-in patterns, email traces, and inbox rules for complete investigation."
+        $securityDescLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+        $securityDescLabel.Location = New-Object System.Drawing.Point(15, 55)
+        $securityDescLabel.Size = New-Object System.Drawing.Size(600, 40)
+        $securityDescLabel.MaximumSize = New-Object System.Drawing.Size(600, 0)
+        $securityDescLabel.AutoSize = $true
+
+        # Configuration section
+        $configGroupBox = New-Object System.Windows.Forms.GroupBox
+        $configGroupBox.Text = "Investigation Configuration"
+        $configGroupBox.Location = New-Object System.Drawing.Point(15, 110)
+        $configGroupBox.Size = New-Object System.Drawing.Size(400, 140)
+
+        # Investigator Name
+        $investigatorNameLabel = New-Object System.Windows.Forms.Label
+        $investigatorNameLabel.Text = "Investigator Name:"
+        $investigatorNameLabel.Location = New-Object System.Drawing.Point(20, 30)
+        $investigatorNameLabel.Size = New-Object System.Drawing.Size(120, 20)
+
+        $investigatorNameTextBox = New-Object System.Windows.Forms.TextBox
+        $investigatorNameTextBox.Text = "Security Administrator"
+        $investigatorNameTextBox.Location = New-Object System.Drawing.Point(145, 27)
+        $investigatorNameTextBox.Size = New-Object System.Drawing.Size(230, 20)
+
+        # Company Name
+        $companyNameLabel = New-Object System.Windows.Forms.Label
+        $companyNameLabel.Text = "Company Name:"
+        $companyNameLabel.Location = New-Object System.Drawing.Point(20, 60)
+        $companyNameLabel.Size = New-Object System.Drawing.Size(120, 20)
+
+        $companyNameTextBox = New-Object System.Windows.Forms.TextBox
+        $companyNameTextBox.Text = "Organization"
+        $companyNameTextBox.Location = New-Object System.Drawing.Point(145, 57)
+        $companyNameTextBox.Size = New-Object System.Drawing.Size(230, 20)
+
+        # Days to Analyze
+        $daysLabel = New-Object System.Windows.Forms.Label
+        $daysLabel.Text = "Days to Analyze:"
+        $daysLabel.Location = New-Object System.Drawing.Point(20, 90)
+        $daysLabel.Size = New-Object System.Drawing.Size(120, 20)
+
+        $daysComboBox = New-Object System.Windows.Forms.ComboBox
+        $daysComboBox.Items.AddRange(@("1", "3", "7", "10", "30"))
+        $daysComboBox.SelectedItem = "10"
+        $daysComboBox.Location = New-Object System.Drawing.Point(145, 87)
+        $daysComboBox.Size = New-Object System.Drawing.Size(80, 20)
+
+        # Connection Status
+        $connectionStatusLabel = New-Object System.Windows.Forms.Label
+        $connectionStatusLabel.Text = "Checking connections..."
+        $connectionStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Italic)
+        $connectionStatusLabel.Location = New-Object System.Drawing.Point(20, 115)
+        $connectionStatusLabel.Size = New-Object System.Drawing.Size(350, 20)
+
+        $configGroupBox.Controls.AddRange(@($investigatorNameLabel, $investigatorNameTextBox, $companyNameLabel, $companyNameTextBox, $daysLabel, $daysComboBox, $connectionStatusLabel))
+
+        # Generate Button
+        $generateButton = New-Object System.Windows.Forms.Button
+        $generateButton.Text = "🚀 Generate Security Investigation"
+        $generateButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+        $generateButton.Location = New-Object System.Drawing.Point(430, 140)
+        $generateButton.Size = New-Object System.Drawing.Size(280, 50)
+        $generateButton.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
+        $generateButton.ForeColor = [System.Drawing.Color]::White
+
+        # Progress label
+        $progressLabel = New-Object System.Windows.Forms.Label
+        $progressLabel.Text = "Ready to generate security investigation report."
+        $progressLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Italic)
+        $progressLabel.Location = New-Object System.Drawing.Point(430, 200)
+        $progressLabel.Size = New-Object System.Drawing.Size(400, 20)
+        $progressLabel.ForeColor = [System.Drawing.Color]::Green
+
+        # Update connection status
+        $exchangeConnected = $script:currentExchangeConnection -ne $null
+        $graphConnected = $script:graphConnection -ne $null
+
+        if ($exchangeConnected -and $graphConnected) {
+            $connectionStatusLabel.Text = "✅ Both Exchange Online and Microsoft Graph connected"
+            $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Green
+            $generateButton.Enabled = $true
+        } elseif ($exchangeConnected -or $graphConnected) {
+            $connectionStatusLabel.Text = "⚠️ Partial connection - some data may be unavailable"
+            $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Orange
+            $generateButton.Enabled = $true
+        } else {
+            $connectionStatusLabel.Text = "❌ No connections available - cannot generate report"
+            $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Red
+            $generateButton.Enabled = $false
+        }
+
+        # Generate button click handler
+        $generateButton.add_Click({
+            $investigator = $investigatorNameTextBox.Text
+            $company = $companyNameTextBox.Text
+            $days = [int]$daysComboBox.SelectedItem
+
+            $progressLabel.Text = "🔍 Starting comprehensive security investigation..."
+            $progressLabel.ForeColor = [System.Drawing.Color]::Blue
+            $securityForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+            $generateButton.Enabled = $false
+
+            try {
+                # Import the security investigation module
+                Import-Module "$PSScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
+
+                # Resolve output folder for this run
+                $defaultRoot = Join-Path $env:USERPROFILE "Documents\\ExchangeOnlineAnalyzer\\SecurityInvestigation"
+                if (-not (Test-Path $defaultRoot)) { New-Item -ItemType Directory -Path $defaultRoot -Force | Out-Null }
+                $timestampFolder = Join-Path $defaultRoot (Get-Date -Format "yyyyMMdd_HHmmss")
+
+                # Generate the security investigation report with export paths
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder
+
+                if ($securityReport) {
+                    $progressLabel.Text = "✅ Security investigation completed successfully!"
+                    $progressLabel.ForeColor = [System.Drawing.Color]::Green
+
+                    # Show results in a new form
+                    $resultsForm = New-Object System.Windows.Forms.Form
+                    $resultsForm.Text = "Security Investigation Results"
+                    $resultsForm.Size = New-Object System.Drawing.Size(1000, 800)
+                    $resultsForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+
+                    # Create tab control for results
+                    $resultsTabControl = New-Object System.Windows.Forms.TabControl
+                    $resultsTabControl.Dock = 'Fill'
+
+                    # Summary tab
+                    $summaryTab = New-Object System.Windows.Forms.TabPage
+                    $summaryTab.Text = "📋 Investigation Summary"
+                    $summaryTextBox = New-Object System.Windows.Forms.RichTextBox
+                    $summaryTextBox.Dock = 'Fill'
+                    $summaryTextBox.ReadOnly = $true
+                    $summaryTextBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+                    $summaryTextBox.Text = $securityReport.Summary
+                    $summaryTab.Controls.Add($summaryTextBox)
+
+                    # AI Prompt tab
+                    $aiPromptTab = New-Object System.Windows.Forms.TabPage
+                    $aiPromptTab.Text = "🤖 AI Investigation Prompt"
+                    $aiPromptTextBox = New-Object System.Windows.Forms.RichTextBox
+                    $aiPromptTextBox.Dock = 'Fill'
+                    $aiPromptTextBox.ReadOnly = $true
+                    $aiPromptTextBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+                    $aiPromptTextBox.Text = $securityReport.AIPrompt
+                    $aiPromptTab.Controls.Add($aiPromptTextBox)
+
+                    # Ticket Message tab
+                    $ticketTab = New-Object System.Windows.Forms.TabPage
+                    $ticketTab.Text = "📝 Non-Technical Summary"
+                    $ticketTextBox = New-Object System.Windows.Forms.RichTextBox
+                    $ticketTextBox.Dock = 'Fill'
+                    $ticketTextBox.ReadOnly = $true
+                    $ticketTextBox.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+                    $ticketTextBox.Text = $securityReport.TicketMessage
+                    $ticketTab.Controls.Add($ticketTextBox)
+
+                    # Add tabs
+                    $resultsTabControl.TabPages.Add($summaryTab)
+                    $resultsTabControl.TabPages.Add($aiPromptTab)
+                    $resultsTabControl.TabPages.Add($ticketTab)
+
+                    # Copy buttons and instructions panel
+                    $copyPanel = New-Object System.Windows.Forms.Panel
+                    $copyPanel.Dock = 'Bottom'
+                    $copyPanel.Height = 85
+                    $copyPanel.BackColor = [System.Drawing.Color]::FromArgb(240, 242, 244)
+
+                    # Simple instructions
+                    $instructionsLabel = New-Object System.Windows.Forms.Label
+                    $instructionsLabel.AutoSize = $true
+                    $instructionsLabel.Location = New-Object System.Drawing.Point(15, 10)
+                    $instructionsLabel.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+                    $instructionsLabel.Text = "Instructions: Review exported CSVs in the folder (use 'Open Export Folder'). Upload MessageTrace.csv, InboxRules.csv, AuditLogs.csv, MFAStatus.csv, and UserSecurityGroups.csv to your analysis workspace or LLM. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them alongside these files for full analysis."
+
+                    $copySummaryBtn = New-Object System.Windows.Forms.Button
+                    $copySummaryBtn.Text = "📋 Copy Summary"
+                    $copySummaryBtn.Location = New-Object System.Drawing.Point(15, 35)
+                    $copySummaryBtn.Size = New-Object System.Drawing.Size(130, 30)
+                    $copySummaryBtn.add_Click({
+                        [System.Windows.Forms.Clipboard]::SetText($summaryTextBox.Text)
+                        [System.Windows.Forms.MessageBox]::Show("Summary copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    })
+
+                    $copyAIBtn = New-Object System.Windows.Forms.Button
+                    $copyAIBtn.Text = "🤖 Copy AI Prompt"
+                    $copyAIBtn.Location = New-Object System.Drawing.Point(155, 35)
+                    $copyAIBtn.Size = New-Object System.Drawing.Size(130, 30)
+                    $copyAIBtn.add_Click({
+                        [System.Windows.Forms.Clipboard]::SetText($aiPromptTextBox.Text)
+                        [System.Windows.Forms.MessageBox]::Show("AI prompt copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    })
+
+                    $copyTicketBtn = New-Object System.Windows.Forms.Button
+                    $copyTicketBtn.Text = "📝 Copy Ticket Message"
+                    $copyTicketBtn.Location = New-Object System.Drawing.Point(295, 35)
+                    $copyTicketBtn.Size = New-Object System.Drawing.Size(150, 30)
+                    $copyTicketBtn.add_Click({
+                        [System.Windows.Forms.Clipboard]::SetText($ticketTextBox.Text)
+                        [System.Windows.Forms.MessageBox]::Show("Ticket message copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    })
+
+                    # Open folder button if files were exported
+                    $openFolderBtn = New-Object System.Windows.Forms.Button
+                    $openFolderBtn.Text = "Open Export Folder"
+                    $openFolderBtn.Location = New-Object System.Drawing.Point(465, 35)
+                    $openFolderBtn.Size = New-Object System.Drawing.Size(150, 30)
+                    $openFolderBtn.add_Click({ if ($securityReport.OutputFolder) { Start-Process $securityReport.OutputFolder } })
+
+                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn))
+
+                    $resultsForm.Controls.Add($resultsTabControl)
+                    $resultsForm.Controls.Add($copyPanel)
+
+                    $resultsForm.ShowDialog()
+
+                } else {
+                    $progressLabel.Text = "❌ Failed to generate security investigation report"
+                    $progressLabel.ForeColor = [System.Drawing.Color]::Red
+                    [System.Windows.Forms.MessageBox]::Show("Failed to generate security investigation report. Please check connections and permissions.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            } catch {
+                $progressLabel.Text = "❌ Error: $($_.Exception.Message)"
+                $progressLabel.ForeColor = [System.Drawing.Color]::Red
+                [System.Windows.Forms.MessageBox]::Show("Error generating security investigation report: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            } finally {
+                $generateButton.Enabled = $true
+                $securityForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            }
+        })
+
+        # Close button
+        $closeButton = New-Object System.Windows.Forms.Button
+        $closeButton.Text = "Close"
+        $closeButton.Location = New-Object System.Drawing.Point(730, 140)
+        $closeButton.Size = New-Object System.Drawing.Size(100, 50)
+        $closeButton.add_Click({ $securityForm.Close() })
+
+        # Add all controls to main panel
+        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $generateButton, $progressLabel, $closeButton))
+
+        $securityForm.Controls.Add($securityMainPanel)
+
+        $securityForm.ShowDialog()
+
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Security investigation interface closed"
+
+    } catch {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "❌ Error opening security investigation: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error opening security investigation interface: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$reportGeneratorPanel.Controls.Add($securityInvestigationButton)
 
 # Add account selector group to panel
 $reportGeneratorPanel.Controls.Add($accountSelectorGroup)
@@ -4329,7 +4639,8 @@ $generateReportButton.add_Click({
             [System.Windows.Forms.MessageBox]::Show("Obsidian note copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         })
         $obsidianTab.Controls.Add($copyObsidianButton)
-        
+
+
         # Add tabs to tab control
         $reportTabControl.TabPages.Add($professionalTab)
         $reportTabControl.TabPages.Add($obsidianTab)
@@ -5344,6 +5655,103 @@ $entraDisconnectGraphButton.add_Click({
     } catch {
         $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
+# Fix Module Conflicts button handler
+$entraFixModulesButton.add_Click({
+    $statusLabel.Text = "🔧 Fixing Microsoft Graph module conflicts..."
+    $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    $entraFixModulesButton.Enabled = $false
+
+    try {
+        # Import the GraphOnline module
+        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction Stop
+
+        # Run manual fix commands directly
+        try {
+            # Step 1: Disconnect and remove current modules
+            $statusLabel.Text = "Step 1: Removing existing Microsoft Graph modules..."
+            Disconnect-MgGraph -ErrorAction SilentlyContinue
+            Get-Module -Name "Microsoft.Graph*" -All | Remove-Module -Force -ErrorAction SilentlyContinue
+            Uninstall-Module -Name "Microsoft.Graph*" -AllVersions -Force -ErrorAction SilentlyContinue
+
+            # Step 2: Clear module cache
+            $statusLabel.Text = "Step 2: Clearing module cache..."
+            Get-Module -Name "Microsoft.Graph*" -ListAvailable | ForEach-Object {
+                try {
+                    Remove-Item -Path $_.ModuleBase -Recurse -Force -ErrorAction SilentlyContinue
+                } catch {
+                    # Ignore errors removing module directories
+                }
+            }
+
+            # Step 3: Reinstall required modules
+            $statusLabel.Text = "Step 3: Reinstalling Microsoft Graph modules..."
+            $modulesToInstall = @(
+                "Microsoft.Graph.Authentication",
+                "Microsoft.Graph.Users",
+                "Microsoft.Graph.Users.Actions",
+                "Microsoft.Graph.Identity.SignIns",
+                "Microsoft.Graph.Reports"
+            )
+
+            foreach ($module in $modulesToInstall) {
+                try {
+                    Install-Module -Name $module -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
+                    Write-Host "✓ $module installed successfully" -ForegroundColor Green
+                } catch {
+                    Write-Host "✗ Failed to install $module`: $($_.Exception.Message)" -ForegroundColor Red
+                    throw "Failed to install required modules"
+                }
+            }
+
+            # Step 4: Clear authentication cache
+            $statusLabel.Text = "Step 4: Clearing authentication cache..."
+            try {
+                $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                if ($graphSession -and $graphSession.AuthContext) {
+                    $graphSession.AuthContext.ClearTokenCache()
+                }
+            } catch {
+                # Ignore errors clearing token cache
+            }
+
+            $statusLabel.Text = "✅ Microsoft Graph module conflicts fixed! Please restart PowerShell."
+            [System.Windows.Forms.MessageBox]::Show(
+                "Microsoft Graph module conflicts have been resolved!`n`n" +
+                "✅ All conflicting modules uninstalled`n" +
+                "✅ Required modules reinstalled with compatible versions`n" +
+                "✅ Authentication cache cleared`n`n" +
+                "Please restart PowerShell and try connecting again.",
+                "Module Conflicts Fixed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+
+        } catch {
+            $statusLabel.Text = "❌ Error fixing module conflicts: $($_.Exception.Message)"
+            [System.Windows.Forms.MessageBox]::Show(
+                "Error fixing Microsoft Graph module conflicts: $($_.Exception.Message)`n`n" +
+                "Please manually run these commands:`n`n" +
+                "1. Uninstall-Module Microsoft.Graph* -AllVersions -Force`n" +
+                "2. Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force`n" +
+                "3. Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force`n" +
+                "4. Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force`n" +
+                "5. Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force`n" +
+                "6. Restart PowerShell",
+                "Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+        }
+
+    } catch {
+        $statusLabel.Text = "❌ Error fixing module conflicts: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error fixing module conflicts: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $entraFixModulesButton.Enabled = $true
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
     }
 })
 

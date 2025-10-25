@@ -2,16 +2,24 @@
 
 A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox rules, managing user accounts, monitoring security configurations, and investigating Entra ID (Azure AD) accounts. This tool provides administrators with powerful capabilities to detect suspicious inbox rules, manage user access, export detailed reports, and perform comprehensive Entra ID investigations.
 
+## 🔧 **Version 8.0 - Now Available!**
+**✅ Fixed MS Graph Integration** - User blocking and session revocation in Entra ID now working properly
+**✅ Enhanced Module Management** - Automatic import and installation of Microsoft Graph PowerShell modules
+**✅ Improved Error Handling** - Better diagnostics and error messages for Graph operations
+**✅ Enhanced Security** - Comprehensive function validation and permission checks
+
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
 ![Exchange Online](https://img.shields.io/badge/Exchange-Online-orange)
 ![Microsoft Graph](https://img.shields.io/badge/Microsoft-Graph-green)
 ![Entra ID](https://img.shields.io/badge/Entra-ID-purple)
+![Version](https://img.shields.io/badge/Version-8.0-blue)
 
 ## 🚀 Features
 
 ### Core Functionality
 - **📧 Inbox Rules Analysis**: Comprehensive analysis of Exchange Online inbox rules with suspicious activity detection
 - **🔍 Auto-Domain Detection**: Automatically detects organization domains from loaded mailboxes
+- **🔒 Security Investigation**: Comprehensive security analysis combining Exchange Online and Microsoft Graph data
 - **📊 XLSX Export**: Formatted Excel reports with advanced formatting:
   - User-friendly columns (MailboxOwner, RuleName, IsEnabled, IsHidden, etc.)
   - All columns auto-fit for width
@@ -27,6 +35,15 @@ A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox ru
 - **🚫 Sign-in Control**: Block/unblock user sign-ins through Entra ID (Azure AD)
 - **📮 Sending Restrictions**: Manage user email sending restrictions (button now at top right)
 - **🔐 Permissions Audit**: View mailbox delegates and full access permissions
+
+### 🔍 Security Investigation Report
+- **📊 Multi-Source Analysis**: Combines data from Exchange Online and Microsoft Graph
+- **📧 Message Trace Collection**: Last 10 days of all email communications
+- **📋 Inbox Rules Export**: Complete audit of all mailbox rules across the organization
+- **🔐 Sign-in Log Analysis**: Authentication patterns and risk assessments
+- **📋 Audit Log Collection**: Directory changes and administrative activities
+- **🤖 AI Investigation Prompts**: Structured prompts for AI-powered security analysis
+- **📝 Executive Summaries**: Non-technical reports for management and ticketing systems
 
 ### Advanced Features
 - **🚦 Transport Rules Management**: Review, export, and delete Exchange Online transport rules
@@ -62,7 +79,9 @@ Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force
 # Microsoft Graph Modules
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force
+Install-Module Microsoft.Graph.Users.Actions -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
+Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
 ```
 
 ### Required Permissions
@@ -93,7 +112,7 @@ Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
 
 3. **Run the Script**
    ```powershell
-   .\365analyzerv7.ps1
+   .\365analyzerv8.ps1
    ```
 
 ## 💻 Usage
@@ -119,13 +138,43 @@ Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
 5. **Generate Reports**
    - Click "Export Rules" to analyze and export rules
    - Reports include suspicious rule detection, external forwarding analysis, and advanced formatting
+   - **Security Investigation**: Click the "🔍 Security Investigation Report" button in the Report Generator tab for comprehensive security analysis
 
 ### Advanced Features
 
 #### Microsoft Graph Integration
 - Click "Connect to MS Graph" for enhanced user management features
-- Enable session revocation and sign-in blocking capabilities
-- Access Entra ID Investigator tab for comprehensive user analysis
+
+#### Security Investigation Report
+- Navigate to the "Report Generator" tab
+- Click the blue "🔍 Security Investigation Report" button
+- Configure investigation parameters:
+  - Investigator Name (default: Security Administrator)
+  - Company Name (default: Organization)
+  - Days to Analyze (1, 3, 7, 10, or 30 days)
+- Click "🚀 Generate Security Investigation" to start analysis
+- Review results in three tabs:
+  - **📋 Investigation Summary** - Technical analysis and findings
+  - **🤖 AI Investigation Prompt** - Structured prompt for AI analysis
+  - **📝 Non-Technical Summary** - Executive summary for management
+
+#### Troubleshooting Microsoft Graph Connection Issues
+If you encounter connection errors like "Method not found" or module version conflicts:
+
+1. **Use the Fix Module Conflicts Button:**
+   - In the Entra ID tab, click the yellow/orange "Fix Module Conflicts" button
+   - This will automatically uninstall and reinstall all Microsoft Graph modules with compatible versions
+
+2. **Manual Fix (if automatic fix fails):**
+   ```powershell
+   # Run these commands in PowerShell as Administrator
+   Uninstall-Module Microsoft.Graph* -AllVersions -Force
+   Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
+   Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force
+   Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
+   Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
+   # Restart PowerShell and try connecting again
+   ```
 
 #### Transport Rules and Connectors
 - Use dedicated buttons to view, export, and delete transport rules
@@ -235,7 +284,22 @@ Enable verbose output by modifying the script's debug settings or checking conso
 
 ## 📝 Version History
 
-### v7.0 (Current)
+### v8.0 (Current)
+- ✅ **Fixed MS Graph Integration**: Resolved critical user blocking and session revocation issues in Entra ID
+- ✅ **Enhanced Module Management**: Automatic import and installation of Microsoft Graph PowerShell modules
+- ✅ **Improved Error Handling**: Better diagnostics and error messages for Graph operations
+- ✅ **Enhanced Security**: Added comprehensive function validation and permission checks
+- ✅ **Updated Dependencies**: Added Microsoft.Graph.Users.Actions and Microsoft.Graph.Reports module support
+- ✅ **Robust API Integration**: Enhanced reliability with fallback mechanisms and detailed error reporting
+- ✅ **Security Investigation Report**: Comprehensive security analysis tool with AI prompt generation
+- ✅ **Multi-Source Data Collection**: Combines Exchange Online and Microsoft Graph data for complete analysis
+- ✅ **Automated Audit Collection**: Pulls maximum audit logs, sign-in logs, message traces, and inbox rules
+- ✅ **AI Investigation Prompts**: Generates structured prompts for AI-powered security analysis
+- ✅ **Non-Technical Reporting**: Creates executive summaries for ticketing systems and management
+- ✅ **Module Conflict Resolution**: Added automatic fix for Microsoft Graph version conflicts
+- ✅ **Enhanced Troubleshooting**: Built-in diagnostics and repair tools for connection issues
+
+### v7.0
 - ✅ **New Application Name**: Changed from "Exchange Online Analyzer" to "Microsoft 365 Management Tool"
 - ✅ **Enhanced GUI Layout**: Improved Entra ID tab layout with proper spacing, headers, and button positioning
 - ✅ **Progress Indicators**: Real-time progress tracking for long-running operations
