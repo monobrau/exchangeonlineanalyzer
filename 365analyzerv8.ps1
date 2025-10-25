@@ -4661,6 +4661,85 @@ $generateReportButton.add_Click({
     }
 })
 
+# --- Entra Portal Shortcuts (v8.1b) ---
+$entraPortalGroup = New-Object System.Windows.Forms.GroupBox
+$entraPortalGroup.Text = "Entra Portal Shortcuts (Preview)"
+$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 520)
+$entraPortalGroup.Size = New-Object System.Drawing.Size(780, 90)
+$reportGeneratorPanel.Controls.Add($entraPortalGroup)
+
+$profileLabel = New-Object System.Windows.Forms.Label
+$profileLabel.Text = "Firefox Profile:"
+$profileLabel.Location = New-Object System.Drawing.Point(15, 25)
+$profileCombo = New-Object System.Windows.Forms.ComboBox
+$profileCombo.Location = New-Object System.Drawing.Point(110, 22)
+$profileCombo.Width = 160
+
+$containerLabel = New-Object System.Windows.Forms.Label
+$containerLabel.Text = "Container:"
+$containerLabel.Location = New-Object System.Drawing.Point(290, 25)
+$containerCombo = New-Object System.Windows.Forms.ComboBox
+$containerCombo.Location = New-Object System.Drawing.Point(355, 22)
+$containerCombo.Width = 160
+
+$openSignInsBtn = New-Object System.Windows.Forms.Button
+$openSignInsBtn.Text = "Open Sign-in Logs"
+$openSignInsBtn.Location = New-Object System.Drawing.Point(540, 20)
+$openSignInsBtn.Size = New-Object System.Drawing.Size(120, 25)
+
+$openRestrictedBtn = New-Object System.Windows.Forms.Button
+$openRestrictedBtn.Text = "Restricted Entities"
+$openRestrictedBtn.Location = New-Object System.Drawing.Point(540, 50)
+$openRestrictedBtn.Size = New-Object System.Drawing.Size(120, 25)
+
+$openCABtn = New-Object System.Windows.Forms.Button
+$openCABtn.Text = "Conditional Access"
+$openCABtn.Location = New-Object System.Drawing.Point(665, 20)
+$openCABtn.Size = New-Object System.Drawing.Size(100, 25)
+
+$entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabel,$containerCombo,$openSignInsBtn,$openRestrictedBtn,$openCABtn))
+
+$entraPortalGroup.add_Enter({
+    try {
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+        $profiles = Get-FirefoxProfiles
+        $profileCombo.Items.Clear()
+        foreach ($p in $profiles) { [void]$profileCombo.Items.Add($p.Name) }
+        $default = ($profiles | Where-Object { $_.Default -eq $true } | Select-Object -First 1)
+        if ($default) { $profileCombo.SelectedItem = $default.Name } elseif ($profiles.Count -gt 0) { $profileCombo.SelectedItem = $profiles[0].Name }
+
+        # Load containers and auto-match
+        if ($profileCombo.SelectedItem) {
+            $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+            if ($prof -and $prof.Path) {
+                $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path (Join-Path $env:APPDATA 'Mozilla\Firefox') $prof.Path }
+                $containers = Get-FirefoxContainers -ProfilePath $ppath
+                $containerCombo.Items.Clear(); foreach ($c in $containers) { [void]$containerCombo.Items.Add($c.name) }
+                $tenant = Get-TenantIdentity
+                $best = Select-BestContainer -Containers $containers -TenantIdentity $tenant
+                if ($best) { $containerCombo.SelectedItem = $best.name }
+            }
+        }
+    } catch {}
+})
+
+$profileCombo.add_SelectedIndexChanged({
+    try {
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+        $profiles = Get-FirefoxProfiles
+        $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+        if ($prof -and $prof.Path) {
+            $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path (Join-Path $env:APPDATA 'Mozilla\Firefox') $prof.Path }
+            $containers = Get-FirefoxContainers -ProfilePath $ppath
+            $containerCombo.Items.Clear(); foreach ($c in $containers) { [void]$containerCombo.Items.Add($c.name) }
+        }
+    } catch {}
+})
+
+$openSignInsBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'SignIns' } catch {} })
+$openRestrictedBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'RestrictedEntities' } catch {} })
+$openCABtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'ConditionalAccess' } catch {} })
+
 # Incident Checklist button event handler
 $incidentChecklistButton.add_Click({
     try {
