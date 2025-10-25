@@ -14,6 +14,35 @@ A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox ru
 ![Entra ID](https://img.shields.io/badge/Entra-ID-purple)
 ![Version](https://img.shields.io/badge/Version-8.0-blue)
 
+## 🚧 Version 8.1-beta (Preview)
+
+Entra Portal Shortcuts with Firefox Multi‑Account Containers (preview on branch `v8.1-beta`).
+
+Requirements:
+- Firefox (desktop)
+- Extension: Open external links in a container (by Denys H)
+  - Install: https://addons.mozilla.org/en-US/firefox/addon/open-url-in-container/
+  - Enable handling of external `ext+container` links in the add‑on options
+
+What it does:
+- Opens Entra portal deep links directly in a chosen Firefox container
+- Auto‑matches the best container by tenant name/domain (if Graph/EXO connected)
+
+How to use (UI):
+- Report Generator tab → Entra Portal Shortcuts (Preview)
+- Choose Firefox profile and container (or accept auto‑match)
+- Click a shortcut (Sign‑in Logs / Restricted Entities / Conditional Access)
+- If the extension isn’t installed, links open as normal tabs
+
+Quick test (CLI):
+```powershell
+Start-Process 'firefox.exe' -ArgumentList (
+  "ext+container:name=MyContainer&url={0}" -f [uri]::EscapeUriString(
+    'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SignInsMenuBlade/~/SignIns'
+  )
+)
+```
+
 ## 🚀 Features
 
 ### Core Functionality
