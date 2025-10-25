@@ -4710,7 +4710,7 @@ $extNote.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
 $extNote.Text = "Requires Firefox add-on 'Open external links in a container'. If not installed, links open in a normal tab."
 $entraPortalGroup.Controls.Add($extNote)
 
-$entraPortalGroup.add_Enter({
+$loadFirefoxUi = {
     try {
         Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
         $profiles = Get-FirefoxProfiles
@@ -4719,19 +4719,31 @@ $entraPortalGroup.add_Enter({
         $default = ($profiles | Where-Object { $_.Default -eq $true } | Select-Object -First 1)
         if ($default) { $profileCombo.SelectedItem = $default.Name } elseif ($profiles.Count -gt 0) { $profileCombo.SelectedItem = $profiles[0].Name }
 
-        # Load containers and auto-match
         if ($profileCombo.SelectedItem) {
             $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
             if ($prof -and $prof.Path) {
                 $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path (Join-Path $env:APPDATA 'Mozilla\Firefox') $prof.Path }
                 $containers = Get-FirefoxContainers -ProfilePath $ppath
                 $containerCombo.Items.Clear(); foreach ($c in $containers) { [void]$containerCombo.Items.Add($c.name) }
-                $tenant = Get-TenantIdentity
-                $best = Select-BestContainer -Containers $containers -TenantIdentity $tenant
-                if ($best) { $containerCombo.SelectedItem = $best.name }
+                if ($containers.Count -gt 0) {
+                    $tenant = Get-TenantIdentity
+                    $best = Select-BestContainer -Containers $containers -TenantIdentity $tenant
+                    if ($best) { $containerCombo.SelectedItem = $best.name } else { $containerCombo.SelectedIndex = 0 }
+                }
             }
         }
     } catch {}
+}
+
+$refreshContainersBtn = New-Object System.Windows.Forms.Button
+$refreshContainersBtn.Text = "Refresh"
+$refreshContainersBtn.Location = New-Object System.Drawing.Point(520, 50)
+$refreshContainersBtn.Size = New-Object System.Drawing.Size(75, 22)
+$refreshContainersBtn.add_Click({ & $loadFirefoxUi })
+$entraPortalGroup.Controls.Add($refreshContainersBtn)
+
+$entraPortalGroup.add_Enter({
+    & $loadFirefoxUi
 })
 
 $profileCombo.add_SelectedIndexChanged({
