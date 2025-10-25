@@ -4025,6 +4025,7 @@ $reportGeneratorTab.Text = "Report Generator"
 $reportGeneratorPanel = New-Object System.Windows.Forms.Panel
 $reportGeneratorPanel.Dock = 'Fill'
 $reportGeneratorPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+$reportGeneratorPanel.AutoScroll = $true
 
 # Title label
 $reportGeneratorTitleLabel = New-Object System.Windows.Forms.Label
@@ -4047,7 +4048,8 @@ $reportGeneratorPanel.Controls.Add($reportGeneratorDescLabel)
 $accountSelectorGroup = New-Object System.Windows.Forms.GroupBox
 $accountSelectorGroup.Text = "Account Selection"
 $accountSelectorGroup.Location = New-Object System.Drawing.Point(10, 100)
-$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 450)
+$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 360)
+$accountSelectorGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $accountSelectorGroup.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 
 # Account selector description
@@ -4061,7 +4063,7 @@ $accountSelectorGroup.Controls.Add($accountSelectorDescLabel)
 # Unified account grid
 $unifiedAccountGrid = New-Object System.Windows.Forms.DataGridView
 $unifiedAccountGrid.Location = New-Object System.Drawing.Point(10, 50)
-$unifiedAccountGrid.Size = New-Object System.Drawing.Size(760, 400)
+$unifiedAccountGrid.Size = New-Object System.Drawing.Size(760, 310)
 $unifiedAccountGrid.ReadOnly = $false
 $unifiedAccountGrid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
 $unifiedAccountGrid.MultiSelect = $true
@@ -4110,7 +4112,7 @@ $accountSelectorGroup.Controls.Add($unifiedAccountGrid)
 # Account selector buttons
 $refreshAccountsButton = New-Object System.Windows.Forms.Button
 $refreshAccountsButton.Text = "🔄 Refresh Account List"
-$refreshAccountsButton.Location = New-Object System.Drawing.Point(10, 460)
+$refreshAccountsButton.Location = New-Object System.Drawing.Point(10, 370)
 $refreshAccountsButton.Size = New-Object System.Drawing.Size(180, 35)
 $refreshAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $refreshAccountsButton.BackColor = [System.Drawing.Color]::LightBlue
@@ -4118,13 +4120,13 @@ $refreshAccountsButton.ForeColor = [System.Drawing.Color]::DarkBlue
 
 $selectAllAccountsButton = New-Object System.Windows.Forms.Button
 $selectAllAccountsButton.Text = "Select All"
-$selectAllAccountsButton.Location = New-Object System.Drawing.Point(200, 460)
+$selectAllAccountsButton.Location = New-Object System.Drawing.Point(200, 370)
 $selectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 35)
 $selectAllAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $deselectAllAccountsButton = New-Object System.Windows.Forms.Button
 $deselectAllAccountsButton.Text = "Deselect All"
-$deselectAllAccountsButton.Location = New-Object System.Drawing.Point(310, 460)
+$deselectAllAccountsButton.Location = New-Object System.Drawing.Point(310, 370)
 $deselectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 35)
 $deselectAllAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
@@ -4664,8 +4666,9 @@ $generateReportButton.add_Click({
 # --- Entra Portal Shortcuts (v8.1b) ---
 $entraPortalGroup = New-Object System.Windows.Forms.GroupBox
 $entraPortalGroup.Text = "Entra Portal Shortcuts (Preview)"
-$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 470)
-$entraPortalGroup.Size = New-Object System.Drawing.Size(780, 100)
+$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 420)
+$entraPortalGroup.Size = New-Object System.Drawing.Size(780, 110)
+$entraPortalGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $reportGeneratorPanel.Controls.Add($entraPortalGroup)
 
 $profileLabel = New-Object System.Windows.Forms.Label
