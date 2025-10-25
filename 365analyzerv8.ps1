@@ -4746,6 +4746,9 @@ $entraPortalGroup.add_Enter({
     & $loadFirefoxUi
 })
 
+# Initial populate when building the panel (in case Enter doesn't fire yet)
+& $loadFirefoxUi
+
 $profileCombo.add_SelectedIndexChanged({
     try {
         Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
