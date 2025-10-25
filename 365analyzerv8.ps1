@@ -4677,7 +4677,7 @@ $profileLabel.Text = "Firefox Profile:"
 $profileLabel.Location = New-Object System.Drawing.Point(15, 25)
 $profileCombo = New-Object System.Windows.Forms.ComboBox
 $profileCombo.Location = New-Object System.Drawing.Point(115, 22)
-$profileCombo.Width = 150
+$profileCombo.Width = 100
 
 $containerLabel = New-Object System.Windows.Forms.Label
 $containerLabel.Text = "Container:"
@@ -4727,9 +4727,25 @@ $loadFirefoxUi = {
         $profileCombo.Items.Clear()
         foreach ($p in $profiles) { if ($p -and $p.Name) { [void]$profileCombo.Items.Add($p.Name) } }
 
+        # Prefer the most recently used/updated profile based on containers.json timestamp; fall back to 'Default' then first
+        $latestProfile = $null
+        $latestTime = [datetime]::MinValue
+        foreach ($p in $profiles) {
+            try {
+                if (-not $p -or -not $p.Path) { continue }
+                $pp = if ($p.Path -like '*:*') { $p.Path } else { Join-Path $basePath $p.Path }
+                $cp = Join-Path $pp 'containers.json'
+                $t = $null
+                if (Test-Path $cp) { $t = (Get-Item $cp).LastWriteTime }
+                elseif (Test-Path $pp) { $t = (Get-Item $pp).LastWriteTime }
+                if ($t -and ($t -gt $latestTime)) { $latestTime = $t; $latestProfile = $p }
+            } catch {}
+        }
         $default = $null
         try { $default = ($profiles | Where-Object { $_.Default -eq $true } | Select-Object -First 1) } catch {}
-        if ($default -and $default.Name) { $profileCombo.SelectedItem = $default.Name } elseif ($profileCombo.Items.Count -gt 0) { $profileCombo.SelectedIndex = 0 }
+        if ($latestProfile -and $latestProfile.Name) { $profileCombo.SelectedItem = $latestProfile.Name }
+        elseif ($default -and $default.Name) { $profileCombo.SelectedItem = $default.Name }
+        elseif ($profileCombo.Items.Count -gt 0) { $profileCombo.SelectedIndex = 0 }
 
         $containerCombo.Items.Clear()
         if ($profileCombo.SelectedItem) {
