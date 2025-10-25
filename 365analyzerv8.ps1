@@ -4706,7 +4706,7 @@ $entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabe
 # Helper note about required extension
 $extNote = New-Object System.Windows.Forms.Label
 $extNote.AutoSize = $true
-$extNote.Location = New-Object System.Drawing.Point(15, 60)
+$extNote.Location = New-Object System.Drawing.Point(15, 80)
 $extNote.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
 $extNote.Text = "Requires Firefox add-on 'Open external links in a container'. If not installed, links open in a normal tab."
 $entraPortalGroup.Controls.Add($extNote)
@@ -4738,10 +4738,11 @@ $loadFirefoxUi = {
 
 $refreshContainersBtn = New-Object System.Windows.Forms.Button
 $refreshContainersBtn.Text = "Refresh"
-$refreshContainersBtn.Location = New-Object System.Drawing.Point(355, 50)
-$refreshContainersBtn.Size = New-Object System.Drawing.Size(75, 22)
+$refreshContainersBtn.Location = New-Object System.Drawing.Point(525, 20)
+$refreshContainersBtn.Size = New-Object System.Drawing.Size(75, 24)
 $refreshContainersBtn.add_Click({ & $loadFirefoxUi })
 $entraPortalGroup.Controls.Add($refreshContainersBtn)
+$refreshContainersBtn.BringToFront()
 
 $entraPortalGroup.add_Enter({
     & $loadFirefoxUi
