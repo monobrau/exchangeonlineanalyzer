@@ -4737,12 +4737,14 @@ $loadFirefoxUi = {
                 if (Test-Path $ppath) {
                     try {
                         $containers = Get-FirefoxContainers -ProfilePath $ppath
-                        foreach ($c in $containers) { if ($c -and $c.name) { [void]$containerCombo.Items.Add($c.name) } }
+                        # Filter out internal/synthetic names and sort alphabetically
+                        $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+                        foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
                         if ($containerCombo.Items.Count -gt 0) {
                             $tenant = Get-TenantIdentity
                             $best = $null
-                            try { $best = Select-BestContainer -Containers $containers -TenantIdentity $tenant } catch {}
-                            if ($best -and $best.name) { $containerCombo.SelectedItem = $best.name } else { $containerCombo.SelectedIndex = 0 }
+                            try { $best = Select-BestContainer -Containers $visible -TenantIdentity $tenant } catch {}
+                            if ($best -and $best.name -and ($containerCombo.Items -contains $best.name)) { $containerCombo.SelectedItem = $best.name } else { $containerCombo.SelectedIndex = 0 }
                         }
                         $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count))
                     } catch {
