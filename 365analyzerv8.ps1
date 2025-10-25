@@ -4666,7 +4666,7 @@ $generateReportButton.add_Click({
 # --- Entra Portal Shortcuts (v8.1b) ---
 $entraPortalGroup = New-Object System.Windows.Forms.GroupBox
 $entraPortalGroup.Text = "Entra Portal Shortcuts (Preview)"
-$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 420)
+$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 480)
 $entraPortalGroup.Size = New-Object System.Drawing.Size(780, 110)
 $entraPortalGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $reportGeneratorPanel.Controls.Add($entraPortalGroup)
@@ -4705,7 +4705,7 @@ $entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabe
 # Helper note about required extension
 $extNote = New-Object System.Windows.Forms.Label
 $extNote.AutoSize = $true
-$extNote.Location = New-Object System.Drawing.Point(15, 50)
+$extNote.Location = New-Object System.Drawing.Point(15, 60)
 $extNote.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
 $extNote.Text = "Requires Firefox add-on 'Open external links in a container'. If not installed, links open in a normal tab."
 $entraPortalGroup.Controls.Add($extNote)
