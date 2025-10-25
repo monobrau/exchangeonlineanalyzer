@@ -4689,17 +4689,17 @@ $containerCombo.Width = 160
 $openSignInsBtn = New-Object System.Windows.Forms.Button
 $openSignInsBtn.Text = "Open Sign-in Logs"
 $openSignInsBtn.Location = New-Object System.Drawing.Point(15, 50)
-$openSignInsBtn.Size = New-Object System.Drawing.Size(120, 25)
+$openSignInsBtn.Size = New-Object System.Drawing.Size(130, 25)
 
 $openRestrictedBtn = New-Object System.Windows.Forms.Button
 $openRestrictedBtn.Text = "Restricted Entities"
 $openRestrictedBtn.Location = New-Object System.Drawing.Point(290, 50)
-$openRestrictedBtn.Size = New-Object System.Drawing.Size(120, 25)
+$openRestrictedBtn.Size = New-Object System.Drawing.Size(130, 25)
 
 $openCABtn = New-Object System.Windows.Forms.Button
 $openCABtn.Text = "Conditional Access"
 $openCABtn.Location = New-Object System.Drawing.Point(150, 50)
-$openCABtn.Size = New-Object System.Drawing.Size(100, 25)
+$openCABtn.Size = New-Object System.Drawing.Size(130, 25)
 
 $entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabel,$containerCombo,$openSignInsBtn,$openRestrictedBtn,$openCABtn))
 
