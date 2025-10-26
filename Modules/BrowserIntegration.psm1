@@ -106,19 +106,36 @@ function Open-FirefoxUrlInContainer {
         [Parameter(Mandatory=$true)][string]$Url
     )
     # Attempt container-aware open via extension protocol (requires helper extension installed)
-    $encoded = [System.Web.HttpUtility]::UrlEncode($Url)
+    $encodedUrl = [System.Web.HttpUtility]::UrlEncode($Url)
+    $encodedName = [System.Web.HttpUtility]::UrlEncode($ContainerName)
 
-    # 1) Preferred: single-argument form the user confirmed works
-    $primary = "ext+container:name=$ContainerName&url=$encoded"
-    try { Start-Process 'firefox.exe' -ArgumentList $primary -WindowStyle Normal | Out-Null; return } catch {}
+    # Try to resolve cookieStoreId (cid) for a name with special characters
+    $cid = $null
+    try {
+        $ppath = Get-FirefoxProfilePathByName -ProfileName $ProfileName
+        if ($ppath) {
+            $containers = Get-FirefoxContainers -ProfilePath $ppath
+            $match = $containers | Where-Object { $_.name -and ($_.name -eq $ContainerName -or $_.name.ToLower() -eq $ContainerName.ToLower()) } | Select-Object -First 1
+            if ($match -and $match.cookieStoreId) { $cid = $match.cookieStoreId }
+        }
+    } catch {}
 
-    # 2) Alternative key name some forks use
-    $alt = "ext+container:container=$ContainerName&url=$encoded"
-    try { Start-Process 'firefox.exe' -ArgumentList $alt -WindowStyle Normal | Out-Null; return } catch {}
+    # Candidate invocations (encoded first, then raw), plus cid if available
+    $candidates = @(
+        "ext+container:name=$encodedName&url=$encodedUrl",
+        "ext+container:container=$encodedName&url=$encodedUrl"
+    )
+    if ($cid) { $candidates += "ext+container:cid=$cid&url=$encodedUrl" }
+    $candidates += @(
+        "ext+container:name=$ContainerName&url=$encodedUrl",
+        "ext+container:container=$ContainerName&url=$encodedUrl"
+    )
 
-    # 3) Profile-targeted invocation as a fallback
-    try { Start-Process 'firefox.exe' -ArgumentList @('-P', $ProfileName, '-url', $primary) -WindowStyle Normal | Out-Null; return } catch {}
-    try { Start-Process 'firefox.exe' -ArgumentList @('-P', $ProfileName, '-new-tab', $primary) -WindowStyle Normal | Out-Null; return } catch {}
+    foreach ($c in $candidates) {
+        try { Start-Process 'firefox.exe' -ArgumentList $c -WindowStyle Normal | Out-Null; return } catch {}
+        try { Start-Process 'firefox.exe' -ArgumentList @('-P', $ProfileName, '-url', $c) -WindowStyle Normal | Out-Null; return } catch {}
+        try { Start-Process 'firefox.exe' -ArgumentList @('-P', $ProfileName, '-new-tab', $c) -WindowStyle Normal | Out-Null; return } catch {}
+    }
 
     # 4) Final fallback: open plain URL in profile
     Open-FirefoxUrlInProfile -ProfileName $ProfileName -Url $Url
