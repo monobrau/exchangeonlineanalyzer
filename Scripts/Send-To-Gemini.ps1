@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$false)][string]$ApiKey,
     [Parameter(Mandatory=$false)][string]$OutputFolder,
-    [Parameter(Mandatory=$false)][string]$Model = 'models/gemini-1.5-pro'
+    [Parameter(Mandatory=$false)][string]$Model = 'models/gemini-1.5-pro',
+    [Parameter(Mandatory=$false)][string[]]$ExtraFiles
 )
 
 function Get-LatestInvestigationFolder {
@@ -42,6 +43,18 @@ $existing = @()
 foreach ($f in $files) {
     $p = Join-Path $OutputFolder $f
     if (Test-Path $p) { $existing += $p }
+}
+if ($ExtraFiles) {
+    foreach ($ef in $ExtraFiles) {
+        if ([string]::IsNullOrWhiteSpace($ef)) { continue }
+        try {
+            $rp = (Resolve-Path $ef -ErrorAction Stop).Path
+            if (Test-Path $rp) { $existing += $rp }
+        } catch {
+            Write-Warning ("Extra file not found: {0}" -f $ef)
+        }
+    }
+    $existing = $existing | Select-Object -Unique
 }
 if ($existing.Count -eq 0) {
     Write-Error "No known report files found in $OutputFolder."
