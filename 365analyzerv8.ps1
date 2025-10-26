@@ -2011,7 +2011,7 @@ $aiSendBtn.add_Click({
 
         $extras = @(); foreach ($it in $aiExtraList.Items) { $extras += $it }
 
-        $aiSendBtn.Enabled = $false; $aiStatus.Text = "Submitting to Gemini..."; $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        $aiSendBtn.Enabled = $false; $aiStatus.Text = ("Submitting to {0}..." -f $provider); $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         $output = $null
         try {
@@ -2049,11 +2049,16 @@ $aiSendBtn.add_Click({
         }
 
         $respFile = if ($provider -eq 'Gemini') { Join-Path $folder "Gemini_Response.md" } else { Join-Path $folder "Claude_Response.md" }
+        $errFile  = if ($provider -eq 'Gemini') { Join-Path $folder "Gemini_Error.txt" } else { Join-Path $folder "Claude_Error.txt" }
         if (Test-Path $respFile) {
             $aiStatus.Text = ("Saved: {0}" -f $respFile); $aiStatus.ForeColor = [System.Drawing.Color]::Green
             try { Start-Process $respFile } catch {}
+        } elseif (Test-Path $errFile) {
+            $aiStatus.Text = ("{0} error. See: {1}" -f $provider, $errFile); $aiStatus.ForeColor = [System.Drawing.Color]::Red
+            try { Start-Process $errFile } catch {}
         } else {
-            $aiStatus.Text = "Completed. Check folder for Gemini_Response.md (see console for details)."; $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+            $aiStatus.Text = ("Completed. Check folder for {0} (see console for details)." -f [System.IO.Path]::GetFileName($respFile));
+            $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
         }
     } catch {
         $aiStatus.Text = $_.Exception.Message; $aiStatus.ForeColor = [System.Drawing.Color]::Red
