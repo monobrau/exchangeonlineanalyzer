@@ -5562,50 +5562,71 @@ $helpRichTextBox.WordWrap = $true
 # Create clean, formatted help content
 $helpText = @"
 
-MICROSOFT 365 MANAGEMENT TOOL - HELP
+MICROSOFT 365 MANAGEMENT TOOL – QUICK HELP (v8.1-beta)
 
-OVERVIEW
-This tool provides comprehensive management capabilities for Microsoft 365 environments, including Exchange Online and Entra ID (Azure AD) administration.
+WHAT'S NEW
+- Security Investigation Report (Reports → Security Investigation):
+  - Exchange: Message Trace (last 10 days), Inbox Rules (all mailboxes)
+  - Microsoft Graph: Directory Audit Logs (max detail)
+  - Posture: MFA Coverage (Security Defaults/CA/Per-user), User Security Groups/Roles
+  - Exports to Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
+  - LLM_Instructions.txt generated for AI analysis. Sign-in logs are not included (license); export from Entra portal manually and attach when using AI.
 
-EXCHANGE ONLINE TAB
-• Connect to Exchange Online using modern authentication
-• View and manage user mailboxes with detailed information
-• Export inbox rules for analysis and backup
-• Manage connectors (inbound/outbound) with delete capability
-• Manage transport rules with delete capability
-• Search and filter mailbox data
-• Export data to CSV/Excel formats
+- Entra Portal Shortcuts (Report Generator tab):
+  - Select Firefox Profile and Container; auto-matches best container to signed-in tenant
+  - Refresh and Reload Disk buttons to repopulate containers
+  - Opens Entra deep links (Sign-ins, Conditional Access, Restricted Entities)
+  - Requires Firefox add-on: "Open external links in a container"; protocol: ext+container:name=<Container>&url=<Url>
 
-ENTRA ID INVESTIGATOR TAB
-• Connect to Microsoft Graph API
-• View and manage user accounts
-• Block/unblock user sign-in access
-• Revoke user sessions for security
-• Export sign-in and audit logs
-• Analyze MFA status and user details
-• View user roles and permissions
+- AI Analysis tab:
+  - Provider selector: Gemini or Claude
+  - Choose latest or browse to report folder; optionally add extra files (e.g., portal SignInLogs.csv)
+  - Saves response as Gemini_Response.md or Claude_Response.md in the selected folder
+  - Troubleshooting:
+    • Gemini 404: use a listed model (e.g., models/gemini-1.5-flash-002, models/gemini-2.5-pro)
+    • Gemini 429: your payload exceeded free-tier token quota; trim CSVs or send only LLM_Instructions.txt
+    • Claude 400 invalid_request_error: credits/billing required for Anthropic API
 
-KEYBOARD SHORTCUTS
-• Ctrl+O: Connect to services
-• Ctrl+D: Disconnect from services
-• Ctrl+S: Export rules/data
-• F5: Refresh data
-• Ctrl+A: Select all items
-• Escape: Close dialogs
+- Settings tab:
+  - Persist Investigator Name and Company
+  - API Keys: Gemini and Claude
 
-CONNECTION REQUIREMENTS
-• Exchange Online PowerShell module
-• Microsoft Graph PowerShell module
-• Appropriate admin permissions
-• Modern authentication enabled
+CORE TABS
+- Exchange Online:
+  - Connect/Disconnect (modern auth), export Inbox Rules, manage Transport Rules & Connectors
+  - Bulk mailbox operations; search/filter; export CSV
+
+- Entra ID Investigator:
+  - Connect to Microsoft Graph; block/unblock sign-in; revoke sessions
+  - MFA posture, user roles/groups, and elevated-role highlights
+
+KEYBOARD SHORTCUTS (where applicable)
+- Ctrl+O: Connect   • Ctrl+D: Disconnect   • Ctrl+S: Export   • F5: Refresh
+- Ctrl+A: Select all • Esc: Close dialog
+
+FOLDER LAYOUT
+- Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
+  - MessageTrace.csv, InboxRules.csv, TransportRules.csv, Inbound/OutboundConnectors.csv,
+    GraphAuditLogs.csv, MFAStatus.csv, UserSecurityGroups.csv, LLM_Instructions.txt
+
+KNOWN REQUIREMENTS
+- PowerShell 7+ recommended
+- Modules: ExchangeOnlineManagement, Microsoft.Graph (Authentication, Users, Users.Actions, Identity.SignIns, Reports)
+- Firefox + Multi-Account Containers + "Open external links in a container" (for shortcuts panel)
 
 TROUBLESHOOTING
-• Ensure you have the required PowerShell modules installed
-• Verify you have appropriate admin permissions
-• Check your internet connection
-• Ensure modern authentication is enabled for your tenant
+- Graph "Method not found" after connecting:
+  Use the Fix Module Conflicts button (Entra tab) to remove/reinstall Graph modules, then restart PowerShell.
+- No message trace:
+  Get-MessageTraceV2 is preferred; tool falls back per-day windows if V2 unavailable.
+- Sign-in logs missing:
+  Not included by design (license). Download from Entra portal and add via AI Analysis Extra Files.
+- AI send fails:
+  See Gemini_Error.txt or Claude_Error.txt in the report folder; request JSON is saved alongside.
 
-For detailed documentation, please refer to the readme.md file in the application directory.
+Links:
+- Gemini models & quotas: https://ai.google.dev
+- Anthropic Claude API: https://docs.anthropic.com
 
 "@
 
