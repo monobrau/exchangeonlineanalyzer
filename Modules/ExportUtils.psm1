@@ -352,6 +352,13 @@ function New-SecurityInvestigationReport {
 
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
             $report.InboxRules = Get-ExchangeInboxRules
+
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
+            $report.TransportRules = Get-ExchangeTransportRules
+
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
+            $report.InboundConnectors = Get-ExchangeInboundConnectors
+            $report.OutboundConnectors = Get-ExchangeOutboundConnectors
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
             $report.ExchangeDataError = $_.Exception.Message
@@ -412,6 +419,29 @@ function New-SecurityInvestigationReport {
             if ($report.InboxRules -and $report.InboxRules.Count -gt 0) {
                 try { $report.InboxRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboxRulesCsv = $csv }
                 catch { $report.InboxRules | ConvertTo-Json -Depth 6 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboxRulesJson = $json }
+            }
+
+            # Transport Rules export
+            $csv = Join-Path $report.OutputFolder "TransportRules.csv"
+            $json = Join-Path $report.OutputFolder "TransportRules.json"
+            if ($report.TransportRules -and $report.TransportRules.Count -gt 0) {
+                try { $report.TransportRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.TransportRulesCsv = $csv }
+                catch { $report.TransportRules | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.TransportRulesJson = $json }
+            }
+
+            # Connectors export
+            $csv = Join-Path $report.OutputFolder "InboundConnectors.csv"
+            $json = Join-Path $report.OutputFolder "InboundConnectors.json"
+            if ($report.InboundConnectors -and $report.InboundConnectors.Count -gt 0) {
+                try { $report.InboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboundConnectorsCsv = $csv }
+                catch { $report.InboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboundConnectorsJson = $json }
+            }
+
+            $csv = Join-Path $report.OutputFolder "OutboundConnectors.csv"
+            $json = Join-Path $report.OutputFolder "OutboundConnectors.json"
+            if ($report.OutboundConnectors -and $report.OutboundConnectors.Count -gt 0) {
+                try { $report.OutboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.OutboundConnectorsCsv = $csv }
+                catch { $report.OutboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.OutboundConnectorsJson = $json }
             }
 
             $csv = Join-Path $report.OutputFolder "GraphAuditLogs.csv"
@@ -553,6 +583,96 @@ function Get-ExchangeInboxRules {
     }
 }
 
+function Get-ExchangeTransportRules {
+    try {
+        Write-Host "Exporting transport (mail flow) rules..." -ForegroundColor Yellow
+        $rules = @()
+        try { $rules = Get-TransportRule -ResultSize Unlimited -ErrorAction Stop } catch { $rules = Get-TransportRule -ErrorAction Stop }
+
+        function Convert-ShortJson($obj) { try { return ($obj | ConvertTo-Json -Depth 12 -Compress) } catch { return "" } }
+
+        $results = New-Object System.Collections.Generic.List[object]
+        foreach ($r in $rules) {
+            $results.Add([pscustomobject]@{
+                Name               = $r.Name
+                Priority           = $r.Priority
+                State              = $r.State
+                Mode               = $r.Mode
+                Comments           = $r.Comments
+                RuleVersion        = $r.RuleVersion
+                ActivationDate     = $r.ActivationDate
+                ExpiryDate         = $r.ExpiryDate
+                ConditionsSummary  = (Convert-ShortJson $r.Conditions)
+                ExceptionsSummary  = (Convert-ShortJson $r.Exceptions)
+                ActionsSummary     = (Convert-ShortJson $r.Actions)
+                ImmutableId        = $r.ImmutableId
+                Guid               = $r.Guid
+                DlpPolicy          = $r.DlpPolicy
+            }) | Out-Null
+        }
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to export transport rules: $($_.Exception.Message)"; return @()
+    }
+}
+
+function Get-ExchangeInboundConnectors {
+    try {
+        Write-Host "Exporting inbound connectors..." -ForegroundColor Yellow
+        $conns = @()
+        try { $conns = Get-InboundConnector -ErrorAction Stop } catch { $conns = @() }
+        $results = New-Object System.Collections.Generic.List[object]
+        foreach ($c in $conns) {
+            $results.Add([pscustomobject]@{
+                Name                          = $c.Name
+                ConnectorType                 = $c.ConnectorType
+                Enabled                       = $c.Enabled
+                SenderDomains                 = ($c.SenderDomains -join ';')
+                SenderIPAddresses             = ($c.SenderIPAddresses -join ';')
+                RestrictDomainsToCertificate  = $c.RestrictDomainsToCertificate
+                RestrictDomainsToIPAddresses  = $c.RestrictDomainsToIPAddresses
+                TlsSenderCertificateName      = $c.TlsSenderCertificateName
+                RequireTls                    = $c.RequireTls
+                CloudServicesMailEnabled      = $c.CloudServicesMailEnabled
+                Comment                       = $c.Comment
+                Identity                      = $c.Identity
+                Guid                           = $c.Guid
+            }) | Out-Null
+        }
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to export inbound connectors: $($_.Exception.Message)"; return @()
+    }
+}
+
+function Get-ExchangeOutboundConnectors {
+    try {
+        Write-Host "Exporting outbound connectors..." -ForegroundColor Yellow
+        $conns = @()
+        try { $conns = Get-OutboundConnector -ErrorAction Stop } catch { $conns = @() }
+        $results = New-Object System.Collections.Generic.List[object]
+        foreach ($c in $conns) {
+            $results.Add([pscustomobject]@{
+                Name                     = $c.Name
+                ConnectorType            = $c.ConnectorType
+                Enabled                  = $c.Enabled
+                SmartHosts               = ($c.SmartHosts -join ';')
+                RecipientDomains         = ($c.RecipientDomains -join ';')
+                UseMXRecord              = $c.UseMXRecord
+                TlsSettings              = $c.TlsSettings
+                TlsDomain                = $c.TlsDomain
+                CloudServicesMailEnabled = $c.CloudServicesMailEnabled
+                Comment                  = $c.Comment
+                Identity                 = $c.Identity
+                Guid                      = $c.Guid
+            }) | Out-Null
+        }
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to export outbound connectors: $($_.Exception.Message)"; return @()
+    }
+}
+
 function Get-GraphAuditLogs {
     param([int]$DaysBack = 10)
 
@@ -691,6 +811,9 @@ function New-AISecurityInvestigationPrompt {
     # Calculate data counts outside the here-string to avoid parsing issues
     $messageTraceCount = if($Report.MessageTrace){$Report.MessageTrace.Count}else{0}
     $inboxRulesCount = if($Report.InboxRules){$Report.InboxRules.Count}else{0}
+    $transportRulesCount = if($Report.TransportRules){$Report.TransportRules.Count}else{0}
+    $inboundConnCount = if($Report.InboundConnectors){$Report.InboundConnectors.Count}else{0}
+    $outboundConnCount = if($Report.OutboundConnectors){$Report.OutboundConnectors.Count}else{0}
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
 
@@ -706,6 +829,8 @@ function New-AISecurityInvestigationPrompt {
 ## DATA SOURCES PROVIDED
 - **Message Trace:** $messageTraceCount email records
 - **Inbox Rules:** $inboxRulesCount rules across all mailboxes
+- **Transport Rules (Mail Flow):** $transportRulesCount rules
+- **Connectors:** $inboundConnCount inbound, $outboundConnCount outbound
 - **Audit Logs:** $auditLogsCount directory audit events
 - **MFA Coverage:** tenant-wide defaults/CA and per-user states
 
@@ -805,6 +930,9 @@ function New-TicketSecuritySummary {
     # Calculate data counts outside the here-string to avoid parsing issues
     $messageTraceCount = if($Report.MessageTrace){$Report.MessageTrace.Count}else{0}
     $inboxRulesCount = if($Report.InboxRules){$Report.InboxRules.Count}else{0}
+    $transportRulesCount = if($Report.TransportRules){$Report.TransportRules.Count}else{0}
+    $inboundConnCount = if($Report.InboundConnectors){$Report.InboundConnectors.Count}else{0}
+    $outboundConnCount = if($Report.OutboundConnectors){$Report.OutboundConnectors.Count}else{0}
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
 
@@ -824,6 +952,8 @@ A comprehensive security investigation has been completed for our Microsoft 365 
 ### Data Sources Analyzed:
 - **Email Communications:** $messageTraceCount messages tracked
 - **User Rules:** $inboxRulesCount inbox rules examined
+- **Mail Flow Rules:** $transportRulesCount transport rules examined
+- **Connectors:** $inboundConnCount inbound, $outboundConnCount outbound
 - **Security Logs:** $auditLogsCount audit events reviewed
 - **MFA Coverage:** tenant defaults/CA/per-user evaluated
 
@@ -886,6 +1016,8 @@ Location: $($Report.OutputFolder)
 
 - MessageTrace.csv: Upload to your analysis workspace/LLM to identify unusual external flows and spikes.
 - InboxRules.csv: Review for forwarding/hidden/suspicious rules; feed to LLM for triage.
+- TransportRules.csv: Review for risky conditions/actions (auto-forwarding, allow lists, spoof bypass).
+- InboundConnectors.csv / OutboundConnectors.csv: Validate trusted partners, smart hosts, TLS settings, and domain scopes.
 - AuditLogs.csv: Examine administrative actions and policy changes.
 - MFAStatus.csv: Identify users not covered by any MFA control; prioritize remediation.
 - UserSecurityGroups.csv: Validate privileged group/role membership (e.g., Global Administrator).
@@ -961,6 +1093,9 @@ function New-SecurityInvestigationSummary {
     $mailboxesAnalyzed = if($Report.InboxRules){
         ($Report.InboxRules | Select-Object -Property MailboxOwner -Unique).Count
     }else{0}
+    $transportRulesCount = if($Report.TransportRules){$Report.TransportRules.Count}else{0}
+    $inboundConnCount = if($Report.InboundConnectors){$Report.InboundConnectors.Count}else{0}
+    $outboundConnCount = if($Report.OutboundConnectors){$Report.OutboundConnectors.Count}else{0}
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
     $usersWithActivity = 0
@@ -980,6 +1115,8 @@ function New-SecurityInvestigationSummary {
 - **Message Trace Records:** $messageTraceCount
 - **Inbox Rules Exported:** $inboxRulesCount
 - **Mailboxes Analyzed:** $mailboxesAnalyzed
+- **Transport Rules Exported:** $transportRulesCount
+- **Connectors Exported:** $inboundConnCount inbound, $outboundConnCount outbound
 - **Connection Status:** $($Report.ExchangeConnection)
 
 ### Microsoft Graph Data
@@ -1043,4 +1180,4 @@ function New-SecurityInvestigationSummary {
 }
 
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
-Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv
+Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors

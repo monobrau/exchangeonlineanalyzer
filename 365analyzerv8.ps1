@@ -4796,7 +4796,10 @@ $loadFirefoxUi = {
                             }
 
                             if ($bestName -and ($containerCombo.Items -contains $bestName)) { $containerCombo.SelectedItem = $bestName } else { $containerCombo.SelectedIndex = 0 }
-                            if ($ffStatusLabel) { $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s) | Auto-match: {2} (score {3:N2})" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count), ($bestName?$bestName:'(none)'), $bestScore) }
+                            if ($ffStatusLabel) {
+                                $bn = if ($bestName) { $bestName } else { '(none)' }
+                                $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s) | Auto-match: {2} (score {3:N2})" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count), $bn, $bestScore)
+                            }
                         }
                         $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count))
                     } catch {
@@ -4858,7 +4861,31 @@ $ffStatusLabel.Text = ""
 $entraPortalGroup.Controls.Add($ffStatusLabel)
 
 $entraPortalGroup.add_Enter({
+    # Initial populate immediately
     & $loadFirefoxUi
+    # Then attempt an eager auto-select using current Graph context
+    try {
+        Start-Sleep -Milliseconds 150
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+        $profiles = Get-FirefoxProfiles
+        $basePath = Join-Path $env:APPDATA 'Mozilla\Firefox'
+        $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+        if ($prof -and $prof.Path) {
+            $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path $basePath $prof.Path }
+            if (Test-Path $ppath) {
+                $containers = Get-FirefoxContainers -ProfilePath $ppath
+                $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+                if ($visible.Count -gt 0) {
+                    $tenant = $null
+                    try { $tenant = Get-TenantIdentity } catch {}
+                    if ($tenant) {
+                        $best = Get-BestContainerName -ContainerNames ($visible | Select-Object -ExpandProperty name) -TenantIdentity $tenant
+                        if ($best -and $best.Name -and ($containerCombo.Items -contains $best.Name)) { $containerCombo.SelectedItem = $best.Name }
+                    }
+                }
+            }
+        }
+    } catch {}
 })
 
 # Initial populate when building the panel (in case Enter doesn't fire yet)
@@ -4872,7 +4899,19 @@ $profileCombo.add_SelectedIndexChanged({
         if ($prof -and $prof.Path) {
             $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path (Join-Path $env:APPDATA 'Mozilla\Firefox') $prof.Path }
             $containers = Get-FirefoxContainers -ProfilePath $ppath
-            $containerCombo.Items.Clear(); foreach ($c in $containers) { [void]$containerCombo.Items.Add($c.name) }
+            $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+            $containerCombo.Items.Clear(); foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
+            if ($containerCombo.Items.Count -gt 0) {
+                $tenant = $null
+                try { $tenant = Get-TenantIdentity } catch {}
+                if ($tenant) {
+                    $best = Get-BestContainerName -ContainerNames ($visible | Select-Object -ExpandProperty name) -TenantIdentity $tenant
+                    if ($best -and $best.Name -and ($containerCombo.Items -contains $best.Name)) { $containerCombo.SelectedItem = $best.Name }
+                    elseif ($containerCombo.Items.Count -gt 0) { $containerCombo.SelectedIndex = 0 }
+                } else {
+                    $containerCombo.SelectedIndex = 0
+                }
+            }
         }
     } catch {}
 })
