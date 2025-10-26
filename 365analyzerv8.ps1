@@ -4763,13 +4763,40 @@ $loadFirefoxUi = {
                         $containerCombo.Items.Clear(); foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
                         if ($containerCombo.Items.Count -gt 0) {
                             $tenant = Get-TenantIdentity
-                            $bestName = $null
+                            $bestName = $null; $bestScore = 0.0
                             try {
                                 Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
-                                $best = Get-BestContainerName -ContainerNames ($visible | Select-Object -ExpandProperty name) -TenantIdentity $tenant
-                                if ($best -and $best.Name) { $bestName = $best.Name }
+                                $names = ($visible | Select-Object -ExpandProperty name)
+                                $best = Get-BestContainerName -ContainerNames $names -TenantIdentity $tenant
+                                if ($best) { $bestName = $best.Name; $bestScore = $best.Score }
                             } catch {}
+
+                            # Fallback heuristics if low score
+                            if (-not $bestName -or -not ($containerCombo.Items -contains $bestName) -or $bestScore -lt 0.5) {
+                                $norm = @{}
+                                foreach ($n in $containerCombo.Items) {
+                                    $key = ($n.ToString().ToLower() -replace '[^a-z0-9 ]',' ' -replace '\s+',' ').Trim()
+                                    if (-not $norm.ContainsKey($key)) { $norm[$key] = $n }
+                                }
+                                $targets = @()
+                                if ($tenant.TenantDisplayName) { $targets += $tenant.TenantDisplayName }
+                                if ($tenant.PrimaryDomain) { $targets += $tenant.PrimaryDomain; $targets += ($tenant.PrimaryDomain -split '\.')[0] }
+                                if ($tenant.Domains) { $targets += $tenant.Domains }
+                                $picked = $null
+                                foreach ($t in $targets) {
+                                    if (-not $t) { continue }
+                                    $tk = ($t.ToLower() -replace '[^a-z0-9 ]',' ' -replace '\s+',' ').Trim()
+                                    # direct contains/prefix tests across normalized keys
+                                    foreach ($k in $norm.Keys) {
+                                        if ($k.StartsWith($tk) -or $tk.StartsWith($k) -or ($k.Contains($tk)) -or ($tk.Contains($k))) { $picked = $norm[$k]; break }
+                                    }
+                                    if ($picked) { break }
+                                }
+                                if ($picked) { $bestName = $picked }
+                            }
+
                             if ($bestName -and ($containerCombo.Items -contains $bestName)) { $containerCombo.SelectedItem = $bestName } else { $containerCombo.SelectedIndex = 0 }
+                            if ($ffStatusLabel) { $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s) | Auto-match: {2} (score {3:N2})" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count), ($bestName?$bestName:'(none)'), $bestScore) }
                         }
                         $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count))
                     } catch {
