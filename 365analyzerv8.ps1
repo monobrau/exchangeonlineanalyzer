@@ -1937,6 +1937,18 @@ $btnSave.add_Click({
     } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
 })
 
+# Ensure Settings tab is the rightmost tab (last position)
+try {
+    $mainForm.add_Shown({
+        try {
+            if ($tabControl.TabPages.Contains($settingsTab)) {
+                $tabControl.TabPages.Remove($settingsTab)
+                $tabControl.TabPages.Add($settingsTab)
+            }
+        } catch {}
+    })
+} catch {}
+
 # --- Exchange Online Controls Instantiation ---
 $connectButton = New-Object System.Windows.Forms.Button
 $connectButton.Text = "Connect"
