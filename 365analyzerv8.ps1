@@ -4838,7 +4838,7 @@ $reportGeneratorTab.add_Enter({
 
         $hasExchangeData = $script:allLoadedMailboxUPNs -and $script:allLoadedMailboxUPNs.Count -gt 0
         $hasEntraData = $entraUserGrid.Rows.Count -gt 0
-
+        
         if (-not $exoConnected -and -not $mgConnected -and -not $hasExchangeData -and -not $hasEntraData) {
             $statusLabel.Text = "⚠️ No data available - please connect to Exchange Online and/or Entra ID first"
             [System.Windows.Forms.MessageBox]::Show(
@@ -4993,7 +4993,7 @@ $generateReportButton.add_Click({
         })
         $obsidianTab.Controls.Add($copyObsidianButton)
 
-
+        
         # Add tabs to tab control
         $reportTabControl.TabPages.Add($professionalTab)
         $reportTabControl.TabPages.Add($obsidianTab)

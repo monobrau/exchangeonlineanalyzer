@@ -104,13 +104,18 @@ foreach ($path in $existing) {
 
 $body = @{ contents = @(@{ role = 'user'; parts = $parts }) }
 $json = $body | ConvertTo-Json -Depth 6
-if ($DebugOutput) { $reqPath = Join-Path $OutputFolder 'Gemini_Request.json'; $json | Out-File -FilePath $reqPath -Encoding utf8; Write-Verbose ("Saved request JSON: {0}" -f $reqPath) }
+# Always save request JSON for troubleshooting
+$reqPath = Join-Path $OutputFolder 'Gemini_Request.json'
+$json | Out-File -FilePath $reqPath -Encoding utf8
+Write-Verbose ("Saved request JSON: {0}" -f $reqPath)
 
 $resp = $null
 $lastErr = $null
+$usedEndpoint = $null
 foreach ($ep in $endpoints) {
     try {
         Write-Verbose ("Submitting to: {0}" -f $ep)
+        $usedEndpoint = $ep
         $resp = Invoke-RestMethod -Method POST -Uri $ep -ContentType 'application/json' -Body $json -ErrorAction Stop
         break
     } catch {
@@ -123,15 +128,30 @@ foreach ($ep in $endpoints) {
 }
 if (-not $resp) {
     $errPath = Join-Path $OutputFolder 'Gemini_Error.txt'
-    $details = $lastErr.Exception.Message
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("Endpoint: $usedEndpoint") | Out-Null
     try {
-        if ($lastErr.Exception.Response -and $lastErr.Exception.Response.GetResponseStream) {
+        $scName = $null; $scVal = $null
+        try { $scName = $lastErr.Exception.Response.StatusCode } catch {}
+        try { $scVal = $lastErr.Exception.Response.StatusCode.value__ } catch {}
+        if ($scName -or $scVal) { $lines.Add("Status: $scVal ($scName)") | Out-Null }
+    } catch {}
+    if ($lastErr -and $lastErr.Exception -and $lastErr.Exception.Message) { $lines.Add("Exception: " + $lastErr.Exception.Message) | Out-Null }
+    if ($lastErr.ErrorDetails -and $lastErr.ErrorDetails.Message) { $lines.Add("ErrorDetails: " + $lastErr.ErrorDetails.Message) | Out-Null }
+
+    # Try to capture response body across frameworks
+    try {
+        $body = $null
+        if ($lastErr.Exception.Response -is [System.Net.Http.HttpResponseMessage]) {
+            $body = $lastErr.Exception.Response.Content.ReadAsStringAsync().Result
+        } elseif ($lastErr.Exception.Response -and $lastErr.Exception.Response.GetResponseStream) {
             $reader = New-Object System.IO.StreamReader($lastErr.Exception.Response.GetResponseStream())
             $body = $reader.ReadToEnd()
-            if ($body) { $details += "`n`nResponse:`n" + $body }
         }
+        if ($body) { $lines.Add("Body:") | Out-Null; $lines.Add($body) | Out-Null }
     } catch {}
-    $details | Out-File -FilePath $errPath -Encoding utf8
+
+    $lines -join "`r`n" | Out-File -FilePath $errPath -Encoding utf8
     Write-Error ("Gemini request failed. See {0}" -f $errPath)
     exit 1
 }
