@@ -2024,11 +2024,20 @@ $aiSendBtn.add_Click({
                     $output = & $ps $scriptPath $folder
                 }
             } else {
+                # Ensure Claude API key exists
+                try {
+                    Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                    $s = Get-AppSettings
+                    if (-not $s -or -not $s.ClaudeApiKey -or $s.ClaudeApiKey.Trim().Length -eq 0) {
+                        [System.Windows.Forms.MessageBox]::Show("Please add your Claude API key in the Settings tab first.", "Claude API Key Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        return
+                    }
+                } catch {}
                 if ($extras.Count -gt 0) {
-                    $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -VerboseOutput 4>&1 }
+                    $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -MaxCsvRows 2000 -VerboseOutput 4>&1 }
                     $output = & $ps $scriptPath $folder $extras
                 } else {
-                    $ps = { param($sp,$of) & $sp -OutputFolder $of -VerboseOutput 4>&1 }
+                    $ps = { param($sp,$of) & $sp -OutputFolder $of -MaxCsvRows 2000 -VerboseOutput 4>&1 }
                     $output = & $ps $scriptPath $folder
                 }
             }
