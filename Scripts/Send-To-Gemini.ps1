@@ -27,8 +27,14 @@ if (-not $ApiKey) { Write-Error "Gemini API key is required. Provide -ApiKey or 
 if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { Write-Error "Could not find Security Investigation output folder. Run the report first or pass -OutputFolder."; exit 1 }
 Write-Verbose ("Using output folder: {0}" -f $OutputFolder)
 
-$endpoint = ("https://generativelanguage.googleapis.com/v1beta/{0}:generateContent?key={1}" -f $Model, $ApiKey)
-Write-Verbose ("Model endpoint: {0}" -f $endpoint)
+$modelName = $Model
+if ($modelName -like 'models/*') { $modelName = $modelName.Substring(7) }
+$endpoints = @(
+    ("https://generativelanguage.googleapis.com/v1/models/{0}:generateContent?key={1}" -f $modelName, $ApiKey),
+    ("https://generativelanguage.googleapis.com/v1beta/models/{0}:generateContent?key={1}" -f $modelName, $ApiKey),
+    ("https://generativelanguage.googleapis.com/v1beta/{0}:generateContent?key={1}" -f $Model, $ApiKey)
+)
+Write-Verbose ("Model endpoints (fallback order):`n - {0}`n - {1}`n - {2}" -f $endpoints[0], $endpoints[1], $endpoints[2])
 
 # Collect files to attach
 $files = @(
@@ -100,13 +106,33 @@ $body = @{ contents = @(@{ role = 'user'; parts = $parts }) }
 $json = $body | ConvertTo-Json -Depth 6
 if ($DebugOutput) { $reqPath = Join-Path $OutputFolder 'Gemini_Request.json'; $json | Out-File -FilePath $reqPath -Encoding utf8; Write-Verbose ("Saved request JSON: {0}" -f $reqPath) }
 
-try {
-    Write-Verbose "Submitting request to Gemini..."
-    $resp = Invoke-RestMethod -Method POST -Uri $endpoint -ContentType 'application/json' -Body $json -ErrorAction Stop
-} catch {
+$resp = $null
+$lastErr = $null
+foreach ($ep in $endpoints) {
+    try {
+        Write-Verbose ("Submitting to: {0}" -f $ep)
+        $resp = Invoke-RestMethod -Method POST -Uri $ep -ContentType 'application/json' -Body $json -ErrorAction Stop
+        break
+    } catch {
+        $lastErr = $_
+        # If 404 Not Found, try next endpoint; otherwise stop early
+        $status = $null
+        try { $status = $_.Exception.Response.StatusCode.value__ } catch {}
+        if ($status -ne 404) { break }
+    }
+}
+if (-not $resp) {
     $errPath = Join-Path $OutputFolder 'Gemini_Error.txt'
-    ("Gemini request failed: {0}" -f $_.Exception.Message) | Out-File -FilePath $errPath -Encoding utf8
-    Write-Error ("Gemini request failed: {0}. See {1}" -f $_.Exception.Message, $errPath)
+    $details = $lastErr.Exception.Message
+    try {
+        if ($lastErr.Exception.Response -and $lastErr.Exception.Response.GetResponseStream) {
+            $reader = New-Object System.IO.StreamReader($lastErr.Exception.Response.GetResponseStream())
+            $body = $reader.ReadToEnd()
+            if ($body) { $details += "`n`nResponse:`n" + $body }
+        }
+    } catch {}
+    $details | Out-File -FilePath $errPath -Encoding utf8
+    Write-Error ("Gemini request failed. See {0}" -f $errPath)
     exit 1
 }
 
