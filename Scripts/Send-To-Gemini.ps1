@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$false)][string]$ApiKey,
     [Parameter(Mandatory=$false)][string]$OutputFolder,
-    [Parameter(Mandatory=$false)][string]$Model = 'models/gemini-1.5-pro',
+    [Parameter(Mandatory=$false)][string]$Model = 'models/gemini-2.5-pro',
     [Parameter(Mandatory=$false)][string[]]$ExtraFiles,
     [Parameter(Mandatory=$false)][string]$ResponseFile = 'Gemini_Response.md',
     [Parameter(Mandatory=$false)][switch]$DebugOutput
