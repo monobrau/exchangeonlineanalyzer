@@ -4484,11 +4484,14 @@ $reportGeneratorTab.add_Enter({
         # Update connection status first
         Update-ConnectionStatus
         
-        # Check if we have data from both sources
+        # Check if we have any connection/data and only show popup when neither is connected/loaded
+        $exoConnected = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoConnected = $true } catch {}
+        $mgConnected = $false; try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true } } catch {}
+
         $hasExchangeData = $script:allLoadedMailboxUPNs -and $script:allLoadedMailboxUPNs.Count -gt 0
         $hasEntraData = $entraUserGrid.Rows.Count -gt 0
-        
-        if (-not $hasExchangeData -and -not $hasEntraData) {
+
+        if (-not $exoConnected -and -not $mgConnected -and -not $hasExchangeData -and -not $hasEntraData) {
             $statusLabel.Text = "⚠️ No data available - please connect to Exchange Online and/or Entra ID first"
             [System.Windows.Forms.MessageBox]::Show(
                 "No account data available for reports.`n`nPlease connect to Exchange Online and/or Entra ID first, then refresh the account list.",

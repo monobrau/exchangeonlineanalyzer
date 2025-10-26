@@ -73,6 +73,43 @@ function Measure-StringSimilarity {
     return [double]($inter/$union)
 }
 
+function Normalize-Name {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+    $s = $Name.ToLower()
+    $s = ($s -replace '[^a-z0-9 ]',' ')
+    $s = ($s -replace '\s+',' ').Trim()
+    # Remove common suffixes
+    $tokens = $s.Split(' ')
+    $stop = @('inc','incorporated','llc','corp','corporation','company','co','group','ltd','limited','the')
+    $filtered = $tokens | Where-Object { $_ -and ($stop -notcontains $_) }
+    return ($filtered -join ' ').Trim()
+}
+
+function Compute-NameScore {
+    param([string]$Candidate,[string]$Target)
+    $c = Normalize-Name $Candidate
+    $t = Normalize-Name $Target
+    if (-not $c -or -not $t) { return 0.0 }
+    # Base score: Jaccard bigram
+    $score = Measure-StringSimilarity -A $c -B $t
+    # Prefix boost
+    $pref = 0.0
+    $len = [Math]::Min($c.Length,$t.Length)
+    $i=0; while($i -lt $len -and $c[$i] -eq $t[$i]){ $i++ }
+    if ($len -gt 0) { $pref = $i / $len }
+    if ($pref -gt $score) { $score = $pref }
+    # Token overlap
+    $ctoks = ($c -split ' ' | Where-Object { $_ })
+    $ttoks = ($t -split ' ' | Where-Object { $_ })
+    if ($ctoks.Count -gt 0 -and $ttoks.Count -gt 0) {
+        $common = @($ctoks | Where-Object { $ttoks -contains $_ }).Count
+        $tokScore = $common / [double]([Math]::Max($ctoks.Count,$ttoks.Count))
+        if ($tokScore -gt $score) { $score = $tokScore }
+    }
+    return [double]$score
+}
+
 function Select-BestContainer {
     param(
         [Parameter(Mandatory=$true)]$Containers,
@@ -84,9 +121,21 @@ function Select-BestContainer {
     if ($TenantIdentity.TenantDisplayName) { $names += $TenantIdentity.TenantDisplayName }
     if ($TenantIdentity.PrimaryDomain) { $names += $TenantIdentity.PrimaryDomain }
     if ($TenantIdentity.Domains) { $names += $TenantIdentity.Domains }
+    # Add primary domain host (leftmost label) as a candidate and singularized forms
+    try {
+        if ($TenantIdentity.PrimaryDomain) {
+            $host = ($TenantIdentity.PrimaryDomain -split '\.')[0]
+            if ($host) { $names += $host }
+        }
+    } catch {}
+    $more = @()
+    foreach ($n in $names) {
+        if ($n -and $n.ToString().EndsWith('s')) { $more += $n.Substring(0, $n.Length-1) }
+    }
+    $names += $more
     foreach ($cont in $Containers) {
         $best=0.0
-        foreach ($n in $names) { $s = Measure-StringSimilarity -A $cont.name -B $n; if ($s -gt $best) { $best=$s } }
+        foreach ($n in $names) { $s = Compute-NameScore -Candidate $cont.name -Target $n; if ($s -gt $best) { $best=$s } }
         $candidates += [pscustomobject]@{ Container=$cont; Score=$best }
     }
     $pick = $candidates | Sort-Object Score -Descending | Select-Object -First 1
