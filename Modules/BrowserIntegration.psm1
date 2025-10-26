@@ -106,6 +106,16 @@ function Compute-NameScore {
         $common = @($ctoks | Where-Object { $ttoks -contains $_ }).Count
         $tokScore = $common / [double]([Math]::Max($ctoks.Count,$ttoks.Count))
         if ($tokScore -gt $score) { $score = $tokScore }
+        # Prefix token overlap (handles truncated last token: 'interio' vs 'interior')
+        $prefMatches = 0
+        foreach ($ct in $ctoks) {
+            foreach ($tt in $ttoks) {
+                if ([string]::IsNullOrEmpty($ct) -or [string]::IsNullOrEmpty($tt)) { continue }
+                if ($tt.StartsWith($ct) -or $ct.StartsWith($tt)) { $prefMatches++; break }
+            }
+        }
+        $prefTokScore = $prefMatches / [double]([Math]::Max($ctoks.Count,$ttoks.Count))
+        if ($prefTokScore -gt $score) { $score = $prefTokScore }
     }
     # Substring/prefix heuristic to favor truncated names (e.g., 'creative business interio' vs 'creative business interiors')
     if ($c.Length -gt 0 -and $t.Length -gt 0) {
