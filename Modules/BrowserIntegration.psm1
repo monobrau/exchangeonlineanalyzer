@@ -107,6 +107,17 @@ function Compute-NameScore {
         $tokScore = $common / [double]([Math]::Max($ctoks.Count,$ttoks.Count))
         if ($tokScore -gt $score) { $score = $tokScore }
     }
+    # Substring/prefix heuristic to favor truncated names (e.g., 'creative business interio' vs 'creative business interiors')
+    if ($c.Length -gt 0 -and $t.Length -gt 0) {
+        $isPref = $t.StartsWith($c) -or $c.StartsWith($t)
+        $isSub  = (-not $isPref) -and ($t.Contains($c) -or $c.Contains($t))
+        if ($isPref -or $isSub) {
+            $shared = [Math]::Min($c.Length,$t.Length)
+            $baseRatio = $shared / [double]([Math]::Max($c.Length,$t.Length))
+            $boost = [Math]::Min(1.0, $baseRatio + 0.1)
+            if ($boost -gt $score) { $score = $boost }
+        }
+    }
     return [double]$score
 }
 
