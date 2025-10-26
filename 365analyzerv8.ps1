@@ -4731,12 +4731,24 @@ $securityInvestigationButton.add_Click({
                     $openFolderBtn.Size = New-Object System.Drawing.Size(150, 30)
                     $openFolderBtn.add_Click({ if ($securityReport.OutputFolder) { Start-Process $securityReport.OutputFolder } })
 
-                    # Send to Gemini button
-                    $sendGeminiBtn = New-Object System.Windows.Forms.Button
-                    $sendGeminiBtn.Text = "Send to Gemini"
-                    $sendGeminiBtn.Location = New-Object System.Drawing.Point(625, 35)
-                    $sendGeminiBtn.Size = New-Object System.Drawing.Size(140, 30)
-                    $sendGeminiBtn.add_Click({
+                    # Provider selector + Send to AI
+                    $providerLabel = New-Object System.Windows.Forms.Label
+                    $providerLabel.Text = "Provider:"
+                    $providerLabel.Location = New-Object System.Drawing.Point(625, 12)
+                    $providerLabel.AutoSize = $true
+
+                    $providerCombo = New-Object System.Windows.Forms.ComboBox
+                    $providerCombo.Location = New-Object System.Drawing.Point(685, 10)
+                    $providerCombo.Width = 100
+                    $providerCombo.DropDownStyle = 'DropDownList'
+                    $providerCombo.Items.AddRange(@('Gemini','Claude'))
+                    $providerCombo.SelectedIndex = 0
+
+                    $sendAIBtn = New-Object System.Windows.Forms.Button
+                    $sendAIBtn.Text = "Send to AI"
+                    $sendAIBtn.Location = New-Object System.Drawing.Point(625, 35)
+                    $sendAIBtn.Size = New-Object System.Drawing.Size(160, 30)
+                    $sendAIBtn.add_Click({
                         try {
                             # Determine default folder
                             $folder = $null
@@ -4758,7 +4770,7 @@ $securityInvestigationButton.add_Click({
 
                             # Ask to use latest or choose
                             if ($folder -and (Test-Path $folder)) {
-                                $resp = [System.Windows.Forms.MessageBox]::Show("Use last generated folder?`n`n$folder`n`nYes = use this folder, No = choose another.", "Send to Gemini", [System.Windows.Forms.MessageBoxButtons]::YesNoCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
+                                $resp = [System.Windows.Forms.MessageBox]::Show("Use last generated folder?`n`n$folder`n`nYes = use this folder, No = choose another.", "Send to AI", [System.Windows.Forms.MessageBoxButtons]::YesNoCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
                                 if ($resp -eq [System.Windows.Forms.DialogResult]::No) {
                                     $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
                                     $fbd.Description = "Select the report folder that contains LLM_Instructions.txt and CSV files"
@@ -4778,40 +4790,53 @@ $securityInvestigationButton.add_Click({
                                 return
                             }
 
-                            # Call the Gemini sender script
-                            $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Gemini.ps1"
-                            if (-not (Test-Path $scriptPath)) {
-                                [System.Windows.Forms.MessageBox]::Show("Gemini sender script not found at:`n$scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                                return
+                            $provider = $providerCombo.SelectedItem
+                            if ($provider -eq 'Claude') {
+                                $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Claude.ps1"
+                                if (-not (Test-Path $scriptPath)) {
+                                    [System.Windows.Forms.MessageBox]::Show("Claude sender script not found at:`n$scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                                    return
+                                }
+                            } else {
+                                $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Gemini.ps1"
+                                if (-not (Test-Path $scriptPath)) {
+                                    [System.Windows.Forms.MessageBox]::Show("Gemini sender script not found at:`n$scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                                    return
+                                }
                             }
 
                             $resultsForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-                            $sendGeminiBtn.Enabled = $false
+                            $sendAIBtn.Enabled = $false
                             $outMsg = $null
                             try {
-                                $ps = { param($sp,$of) & $sp -OutputFolder $of -Verbose 4>&1 }
-                                $output = & $ps $scriptPath $folder
+                                if ($provider -eq 'Claude') {
+                                    $ps = { param($sp,$of) & $sp -OutputFolder $of -VerboseOutput 4>&1 }
+                                    $output = & $ps $scriptPath $folder
+                                } else {
+                                    $ps = { param($sp,$of) & $sp -OutputFolder $of -Verbose 4>&1 }
+                                    $output = & $ps $scriptPath $folder
+                                }
                                 $outMsg = ($output | Out-String)
                             } catch {
                                 $outMsg = $_.Exception.Message
                             } finally {
                                 $resultsForm.Cursor = [System.Windows.Forms.Cursors]::Default
-                                $sendGeminiBtn.Enabled = $true
+                                $sendAIBtn.Enabled = $true
                             }
 
-                            $respFile = Join-Path $folder "Gemini_Response.md"
+                            $respFile = if ($provider -eq 'Claude') { Join-Path $folder "Claude_Response.md" } else { Join-Path $folder "Gemini_Response.md" }
                             if (Test-Path $respFile) {
-                                [System.Windows.Forms.MessageBox]::Show("Gemini response saved:`n$respFile", "Gemini", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                                [System.Windows.Forms.MessageBox]::Show(("{0} response saved:`n{1}" -f $provider,$respFile), $provider, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                                 try { Start-Process $respFile } catch {}
                             } else {
-                                [System.Windows.Forms.MessageBox]::Show("Send-To-Gemini completed. Check the folder for Gemini_Response.md.`n`nOutput:`n$($outMsg)", "Gemini", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                                [System.Windows.Forms.MessageBox]::Show(("Send-To-{0} completed. Check the folder for the response file.`n`nOutput:`n{1}" -f $provider,$outMsg), $provider, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                             }
                         } catch {
-                            [System.Windows.Forms.MessageBox]::Show("Failed to send to Gemini:`n$($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                            [System.Windows.Forms.MessageBox]::Show(("Failed to send to {0}:`n{1}" -f $provider, $_.Exception.Message), "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                         }
                     })
 
-                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn, $sendGeminiBtn))
+                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn, $providerLabel, $providerCombo, $sendAIBtn))
 
                     $resultsForm.Controls.Add($resultsTabControl)
                     $resultsForm.Controls.Add($copyPanel)
