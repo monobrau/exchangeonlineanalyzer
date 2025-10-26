@@ -69,7 +69,8 @@ if ($VerboseOutput) {
 
 # Build Anthropic messages format
 $contentParts = @()
-$intro = @"Please analyze the attached security investigation datasets and produce:
+$intro = @"
+Please analyze the attached security investigation datasets and produce:
 - Executive summary (non-technical)
 - Timeline of events with timestamps and sources
 - Evidence-backed findings
@@ -80,12 +81,13 @@ $contentParts += @{ type = 'text'; text = $intro }
 
 foreach ($p in $files) {
     $attach = Get-AttachPath -path $p -maxRows $MaxCsvRows
-    $mime = Get-MimeType $attach
     if ((Get-Item $attach).Length -gt 20000000) { Write-Warning "File >20MB, skipping: $attach"; continue }
-    $bytes = [System.IO.File]::ReadAllBytes($attach)
-    $b64 = [Convert]::ToBase64String($bytes)
-    $contentParts += @{ type='input_text'; text=("Attachment: {0}" -f [System.IO.Path]::GetFileName($p)) }
-    $contentParts += @{ type='document'; source=@{ type='base64'; media_type=$mime; data=$b64 } }
+    $name = [System.IO.Path]::GetFileName($p)
+    $text = try { Get-Content -Path $attach -Raw -Encoding UTF8 } catch { '' }
+    if (-not $text) { $text = "(empty file)" }
+    $maxChars = 300000
+    if ($text.Length -gt $maxChars) { $text = $text.Substring(0,$maxChars) + "`n...[truncated]" }
+    $contentParts += @{ type='text'; text=("=== {0} ===`n{1}" -f $name, $text) }
 }
 
 $req = @{ model = $Model; max_tokens = 2048; messages = @(@{ role = 'user'; content = $contentParts }) }
