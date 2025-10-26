@@ -4418,9 +4418,23 @@ $securityInvestigationButton.add_Click({
                 Import-Module "$PSScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
 
                 # Resolve output folder for this run
+                # Determine tenant-scoped folder root to match ExportUtils behavior
                 $defaultRoot = Join-Path $env:USERPROFILE "Documents\\ExchangeOnlineAnalyzer\\SecurityInvestigation"
-                if (-not (Test-Path $defaultRoot)) { New-Item -ItemType Directory -Path $defaultRoot -Force | Out-Null }
-                $timestampFolder = Join-Path $defaultRoot (Get-Date -Format "yyyyMMdd_HHmmss")
+                $tenantName = $null
+                try {
+                    Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+                    $ti = $null; try { $ti = Get-TenantIdentity } catch {}
+                    if ($ti) { if ($ti.TenantDisplayName) { $tenantName = $ti.TenantDisplayName } elseif ($ti.PrimaryDomain) { $tenantName = $ti.PrimaryDomain } }
+                    if (-not $tenantName) { try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org.DisplayName) { $tenantName = $org.DisplayName } elseif ($org.Name) { $tenantName = $org.Name } } catch {} }
+                } catch {}
+                if (-not $tenantName -or [string]::IsNullOrWhiteSpace($tenantName)) { $tenantName = 'Tenant' }
+                $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+                $safeName = ($tenantName.ToCharArray() | ForEach-Object { if ($invalid -contains $_) { '-' } else { $_ } }) -join ''
+                $safeName = ($safeName -replace '\s+', ' ').Trim()
+                if ($safeName.Length -gt 80) { $safeName = $safeName.Substring(0,80) }
+                $tenantRoot = Join-Path $defaultRoot $safeName
+                if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
+                $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
 
                 # Generate the security investigation report with export paths
                 $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder

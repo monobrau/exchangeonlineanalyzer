@@ -10,7 +10,12 @@ param(
 function Get-LatestInvestigationFolder {
     $base = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
     if (-not (Test-Path $base)) { return $null }
-    Get-ChildItem -Path $base -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName }
+    $tenants = Get-ChildItem -Path $base -Directory | Sort-Object LastWriteTime -Descending
+    foreach ($t in $tenants) {
+        $runs = Get-ChildItem -Path $t.FullName -Directory | Sort-Object LastWriteTime -Descending
+        if ($runs -and $runs.Count -gt 0) { return $runs[0].FullName }
+    }
+    return $null
 }
 
 if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { $OutputFolder = Get-LatestInvestigationFolder }

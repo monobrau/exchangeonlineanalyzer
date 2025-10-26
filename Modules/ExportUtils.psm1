@@ -293,12 +293,36 @@ function New-SecurityInvestigationReport {
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
     $report.FilePaths = @{}
 
-    # Resolve output folder
+    # Resolve output folder (tenant-scoped/timestamped)
     try {
         if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
             $root = Join-Path -Path ([Environment]::GetFolderPath('MyDocuments')) -ChildPath "ExchangeOnlineAnalyzer\SecurityInvestigation"
+
+            # Try to get tenant display name for folder scoping
+            $tenantName = $null
+            try {
+                # Prefer BrowserIntegration helper for a unified identity fetch
+                $bi = Join-Path $PSScriptRoot 'BrowserIntegration.psm1'
+                if (Test-Path $bi) { Import-Module $bi -Force -ErrorAction SilentlyContinue }
+                $ti = $null; try { $ti = Get-TenantIdentity } catch {}
+                if ($ti) { if ($ti.TenantDisplayName) { $tenantName = $ti.TenantDisplayName } elseif ($ti.PrimaryDomain) { $tenantName = $ti.PrimaryDomain } }
+                if (-not $tenantName) {
+                    # Fallback to EXO org display name if available
+                    try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org.DisplayName) { $tenantName = $org.DisplayName } elseif ($org.Name) { $tenantName = $org.Name } } catch {}
+                }
+            } catch {}
+
+            if (-not $tenantName -or [string]::IsNullOrWhiteSpace($tenantName)) { $tenantName = 'Tenant' }
+
+            # Sanitize folder name
+            $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+            $safeName = ($tenantName.ToCharArray() | ForEach-Object { if ($invalid -contains $_) { '-' } else { $_ } }) -join ''
+            $safeName = ($safeName -replace '\s+', ' ').Trim()
+            if ($safeName.Length -gt 80) { $safeName = $safeName.Substring(0,80) }
+
+            $tenantRoot = Join-Path $root $safeName
             $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
-            $OutputFolder = Join-Path $root $ts
+            $OutputFolder = Join-Path $tenantRoot $ts
         }
         if (-not (Test-Path $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null }
         $report.OutputFolder = $OutputFolder
