@@ -620,7 +620,12 @@ function Get-ExchangeInboundConnectors {
     try {
         Write-Host "Exporting inbound connectors..." -ForegroundColor Yellow
         $conns = @()
-        try { $conns = Get-InboundConnector -ErrorAction Stop } catch { $conns = @() }
+        try {
+            $params = @{ ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            $gc = Get-Command Get-InboundConnector -ErrorAction SilentlyContinue
+            if ($gc -and $gc.Parameters.ContainsKey('IncludeTestModeConnectors')) { $params.IncludeTestModeConnectors = $true }
+            $conns = Get-InboundConnector @params
+        } catch { $conns = @() }
         $results = New-Object System.Collections.Generic.List[object]
         foreach ($c in $conns) {
             $results.Add([pscustomobject]@{
@@ -637,6 +642,7 @@ function Get-ExchangeInboundConnectors {
                 Comment                       = $c.Comment
                 Identity                      = $c.Identity
                 Guid                           = $c.Guid
+                TestMode                      = $(if ($c.PSObject.Properties['TestMode']) { $c.TestMode } elseif ($c.PSObject.Properties['IsTestMode']) { $c.IsTestMode } else { $null })
             }) | Out-Null
         }
         return [System.Collections.ArrayList]$results
@@ -649,7 +655,12 @@ function Get-ExchangeOutboundConnectors {
     try {
         Write-Host "Exporting outbound connectors..." -ForegroundColor Yellow
         $conns = @()
-        try { $conns = Get-OutboundConnector -ErrorAction Stop } catch { $conns = @() }
+        try {
+            $params = @{ ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            $gc = Get-Command Get-OutboundConnector -ErrorAction SilentlyContinue
+            if ($gc -and $gc.Parameters.ContainsKey('IncludeTestModeConnectors')) { $params.IncludeTestModeConnectors = $true }
+            $conns = Get-OutboundConnector @params
+        } catch { $conns = @() }
         $results = New-Object System.Collections.Generic.List[object]
         foreach ($c in $conns) {
             $results.Add([pscustomobject]@{
@@ -665,6 +676,7 @@ function Get-ExchangeOutboundConnectors {
                 Comment                  = $c.Comment
                 Identity                 = $c.Identity
                 Guid                      = $c.Guid
+                TestMode                 = $(if ($c.PSObject.Properties['TestMode']) { $c.TestMode } elseif ($c.PSObject.Properties['IsTestMode']) { $c.IsTestMode } else { $null })
             }) | Out-Null
         }
         return [System.Collections.ArrayList]$results
