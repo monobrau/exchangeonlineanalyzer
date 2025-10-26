@@ -2148,6 +2148,22 @@ $btnSave.add_Click({
     } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
 })
 
+# Add Fix Module Conflicts button to Settings tab
+$fixModsBtn = New-Object System.Windows.Forms.Button
+$fixModsBtn.Text = "Fix Graph Module Conflicts"
+$fixModsBtn.Location = New-Object System.Drawing.Point(270, 165)
+$fixModsBtn.Width = 180
+$settingsPanel.Controls.Add($fixModsBtn)
+$fixModsBtn.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
+        $lblStatus.Text = "Fixing Graph modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        $ok = Fix-GraphModuleConflicts -statusLabel $null
+        if ($ok) { $lblStatus.Text = "Graph modules repaired. Restart PowerShell."; $lblStatus.ForeColor = [System.Drawing.Color]::Green }
+        else { $lblStatus.Text = "Repair failed. See console."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+})
+
 # Ensure Settings tab is the rightmost tab (last position)
 try {
     $mainForm.add_Shown({
@@ -2620,13 +2636,7 @@ $entraDisconnectGraphButton.Width = 140
 $entraDisconnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDisconnectGraphButtonTooltip.SetToolTip($entraDisconnectGraphButton, "Disconnect from Microsoft Graph")
 
-$entraFixModulesButton = New-Object System.Windows.Forms.Button
-$entraFixModulesButton.Text = "Fix Module Conflicts"
-$entraFixModulesButton.Width = 160
-$entraFixModulesButton.Enabled = $true
-$entraFixModulesButton.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7) # Yellow/Orange color
-$entraFixModulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$entraFixModulesButtonTooltip.SetToolTip($entraFixModulesButton, "Fix Microsoft Graph module version conflicts that prevent connection")
+## Moved Fix Module Conflicts button to Settings tab
 
 $entraOutputFolderLabel = New-Object System.Windows.Forms.Label
 $entraOutputFolderLabel.Text = "Export Folder:"
@@ -2721,14 +2731,7 @@ $entraResetPasswordButton.Enabled = $false
 $entraResetPasswordButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraResetPasswordButtonTooltip.SetToolTip($entraResetPasswordButton, "Reset user password with memorable strong password (select one user)")
 
-# Add restricted senders management button for Entra ID tab
-$entraOpenDefenderRestrictedUsersButton = New-Object System.Windows.Forms.Button
-$entraOpenDefenderRestrictedUsersButton.Text = "Open Defender Restricted Users"
-$entraOpenDefenderRestrictedUsersButton.Width = 200
-$entraOpenDefenderRestrictedUsersButton.Enabled = $true
-$entraOpenDefenderRestrictedUsersButton.BackColor = [System.Drawing.Color]::LightBlue
-$entraOpenDefenderRestrictedUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$entraOpenDefenderRestrictedUsersButtonTooltip.SetToolTip($entraOpenDefenderRestrictedUsersButton, "Open Microsoft Defender Restricted Users page")
+## Removed Open Defender Restricted Users button per request
 
 # Add Select All/Deselect All buttons for Entra ID tab
 $entraSelectAllButton = New-Object System.Windows.Forms.Button
@@ -5722,9 +5725,7 @@ $entraResetPasswordButton.add_Click({
     }
 })
 
-$entraOpenDefenderRestrictedUsersButton.add_Click({
-    Start-Process "https://security.microsoft.com/restrictedentities"
-})
+## Removed click handler for Open Defender Restricted Users
 
 # Add click handlers for Select All/Deselect All buttons
 $entraSelectAllButton.add_Click({
