@@ -4760,12 +4760,16 @@ $loadFirefoxUi = {
                         $containers = Get-FirefoxContainers -ProfilePath $ppath
                         # Filter out internal/synthetic names and sort alphabetically
                         $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
-                        foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
+                        $containerCombo.Items.Clear(); foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
                         if ($containerCombo.Items.Count -gt 0) {
                             $tenant = Get-TenantIdentity
-                            $best = $null
-                            try { $best = Select-BestContainer -Containers $visible -TenantIdentity $tenant } catch {}
-                            if ($best -and $best.name -and ($containerCombo.Items -contains $best.name)) { $containerCombo.SelectedItem = $best.name } else { $containerCombo.SelectedIndex = 0 }
+                            $bestName = $null
+                            try {
+                                Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+                                $best = Get-BestContainerName -ContainerNames ($visible | Select-Object -ExpandProperty name) -TenantIdentity $tenant
+                                if ($best -and $best.Name) { $bestName = $best.Name }
+                            } catch {}
+                            if ($bestName -and ($containerCombo.Items -contains $bestName)) { $containerCombo.SelectedItem = $bestName } else { $containerCombo.SelectedIndex = 0 }
                         }
                         $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count))
                     } catch {

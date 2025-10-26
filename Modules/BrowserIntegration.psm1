@@ -131,6 +131,54 @@ function Compute-NameScore {
     return [double]$score
 }
 
+function Get-LevenshteinDistance {
+    param([string]$a,[string]$b)
+    if ($a -eq $b) { return 0 }
+    if ([string]::IsNullOrEmpty($a)) { return $b.Length }
+    if ([string]::IsNullOrEmpty($b)) { return $a.Length }
+    $m = $a.Length; $n = $b.Length
+    $d = New-Object 'int[,]' ($m+1),($n+1)
+    for($i=0;$i -le $m;$i++){ $d[$i,0]=$i }
+    for($j=0;$j -le $n;$j++){ $d[0,$j]=$j }
+    for($i=1;$i -le $m;$i++){
+        for($j=1;$j -le $n;$j++){
+            $cost = ([int]($a[$i-1] -ne $b[$j-1]))
+            $d[$i,$j] = [Math]::Min([Math]::Min($d[$i-1,$j]+1,$d[$i,$j-1]+1), $d[$i-1,$j-1]+$cost)
+        }
+    }
+    return $d[$m,$n]
+}
+
+function Get-BestContainerName {
+    param(
+        [Parameter(Mandatory=$true)][string[]]$ContainerNames,
+        [Parameter(Mandatory=$true)]$TenantIdentity
+    )
+    $targets = @()
+    if ($TenantIdentity.TenantDisplayName) { $targets += $TenantIdentity.TenantDisplayName }
+    if ($TenantIdentity.PrimaryDomain) { $targets += $TenantIdentity.PrimaryDomain }
+    if ($TenantIdentity.Domains) { $targets += $TenantIdentity.Domains }
+    try { if ($TenantIdentity.PrimaryDomain) { $host = ($TenantIdentity.PrimaryDomain -split '\.')[0]; if ($host) { $targets += $host } } } catch {}
+    $more = @(); foreach ($n in $targets) { if ($n -and $n.ToString().EndsWith('s')) { $more += $n.Substring(0,$n.Length-1) } }
+    $targets += $more
+
+    $bestName = $null; $bestScore = 0.0
+    foreach ($name in $ContainerNames) {
+        $localBest = 0.0
+        foreach ($t in $targets) {
+            $score = Compute-NameScore -Candidate $name -Target $t
+            # Levenshtein normalized score boost
+            $lev = Get-LevenshteinDistance -a (Normalize-Name $name) -b (Normalize-Name $t)
+            $maxLen = [Math]::Max((Normalize-Name $name).Length,(Normalize-Name $t).Length)
+            if ($maxLen -gt 0) { $levScore = 1.0 - ($lev / [double]$maxLen) } else { $levScore = 0.0 }
+            if ($levScore -gt $score) { $score = $levScore }
+            if ($score -gt $localBest) { $localBest = $score }
+        }
+        if ($localBest -gt $bestScore) { $bestScore = $localBest; $bestName = $name }
+    }
+    return [pscustomobject]@{ Name=$bestName; Score=[double]$bestScore }
+}
+
 function Select-BestContainer {
     param(
         [Parameter(Mandatory=$true)]$Containers,
