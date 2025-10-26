@@ -1954,7 +1954,7 @@ $aiRemoveExtraBtn.add_Click({
 
 # Send button and status
 $aiSendBtn = New-Object System.Windows.Forms.Button
-$aiSendBtn.Text = "Send to Gemini"
+$aiSendBtn.Text = "Send to AI"
 $aiSendBtn.Location = New-Object System.Drawing.Point(10, 265)
 $aiSendBtn.Size = New-Object System.Drawing.Size(140, 30)
 
