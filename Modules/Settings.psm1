@@ -16,6 +16,7 @@ function Get-AppSettings {
         InvestigatorName = 'Security Administrator'
         CompanyName = 'Organization'
         GeminiApiKey = ''
+        ClaudeApiKey = ''
     }
 }
 

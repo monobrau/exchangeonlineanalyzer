@@ -1880,23 +1880,35 @@ $aiTitle.Location = New-Object System.Drawing.Point(10,10)
 $aiTitle.AutoSize = $true
 
 $aiDesc = New-Object System.Windows.Forms.Label
-$aiDesc.Text = "Send the latest or selected investigation dataset to Gemini for analysis. Configure your API key in Settings."
+$aiDesc.Text = "Send the latest or selected investigation dataset to Gemini or Claude for analysis. Configure API keys in Settings."
 $aiDesc.Location = New-Object System.Drawing.Point(10,35)
 $aiDesc.Size = New-Object System.Drawing.Size(740, 30)
 
 # Folder selection
+$aiProviderLabel = New-Object System.Windows.Forms.Label
+$aiProviderLabel.Text = "Provider:"
+$aiProviderLabel.Location = New-Object System.Drawing.Point(10,65)
+$aiProviderLabel.AutoSize = $true
+
+$aiProviderCombo = New-Object System.Windows.Forms.ComboBox
+$aiProviderCombo.Location = New-Object System.Drawing.Point(100, 62)
+$aiProviderCombo.Width = 140
+$aiProviderCombo.DropDownStyle = 'DropDownList'
+$aiProviderCombo.Items.AddRange(@('Gemini','Claude'))
+$aiProviderCombo.SelectedIndex = 0
+
 $aiFolderLabel = New-Object System.Windows.Forms.Label
 $aiFolderLabel.Text = "Report Folder:"
-$aiFolderLabel.Location = New-Object System.Drawing.Point(10,75)
+$aiFolderLabel.Location = New-Object System.Drawing.Point(250,65)
 $aiFolderLabel.AutoSize = $true
 
 $aiFolderText = New-Object System.Windows.Forms.TextBox
-$aiFolderText.Location = New-Object System.Drawing.Point(100, 72)
-$aiFolderText.Width = 520
+$aiFolderText.Location = New-Object System.Drawing.Point(340, 62)
+$aiFolderText.Width = 380
 
 $aiBrowseBtn = New-Object System.Windows.Forms.Button
 $aiBrowseBtn.Text = "Browse..."
-$aiBrowseBtn.Location = New-Object System.Drawing.Point(630, 70)
+$aiBrowseBtn.Location = New-Object System.Drawing.Point(730, 60)
 $aiBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiBrowseBtn.add_Click({
     $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -1951,7 +1963,7 @@ $aiStatus.Location = New-Object System.Drawing.Point(160, 270)
 $aiStatus.Size = New-Object System.Drawing.Size(555, 20)
 $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
-$aiPanel.Controls.AddRange(@($aiTitle,$aiDesc,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
+$aiPanel.Controls.AddRange(@($aiTitle,$aiDesc,$aiProviderLabel,$aiProviderCombo,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
 $aiTab.Controls.Add($aiPanel)
 $tabControl.TabPages.Add($aiTab)
 
@@ -1988,8 +2000,14 @@ $aiSendBtn.add_Click({
     try {
         $folder = $aiFolderText.Text
         if (-not $folder -or -not (Test-Path $folder)) { $aiStatus.Text = "Select a valid report folder."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
-        $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Gemini.ps1"
-        if (-not (Test-Path $scriptPath)) { $aiStatus.Text = "Gemini sender script not found."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+        $provider = $aiProviderCombo.SelectedItem
+        if ($provider -eq 'Gemini') {
+            $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Gemini.ps1"
+            if (-not (Test-Path $scriptPath)) { $aiStatus.Text = "Gemini sender script not found."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+        } else {
+            $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Claude.ps1"
+            if (-not (Test-Path $scriptPath)) { $aiStatus.Text = "Claude sender script not found."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+        }
 
         $extras = @(); foreach ($it in $aiExtraList.Items) { $extras += $it }
 
@@ -1997,12 +2015,22 @@ $aiSendBtn.add_Click({
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         $output = $null
         try {
-            if ($extras.Count -gt 0) {
-                $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -Verbose 4>&1 }
-                $output = & $ps $scriptPath $folder $extras
+            if ($provider -eq 'Gemini') {
+                if ($extras.Count -gt 0) {
+                    $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -Verbose 4>&1 }
+                    $output = & $ps $scriptPath $folder $extras
+                } else {
+                    $ps = { param($sp,$of) & $sp -OutputFolder $of -Verbose 4>&1 }
+                    $output = & $ps $scriptPath $folder
+                }
             } else {
-                $ps = { param($sp,$of) & $sp -OutputFolder $of -Verbose 4>&1 }
-                $output = & $ps $scriptPath $folder
+                if ($extras.Count -gt 0) {
+                    $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -VerboseOutput 4>&1 }
+                    $output = & $ps $scriptPath $folder $extras
+                } else {
+                    $ps = { param($sp,$of) & $sp -OutputFolder $of -VerboseOutput 4>&1 }
+                    $output = & $ps $scriptPath $folder
+                }
             }
         } catch {
             $output = $_.Exception.Message
@@ -2011,7 +2039,7 @@ $aiSendBtn.add_Click({
             $aiSendBtn.Enabled = $true
         }
 
-        $respFile = Join-Path $folder "Gemini_Response.md"
+        $respFile = if ($provider -eq 'Gemini') { Join-Path $folder "Gemini_Response.md" } else { Join-Path $folder "Claude_Response.md" }
         if (Test-Path $respFile) {
             $aiStatus.Text = ("Saved: {0}" -f $respFile); $aiStatus.ForeColor = [System.Drawing.Color]::Green
             try { Start-Process $respFile } catch {}
@@ -2064,17 +2092,27 @@ $txtGem.Location = New-Object System.Drawing.Point(150, 102)
 $txtGem.Width = 300
 $txtGem.UseSystemPasswordChar = $true
 
+$lblClaude = New-Object System.Windows.Forms.Label
+$lblClaude.Text = "Claude API Key:"
+$lblClaude.Location = New-Object System.Drawing.Point(10,135)
+$lblClaude.AutoSize = $true
+
+$txtClaude = New-Object System.Windows.Forms.TextBox
+$txtClaude.Location = New-Object System.Drawing.Point(150, 132)
+$txtClaude.Width = 300
+$txtClaude.UseSystemPasswordChar = $true
+
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save"
-$btnSave.Location = New-Object System.Drawing.Point(150, 135)
+$btnSave.Location = New-Object System.Drawing.Point(150, 165)
 $btnSave.Width = 100
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,170)
+$lblStatus.Location = New-Object System.Drawing.Point(10,200)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
-$settingsPanel.Controls.AddRange(@($sTitle,$lblInv,$txtInv,$lblCo,$txtCo,$lblGem,$txtGem,$btnSave,$lblStatus))
+$settingsPanel.Controls.AddRange(@($sTitle,$lblInv,$txtInv,$lblCo,$txtCo,$lblGem,$txtGem,$lblClaude,$txtClaude,$btnSave,$lblStatus))
 $settingsTab.Controls.Add($settingsPanel)
 $tabControl.TabPages.Add($settingsTab)
 
@@ -2082,7 +2120,7 @@ $settingsTab.add_Enter({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
         $s = Get-AppSettings
-        if ($s) { $txtInv.Text = $s.InvestigatorName; $txtCo.Text = $s.CompanyName; $txtGem.Text = $s.GeminiApiKey }
+        if ($s) { $txtInv.Text = $s.InvestigatorName; $txtCo.Text = $s.CompanyName; $txtGem.Text = $s.GeminiApiKey; $txtClaude.Text = $s.ClaudeApiKey }
         $lblStatus.Text = ""
     } catch {}
 })
@@ -2090,7 +2128,7 @@ $settingsTab.add_Enter({
 $btnSave.add_Click({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
-        $s = [pscustomobject]@{ InvestigatorName=$txtInv.Text; CompanyName=$txtCo.Text; GeminiApiKey=$txtGem.Text }
+        $s = [pscustomobject]@{ InvestigatorName=$txtInv.Text; CompanyName=$txtCo.Text; GeminiApiKey=$txtGem.Text; ClaudeApiKey=$txtClaude.Text }
         if (Save-AppSettings -Settings $s) { $lblStatus.Text = "Saved."; $lblStatus.ForeColor = [System.Drawing.Color]::Green } else { $lblStatus.Text = "Failed to save."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
     } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
 })
