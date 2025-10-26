@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory=$true)][string]$ApiKey,
+    [Parameter(Mandatory=$false)][string]$ApiKey,
     [Parameter(Mandatory=$false)][string]$OutputFolder,
     [Parameter(Mandatory=$false)][string]$Model = 'models/gemini-1.5-pro'
 )
@@ -13,6 +13,11 @@ function Get-LatestInvestigationFolder {
 if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) {
     $OutputFolder = Get-LatestInvestigationFolder
 }
+$settingsPath = Join-Path $PSScriptRoot '..\Modules\Settings.psm1'
+try { if (Test-Path $settingsPath) { Import-Module $settingsPath -Force -ErrorAction SilentlyContinue } } catch {}
+if (-not $ApiKey) { try { $s = Get-AppSettings; if ($s -and $s.GeminiApiKey) { $ApiKey = $s.GeminiApiKey } } catch {} }
+if (-not $ApiKey) { Write-Error "Gemini API key is required. Provide -ApiKey or save it in Settings."; exit 1 }
+
 if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) {
     Write-Error "Could not find Security Investigation output folder. Run the report first or pass -OutputFolder."
     exit 1

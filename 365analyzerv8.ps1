@@ -1864,6 +1864,78 @@ $mainForm.Controls.Add($statusStrip)
 $tabControl = New-Object System.Windows.Forms.TabControl
 $tabControl.Dock = 'Fill'
 $mainForm.Controls.Add($tabControl)
+# --- Settings Tab ---
+try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
+$settingsTab = New-Object System.Windows.Forms.TabPage
+$settingsTab.Text = "Settings"
+$settingsPanel = New-Object System.Windows.Forms.Panel
+$settingsPanel.Dock = 'Fill'
+$settingsPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+$sTitle = New-Object System.Windows.Forms.Label
+$sTitle.Text = "Application Settings"
+$sTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+$sTitle.Location = New-Object System.Drawing.Point(10,10)
+$sTitle.AutoSize = $true
+
+$lblInv = New-Object System.Windows.Forms.Label
+$lblInv.Text = "Investigator Name:"
+$lblInv.Location = New-Object System.Drawing.Point(10,45)
+$lblInv.AutoSize = $true
+
+$txtInv = New-Object System.Windows.Forms.TextBox
+$txtInv.Location = New-Object System.Drawing.Point(150, 42)
+$txtInv.Width = 300
+
+$lblCo = New-Object System.Windows.Forms.Label
+$lblCo.Text = "Company Name:"
+$lblCo.Location = New-Object System.Drawing.Point(10,75)
+$lblCo.AutoSize = $true
+
+$txtCo = New-Object System.Windows.Forms.TextBox
+$txtCo.Location = New-Object System.Drawing.Point(150, 72)
+$txtCo.Width = 300
+
+$lblGem = New-Object System.Windows.Forms.Label
+$lblGem.Text = "Gemini API Key:"
+$lblGem.Location = New-Object System.Drawing.Point(10,105)
+$lblGem.AutoSize = $true
+
+$txtGem = New-Object System.Windows.Forms.TextBox
+$txtGem.Location = New-Object System.Drawing.Point(150, 102)
+$txtGem.Width = 300
+$txtGem.UseSystemPasswordChar = $true
+
+$btnSave = New-Object System.Windows.Forms.Button
+$btnSave.Text = "Save"
+$btnSave.Location = New-Object System.Drawing.Point(150, 135)
+$btnSave.Width = 100
+
+$lblStatus = New-Object System.Windows.Forms.Label
+$lblStatus.Location = New-Object System.Drawing.Point(10,170)
+$lblStatus.AutoSize = $true
+$lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+
+$settingsPanel.Controls.AddRange(@($sTitle,$lblInv,$txtInv,$lblCo,$txtCo,$lblGem,$txtGem,$btnSave,$lblStatus))
+$settingsTab.Controls.Add($settingsPanel)
+$tabControl.TabPages.Add($settingsTab)
+
+$settingsTab.add_Enter({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        $s = Get-AppSettings
+        if ($s) { $txtInv.Text = $s.InvestigatorName; $txtCo.Text = $s.CompanyName; $txtGem.Text = $s.GeminiApiKey }
+        $lblStatus.Text = ""
+    } catch {}
+})
+
+$btnSave.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        $s = [pscustomobject]@{ InvestigatorName=$txtInv.Text; CompanyName=$txtCo.Text; GeminiApiKey=$txtGem.Text }
+        if (Save-AppSettings -Settings $s) { $lblStatus.Text = "Saved."; $lblStatus.ForeColor = [System.Drawing.Color]::Green } else { $lblStatus.Text = "Failed to save."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+})
 
 # --- Exchange Online Controls Instantiation ---
 $connectButton = New-Object System.Windows.Forms.Button
@@ -4308,8 +4380,10 @@ $securityInvestigationButton.add_Click({
 
         # Generate button click handler
         $generateButton.add_Click({
-            $investigator = $investigatorNameTextBox.Text
-            $company = $companyNameTextBox.Text
+            try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
+            $settings = $null; try { $settings = Get-AppSettings } catch {}
+            $investigator = if ($investigatorNameTextBox.Text -and $investigatorNameTextBox.Text.Trim().Length -gt 0) { $investigatorNameTextBox.Text } elseif ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
+            $company = if ($companyNameTextBox.Text -and $companyNameTextBox.Text.Trim().Length -gt 0) { $companyNameTextBox.Text } elseif ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
             $days = [int]$daysComboBox.SelectedItem
 
             $progressLabel.Text = "🔍 Starting comprehensive security investigation..."
