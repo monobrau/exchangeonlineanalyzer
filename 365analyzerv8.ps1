@@ -1864,6 +1864,164 @@ $mainForm.Controls.Add($statusStrip)
 $tabControl = New-Object System.Windows.Forms.TabControl
 $tabControl.Dock = 'Fill'
 $mainForm.Controls.Add($tabControl)
+
+# --- AI Analysis Tab ---
+$aiTab = New-Object System.Windows.Forms.TabPage
+$aiTab.Text = "AI Analysis"
+$aiPanel = New-Object System.Windows.Forms.Panel
+$aiPanel.Dock = 'Fill'
+$aiPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+# Title and description
+$aiTitle = New-Object System.Windows.Forms.Label
+$aiTitle.Text = "AI Analysis"
+$aiTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+$aiTitle.Location = New-Object System.Drawing.Point(10,10)
+$aiTitle.AutoSize = $true
+
+$aiDesc = New-Object System.Windows.Forms.Label
+$aiDesc.Text = "Send the latest or selected investigation dataset to Gemini for analysis. Configure your API key in Settings."
+$aiDesc.Location = New-Object System.Drawing.Point(10,35)
+$aiDesc.Size = New-Object System.Drawing.Size(740, 30)
+
+# Folder selection
+$aiFolderLabel = New-Object System.Windows.Forms.Label
+$aiFolderLabel.Text = "Report Folder:"
+$aiFolderLabel.Location = New-Object System.Drawing.Point(10,75)
+$aiFolderLabel.AutoSize = $true
+
+$aiFolderText = New-Object System.Windows.Forms.TextBox
+$aiFolderText.Location = New-Object System.Drawing.Point(100, 72)
+$aiFolderText.Width = 520
+
+$aiBrowseBtn = New-Object System.Windows.Forms.Button
+$aiBrowseBtn.Text = "Browse..."
+$aiBrowseBtn.Location = New-Object System.Drawing.Point(630, 70)
+$aiBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
+$aiBrowseBtn.add_Click({
+    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+    $fbd.Description = "Select the report folder that contains LLM_Instructions.txt and CSV files"
+    if ($aiFolderText.Text -and (Test-Path $aiFolderText.Text)) { $fbd.SelectedPath = $aiFolderText.Text }
+    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $aiFolderText.Text = $fbd.SelectedPath }
+})
+
+# Extra files list
+$aiExtraLabel = New-Object System.Windows.Forms.Label
+$aiExtraLabel.Text = "Extra Files (optional):"
+$aiExtraLabel.Location = New-Object System.Drawing.Point(10,110)
+$aiExtraLabel.AutoSize = $true
+
+$aiExtraList = New-Object System.Windows.Forms.ListBox
+$aiExtraList.Location = New-Object System.Drawing.Point(10,130)
+$aiExtraList.Size = New-Object System.Drawing.Size(610, 120)
+
+$aiAddExtraBtn = New-Object System.Windows.Forms.Button
+$aiAddExtraBtn.Text = "Add..."
+$aiAddExtraBtn.Location = New-Object System.Drawing.Point(630, 130)
+$aiAddExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
+$aiAddExtraBtn.add_Click({
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Title = "Select additional file(s) to include"
+    $ofd.Filter = "CSV/Text|*.csv;*.txt|All Files|*.*"
+    $ofd.Multiselect = $true
+    if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        foreach ($p in $ofd.FileNames) {
+            if (-not ($aiExtraList.Items -contains $p)) { [void]$aiExtraList.Items.Add($p) }
+        }
+    }
+})
+
+$aiRemoveExtraBtn = New-Object System.Windows.Forms.Button
+$aiRemoveExtraBtn.Text = "Remove"
+$aiRemoveExtraBtn.Location = New-Object System.Drawing.Point(630, 160)
+$aiRemoveExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
+$aiRemoveExtraBtn.add_Click({
+    $sel = @($aiExtraList.SelectedItems)
+    foreach ($it in $sel) { $aiExtraList.Items.Remove($it) }
+})
+
+# Send button and status
+$aiSendBtn = New-Object System.Windows.Forms.Button
+$aiSendBtn.Text = "Send to Gemini"
+$aiSendBtn.Location = New-Object System.Drawing.Point(10, 265)
+$aiSendBtn.Size = New-Object System.Drawing.Size(140, 30)
+
+$aiStatus = New-Object System.Windows.Forms.Label
+$aiStatus.Location = New-Object System.Drawing.Point(160, 270)
+$aiStatus.Size = New-Object System.Drawing.Size(555, 20)
+$aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+
+$aiPanel.Controls.AddRange(@($aiTitle,$aiDesc,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
+$aiTab.Controls.Add($aiPanel)
+$tabControl.TabPages.Add($aiTab)
+
+# Helper: get latest report folder (nested or legacy)
+$getLatestReportFolder = {
+    try {
+        $base = Join-Path $env:USERPROFILE "Documents\ExchangeOnlineAnalyzer\SecurityInvestigation"
+        if (-not (Test-Path $base)) { return $null }
+        $candidates = @()
+        $tenants = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue
+        foreach ($t in $tenants) {
+            $runs = Get-ChildItem -Path $t.FullName -Directory -ErrorAction SilentlyContinue
+            if ($runs) { $candidates += $runs }
+        }
+        $legacy = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{8}_\d{6}$' }
+        if ($legacy) { $candidates += $legacy }
+        if ($candidates -and $candidates.Count -gt 0) { return ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName }
+    } catch {}
+    return $null
+}
+
+# Prefill latest folder when the tab is entered
+$aiTab.add_Enter({
+    try {
+        if (-not $aiFolderText.Text -or -not (Test-Path $aiFolderText.Text)) {
+            $latest = & $getLatestReportFolder
+            if ($latest) { $aiFolderText.Text = $latest }
+        }
+    } catch {}
+})
+
+# Send to Gemini handler
+$aiSendBtn.add_Click({
+    try {
+        $folder = $aiFolderText.Text
+        if (-not $folder -or -not (Test-Path $folder)) { $aiStatus.Text = "Select a valid report folder."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+        $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Gemini.ps1"
+        if (-not (Test-Path $scriptPath)) { $aiStatus.Text = "Gemini sender script not found."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+
+        $extras = @(); foreach ($it in $aiExtraList.Items) { $extras += $it }
+
+        $aiSendBtn.Enabled = $false; $aiStatus.Text = "Submitting to Gemini..."; $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $output = $null
+        try {
+            if ($extras.Count -gt 0) {
+                $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -Verbose 4>&1 }
+                $output = & $ps $scriptPath $folder $extras
+            } else {
+                $ps = { param($sp,$of) & $sp -OutputFolder $of -Verbose 4>&1 }
+                $output = & $ps $scriptPath $folder
+            }
+        } catch {
+            $output = $_.Exception.Message
+        } finally {
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $aiSendBtn.Enabled = $true
+        }
+
+        $respFile = Join-Path $folder "Gemini_Response.md"
+        if (Test-Path $respFile) {
+            $aiStatus.Text = ("Saved: {0}" -f $respFile); $aiStatus.ForeColor = [System.Drawing.Color]::Green
+            try { Start-Process $respFile } catch {}
+        } else {
+            $aiStatus.Text = "Completed. Check folder for Gemini_Response.md (see console for details)."; $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        }
+    } catch {
+        $aiStatus.Text = $_.Exception.Message; $aiStatus.ForeColor = [System.Drawing.Color]::Red
+    }
+})
 # --- Settings Tab ---
 try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
 $settingsTab = New-Object System.Windows.Forms.TabPage
