@@ -184,9 +184,21 @@ function Connect-GraphService {
                 try { $fixOk = Fix-GraphModuleConflicts -statusLabel $statusLabel } catch {}
                 if ($fixOk) {
                     Write-Host "Retrying Graph connection after repair..." -ForegroundColor Yellow
-                    try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop } catch { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop }
-                } else {
-                    throw
+                    try {
+                        $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
+                    } catch {
+                        try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop } catch {}
+                    }
+                }
+                # If still not connected, fall back to Device Code flow (bypasses InteractiveBrowserCredential path)
+                if (-not $global:graphConnection) {
+                    Write-Warning "Falling back to Device Code authentication for Microsoft Graph..."
+                    try {
+                        $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ErrorAction Stop
+                        Write-Host "Connected to Graph via Device Code." -ForegroundColor Green
+                    } catch {
+                        throw
+                    }
                 }
             } else {
                 throw
