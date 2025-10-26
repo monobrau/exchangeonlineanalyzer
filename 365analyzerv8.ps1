@@ -4904,6 +4904,12 @@ $reportGeneratorPanel.Controls.Add($accountSelectorGroup)
 # Add Report Generator tab to tab control
 $tabControl.TabPages.Add($reportGeneratorTab)
 
+# Reposition AI Analysis tab to the right of Report Generator
+try {
+    if ($tabControl.TabPages.Contains($aiTab)) { $tabControl.TabPages.Remove($aiTab) }
+    $tabControl.TabPages.Add($aiTab)
+} catch {}
+
 # Initialize unified account grid when Report Generator tab is first shown
 $reportGeneratorTab.add_Enter({
     try {
