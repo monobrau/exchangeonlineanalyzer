@@ -4535,7 +4535,87 @@ $securityInvestigationButton.add_Click({
                     $openFolderBtn.Size = New-Object System.Drawing.Size(150, 30)
                     $openFolderBtn.add_Click({ if ($securityReport.OutputFolder) { Start-Process $securityReport.OutputFolder } })
 
-                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn))
+                    # Send to Gemini button
+                    $sendGeminiBtn = New-Object System.Windows.Forms.Button
+                    $sendGeminiBtn.Text = "Send to Gemini"
+                    $sendGeminiBtn.Location = New-Object System.Drawing.Point(625, 35)
+                    $sendGeminiBtn.Size = New-Object System.Drawing.Size(140, 30)
+                    $sendGeminiBtn.add_Click({
+                        try {
+                            # Determine default folder
+                            $folder = $null
+                            if ($securityReport.OutputFolder -and (Test-Path $securityReport.OutputFolder)) { $folder = $securityReport.OutputFolder }
+                            if (-not $folder) {
+                                $base = Join-Path $env:USERPROFILE "Documents\ExchangeOnlineAnalyzer\SecurityInvestigation"
+                                $candidates = @()
+                                try {
+                                    $tenants = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue
+                                    foreach ($t in $tenants) {
+                                        $runs = Get-ChildItem -Path $t.FullName -Directory -ErrorAction SilentlyContinue
+                                        if ($runs) { $candidates += $runs }
+                                    }
+                                    $legacy = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{8}_\d{6}$' }
+                                    if ($legacy) { $candidates += $legacy }
+                                    if ($candidates -and $candidates.Count -gt 0) { $folder = ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName }
+                                } catch {}
+                            }
+
+                            # Ask to use latest or choose
+                            if ($folder -and (Test-Path $folder)) {
+                                $resp = [System.Windows.Forms.MessageBox]::Show("Use last generated folder?`n`n$folder`n`nYes = use this folder, No = choose another.", "Send to Gemini", [System.Windows.Forms.MessageBoxButtons]::YesNoCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
+                                if ($resp -eq [System.Windows.Forms.DialogResult]::No) {
+                                    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+                                    $fbd.Description = "Select the report folder that contains LLM_Instructions.txt and CSV files"
+                                    $fbd.SelectedPath = $folder
+                                    if ($fbd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+                                    $folder = $fbd.SelectedPath
+                                } elseif ($resp -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
+                            } else {
+                                $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+                                $fbd.Description = "Select the report folder that contains LLM_Instructions.txt and CSV files"
+                                if ($fbd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+                                $folder = $fbd.SelectedPath
+                            }
+
+                            if (-not (Test-Path $folder)) {
+                                [System.Windows.Forms.MessageBox]::Show("Selected folder not found:", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                                return
+                            }
+
+                            # Call the Gemini sender script
+                            $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Gemini.ps1"
+                            if (-not (Test-Path $scriptPath)) {
+                                [System.Windows.Forms.MessageBox]::Show("Gemini sender script not found at:`n$scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                                return
+                            }
+
+                            $resultsForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+                            $sendGeminiBtn.Enabled = $false
+                            $outMsg = $null
+                            try {
+                                $ps = { param($sp,$of) & $sp -OutputFolder $of -Verbose 4>&1 }
+                                $output = & $ps $scriptPath $folder
+                                $outMsg = ($output | Out-String)
+                            } catch {
+                                $outMsg = $_.Exception.Message
+                            } finally {
+                                $resultsForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                                $sendGeminiBtn.Enabled = $true
+                            }
+
+                            $respFile = Join-Path $folder "Gemini_Response.md"
+                            if (Test-Path $respFile) {
+                                [System.Windows.Forms.MessageBox]::Show("Gemini response saved:`n$respFile", "Gemini", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                                try { Start-Process $respFile } catch {}
+                            } else {
+                                [System.Windows.Forms.MessageBox]::Show("Send-To-Gemini completed. Check the folder for Gemini_Response.md.`n`nOutput:`n$($outMsg)", "Gemini", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                            }
+                        } catch {
+                            [System.Windows.Forms.MessageBox]::Show("Failed to send to Gemini:`n$($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        }
+                    })
+
+                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn, $sendGeminiBtn))
 
                     $resultsForm.Controls.Add($resultsTabControl)
                     $resultsForm.Controls.Add($copyPanel)
