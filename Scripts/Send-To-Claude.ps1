@@ -98,8 +98,10 @@ $headers = @{ 'x-api-key' = $ApiKey; 'anthropic-version' = '2023-06-01'; 'Conten
 $url = 'https://api.anthropic.com/v1/messages'
 
 $resp = $null; $err = $null
-try { $resp = Invoke-RestMethod -Method POST -Uri $url -Headers $headers -Body $json -ErrorAction Stop }
-catch { $err = $_ }
+try {
+    Write-Host ("Submitting to Claude: {0}" -f $url) -ForegroundColor DarkGray
+    $resp = Invoke-RestMethod -Method POST -Uri $url -Headers $headers -Body $json -ErrorAction Stop
+} catch { $err = $_ }
 if ($err) {
     $errPath = Join-Path $OutputFolder 'Claude_Error.txt'
     $lines = @()

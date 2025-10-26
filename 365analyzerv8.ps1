@@ -2059,6 +2059,7 @@ $aiSendBtn.add_Click({
         } else {
             $aiStatus.Text = ("Completed. Check folder for {0} (see console for details)." -f [System.IO.Path]::GetFileName($respFile));
             $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+            if ($output) { [System.Windows.Forms.MessageBox]::Show(("Output:`n{0}" -f ($output | Out-String)), "Send to AI", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) }
         }
     } catch {
         $aiStatus.Text = $_.Exception.Message; $aiStatus.ForeColor = [System.Drawing.Color]::Red
