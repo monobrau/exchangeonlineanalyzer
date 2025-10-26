@@ -73,7 +73,8 @@ function Get-MimeType([string]$path) {
 }
 
 # Build request parts. First include a concise instruction tying files together.
-$intro = @"Please analyze the attached security investigation datasets and produce:
+$intro = @"
+Please analyze the attached security investigation datasets and produce:
 - Executive summary (non-technical)
 - Timeline of events with timestamps and sources
 - Evidence-backed findings
