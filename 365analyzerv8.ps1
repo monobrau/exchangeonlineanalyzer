@@ -4322,6 +4322,16 @@ $securityInvestigationButton.add_Click({
         $companyNameTextBox.Location = New-Object System.Drawing.Point(145, 57)
         $companyNameTextBox.Size = New-Object System.Drawing.Size(230, 20)
 
+        # Prefill from saved settings if available
+        try {
+            Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+            $s = Get-AppSettings
+            if ($s) {
+                if ($s.InvestigatorName -and $s.InvestigatorName.Trim().Length -gt 0) { $investigatorNameTextBox.Text = $s.InvestigatorName }
+                if ($s.CompanyName -and $s.CompanyName.Trim().Length -gt 0) { $companyNameTextBox.Text = $s.CompanyName }
+            }
+        } catch {}
+
         # Days to Analyze
         $daysLabel = New-Object System.Windows.Forms.Label
         $daysLabel.Text = "Days to Analyze:"
