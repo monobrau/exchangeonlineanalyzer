@@ -636,57 +636,14 @@ function Get-ExchangeMessageTrace {
         $hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
 
         # Chunk by day to avoid server-side caps; run per-day windows, optionally in parallel
-        $days = 0..9 | ForEach-Object { $start.AddDays($_) }
-        if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $chunks = $days | ForEach-Object -Parallel {
-                param($winStart,$hasV2)
-                $winEnd = $winStart.AddDays(1)
-                $out = New-Object System.Collections.Generic.List[object]
-                try {
-                    if ($hasV2) {
-                        $startRecipient = $null; $iterations = 0
-                        do {
-                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
-                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                            $chunk = Get-MessageTraceV2 @params
-                            if ($chunk) { $out.AddRange($chunk) }
-                            $last = $chunk | Select-Object -Last 1
-                            $startRecipient = $last.RecipientAddress
-                            $iterations++
-                        } while ($chunk -and $chunk.Count -ge 1000 -and $iterations -lt 100)
-                    } else {
-                        $chunk = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction SilentlyContinue
-                        if ($chunk) { $out.AddRange($chunk) }
-                    }
-                } catch {}
-                $out
-            } -ThrottleLimit $ThrottleLimit -ArgumentList $hasV2
-            if ($chunks) { [void]$results.AddRange($chunks) }
-        } else {
-            foreach ($winStart in $days) {
-                $winEnd = $winStart.AddDays(1)
-                try {
-                    if ($hasV2) {
-                        $startRecipient = $null; $iterations = 0
-                        do {
-                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
-                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                            $chunk = Get-MessageTraceV2 @params
-                            if ($chunk) {
-                                $filtered = if ($startRecipient) { $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } } else { $chunk }
-                                if ($filtered) { [void]$results.AddRange($filtered) }
-                                $prev = $startRecipient; $last = $chunk[-1]; $startRecipient = $last.RecipientAddress
-                                if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
-                            } else { $startRecipient = $null }
-                            $iterations++
-                        } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
-                    } else {
-                        $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
-                        if ($batch) { [void]$results.AddRange($batch) }
-                    }
-                } catch {}
-            }
-        }
+		$days = 0..9 | ForEach-Object { $start.AddDays($_) }
+		foreach ($winStart in $days) {
+			$winEnd = $winStart.AddDays(1)
+			try {
+				$batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+				if ($batch) { [void]$results.AddRange($batch) }
+			} catch {}
+		}
 
         return [System.Collections.ArrayList]$results
     } catch {
