@@ -276,10 +276,8 @@ function Load-MailboxesOptimized {
         $blockUserButton.Enabled = $false
         $unblockUserButton.Enabled = $false
         
-        # Debug: Log button state
-        Write-Host "Analyze Selected Button Enabled: $($analyzeSelectedButton.Enabled)"
-        Write-Host "Analyze Selected Button Visible: $($analyzeSelectedButton.Visible)"
-        Write-Host "Analyze Selected Button Text: $($analyzeSelectedButton.Text)"
+        # Update status with counts instead of verbose button diagnostics
+        $statusLabel.Text = "Ready. Connected to Exchange Online. Loaded $($mailboxes.Count) mailboxes."
         
         Show-Progress -message "Ready. Connected to Exchange Online. Loaded $($mailboxes.Count) mailboxes." -progress -1
         
@@ -2311,10 +2309,8 @@ $analyzeSelectedButton.Visible = $true
 $analyzeSelectedButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $analyzeSelectedButtonTooltip.SetToolTip($analyzeSelectedButton, "Perform detailed analysis (rules & permissions) for selected mailboxes")
 
-# Debug: Log button creation
-Write-Host "Analyze Selected Button created: $($analyzeSelectedButton.Text)"
-Write-Host "Analyze Selected Button Enabled: $($analyzeSelectedButton.Enabled)"
-Write-Host "Analyze Selected Button Visible: $($analyzeSelectedButton.Visible)"
+# Initialize Analyze Selected button state
+$analyzeSelectedButton.Enabled = $false
 
 # Mailbox list grid
 $userMailboxGrid = New-Object System.Windows.Forms.DataGridView
@@ -2849,10 +2845,7 @@ $exchangeTopRow1.Controls.Add($exchangeSearchTextBox)
 $topActionPanel.Controls.Add($exchangeTopRow1)
 $topActionPanel.Controls.Add($exchangeTopRow2)
 
-# Debug: Log button addition to panel
-Write-Host "Exchange Online buttons organized into two rows"
-Write-Host "Row 1 Controls Count: $($exchangeTopRow1.Controls.Count)"
-Write-Host "Row 2 Controls Count: $($exchangeTopRow2.Controls.Count)"
+# No-op: removed verbose layout debug logging
 
 $exchangeTab.Controls.Add($topActionPanel)
 
