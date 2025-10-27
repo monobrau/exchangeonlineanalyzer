@@ -68,7 +68,8 @@ function Get-MfaCoverageReport {
                     }
                 } catch {}
                 $userCaRequiresMfa = $false
-                foreach ($p in $using:mfaPolicies) {
+                $pols = $using:mfaPolicies
+                foreach ($p in $pols) {
                     $conds = $p.conditions; if (-not $conds) { continue }
                     $usersCond = $conds.users
                     $incAll = $false; $incUser = $false; $excluded = $false
@@ -212,6 +213,7 @@ function Get-UserSecurityGroupsReport {
         }
 
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
+            $map = $roleIdToName; $hi = $highPrivilegeRoles
             $computed = $users | ForEach-Object -Parallel {
                 param($u)
                 $roleNames = @(); $groupNames = @()
@@ -220,14 +222,14 @@ function Get-UserSecurityGroupsReport {
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { if ($m.DisplayName) { $groupNames += $m.DisplayName } }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
-                            $rname = $using:roleIdToName[$m.Id]; if (-not $rname -and $m.DisplayName) { $rname = $m.DisplayName }
+                            $rname = $using:map[$m.Id]; if (-not $rname -and $m.DisplayName) { $rname = $m.DisplayName }
                             if ($rname) { $roleNames += $rname }
                         }
                     }
                 } catch {}
                 $roleNames = $roleNames | Sort-Object -Unique
                 $groupNames = $groupNames | Sort-Object -Unique
-                $elevated = @($roleNames | Where-Object { $using:highPrivilegeRoles -contains $_ })
+                $elevated = @($roleNames | Where-Object { $using:hi -contains $_ })
                 [pscustomobject]@{
                     DisplayName        = $u.DisplayName
                     UserPrincipalName  = $u.UserPrincipalName
@@ -568,7 +570,7 @@ function New-SecurityInvestigationReport {
             }
 
             if ($PSVersionTable.PSVersion.Major -ge 7) {
-                $exportItems | ForEach-Object -Parallel { & $using:exportAction $_ $using:out } -ThrottleLimit 4
+                $o = $out; $exportItems | ForEach-Object -Parallel { & $using:exportAction $_ $using:o } -ThrottleLimit 4
             } else {
                 foreach ($it in $exportItems) { & $exportAction $it $out }
             }
