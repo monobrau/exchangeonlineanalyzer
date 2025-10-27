@@ -539,7 +539,7 @@ function New-SecurityInvestigationReport {
             $report.MfaCoverage = Get-MfaCoverageReport -Parallel -ThrottleLimit 4
 
             Set-ReportProgress -Percent 84 -Text "Collecting user security groups and roles..."
-            $report.UserSecurityGroups = Get-UserSecurityGroupsReport -Parallel -ThrottleLimit 6
+            $report.UserSecurityGroups = Get-UserSecurityGroupsReport
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
