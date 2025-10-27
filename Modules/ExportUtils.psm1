@@ -206,12 +206,26 @@ function Get-UserSecurityGroupsReport {
     try {
         $results = New-Object System.Collections.Generic.List[object]
 
+        function Invoke-GraphApiInternal {
+            param([Parameter(Mandatory=$true)][string]$Uri)
+            try {
+                $token = $null
+                try { $ctx = Get-MgContext -ErrorAction SilentlyContinue; if ($ctx -and $ctx.AccessToken) { $token = $ctx.AccessToken } } catch {}
+                if ($token) {
+                    $headers = @{ Authorization = ("Bearer {0}" -f $token) }
+                    return Invoke-RestMethod -Method Get -Uri $Uri -Headers $headers -ErrorAction Stop
+                } else {
+                    return Invoke-MgGraphRequest -Method GET -Uri $Uri -ErrorAction Stop
+                }
+            } catch { throw }
+        }
+
         # Directory roles (e.g., Global Administrator) via REST to avoid parameter set issues
         $roles = @(); $roleIdToName = @{}
         try {
             $uri = 'https://graph.microsoft.com/v1.0/directoryRoles?$select=id,displayName&$top=999'
             do {
-                $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                $resp = Invoke-GraphApiInternal -Uri $uri
                 if ($resp.value) { $roles += $resp.value }
                 $uri = $resp.'@odata.nextLink'
             } while ($uri)
@@ -230,10 +244,10 @@ function Get-UserSecurityGroupsReport {
         # Users (REST paging to avoid -All parameter set issues)
         $users = @()
         try {
-            $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName&$top=999'
+            $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,accountEnabled&$top=999'
             do {
-                $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-                if ($resp.value) { $users += $resp.value }
+                $resp = Invoke-GraphApiInternal -Uri $uri
+                if ($resp.value) { $users += ($resp.value | Where-Object { $_.accountEnabled -ne $false }) }
                 $uri = $resp.'@odata.nextLink'
             } while ($uri)
         } catch { $users = @() }
@@ -246,7 +260,7 @@ function Get-UserSecurityGroupsReport {
                 $mem = @()
                 $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
                 do {
-                    $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
+                $mResp = $null; try { $mResp = Invoke-GraphApiInternal -Uri $mUri } catch {}
                     if ($mResp.value) { $mem += $mResp.value }
                     $mUri = $mResp.'@odata.nextLink'
                 } while ($mUri)
@@ -281,7 +295,7 @@ function Get-UserSecurityGroupsReport {
                     $mem = @()
                     $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
                     do {
-                        $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
+                        $mResp = $null; try { $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction Stop } catch {}
                         if ($mResp.value) { $mem += $mResp.value }
                         $mUri = $mResp.'@odata.nextLink'
                     } while ($mUri)
