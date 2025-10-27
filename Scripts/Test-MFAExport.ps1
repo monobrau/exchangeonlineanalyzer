@@ -1,6 +1,7 @@
 param(
     [string]$OutputFolder,
-    [int]$ThrottleLimit = 4
+    [int]$ThrottleLimit = 4,
+    [switch]$Diag
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +73,39 @@ try {
     } while ($uri)
 } catch {
     Write-Warn ("Failed to enumerate users from Graph: {0}" -f $_.Exception.Message)
+}
+
+if ($Diag) {
+    Write-Info 'Diagnostics: Checking Conditional Access policies requiring MFA...'
+    try {
+        $cap = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction Stop
+        $mfaPols = @()
+        if ($cap.value) {
+            foreach ($p in $cap.value) {
+                if ($p.state -eq 'enabled' -and $p.grantControls) {
+                    if ($p.grantControls.builtInControls -contains 'mfa' -or $p.grantControls.authenticationStrength) { $mfaPols += $p }
+                }
+            }
+        }
+        Write-Ok ("CA policies fetched: {0}; MFA-requiring: {1}" -f (@($cap.value).Count), $mfaPols.Count)
+        if (-not $cap.value) { Write-Warn 'No CA policies returned. Ensure Policy.Read.All is consented.' }
+    } catch { Write-Warn ("CA policy fetch failed: {0}" -f $_.Exception.Message) }
+
+    Write-Info 'Diagnostics: Sampling authentication methods for first 3 users...'
+    $sample = $users | Select-Object -First 3
+    foreach ($su in $sample) {
+        try {
+            $m = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $su.id) -ErrorAction Stop
+            $has = $false
+            if ($m.value) {
+                foreach ($mm in $m.value) {
+                    $otype = $mm.'@odata.type'
+                    if ($otype -match 'microsoftAuthenticator|phoneAuthentication|softwareOath|fido2|temporaryAccessPass') { $has = $true; break }
+                }
+            }
+            Write-Host (" - {0}: methods={1} anyMfaLike={2}" -f $su.userPrincipalName, (@($m.value).Count), $has) -ForegroundColor Yellow
+        } catch { Write-Warn (" - {0}: methods query failed: {1}" -f $su.userPrincipalName, $_.Exception.Message) }
+    }
 }
 
 $covById = @{}; $covByUpn = @{}

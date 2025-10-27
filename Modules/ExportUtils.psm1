@@ -65,6 +65,25 @@ function Get-MfaCoverageReport {
             } catch {}
             foreach ($r in $roles) { if ($r.Id) { $roleIdToName[$r.Id] = $r.DisplayName } }
 
+            # Use the same per-user analyzer as the GUI to ensure consistent MFA detection
+            try { Import-Module (Join-Path $PSScriptRoot 'EntraInvestigator.psm1') -Force -ErrorAction SilentlyContinue } catch {}
+            $rows = New-Object System.Collections.Generic.List[object]
+            foreach ($u in $users) {
+                try {
+                    $st = Get-EntraUserMfaStatus -UserPrincipalName $u.userPrincipalName
+                    $rows.Add([pscustomobject]@{
+                        DisplayName       = $u.displayName
+                        UserPrincipalName = $u.userPrincipalName
+                        PerUserMfaEnabled = [bool]$st.PerUserMfa.Enabled
+                        SecurityDefaults  = [bool]$st.SecurityDefaults.Enabled
+                        CARequiresMfa     = [bool]$st.ConditionalAccess.RequiresMfa
+                        MfaCovered        = [bool]($st.PerUserMfa.Enabled -or $st.SecurityDefaults.Enabled -or $st.ConditionalAccess.RequiresMfa)
+                    }) | Out-Null
+                } catch {}
+            }
+            $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
+            return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = [System.Collections.ArrayList]$rows }
+
         # Preload user registration details as fallback per-user MFA signal
         $regMap = @{}
         try {
