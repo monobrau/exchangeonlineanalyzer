@@ -43,8 +43,12 @@ function Fix-GraphModuleConflicts {
     if ($statusLabel) { $statusLabel.Text = "Fixing Graph module conflicts..." }
 
     try {
-        # Disconnect any existing connections
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
+        # Disconnect any existing connections (only if cmdlet exists)
+        try {
+            if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) {
+                Disconnect-MgGraph -ErrorAction SilentlyContinue
+            }
+        } catch {}
 
         # Uninstall all Microsoft Graph modules (no wildcard with -Name)
         Write-Host "Unloading Microsoft Graph modules from session..." -ForegroundColor Cyan

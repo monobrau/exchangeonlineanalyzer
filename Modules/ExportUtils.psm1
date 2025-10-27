@@ -288,8 +288,28 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [object]$MainForm,
         [Parameter(Mandatory=$false)]
-        [string]$OutputFolder
+        [string]$OutputFolder,
+        [Parameter(Mandatory=$false)]
+        [object]$ProgressBar
     )
+
+    # Local helper: update progress UI if provided
+    function Set-ReportProgress {
+        param([int]$Percent,[string]$Text)
+        try {
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label" -and $Text) { $StatusLabel.Text = $Text }
+            if ($ProgressBar -and $ProgressBar.GetType().Name -eq "ProgressBar") {
+                try {
+                    if ($ProgressBar.Style -ne [System.Windows.Forms.ProgressBarStyle]::Blocks) { $ProgressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Blocks }
+                    if ($ProgressBar.Maximum -ne 100) { $ProgressBar.Maximum = 100 }
+                    if (-not $ProgressBar.Visible) { $ProgressBar.Visible = $true }
+                    if ($Percent -lt 0) { $Percent = 0 } elseif ($Percent -gt 100) { $Percent = 100 }
+                    $ProgressBar.Value = $Percent
+                } catch {}
+            }
+            if ($MainForm -and $MainForm.GetType().Name -eq "Form") { [System.Windows.Forms.Application]::DoEvents() }
+        } catch {}
+    }
 
     try {
         if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
@@ -298,6 +318,7 @@ function New-SecurityInvestigationReport {
         if ($MainForm -and $MainForm.GetType().Name -eq "Form") {
             $MainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         }
+        Set-ReportProgress -Percent 2 -Text "Initializing..."
     } catch {
         # Ignore Windows Forms errors when running outside GUI context
     }
@@ -346,6 +367,7 @@ function New-SecurityInvestigationReport {
         if (-not (Test-Path $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null }
         $report.OutputFolder = $OutputFolder
     } catch {}
+    Set-ReportProgress -Percent 5 -Text "Resolving output paths..."
 
     # Check connections (robust detection outside UI context)
     $exchangeConnected = $false
@@ -390,16 +412,16 @@ function New-SecurityInvestigationReport {
     # Collect data from Exchange Online
     if ($exchangeConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last $DaysBack days)..." }
+            Set-ReportProgress -Percent 10 -Text "Collecting message trace (last $DaysBack days)..."
             $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 # always 10 days per requirement
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
+            Set-ReportProgress -Percent 40 -Text "Exporting inbox rules..."
             $report.InboxRules = Get-ExchangeInboxRules
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
+            Set-ReportProgress -Percent 50 -Text "Collecting transport rules..."
             $report.TransportRules = Get-ExchangeTransportRules
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
+            Set-ReportProgress -Percent 60 -Text "Collecting mail flow connectors..."
             $report.InboundConnectors = Get-ExchangeInboundConnectors
             $report.OutboundConnectors = Get-ExchangeOutboundConnectors
         } catch {
@@ -411,7 +433,7 @@ function New-SecurityInvestigationReport {
     # Collect data from Microsoft Graph (audit logs only)
     if ($graphConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
+            Set-ReportProgress -Percent 70 -Text "Collecting audit logs from Microsoft Graph..."
             $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
         } catch {
             Write-Warning "Failed to collect Microsoft Graph data: $($_.Exception.Message)"
@@ -422,10 +444,10 @@ function New-SecurityInvestigationReport {
     # MFA Coverage and User Security Groups
     if ($graphConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
+            Set-ReportProgress -Percent 78 -Text "Evaluating MFA coverage..."
             $report.MfaCoverage = Get-MfaCoverageReport
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
+            Set-ReportProgress -Percent 84 -Text "Collecting user security groups and roles..."
             $report.UserSecurityGroups = Get-UserSecurityGroupsReport
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"

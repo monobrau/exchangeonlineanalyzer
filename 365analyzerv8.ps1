@@ -5718,9 +5718,9 @@ $entraResetPasswordButton.add_Click({
     $requireChange = $true
 
     if ($mode -eq [System.Windows.Forms.DialogResult]::Yes) {
-        # Generate memorable password with validation
-        try {
-            $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
+    # Generate memorable password with validation
+    try {
+        $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
             if ([string]::IsNullOrWhiteSpace($newPassword)) { throw "Password generation failed - empty result" }
             if ($newPassword.Length -lt 8) { throw "Generated password is too short (length: $($newPassword.Length))" }
         } catch {
@@ -5788,7 +5788,7 @@ $entraResetPasswordButton.add_Click({
         $newPassword = $txt1.Text
         $requireChange = $chk.Checked
     }
-
+    
     try {
         # Reset user password via Microsoft Graph
         $statusLabel.Text = "Resetting password for $userUpn..."
@@ -5819,9 +5819,9 @@ $entraResetPasswordButton.add_Click({
         if ($mode -eq [System.Windows.Forms.DialogResult]::Yes) {
             $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nRequire change next sign-in: $requireChange`n`nCopy password to clipboard?"
             $result = [System.Windows.Forms.MessageBox]::Show($message, "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
-            if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-                [System.Windows.Forms.Clipboard]::SetText($newPassword)
-                [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+            [System.Windows.Forms.Clipboard]::SetText($newPassword)
+            [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             }
         } else {
             [System.Windows.Forms.MessageBox]::Show("Password reset successful for $userUpn.", "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -5972,8 +5972,8 @@ $entraRequirePwdChangeButton.add_Click({
     }
     if ($selectedUpns.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show("Select one or more users to require password change.", "No Users Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        return
-    }
+            return
+        }
     $preview = ($selectedUpns | Select-Object -First 10) -join "\n"
     if ($selectedUpns.Count -gt 10) { $preview += "\n... +$($selectedUpns.Count-10) more" }
     $confirm = [System.Windows.Forms.MessageBox]::Show(("Require password change at next sign-in for these user(s)?\n{0}" -f $preview), "Confirm Require Password Change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
@@ -5991,8 +5991,8 @@ $entraRequirePwdChangeButton.add_Click({
             try {
                 # Validate user exists before attempting to set password policy
                 try { $null = Get-MgUser -UserId $userUpn -ErrorAction Stop } catch { throw "User not found: $userUpn" }
-                $passwordProfile = @{ ForceChangePasswordNextSignIn = $true }
-                Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
+            $passwordProfile = @{ ForceChangePasswordNextSignIn = $true }
+            Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
                 $success.Add($userUpn) | Out-Null
             } catch {
                 $failed.Add(("{0} ({1})" -f $userUpn, $_.Exception.Message)) | Out-Null
