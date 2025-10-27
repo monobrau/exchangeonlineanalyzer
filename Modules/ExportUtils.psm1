@@ -43,7 +43,7 @@ function Get-MfaCoverageReport {
 
         $acc = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $userPage | ForEach-Object -Parallel {
+            $computed = $userPage | ForEach-Object -Parallel {
                 param($u)
                 $directMfa = $false
                 try {
@@ -84,15 +84,16 @@ function Get-MfaCoverageReport {
                     if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
                 }
                 $covered = ($directMfa -or $using:secDefaultsEnabled -or $userCaRequiresMfa)
-                $using:acc.Add([pscustomobject]@{
+                [pscustomobject]@{
                     DisplayName       = $u.displayName
                     UserPrincipalName = $u.userPrincipalName
                     PerUserMfaEnabled = $directMfa
                     SecurityDefaults  = $using:secDefaultsEnabled
                     CARequiresMfa     = $userCaRequiresMfa
                     MfaCovered        = $covered
-                }) | Out-Null
+                }
             } -ThrottleLimit $ThrottleLimit
+            if ($computed) { foreach($o in $computed){ $acc.Add($o) } }
         } else {
             foreach ($u in $userPage) {
                 & (Get-Command Get-MfaCoverageReport).ScriptBlock # placeholder no-op
@@ -211,7 +212,32 @@ function Get-UserSecurityGroupsReport {
         }
 
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $users | ForEach-Object -Parallel { & $using:processUser $_ $using:roleIdToName $using:highPrivilegeRoles $using:results } -ThrottleLimit $ThrottleLimit
+            $computed = $users | ForEach-Object -Parallel {
+                param($u)
+                $roleNames = @(); $groupNames = @()
+                try {
+                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    foreach ($m in $mem) {
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { if ($m.DisplayName) { $groupNames += $m.DisplayName } }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                            $rname = $using:roleIdToName[$m.Id]; if (-not $rname -and $m.DisplayName) { $rname = $m.DisplayName }
+                            if ($rname) { $roleNames += $rname }
+                        }
+                    }
+                } catch {}
+                $roleNames = $roleNames | Sort-Object -Unique
+                $groupNames = $groupNames | Sort-Object -Unique
+                $elevated = @($roleNames | Where-Object { $using:highPrivilegeRoles -contains $_ })
+                [pscustomobject]@{
+                    DisplayName        = $u.DisplayName
+                    UserPrincipalName  = $u.UserPrincipalName
+                    Roles              = ($roleNames -join '; ')
+                    Groups             = ($groupNames -join '; ')
+                    ElevatedRoles      = ($elevated -join '; ')
+                    IsElevated         = [bool]($elevated -and $elevated.Count -gt 0)
+                }
+            } -ThrottleLimit $ThrottleLimit
+            if ($computed) { foreach($o in $computed){ $results.Add($o) } }
         } else {
             foreach ($u in $users) { & $processUser $u $roleIdToName $highPrivilegeRoles $results }
         }
@@ -603,9 +629,10 @@ function Get-ExchangeMessageTrace {
         # Chunk by day to avoid server-side caps; run per-day windows, optionally in parallel
         $days = 0..9 | ForEach-Object { $start.AddDays($_) }
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $days | ForEach-Object -Parallel {
+            $chunks = $days | ForEach-Object -Parallel {
                 param($winStart)
                 $winEnd = $winStart.AddDays(1)
+                $out = New-Object System.Collections.Generic.List[object]
                 try {
                     if ($using:hasV2) {
                         $startRecipient = $null; $iterations = 0
@@ -615,7 +642,7 @@ function Get-ExchangeMessageTrace {
                             $chunk = Get-MessageTraceV2 @params
                             if ($chunk) {
                                 $filtered = if ($startRecipient) { $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } } else { $chunk }
-                                if ($filtered) { foreach($r in $filtered){ $using:results.Add($r) } }
+                                if ($filtered) { [void]$out.AddRange($filtered) }
                                 $prev = $startRecipient; $last = $chunk[-1]; $startRecipient = $last.RecipientAddress
                                 if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
                             } else { $startRecipient = $null }
@@ -623,10 +650,12 @@ function Get-ExchangeMessageTrace {
                         } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
                     } else {
                         $batch = Get-MessageTrace -StartDate $winEnd.AddDays(-1) -EndDate $winEnd -ErrorAction Stop
-                        if ($batch) { foreach($r in $batch){ $using:results.Add($r) } }
+                        if ($batch) { [void]$out.AddRange($batch) }
                     }
                 } catch {}
+                $out
             } -ThrottleLimit $ThrottleLimit
+            if ($chunks) { [void]$results.AddRange($chunks) }
         } else {
             foreach ($winStart in $days) {
                 $winEnd = $winStart.AddDays(1)
