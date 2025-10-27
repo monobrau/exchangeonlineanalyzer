@@ -43,6 +43,7 @@ function Get-MfaCoverageReport {
 
         $acc = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
+            $sec = $secDefaultsEnabled; $pols = $mfaPolicies
             $computed = $userPage | ForEach-Object -Parallel {
                 param($u)
                 $directMfa = $false
@@ -68,8 +69,7 @@ function Get-MfaCoverageReport {
                     }
                 } catch {}
                 $userCaRequiresMfa = $false
-                $pols = $using:mfaPolicies
-                foreach ($p in $pols) {
+                foreach ($p in $using:pols) {
                     $conds = $p.conditions; if (-not $conds) { continue }
                     $usersCond = $conds.users
                     $incAll = $false; $incUser = $false; $excluded = $false
@@ -84,12 +84,12 @@ function Get-MfaCoverageReport {
                     $applies = ($incAll -or $incUser)
                     if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
                 }
-                $covered = ($directMfa -or $using:secDefaultsEnabled -or $userCaRequiresMfa)
+                $covered = ($directMfa -or $using:sec -or $userCaRequiresMfa)
                 [pscustomobject]@{
                     DisplayName       = $u.displayName
                     UserPrincipalName = $u.userPrincipalName
                     PerUserMfaEnabled = $directMfa
-                    SecurityDefaults  = $using:secDefaultsEnabled
+                    SecurityDefaults  = $using:sec
                     CARequiresMfa     = $userCaRequiresMfa
                     MfaCovered        = $covered
                 }
