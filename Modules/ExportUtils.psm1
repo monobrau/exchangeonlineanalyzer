@@ -120,31 +120,50 @@ function Get-UserSecurityGroupsReport {
         $results = New-Object System.Collections.Generic.List[object]
 
         # Directory roles (e.g., Global Administrator)
-        $roles = @()
+        $roles = @(); $roleIdToName = @{}
         try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
-        $roleIdToName = @{}
         foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+
+        # Elevated/privileged role names (include legacy names)
+        $highPrivilegeRoles = @(
+            'Global Administrator','Company Administrator','Privileged Role Administrator','Privileged Authentication Administrator',
+            'Exchange Administrator','SharePoint Administrator','Security Administrator','Compliance Administrator',
+            'User Administrator','Billing Administrator','Helpdesk Administrator','Service Support Administrator',
+            'Teams Administrator','Intune Administrator','Application Administrator','Cloud Application Administrator',
+            'Power Platform Administrator'
+        )
 
         # Users
         $users = @()
         try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
 
         foreach ($u in $users) {
-            $groups = @()
+            $roleNames = @(); $groupNames = @()
             try {
                 $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
                 foreach ($m in $mem) {
-                    $name = $null
-                    if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.DisplayName }
-                    elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.Id)) { $roleIdToName[$m.Id] } else { 'Directory Role' } }
-                    if ($name) { $groups += $name }
+                    if ($m.'@odata.type' -eq '#microsoft.graph.group') {
+                        if ($m.DisplayName) { $groupNames += $m.DisplayName }
+                    } elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                        $rname = $null
+                        if ($roleIdToName.ContainsKey($m.Id)) { $rname = $roleIdToName[$m.Id] }
+                        if (-not $rname -and $m.DisplayName) { $rname = $m.DisplayName }
+                        if ($rname) { $roleNames += $rname }
+                    }
                 }
             } catch {}
 
+            $roleNames = $roleNames | Sort-Object -Unique
+            $groupNames = $groupNames | Sort-Object -Unique
+            $elevated = @($roleNames | Where-Object { $highPrivilegeRoles -contains $_ })
+
             $results.Add([pscustomobject]@{
-                DisplayName       = $u.DisplayName
-                UserPrincipalName = $u.UserPrincipalName
-                GroupsAndRoles    = ($groups | Sort-Object -Unique) -join '; '
+                DisplayName        = $u.DisplayName
+                UserPrincipalName  = $u.UserPrincipalName
+                Roles              = ($roleNames -join '; ')
+                Groups             = ($groupNames -join '; ')
+                ElevatedRoles      = ($elevated -join '; ')
+                IsElevated         = [bool]($elevated -and $elevated.Count -gt 0)
             }) | Out-Null
         }
 
