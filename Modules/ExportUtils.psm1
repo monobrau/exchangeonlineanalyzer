@@ -31,21 +31,33 @@ function Get-MfaCoverageReport {
             if ($requiresMfa) { $mfaPolicies += $p }
         }
 
-        # 3) Users and per-user evaluation
+        # 3) Users and per-user evaluation (use REST paging to avoid parameter-set issues)
         $users = @()
         try {
-            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+            $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName&$top=999'
+            do {
+                $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                if ($page.value) { $users += $page.value }
+                $uri = $page.'@odata.nextLink'
+            } while ($uri)
 
-            # Directory roles map (for policy role assignment evaluation)
+            # Directory roles map (for policy role assignment evaluation) via REST
             $roles = @(); $roleIdToName = @{}
-            try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
-            foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+            try {
+                $ruri = 'https://graph.microsoft.com/v1.0/directoryRoles?$select=id,displayName&$top=999'
+                do {
+                    $rpage = Invoke-MgGraphRequest -Method GET -Uri $ruri -ErrorAction SilentlyContinue
+                    if ($rpage.value) { $roles += $rpage.value }
+                    $ruri = $rpage.'@odata.nextLink'
+                } while ($ruri)
+            } catch {}
+            foreach ($r in $roles) { if ($r.Id) { $roleIdToName[$r.Id] = $r.DisplayName } }
 
         $acc = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
             $sec = $secDefaultsEnabled
             $pols = $mfaPolicies
-            $computed = $userPage | ForEach-Object -Parallel {
+            $computed = $users | ForEach-Object -Parallel {
                 param($u,$sec,$pols)
                 $directMfa = $false
                 try {
@@ -96,10 +108,10 @@ function Get-MfaCoverageReport {
             } -ThrottleLimit $ThrottleLimit -ArgumentList $sec,$pols
             if ($computed) { foreach($o in $computed){ $acc.Add($o) } }
         } else {
-            foreach ($u in $userPage) {
+            foreach ($u in $users) {
                 & (Get-Command Get-MfaCoverageReport).ScriptBlock # placeholder no-op
             }
-            foreach ($u in $userPage) {
+            foreach ($u in $users) {
                 # sequential path reuse same logic as above (inline for clarity)
                 $directMfa = $false
                 try {
@@ -708,15 +720,17 @@ function Get-ExchangeMessageTrace {
     try {
         Write-Host "Collecting message trace data..." -ForegroundColor Yellow
 		$utcNow = (Get-Date).ToUniversalTime()
-		$start = $utcNow.AddDays(-[Math]::Max(1,$DaysBack)).Date
+		# Include today's partial day plus prior full days
+		$windowCount = [Math]::Max(1,$DaysBack)
+		$firstDay = $utcNow.Date.AddDays(-($windowCount - 1))
 
 		$results = New-Object System.Collections.Generic.List[object]
 
 		$hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
 
-		# Sequential per-day windows, prefer V2 when available; avoid conflicting params
-		for ($i = 0; $i -lt [Math]::Max(1,$DaysBack); $i++) {
-			$winStart = $start.AddDays($i)
+		# Sequential per-day windows for prior days
+		for ($i = 0; $i -lt ($windowCount - 1); $i++) {
+			$winStart = $firstDay.AddDays($i)
 			$winEnd = $winStart.AddDays(1)
 			try {
 				if ($hasV2) {
@@ -744,6 +758,32 @@ function Get-ExchangeMessageTrace {
 			} catch {}
 		}
 
+		# Final window: today's partial day up to current time
+		$winStart = $utcNow.Date
+		$winEnd = $utcNow
+		try {
+			if ($hasV2) {
+				$cursor = $null
+				$iterations = 0
+				do {
+					$params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
+					if ($cursor) { $params.StartingRecipientAddress = $cursor }
+					$chunk = Get-MessageTraceV2 @params
+					if ($chunk) {
+						[void]$results.AddRange($chunk)
+						$last = $chunk[-1]
+						$nextCursor = $last.RecipientAddress
+						if (-not $nextCursor -or $nextCursor -eq $cursor) { break }
+						$cursor = $nextCursor
+					}
+					$iterations++
+				} while ($chunk -and $iterations -lt 500)
+			} else {
+				$batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+				if ($batch) { [void]$results.AddRange($batch) }
+			}
+		} catch {}
+
 		return [System.Collections.ArrayList]$results
     } catch {
         Write-Error "Failed to collect message trace: $($_.Exception.Message)"
@@ -760,8 +800,12 @@ function Get-ExchangeInboxRules {
         try {
             $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
         } catch {
-            # Fallback narrower call if needed
-            $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
+            # Fallbacks if Get-Mailbox is restricted or not available in current session
+            try { $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop }
+            catch {
+                try { $mailboxes = Get-EXOMailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop }
+                catch { try { $mailboxes = Get-EXOMailbox -ResultSize 2000 -ErrorAction Stop } catch { $mailboxes = @() } }
+            }
         }
 
         $allRules = New-Object System.Collections.Generic.List[object]
