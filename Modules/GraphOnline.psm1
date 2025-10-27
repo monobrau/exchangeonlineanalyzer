@@ -139,13 +139,13 @@ function Fix-GraphModuleConflicts {
 function Connect-GraphService {
     param(
         [Parameter(Mandatory=$false)]
-        [System.Windows.Forms.ToolStripStatusLabel]$statusLabel,
+        [object]$statusLabel,
         [Parameter(Mandatory=$false)]
-        [System.Windows.Forms.Form]$mainForm
+        [object]$mainForm
     )
     try {
-        if ($statusLabel) { $statusLabel.Text = "Connecting to Microsoft Graph..." }
-        if ($mainForm) { $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor }
+        try { if ($statusLabel) { $statusLabel.Text = "Connecting to Microsoft Graph..." } } catch {}
+        try { if ($mainForm -and $mainForm.GetType().Name -eq 'Form') { $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor } } catch {}
 
         # Use global script variables for scopes
         $scopes = $script:graphScopes
@@ -277,7 +277,7 @@ function Connect-GraphService {
         }
 
         $global:graphConnectionAttempted = $true
-        if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph and modules loaded." }
+        try { if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph and modules loaded." } } catch {}
         return $true
     } catch {
         $ex = $_.Exception
@@ -299,7 +299,7 @@ function Connect-GraphService {
             [System.Windows.Forms.MessageBox]::Show("Connect-GraphService ERROR: $($ex.Message)", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
 
-        if ($statusLabel) { $statusLabel.Text = "Microsoft Graph connection failed." }
+        try { if ($statusLabel) { $statusLabel.Text = "Microsoft Graph connection failed." } } catch {}
         Write-Error "Microsoft Graph connection failed: $($ex.Message)"
         return $false
     } finally {
