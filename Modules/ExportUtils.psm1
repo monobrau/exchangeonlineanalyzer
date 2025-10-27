@@ -34,10 +34,10 @@ function Get-MfaCoverageReport {
         # 3) Users and per-user evaluation (use REST paging to avoid parameter-set issues)
         $users = @()
         try {
-            $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName&$top=999'
+            $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,accountEnabled&$top=999'
             do {
                 $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-                if ($page.value) { $users += $page.value }
+                if ($page.value) { $users += ($page.value | Where-Object { $_.accountEnabled -ne $false }) }
                 $uri = $page.'@odata.nextLink'
             } while ($uri)
 
@@ -734,19 +734,18 @@ function Get-ExchangeMessageTrace {
 			$winEnd = $winStart.AddDays(1)
 			try {
 				if ($hasV2) {
-					# Seek-like pagination via StartingRecipientAddress; keep it simple to avoid parameter set issues
+					# Seek-like pagination via StartingRecipientAddress; emit only strictly-greater recipients to avoid duplicates
 					$cursor = $null
 					$iterations = 0
 					do {
-						$params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
+						$params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
 						if ($cursor) { $params.StartingRecipientAddress = $cursor }
 						$chunk = Get-MessageTraceV2 @params
 						if ($chunk) {
-							# Append and advance cursor by last recipient to avoid duplicates
-							[void]$results.AddRange($chunk)
-							$last = $chunk[-1]
-							$nextCursor = $last.RecipientAddress
-							if (-not $nextCursor -or $nextCursor -eq $cursor) { break }
+							$emit = if ($cursor) { $chunk | Where-Object { $_.RecipientAddress -gt $cursor } } else { $chunk }
+							if ($emit) { [void]$results.AddRange($emit) }
+							$nextCursor = ($chunk | Where-Object { -not $cursor -or $_.RecipientAddress -gt $cursor } | Select-Object -Last 1).RecipientAddress
+							if (-not $nextCursor -or ($cursor -and $nextCursor -le $cursor)) { break }
 							$cursor = $nextCursor
 						}
 						$iterations++
@@ -766,14 +765,14 @@ function Get-ExchangeMessageTrace {
 				$cursor = $null
 				$iterations = 0
 				do {
-					$params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
+					$params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
 					if ($cursor) { $params.StartingRecipientAddress = $cursor }
 					$chunk = Get-MessageTraceV2 @params
 					if ($chunk) {
-						[void]$results.AddRange($chunk)
-						$last = $chunk[-1]
-						$nextCursor = $last.RecipientAddress
-						if (-not $nextCursor -or $nextCursor -eq $cursor) { break }
+						$emit = if ($cursor) { $chunk | Where-Object { $_.RecipientAddress -gt $cursor } } else { $chunk }
+						if ($emit) { [void]$results.AddRange($emit) }
+						$nextCursor = ($chunk | Where-Object { -not $cursor -or $_.RecipientAddress -gt $cursor } | Select-Object -Last 1).RecipientAddress
+						if (-not $nextCursor -or ($cursor -and $nextCursor -le $cursor)) { break }
 						$cursor = $nextCursor
 					}
 					$iterations++
