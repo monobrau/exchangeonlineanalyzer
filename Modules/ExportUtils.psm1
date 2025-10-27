@@ -507,7 +507,7 @@ function New-SecurityInvestigationReport {
             $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 -Parallel -ThrottleLimit 3 # always 10 days per requirement
 
             Set-ReportProgress -Percent 40 -Text "Exporting inbox rules..."
-            $report.InboxRules = Get-ExchangeInboxRules
+            $report.InboxRules = Get-ExchangeInboxRules -Parallel -ThrottleLimit 6
 
             Set-ReportProgress -Percent 50 -Text "Collecting transport rules..."
             $report.TransportRules = Get-ExchangeTransportRules
@@ -688,6 +688,7 @@ function Get-ExchangeMessageTrace {
 }
 
 function Get-ExchangeInboxRules {
+    param([switch]$Parallel,[int]$ThrottleLimit = 6)
     try {
         Write-Host "Exporting inbox rules..." -ForegroundColor Yellow
 
@@ -700,31 +701,63 @@ function Get-ExchangeInboxRules {
         }
 
         $allRules = New-Object System.Collections.Generic.List[object]
-        foreach ($mbx in $mailboxes) {
-            $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
-            try {
-                $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
-                foreach ($r in $rules) {
-                    $obj = [pscustomobject]@{
-                        MailboxOwner        = $upn
-                        Name                = $r.Name
-                        Enabled             = $r.Enabled
-                        Priority            = $r.Priority
-                        FromAddressContains = ($r.FromAddressContainsWords -join ';')
-                        SubjectContains     = ($r.SubjectContainsWords -join ';')
-                        SentTo              = ($r.SentTo -join ';')
-                        RedirectTo          = ($r.RedirectTo -join ';')
-                        ForwardTo           = ($r.ForwardTo -join ';')
-                        ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
-                        DeleteMessage       = $r.DeleteMessage
-                        StopProcessing      = $r.StopProcessingRules
-                        IsHidden            = $false
-                        Description         = ($r.Description -join ' ')
+
+        if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
+            $computed = $mailboxes | ForEach-Object -Parallel {
+                param($mbx)
+                $output = @()
+                $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
+                try {
+                    $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
+                    foreach ($r in $rules) {
+                        $output += [pscustomobject]@{
+                            MailboxOwner        = $upn
+                            Name                = $r.Name
+                            Enabled             = $r.Enabled
+                            Priority            = $r.Priority
+                            FromAddressContains = ($r.FromAddressContainsWords -join ';')
+                            SubjectContains     = ($r.SubjectContainsWords -join ';')
+                            SentTo              = ($r.SentTo -join ';')
+                            RedirectTo          = ($r.RedirectTo -join ';')
+                            ForwardTo           = ($r.ForwardTo -join ';')
+                            ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
+                            DeleteMessage       = $r.DeleteMessage
+                            StopProcessing      = $r.StopProcessingRules
+                            IsHidden            = $false
+                            Description         = ($r.Description -join ' ')
+                        }
                     }
-                    [void]$allRules.Add($obj)
+                } catch {}
+                $output
+            } -ThrottleLimit $ThrottleLimit
+            if ($computed) { foreach($o in $computed){ $allRules.Add($o) | Out-Null } }
+        } else {
+            foreach ($mbx in $mailboxes) {
+                $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
+                try {
+                    $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
+                    foreach ($r in $rules) {
+                        $obj = [pscustomobject]@{
+                            MailboxOwner        = $upn
+                            Name                = $r.Name
+                            Enabled             = $r.Enabled
+                            Priority            = $r.Priority
+                            FromAddressContains = ($r.FromAddressContainsWords -join ';')
+                            SubjectContains     = ($r.SubjectContainsWords -join ';')
+                            SentTo              = ($r.SentTo -join ';')
+                            RedirectTo          = ($r.RedirectTo -join ';')
+                            ForwardTo           = ($r.ForwardTo -join ';')
+                            ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
+                            DeleteMessage       = $r.DeleteMessage
+                            StopProcessing      = $r.StopProcessingRules
+                            IsHidden            = $false
+                            Description         = ($r.Description -join ' ')
+                        }
+                        [void]$allRules.Add($obj)
+                    }
+                } catch {
+                    Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
                 }
-            } catch {
-                Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
             }
         }
 
