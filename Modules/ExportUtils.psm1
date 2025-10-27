@@ -722,31 +722,13 @@ function New-SecurityInvestigationReport {
 
             # MFA Coverage export (ensure file exists; project to fixed columns)
             $mfaCsv = Join-Path $report.OutputFolder "MFAStatus.csv"
-            $mfaRows = @()
-            if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
-                $tenantSecDefaults = [bool]($report.MfaCoverage.SecurityDefaultsEnabled)
-                $tenantCaRequires = [bool]($report.MfaCoverage.CAPoliciesRequireMfa)
-                foreach ($u in $report.MfaCoverage.Users) {
-                    $id = $null; $display = $null; $upn = $null; $perUser = $null; $caReq = $null
-                    if ($u.PSObject.Properties['UserId']) { $id = $u.UserId } elseif ($u.PSObject.Properties['id']) { $id = $u.id }
-                    if ($u.PSObject.Properties['DisplayName']) { $display = $u.DisplayName } elseif ($u.PSObject.Properties['displayName']) { $display = $u.displayName }
-                    if ($u.PSObject.Properties['UserPrincipalName']) { $upn = $u.UserPrincipalName } elseif ($u.PSObject.Properties['userPrincipalName']) { $upn = $u.userPrincipalName }
-                    if ($u.PSObject.Properties['PerUserMfaEnabled']) { $perUser = [bool]$u.PerUserMfaEnabled }
-                    if ($u.PSObject.Properties['CARequiresMfa']) { $caReq = [bool]$u.CARequiresMfa } else { $caReq = $tenantCaRequires }
-                    $covered = [bool]($perUser -or $tenantSecDefaults -or $caReq)
-                    $mfaRows += [pscustomobject]@{
-                        UserId            = $id
-                        DisplayName       = $display
-                        UserPrincipalName = $upn
-                        PerUserMfaEnabled = $perUser
-                        SecurityDefaults  = $tenantSecDefaults
-                        CARequiresMfa     = $caReq
-                        MfaCovered        = $covered
-                    }
-                }
-            }
-            if ($mfaRows -and $mfaRows.Count -gt 0) {
-                try { $mfaRows | Export-Csv -Path $mfaCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
+            if ($report.MfaCoverage -and $report.MfaCoverage.Users -and $report.MfaCoverage.Users.Count -gt 0) {
+                try {
+                    $report.MfaCoverage.Users |
+                        Select-Object DisplayName,UserPrincipalName,PerUserMfaEnabled,SecurityDefaults,CARequiresMfa,MfaCovered |
+                        Export-Csv -Path $mfaCsv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.MFAStatusCsv = $mfaCsv
+                } catch {}
             } else {
                 $mfaHeader = 'DisplayName,UserPrincipalName,PerUserMfaEnabled,SecurityDefaults,CARequiresMfa,MfaCovered'
                 try { Set-Content -Path $mfaCsv -Value $mfaHeader -Encoding utf8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
