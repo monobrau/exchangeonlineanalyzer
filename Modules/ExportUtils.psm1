@@ -423,6 +423,7 @@ function New-SecurityInvestigationReport {
     $report.DaysAnalyzed = $DaysBack
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
     $report.FilePaths = @{}
+    $report.SourceStatus = @{ ExchangeConnected = $false; GraphConnected = $false }
 
     # Resolve output folder (tenant-scoped/timestamped)
     try {
@@ -499,6 +500,8 @@ function New-SecurityInvestigationReport {
     } else {
         $report.GraphConnection = "Connected"
     }
+    $report.SourceStatus.ExchangeConnected = $exchangeConnected
+    $report.SourceStatus.GraphConnected    = $graphConnected
 
     # Collect data from Exchange Online
     if ($exchangeConnected) {
@@ -508,6 +511,12 @@ function New-SecurityInvestigationReport {
 
             Set-ReportProgress -Percent 40 -Text "Exporting inbox rules..."
             $report.InboxRules = Get-ExchangeInboxRules -Parallel -ThrottleLimit 6
+            try {
+                $ri = $report.InboxRules
+                $rc = if ($ri) { $ri.Count } else { 0 }
+                $mbCount = if ($ri) { ($ri | Select-Object -ExpandProperty MailboxOwner -Unique).Count } else { 0 }
+                Write-Host ("Inbox rules collected via Exchange Online: {0} rules across {1} mailbox(es)" -f $rc, $mbCount) -ForegroundColor Green
+            } catch {}
 
             Set-ReportProgress -Percent 50 -Text "Collecting transport rules..."
             $report.TransportRules = Get-ExchangeTransportRules
@@ -541,6 +550,10 @@ function New-SecurityInvestigationReport {
             } catch {
                 $report.MfaCoverage = Get-MfaCoverageReport
             }
+            try {
+                $uc = if ($report.MfaCoverage -and $report.MfaCoverage.Users) { $report.MfaCoverage.Users.Count } else { 0 }
+                Write-Host ("MFA analysis via Microsoft Graph: evaluated {0} user(s)" -f $uc) -ForegroundColor Green
+            } catch {}
 
             Set-ReportProgress -Percent 84 -Text "Collecting user security groups and roles..."
             # Capability check: enable parallel only if Graph supports required switches cleanly
@@ -555,6 +568,10 @@ function New-SecurityInvestigationReport {
             } else {
                 $report.UserSecurityGroups = Get-UserSecurityGroupsReport
             }
+            try {
+                $ugc = if ($report.UserSecurityGroups) { $report.UserSecurityGroups.Count } else { 0 }
+                Write-Host ("User security groups via Microsoft Graph: {0} user(s)" -f $ugc) -ForegroundColor Green
+            } catch {}
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
