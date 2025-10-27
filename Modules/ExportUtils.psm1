@@ -628,9 +628,61 @@ function New-SecurityInvestigationReport {
         $exportError = $null
         try {
             $out = $report.OutputFolder
+
+            # Shape variable-schema datasets into stable, security-relevant columns
+            $mtShaped = @()
+            if ($report.MessageTrace) {
+                foreach ($m in $report.MessageTrace) {
+                    $mtShaped += [pscustomobject]@{
+                        Received              = $(if ($m.PSObject.Properties['Received']) { $m.Received } elseif ($m.PSObject.Properties['Date']) { $m.Date } else { $null })
+                        SenderAddress         = $(if ($m.PSObject.Properties['SenderAddress']) { $m.SenderAddress } else { $null })
+                        RecipientAddress      = $(if ($m.PSObject.Properties['RecipientAddress']) { $m.RecipientAddress } else { $null })
+                        Directionality        = $(if ($m.PSObject.Properties['Directionality']) { $m.Directionality } else { $null })
+                        Subject               = $(if ($m.PSObject.Properties['Subject']) { $m.Subject } else { $null })
+                        MessageId             = $(if ($m.PSObject.Properties['MessageId']) { $m.MessageId } else { $null })
+                        MessageTraceId        = $(if ($m.PSObject.Properties['MessageTraceId']) { $m.MessageTraceId } else { $null })
+                        Size                  = $(if ($m.PSObject.Properties['Size']) { $m.Size } else { $null })
+                        Status                = $(if ($m.PSObject.Properties['Status']) { $m.Status } else { $null })
+                        FromIP                = $(if ($m.PSObject.Properties['FromIP']) { $m.FromIP } else { $null })
+                        ToIP                  = $(if ($m.PSObject.Properties['ToIP']) { $m.ToIP } else { $null })
+                    }
+                }
+            }
+
+            $irShaped = @()
+            if ($report.InboxRules) {
+                foreach ($r in $report.InboxRules) {
+                    $extFwdTargets = @()
+                    if ($r.RedirectTo) { $extFwdTargets += ($r.RedirectTo -split ';') }
+                    if ($r.ForwardTo) { $extFwdTargets += ($r.ForwardTo -split ';') }
+                    $extFwdTargets = $extFwdTargets | Where-Object { $_ -and $_ -match '@' }
+                    $ownDomain = $null; try { $ownDomain = ($r.MailboxOwner -split '@')[-1] } catch {}
+                    $hasExternal = $false
+                    if ($ownDomain) { $hasExternal = [bool](@($extFwdTargets | Where-Object { $_ -notlike "*${ownDomain}" }).Count -gt 0) }
+                    $irShaped += [pscustomobject]@{
+                        MailboxOwner        = $r.MailboxOwner
+                        Name                = $r.Name
+                        Enabled             = $r.Enabled
+                        Priority            = $r.Priority
+                        FromAddressContains = $r.FromAddressContains
+                        SubjectContains     = $r.SubjectContains
+                        SentTo              = $r.SentTo
+                        RedirectTo          = $r.RedirectTo
+                        ForwardTo           = $r.ForwardTo
+                        ForwardAsAttachment = $r.ForwardAsAttachment
+                        DeleteMessage       = $r.DeleteMessage
+                        StopProcessing      = $r.StopProcessing
+                        IsHidden            = $r.IsHidden
+                        Description         = $r.Description
+                        HasExternalForward  = $hasExternal
+                        ExternalTargets     = ($extFwdTargets -join ';')
+                    }
+                }
+            }
+
             $exportItems = @(
-                @{ Data=$report.MessageTrace;       Csv='MessageTrace.csv';        Json='MessageTrace.json';        Depth=8 },
-                @{ Data=$report.InboxRules;         Csv='InboxRules.csv';          Json='InboxRules.json';          Depth=6 },
+                @{ Data=$mtShaped;                  Csv='MessageTrace.csv';        Json='MessageTrace.json';        Depth=8 },
+                @{ Data=$irShaped;                  Csv='InboxRules.csv';          Json='InboxRules.json';          Depth=6 },
                 @{ Data=$report.TransportRules;     Csv='TransportRules.csv';      Json='TransportRules.json';      Depth=8 },
                 @{ Data=$report.InboundConnectors;  Csv='InboundConnectors.csv';   Json='InboundConnectors.json';   Depth=8 },
                 @{ Data=$report.OutboundConnectors; Csv='OutboundConnectors.csv';  Json='OutboundConnectors.json';  Depth=8 },
