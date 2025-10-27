@@ -6259,7 +6259,8 @@ $entraDisconnectGraphButton.add_Click({
     }
 })
 
-# Fix Module Conflicts button handler
+# Legacy Fix Module Conflicts button handler (button moved to Settings). Guard against null.
+if ($null -ne $entraFixModulesButton) {
 $entraFixModulesButton.add_Click({
     $statusLabel.Text = "🔧 Fixing Microsoft Graph module conflicts..."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
@@ -6355,6 +6356,7 @@ $entraFixModulesButton.add_Click({
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
     }
 })
+}
 
 # Configure grids to auto-expand horizontally
 $userMailboxGrid.AutoSizeColumnsMode = 'Fill'
