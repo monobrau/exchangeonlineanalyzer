@@ -166,14 +166,17 @@ function Get-UserSecurityGroupsReport {
     try {
         $results = New-Object System.Collections.Generic.List[object]
 
-        # Directory roles (e.g., Global Administrator)
+        # Directory roles (e.g., Global Administrator) via REST to avoid parameter set issues
         $roles = @(); $roleIdToName = @{}
         try {
-            $roles = Get-MgDirectoryRole -All -ErrorAction Stop
-        } catch {
-            try { $roles = Get-MgDirectoryRole -ErrorAction Stop } catch { $roles = @() }
-        }
-        foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+            $uri = 'https://graph.microsoft.com/v1.0/directoryRoles?$select=id,displayName&$top=999'
+            do {
+                $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                if ($resp.value) { $roles += $resp.value }
+                $uri = $resp.'@odata.nextLink'
+            } while ($uri)
+        } catch { $roles = @() }
+        foreach ($r in $roles) { if ($r.Id) { $roleIdToName[$r.Id] = $r.DisplayName } }
 
         # Elevated/privileged role names (include legacy names)
         $highPrivilegeRoles = @(
@@ -184,25 +187,29 @@ function Get-UserSecurityGroupsReport {
             'Power Platform Administrator'
         )
 
-        # Users
+        # Users (REST paging to avoid -All parameter set issues)
         $users = @()
         try {
-            # Prefer -Select; some environments throw when combining -All and -Property
-            $users = Get-MgUser -All -Select 'id,displayName,userPrincipalName' -ErrorAction Stop
-        } catch {
-            try { $users = Get-MgUser -All -ErrorAction Stop | Select-Object id,displayName,userPrincipalName }
-            catch {
-                try { $users = Get-MgUser -Top 999 -ErrorAction Stop | Select-Object id,displayName,userPrincipalName }
-                catch { $users = @() }
-            }
-        }
+            $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName&$top=999'
+            do {
+                $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                if ($resp.value) { $users += $resp.value }
+                $uri = $resp.'@odata.nextLink'
+            } while ($uri)
+        } catch { $users = @() }
 
         $processUser = {
             param($u,$roleIdToName,$highPrivilegeRoles,$results)
             $roleNames = @(); $groupNames = @()
             try {
-                $mem = $null
-                try { $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction Stop } catch { $mem = Get-MgUserMemberOf -UserId $u.Id -ErrorAction Stop }
+                # Fetch memberOf via REST with paging; includes groups and directory roles
+                $mem = @()
+                $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
+                do {
+                    $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
+                    if ($mResp.value) { $mem += $mResp.value }
+                    $mUri = $mResp.'@odata.nextLink'
+                } while ($mUri)
                 foreach ($m in $mem) {
                     if ($m.'@odata.type' -eq '#microsoft.graph.group') { if ($m.DisplayName) { $groupNames += $m.DisplayName } }
                     elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
@@ -231,8 +238,13 @@ function Get-UserSecurityGroupsReport {
                 param($u,$map,$hi)
                 $roleNames = @(); $groupNames = @()
                 try {
-                    $mem = $null
-                    try { $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction Stop } catch { $mem = Get-MgUserMemberOf -UserId $u.Id -ErrorAction Stop }
+                    $mem = @()
+                    $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
+                    do {
+                        $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
+                        if ($mResp.value) { $mem += $mResp.value }
+                        $mUri = $mResp.'@odata.nextLink'
+                    } while ($mUri)
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { if ($m.DisplayName) { $groupNames += $m.DisplayName } }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
