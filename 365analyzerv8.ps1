@@ -15,7 +15,7 @@ Features:
 - XLSX report generation with advanced formatting
 
 .NOTES
-Version: 8.0
+Version: 8.1
 Requires: PowerShell 5.1+, ExchangeOnlineManagement, Microsoft.Graph modules, Microsoft Excel
 Permissions: Exchange administrative privileges and Microsoft Graph permissions
 
@@ -3830,6 +3830,30 @@ $searchMailboxesButton.add_Click({
         
         $statusLabel.Text = "Loaded $mailboxCount mailboxes matching '$searchTerm'"
         [System.Windows.Forms.MessageBox]::Show("Found and loaded $mailboxCount mailboxes matching '$searchTerm'.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+        # Populate Org Domains and Keywords based on the loaded subset (any >1)
+        try {
+            $subsetUpns = @()
+            for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
+                $u = $userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value
+                if ($u) { $subsetUpns += $u }
+            }
+            if ($subsetUpns.Count -gt 1) {
+                $doms = @()
+                try { if (Get-Command Get-AutoDetectedDomains -ErrorAction SilentlyContinue) { $doms = Get-AutoDetectedDomains -MailboxUPNs $subsetUpns } } catch {}
+                if (-not $doms -or $doms.Count -eq 0) {
+                    $counts = @{}
+                    foreach ($u in $subsetUpns) { if ($u -match '@(.+)$') { $d=$Matches[1].ToLower(); if ($counts.ContainsKey($d)){$counts[$d]++}else{$counts[$d]=1} } }
+                    $doms = ($counts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { $_.Key })
+                }
+                $orgDomainsTextBox.Text = ($doms -join ", ")
+
+                $autoKw = @(); foreach ($d in $doms) { try { $h=($d -split '\.')[0]; if ($h -and $h.Length -gt 2){ $autoKw += $h } } catch {} }
+                $kw = @(); if (Get-Variable -Name BaseSuspiciousKeywords -Scope Script -ErrorAction SilentlyContinue){ $kw += $script:BaseSuspiciousKeywords } elseif (Get-Variable -Name BaseSuspiciousKeywords -ErrorAction SilentlyContinue){ $kw += $BaseSuspiciousKeywords }
+                $kw += $autoKw
+                $keywordsTextBox.Text = (($kw | Where-Object { $_ -and $_.ToString().Trim().Length -gt 0 } | Sort-Object -Unique) -join ", ")
+            }
+        } catch {}
         
     } catch {
         $statusLabel.Text = "Error searching mailboxes: $($_.Exception.Message)"

@@ -2,7 +2,7 @@
 
 A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox rules, managing user accounts, monitoring security configurations, and investigating Entra ID (Azure AD) accounts. This tool provides administrators with powerful capabilities to detect suspicious inbox rules, manage user access, export detailed reports, and perform comprehensive Entra ID investigations.
 
-## 🔧 **Version 8.0 - Now Available!**
+## 🔧 **Version 8.1 - Now Available!**
 **✅ Fixed MS Graph Integration** - User blocking and session revocation in Entra ID now working properly
 **✅ Enhanced Module Management** - Automatic import and installation of Microsoft Graph PowerShell modules
 **✅ Improved Error Handling** - Better diagnostics and error messages for Graph operations
@@ -12,11 +12,11 @@ A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox ru
 ![Exchange Online](https://img.shields.io/badge/Exchange-Online-orange)
 ![Microsoft Graph](https://img.shields.io/badge/Microsoft-Graph-green)
 ![Entra ID](https://img.shields.io/badge/Entra-ID-purple)
-![Version](https://img.shields.io/badge/Version-8.0-blue)
+![Version](https://img.shields.io/badge/Version-8.1-blue)
 
-## 🚧 Version 8.1-beta (Preview)
+## 🚀 Entra Portal Shortcuts (v8.1)
 
-Entra Portal Shortcuts with Firefox Multi‑Account Containers (preview on branch `v8.1-beta`).
+Entra Portal Shortcuts with Firefox Multi‑Account Containers.
 
 Requirements:
 - Firefox (desktop)
@@ -313,7 +313,17 @@ Enable verbose output by modifying the script's debug settings or checking conso
 
 ## 📝 Version History
 
-### v8.0 (Current)
+### v8.1 (Current)
+- ✅ Entra Portal Shortcuts with Firefox containers; tenant auto‑match and deep links
+- ✅ AI Analysis tab: send report outputs to Gemini or Claude; Settings store API keys
+- ✅ Tenant-scoped export folders: Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\timestamp
+- ✅ Transport Rules and Connectors added to Security Investigation report exports
+- ✅ MFA coverage and user security groups included in investigation outputs
+- ✅ Robust domain/keyword detection on XOL tab for any subset of users
+- ✅ Improved Graph connection handling; device code fallback on module conflicts
+- ✅ Settings tab persists Investigator/Company and API keys
+
+### v8.0
 - ✅ **Fixed MS Graph Integration**: Resolved critical user blocking and session revocation issues in Entra ID
 - ✅ **Enhanced Module Management**: Automatic import and installation of Microsoft Graph PowerShell modules
 - ✅ **Improved Error Handling**: Better diagnostics and error messages for Graph operations
