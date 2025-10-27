@@ -42,61 +42,111 @@ function Get-MfaCoverageReport {
             foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
         $acc = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
-        $processUser = {
-            param($u,$secDefaultsEnabled,$mfaPolicies)
-            $directMfa = $false
-            try {
-                $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
-                if ($methods.value) {
-                    foreach ($m in $methods.value) {
-                        $otype = $m.'@odata.type'
-                        if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
-                            $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
-                            $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
-                            $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
-                            $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') { $directMfa = $true; break }
-                    }
-                }
-            } catch {}
-            $userGroups = @(); $userRoles = @()
-            try {
-                $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
-                foreach ($m in $mem) {
-                    if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
-                    elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
-                }
-            } catch {}
-            $userCaRequiresMfa = $false
-            foreach ($p in $mfaPolicies) {
-                $conds = $p.conditions; if (-not $conds) { continue }
-                $usersCond = $conds.users
-                $incAll = $false; $incUser = $false; $excluded = $false
-                if ($usersCond) {
-                    if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
-                    if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
-                    if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
-                    if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
-                    if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
-                    if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
-                }
-                $applies = ($incAll -or $incUser)
-                if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
-            }
-            $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
-            $acc.Add([pscustomobject]@{
-                DisplayName       = $u.displayName
-                UserPrincipalName = $u.userPrincipalName
-                PerUserMfaEnabled = $directMfa
-                SecurityDefaults  = $secDefaultsEnabled
-                CARequiresMfa     = $userCaRequiresMfa
-                MfaCovered        = $covered
-            }) | Out-Null
-        }
-
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $userPage | ForEach-Object -Parallel { & $using:processUser $_ $using:secDefaultsEnabled $using:mfaPolicies } -ThrottleLimit $ThrottleLimit
+            $userPage | ForEach-Object -Parallel {
+                param($u)
+                $directMfa = $false
+                try {
+                    $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
+                    if ($methods.value) {
+                        foreach ($m in $methods.value) {
+                            $otype = $m.'@odata.type'
+                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') { $directMfa = $true; break }
+                        }
+                    }
+                } catch {}
+                $userGroups = @(); $userRoles = @()
+                try {
+                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    foreach ($m in $mem) {
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
+                    }
+                } catch {}
+                $userCaRequiresMfa = $false
+                foreach ($p in $using:mfaPolicies) {
+                    $conds = $p.conditions; if (-not $conds) { continue }
+                    $usersCond = $conds.users
+                    $incAll = $false; $incUser = $false; $excluded = $false
+                    if ($usersCond) {
+                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
+                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
+                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
+                        if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
+                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
+                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
+                    }
+                    $applies = ($incAll -or $incUser)
+                    if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
+                }
+                $covered = ($directMfa -or $using:secDefaultsEnabled -or $userCaRequiresMfa)
+                $using:acc.Add([pscustomobject]@{
+                    DisplayName       = $u.displayName
+                    UserPrincipalName = $u.userPrincipalName
+                    PerUserMfaEnabled = $directMfa
+                    SecurityDefaults  = $using:secDefaultsEnabled
+                    CARequiresMfa     = $userCaRequiresMfa
+                    MfaCovered        = $covered
+                }) | Out-Null
+            } -ThrottleLimit $ThrottleLimit
         } else {
-            foreach ($u in $userPage) { & $processUser $u $secDefaultsEnabled $mfaPolicies }
+            foreach ($u in $userPage) {
+                & (Get-Command Get-MfaCoverageReport).ScriptBlock # placeholder no-op
+            }
+            foreach ($u in $userPage) {
+                # sequential path reuse same logic as above (inline for clarity)
+                $directMfa = $false
+                try {
+                    $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
+                    if ($methods.value) {
+                        foreach ($m in $methods.value) {
+                            $otype = $m.'@odata.type'
+                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') { $directMfa = $true; break }
+                        }
+                    }
+                } catch {}
+                $userGroups = @(); $userRoles = @()
+                try {
+                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    foreach ($m in $mem) {
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
+                    }
+                } catch {}
+                $userCaRequiresMfa = $false
+                foreach ($p in $mfaPolicies) {
+                    $conds = $p.conditions; if (-not $conds) { continue }
+                    $usersCond = $conds.users
+                    $incAll = $false; $incUser = $false; $excluded = $false
+                    if ($usersCond) {
+                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
+                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
+                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
+                        if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
+                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
+                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
+                    }
+                    $applies = ($incAll -or $incUser)
+                    if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
+                }
+                $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
+                $acc.Add([pscustomobject]@{
+                    DisplayName       = $u.displayName
+                    UserPrincipalName = $u.userPrincipalName
+                    PerUserMfaEnabled = $directMfa
+                    SecurityDefaults  = $secDefaultsEnabled
+                    CARequiresMfa     = $userCaRequiresMfa
+                    MfaCovered        = $covered
+                }) | Out-Null
+            }
         }
         $users = [System.Collections.ArrayList]$acc
         } catch {}
@@ -552,34 +602,55 @@ function Get-ExchangeMessageTrace {
 
         # Chunk by day to avoid server-side caps; run per-day windows, optionally in parallel
         $days = 0..9 | ForEach-Object { $start.AddDays($_) }
-        $collectDay = {
-            param($winStart,$hasV2,$results)
-            $winEnd = $winStart.AddDays(1)
-            try {
-                if ($hasV2) {
-                    $startRecipient = $null; $iterations = 0
-                    do {
-                        $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
-                        if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                        $chunk = Get-MessageTraceV2 @params
-                        if ($chunk) {
-                            $filtered = if ($startRecipient) { $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } } else { $chunk }
-                            if ($filtered) { [void]$results.AddRange($filtered) }
-                            $prev = $startRecipient; $last = $chunk[-1]; $startRecipient = $last.RecipientAddress
-                            if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
-                        } else { $startRecipient = $null }
-                        $iterations++
-                    } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
-                } else {
-                    $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
-                    if ($batch) { [void]$results.AddRange($batch) }
-                }
-            } catch {}
-        }
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $days | ForEach-Object -Parallel { & $using:collectDay $_ $using:hasV2 $using:results } -ThrottleLimit $ThrottleLimit
+            $days | ForEach-Object -Parallel {
+                param($winStart)
+                $winEnd = $winStart.AddDays(1)
+                try {
+                    if ($using:hasV2) {
+                        $startRecipient = $null; $iterations = 0
+                        do {
+                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
+                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
+                            $chunk = Get-MessageTraceV2 @params
+                            if ($chunk) {
+                                $filtered = if ($startRecipient) { $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } } else { $chunk }
+                                if ($filtered) { foreach($r in $filtered){ $using:results.Add($r) } }
+                                $prev = $startRecipient; $last = $chunk[-1]; $startRecipient = $last.RecipientAddress
+                                if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
+                            } else { $startRecipient = $null }
+                            $iterations++
+                        } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
+                    } else {
+                        $batch = Get-MessageTrace -StartDate $winEnd.AddDays(-1) -EndDate $winEnd -ErrorAction Stop
+                        if ($batch) { foreach($r in $batch){ $using:results.Add($r) } }
+                    }
+                } catch {}
+            } -ThrottleLimit $ThrottleLimit
         } else {
-            foreach ($d in $days) { & $collectDay $d $hasV2 $results }
+            foreach ($winStart in $days) {
+                $winEnd = $winStart.AddDays(1)
+                try {
+                    if ($hasV2) {
+                        $startRecipient = $null; $iterations = 0
+                        do {
+                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
+                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
+                            $chunk = Get-MessageTraceV2 @params
+                            if ($chunk) {
+                                $filtered = if ($startRecipient) { $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } } else { $chunk }
+                                if ($filtered) { [void]$results.AddRange($filtered) }
+                                $prev = $startRecipient; $last = $chunk[-1]; $startRecipient = $last.RecipientAddress
+                                if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
+                            } else { $startRecipient = $null }
+                            $iterations++
+                        } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
+                    } else {
+                        $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+                        if ($batch) { [void]$results.AddRange($batch) }
+                    }
+                } catch {}
+            }
         }
 
         return [System.Collections.ArrayList]$results
