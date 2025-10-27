@@ -5916,6 +5916,8 @@ $entraRequirePwdChangeButton.add_Click({
             $mainForm.Refresh()
             $context = Get-MgContext -ErrorAction Stop
             if (-not $context) { throw "Not connected to Microsoft Graph. Please connect first." }
+            # Validate user exists before attempting to set password policy
+            try { $null = Get-MgUser -UserId $userUpn -ErrorAction Stop } catch { throw "User not found: $userUpn" }
             $passwordProfile = @{ ForceChangePasswordNextSignIn = $true }
             Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
         }
