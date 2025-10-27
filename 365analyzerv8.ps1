@@ -5897,32 +5897,39 @@ $entraRequirePwdChangeButton.add_Click({
         }
     }
     if ($selectedUpns.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("Select at least one user to require password change, or the operation will be performed on all loaded users.", "No Users Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        # If no users selected, use all loaded users
-        for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
-            $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
-        }
-        if ($selectedUpns.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("No users available to require password change.", "No Users Available", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            return
-        }
+        [System.Windows.Forms.MessageBox]::Show("Select one or more users to require password change.", "No Users Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
     }
-    $confirm = [System.Windows.Forms.MessageBox]::Show("Require password change at next sign-in for the following user(s)?\n" + ($selectedUpns -join "\n"), "Confirm Require Password Change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    $preview = ($selectedUpns | Select-Object -First 10) -join "\n"
+    if ($selectedUpns.Count -gt 10) { $preview += "\n... +$($selectedUpns.Count-10) more" }
+    $confirm = [System.Windows.Forms.MessageBox]::Show(("Require password change at next sign-in for these user(s)?\n{0}" -f $preview), "Confirm Require Password Change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
     if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     try {
+        $success = New-Object System.Collections.Generic.List[string]
+        $failed  = New-Object System.Collections.Generic.List[string]
+        $total = $selectedUpns.Count; $idx = 0
         foreach ($userUpn in $selectedUpns) {
+            $idx++
             $statusLabel.Text = "Requiring password change for $userUpn..."
             $mainForm.Refresh()
             $context = Get-MgContext -ErrorAction Stop
             if (-not $context) { throw "Not connected to Microsoft Graph. Please connect first." }
-            # Validate user exists before attempting to set password policy
-            try { $null = Get-MgUser -UserId $userUpn -ErrorAction Stop } catch { throw "User not found: $userUpn" }
-            $passwordProfile = @{ ForceChangePasswordNextSignIn = $true }
-            Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
+            try {
+                # Validate user exists before attempting to set password policy
+                try { $null = Get-MgUser -UserId $userUpn -ErrorAction Stop } catch { throw "User not found: $userUpn" }
+                $passwordProfile = @{ ForceChangePasswordNextSignIn = $true }
+                Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
+                $success.Add($userUpn) | Out-Null
+            } catch {
+                $failed.Add(("{0} ({1})" -f $userUpn, $_.Exception.Message)) | Out-Null
+            }
+            $statusLabel.Text = ("Processed {0}/{1} users..." -f $idx, $total)
+            $mainForm.Refresh()
         }
-        [System.Windows.Forms.MessageBox]::Show("Password change required at next sign-in for selected user(s).", "Require Password Change", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        $statusLabel.Text = "Password change required for selected user(s)"
+        $msg = "Password change required for: `n" + ($success -join "`n")
+        if ($failed.Count -gt 0) { $msg += "`n`nFailed:`n" + ($failed -join "`n") }
+        [System.Windows.Forms.MessageBox]::Show($msg, "Require Password Change", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $statusLabel.Text = ("Password change required for {0} user(s); {1} failed" -f $success.Count, $failed.Count)
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to require password change: $($_.Exception.Message)", "Require Password Change Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         $statusLabel.Text = "Require password change failed"
