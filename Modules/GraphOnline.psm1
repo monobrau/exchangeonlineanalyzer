@@ -100,13 +100,27 @@ function Fix-GraphModuleConflicts {
             # Ignore errors clearing MSAL cache - method may not be available
         }
 
-        # Reinstall using umbrella to ensure consistent versions
+        # Reinstall using umbrella to ensure consistent versions (prefer CurrentUser)
         Write-Host "Installing Microsoft.Graph umbrella module for consistent versions..." -ForegroundColor Cyan
+        $umbrellaOk = $false
         try {
+            try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue } catch {}
             Install-Module -Name Microsoft.Graph -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
             Write-Host "✓ Microsoft.Graph installed successfully" -ForegroundColor Green
+            $umbrellaOk = $true
         } catch {
-            Write-Error "Failed to install Microsoft.Graph umbrella: $($_.Exception.Message)"
+            Write-Warning ("Umbrella install failed: {0}" -f $_.Exception.Message)
+            Write-Host "Falling back to installing required Microsoft.Graph submodules to CurrentUser scope..." -ForegroundColor Yellow
+            $req = @('Microsoft.Graph.Authentication','Microsoft.Graph.Users','Microsoft.Graph.Users.Actions','Microsoft.Graph.Identity.SignIns','Microsoft.Graph.Reports')
+            $subOk = $true
+            foreach ($m in $req) {
+                try { Install-Module -Name $m -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop; Write-Host ("✓ {0} installed" -f $m) -ForegroundColor Green }
+                catch { Write-Warning ("Failed to install {0}: {1}" -f $m, $_.Exception.Message); $subOk = $false }
+            }
+            if ($subOk) { $umbrellaOk = $true }
+        }
+        if (-not $umbrellaOk) {
+            Write-Error "Failed to install required Microsoft Graph modules in CurrentUser scope. Please run PowerShell as admin or install manually."
             return $false
         }
 
