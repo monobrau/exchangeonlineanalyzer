@@ -26,7 +26,8 @@ function Get-MfaCoverageReport {
             $requiresMfa = $false
             if ($grant) {
                 if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
-                # authenticationStrength also implies MFA, but skip for simplicity if missing
+                # Treat any authenticationStrength grant as MFA requirement
+                if (-not $requiresMfa -and $grant.authenticationStrength) { $requiresMfa = $true }
             }
             if ($requiresMfa) { $mfaPolicies += $p }
         }
@@ -53,12 +54,28 @@ function Get-MfaCoverageReport {
             } catch {}
             foreach ($r in $roles) { if ($r.Id) { $roleIdToName[$r.Id] = $r.DisplayName } }
 
+        # Preload user registration details as fallback per-user MFA signal
+        $regMap = @{}
+        try {
+            $ruri = 'https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails?$select=id,userPrincipalName,isMfaRegistered,isMfaCapable&$top=999'
+            do {
+                $rpage = Invoke-MgGraphRequest -Method GET -Uri $ruri -ErrorAction SilentlyContinue
+                if ($rpage.value) {
+                    foreach ($row in $rpage.value) {
+                        if ($row.id) { $regMap[$row.id] = @($row.isMfaRegistered,$row.isMfaCapable) -contains $true }
+                    }
+                }
+                $ruri = $rpage.'@odata.nextLink'
+            } while ($ruri)
+        } catch {}
+
         $acc = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
         if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
             $sec = $secDefaultsEnabled
             $pols = $mfaPolicies
+            $reg = $regMap
             $computed = $users | ForEach-Object -Parallel {
-                param($u,$sec,$pols)
+                param($u,$sec,$pols,$reg)
                 $directMfa = $false
                 try {
                     $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
@@ -73,9 +90,16 @@ function Get-MfaCoverageReport {
                         }
                     }
                 } catch {}
+                if (-not $directMfa -and $reg.ContainsKey($u.Id)) { $directMfa = [bool]$reg[$u.Id] }
                 $userGroups = @(); $userRoles = @()
                 try {
-                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    $mem = @()
+                    $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
+                    do {
+                        $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
+                        if ($mResp.value) { $mem += $mResp.value }
+                        $mUri = $mResp.'@odata.nextLink'
+                    } while ($mUri)
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
@@ -105,12 +129,9 @@ function Get-MfaCoverageReport {
                     CARequiresMfa     = $userCaRequiresMfa
                     MfaCovered        = $covered
                 }
-            } -ThrottleLimit $ThrottleLimit -ArgumentList $sec,$pols
+            } -ThrottleLimit $ThrottleLimit -ArgumentList $sec,$pols,$reg
             if ($computed) { foreach($o in $computed){ $acc.Add($o) } }
         } else {
-            foreach ($u in $users) {
-                & (Get-Command Get-MfaCoverageReport).ScriptBlock # placeholder no-op
-            }
             foreach ($u in $users) {
                 # sequential path reuse same logic as above (inline for clarity)
                 $directMfa = $false
@@ -127,9 +148,16 @@ function Get-MfaCoverageReport {
                         }
                     }
                 } catch {}
+                if (-not $directMfa -and $regMap.ContainsKey($u.Id)) { $directMfa = [bool]$regMap[$u.Id] }
                 $userGroups = @(); $userRoles = @()
                 try {
-                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    $mem = @()
+                    $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
+                    do {
+                        $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
+                        if ($mResp.value) { $mem += $mResp.value }
+                        $mUri = $mResp.'@odata.nextLink'
+                    } while ($mUri)
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
