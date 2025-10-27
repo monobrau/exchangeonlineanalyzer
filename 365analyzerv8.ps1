@@ -251,16 +251,54 @@ function Load-MailboxesOptimized {
         
 
         
-        # Auto-detect tenant/org domains from loaded mailboxes
-        $detectedDomains = Get-AutoDetectedDomains -MailboxUPNs $script:allLoadedMailboxUPNs
-        if ($detectedDomains -and $detectedDomains.Count -gt 0) {
-            $orgDomainsTextBox.Text = ($detectedDomains -join ", ")
-        } else {
-            $orgDomainsTextBox.Text = ""
+        # Auto-detect tenant/org domains from whatever UPNs are currently available (>1)
+        $candidateUpns = @()
+        try { $candidateUpns = $mailboxes | Where-Object { $_.UserPrincipalName } | Select-Object -ExpandProperty UserPrincipalName } catch {}
+        if (-not $candidateUpns -or $candidateUpns.Count -le 1) {
+            # Fall back to any UPNs already in the grid
+            for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
+                $upnVal = $userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value
+                if ($upnVal) { $candidateUpns += $upnVal }
+            }
         }
-        
-        # Populate suspicious keywords from $BaseSuspiciousKeywords
-        $keywordsTextBox.Text = ($BaseSuspiciousKeywords -join ", ")
+
+        $detectedDomains = @()
+        if ($candidateUpns -and $candidateUpns.Count -gt 1) {
+            try {
+                # Prefer helper if available
+                if (Get-Command Get-AutoDetectedDomains -ErrorAction SilentlyContinue) {
+                    $detectedDomains = Get-AutoDetectedDomains -MailboxUPNs $candidateUpns
+                }
+            } catch {}
+            if (-not $detectedDomains -or $detectedDomains.Count -eq 0) {
+                # Lightweight fallback: extract and rank domains by frequency
+                $domainCounts = @{}
+                foreach ($upn in $candidateUpns) {
+                    if ($upn -and ($upn -match '@(.+)$')) {
+                        $dom = $Matches[1].ToLower()
+                        if ([string]::IsNullOrWhiteSpace($dom)) { continue }
+                        if ($domainCounts.ContainsKey($dom)) { $domainCounts[$dom]++ } else { $domainCounts[$dom] = 1 }
+                    }
+                }
+                $detectedDomains = ($domainCounts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { $_.Key })
+            }
+        }
+
+        if ($detectedDomains -and $detectedDomains.Count -gt 0) { $orgDomainsTextBox.Text = ($detectedDomains -join ", ") } else { $orgDomainsTextBox.Text = "" }
+
+        # Populate suspicious keywords from $BaseSuspiciousKeywords plus auto keywords derived from detected domains
+        $autoKeywords = @()
+        foreach ($d in $detectedDomains) {
+            try {
+                $host = ($d -split '\.')[0]
+                if ($host -and $host.Length -gt 2) { $autoKeywords += $host }
+            } catch {}
+        }
+        $allKw = @()
+        if (Get-Variable -Name BaseSuspiciousKeywords -Scope Script -ErrorAction SilentlyContinue) { $allKw += $script:BaseSuspiciousKeywords }
+        elseif (Get-Variable -Name BaseSuspiciousKeywords -ErrorAction SilentlyContinue) { $allKw += $BaseSuspiciousKeywords }
+        $allKw += $autoKeywords
+        $keywordsTextBox.Text = (($allKw | Where-Object { $_ -and $_.ToString().Trim().Length -gt 0 } | Sort-Object -Unique) -join ", ")
         
         # Enable/disable buttons
         $selectAllButton.Enabled = $true
