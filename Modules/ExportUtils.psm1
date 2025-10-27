@@ -585,14 +585,14 @@ function New-SecurityInvestigationReport {
 
             if ($PSVersionTable.PSVersion.Major -ge 7) {
                 $exportItems | ForEach-Object -Parallel {
-                    param($item,$out)
-                    if ($item.Data -and $item.Data.Count -gt 0) {
-                        $csvPath  = Join-Path $out $item.Csv
-                        $jsonPath = Join-Path $out $item.Json
+                    $item = $_
+                    if ($item -and $item.Data -and $item.Data.Count -gt 0) {
+                        $csvPath  = Join-Path $using:out $item.Csv
+                        $jsonPath = Join-Path $using:out $item.Json
                         try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 }
                         catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
                     }
-                } -ThrottleLimit 4 -ArgumentList $out
+                } -ThrottleLimit 4
             } else {
                 foreach ($it in $exportItems) { & $exportAction $it $out }
             }
