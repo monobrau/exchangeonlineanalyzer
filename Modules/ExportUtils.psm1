@@ -69,17 +69,50 @@ function Get-MfaCoverageReport {
             try { Import-Module (Join-Path $PSScriptRoot 'EntraInvestigator.psm1') -Force -ErrorAction SilentlyContinue } catch {}
             $rows = New-Object System.Collections.Generic.List[object]
             foreach ($u in $users) {
+                $perUser = $false; $caReq = $false; $sdFlag = [bool]$secDefaultsEnabled
+                $hadAnalyzer = $false
                 try {
                     $st = Get-EntraUserMfaStatus -UserPrincipalName $u.userPrincipalName
-                    $rows.Add([pscustomobject]@{
-                        DisplayName       = $u.displayName
-                        UserPrincipalName = $u.userPrincipalName
-                        PerUserMfaEnabled = [bool]$st.PerUserMfa.Enabled
-                        SecurityDefaults  = [bool]$st.SecurityDefaults.Enabled
-                        CARequiresMfa     = [bool]$st.ConditionalAccess.RequiresMfa
-                        MfaCovered        = [bool]($st.PerUserMfa.Enabled -or $st.SecurityDefaults.Enabled -or $st.ConditionalAccess.RequiresMfa)
-                    }) | Out-Null
+                    if ($st -and $st.PerUserMfa -ne $null -and $st.SecurityDefaults -ne $null -and $st.ConditionalAccess -ne $null) {
+                        $perUser = [bool]$st.PerUserMfa.Enabled
+                        $sdFlag  = [bool]$st.SecurityDefaults.Enabled
+                        $caReq   = [bool]$st.ConditionalAccess.RequiresMfa
+                        $hadAnalyzer = $true
+                    }
                 } catch {}
+                if (-not $hadAnalyzer) {
+                    # Fallback: direct method and CA evaluation
+                    try {
+                        $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
+                        if ($methods.value) {
+                            foreach ($m in $methods.value) {
+                                $otype = $m.'@odata.type'
+                                if ($otype -match 'microsoftAuthenticator|phoneAuthentication|softwareOath|fido2|temporaryAccessPass') { $perUser = $true; break }
+                            }
+                        }
+                    } catch {}
+                    try {
+                        foreach ($p in $mfaPolicies) {
+                            if ($p.state -ne 'enabled') { continue }
+                            $cond = $p.conditions; if (-not $cond) { continue }
+                            $usersCond = $cond.users
+                            $applies = $false
+                            if ($usersCond) {
+                                if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $applies = $true }
+                                if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $applies = $false }
+                            }
+                            if ($applies -and $p.grantControls -and ($p.grantControls.builtInControls -contains 'mfa' -or $p.grantControls.authenticationStrength)) { $caReq = $true; break }
+                        }
+                    } catch {}
+                }
+                $rows.Add([pscustomobject]@{
+                    DisplayName       = $u.displayName
+                    UserPrincipalName = $u.userPrincipalName
+                    PerUserMfaEnabled = $perUser
+                    SecurityDefaults  = $sdFlag
+                    CARequiresMfa     = $caReq
+                    MfaCovered        = [bool]($perUser -or $sdFlag -or $caReq)
+                }) | Out-Null
             }
             $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
             return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = [System.Collections.ArrayList]$rows }
