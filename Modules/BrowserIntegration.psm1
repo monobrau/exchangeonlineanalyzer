@@ -267,7 +267,7 @@ function Open-EntraDeepLink {
     )
     switch ($Target) {
         'SignIns'            { $url = 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/SignIns/menuId/' }
-        'RestrictedEntities' { $url = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SecurityRestrictedEntitiesBlade/~/Overview' }
+        'RestrictedEntities' { $url = 'https://security.microsoft.com/restrictedentities' }
         'ConditionalAccess'  { $url = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConditionalAccessBlade/~/Policies' }
     }
     if ($ContainerName) { Open-FirefoxUrlInContainer -ProfileName $ProfileName -ContainerName $ContainerName -Url $url }
