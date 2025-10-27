@@ -168,7 +168,11 @@ function Get-UserSecurityGroupsReport {
 
         # Directory roles (e.g., Global Administrator)
         $roles = @(); $roleIdToName = @{}
-        try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
+        try {
+            $roles = Get-MgDirectoryRole -All -ErrorAction Stop
+        } catch {
+            try { $roles = Get-MgDirectoryRole -ErrorAction Stop } catch { $roles = @() }
+        }
         foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
         # Elevated/privileged role names (include legacy names)
@@ -182,13 +186,23 @@ function Get-UserSecurityGroupsReport {
 
         # Users
         $users = @()
-        try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
+        try {
+            # Prefer -Select; some environments throw when combining -All and -Property
+            $users = Get-MgUser -All -Select 'id,displayName,userPrincipalName' -ErrorAction Stop
+        } catch {
+            try { $users = Get-MgUser -All -ErrorAction Stop | Select-Object id,displayName,userPrincipalName }
+            catch {
+                try { $users = Get-MgUser -Top 999 -ErrorAction Stop | Select-Object id,displayName,userPrincipalName }
+                catch { $users = @() }
+            }
+        }
 
         $processUser = {
             param($u,$roleIdToName,$highPrivilegeRoles,$results)
             $roleNames = @(); $groupNames = @()
             try {
-                $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                $mem = $null
+                try { $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction Stop } catch { $mem = Get-MgUserMemberOf -UserId $u.Id -ErrorAction Stop }
                 foreach ($m in $mem) {
                     if ($m.'@odata.type' -eq '#microsoft.graph.group') { if ($m.DisplayName) { $groupNames += $m.DisplayName } }
                     elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
@@ -217,7 +231,8 @@ function Get-UserSecurityGroupsReport {
                 param($u,$map,$hi)
                 $roleNames = @(); $groupNames = @()
                 try {
-                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    $mem = $null
+                    try { $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction Stop } catch { $mem = Get-MgUserMemberOf -UserId $u.Id -ErrorAction Stop }
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { if ($m.DisplayName) { $groupNames += $m.DisplayName } }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
