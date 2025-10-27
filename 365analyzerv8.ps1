@@ -15,7 +15,7 @@ Features:
 - XLSX report generation with advanced formatting
 
 .NOTES
-Version: 8.0
+Version: 8.1
 Requires: PowerShell 5.1+, ExchangeOnlineManagement, Microsoft.Graph modules, Microsoft Excel
 Permissions: Exchange administrative privileges and Microsoft Graph permissions
 
@@ -251,16 +251,54 @@ function Load-MailboxesOptimized {
         
 
         
-        # Auto-detect tenant/org domains from loaded mailboxes
-        $detectedDomains = Get-AutoDetectedDomains -MailboxUPNs $script:allLoadedMailboxUPNs
-        if ($detectedDomains -and $detectedDomains.Count -gt 0) {
-            $orgDomainsTextBox.Text = ($detectedDomains -join ", ")
-        } else {
-            $orgDomainsTextBox.Text = ""
+        # Auto-detect tenant/org domains from whatever UPNs are currently available (>1)
+        $candidateUpns = @()
+        try { $candidateUpns = $mailboxes | Where-Object { $_.UserPrincipalName } | Select-Object -ExpandProperty UserPrincipalName } catch {}
+        if (-not $candidateUpns -or $candidateUpns.Count -le 1) {
+            # Fall back to any UPNs already in the grid
+            for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
+                $upnVal = $userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value
+                if ($upnVal) { $candidateUpns += $upnVal }
+            }
         }
-        
-        # Populate suspicious keywords from $BaseSuspiciousKeywords
-        $keywordsTextBox.Text = ($BaseSuspiciousKeywords -join ", ")
+
+        $detectedDomains = @()
+        if ($candidateUpns -and $candidateUpns.Count -gt 1) {
+            try {
+                # Prefer helper if available
+                if (Get-Command Get-AutoDetectedDomains -ErrorAction SilentlyContinue) {
+                    $detectedDomains = Get-AutoDetectedDomains -MailboxUPNs $candidateUpns
+                }
+            } catch {}
+            if (-not $detectedDomains -or $detectedDomains.Count -eq 0) {
+                # Lightweight fallback: extract and rank domains by frequency
+                $domainCounts = @{}
+                foreach ($upn in $candidateUpns) {
+                    if ($upn -and ($upn -match '@(.+)$')) {
+                        $dom = $Matches[1].ToLower()
+                        if ([string]::IsNullOrWhiteSpace($dom)) { continue }
+                        if ($domainCounts.ContainsKey($dom)) { $domainCounts[$dom]++ } else { $domainCounts[$dom] = 1 }
+                    }
+                }
+                $detectedDomains = ($domainCounts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { $_.Key })
+            }
+        }
+
+        if ($detectedDomains -and $detectedDomains.Count -gt 0) { $orgDomainsTextBox.Text = ($detectedDomains -join ", ") } else { $orgDomainsTextBox.Text = "" }
+
+        # Populate suspicious keywords from $BaseSuspiciousKeywords plus auto keywords derived from detected domains
+        $autoKeywords = @()
+        foreach ($d in $detectedDomains) {
+            try {
+                $host = ($d -split '\.')[0]
+                if ($host -and $host.Length -gt 2) { $autoKeywords += $host }
+            } catch {}
+        }
+        $allKw = @()
+        if (Get-Variable -Name BaseSuspiciousKeywords -Scope Script -ErrorAction SilentlyContinue) { $allKw += $script:BaseSuspiciousKeywords }
+        elseif (Get-Variable -Name BaseSuspiciousKeywords -ErrorAction SilentlyContinue) { $allKw += $BaseSuspiciousKeywords }
+        $allKw += $autoKeywords
+        $keywordsTextBox.Text = (($allKw | Where-Object { $_ -and $_.ToString().Trim().Length -gt 0 } | Sort-Object -Unique) -join ", ")
         
         # Enable/disable buttons
         $selectAllButton.Enabled = $true
@@ -276,10 +314,8 @@ function Load-MailboxesOptimized {
         $blockUserButton.Enabled = $false
         $unblockUserButton.Enabled = $false
         
-        # Debug: Log button state
-        Write-Host "Analyze Selected Button Enabled: $($analyzeSelectedButton.Enabled)"
-        Write-Host "Analyze Selected Button Visible: $($analyzeSelectedButton.Visible)"
-        Write-Host "Analyze Selected Button Text: $($analyzeSelectedButton.Text)"
+        # Update status with counts instead of verbose button diagnostics
+        $statusLabel.Text = "Ready. Connected to Exchange Online. Loaded $($mailboxes.Count) mailboxes."
         
         Show-Progress -message "Ready. Connected to Exchange Online. Loaded $($mailboxes.Count) mailboxes." -progress -1
         
@@ -1865,6 +1901,317 @@ $tabControl = New-Object System.Windows.Forms.TabControl
 $tabControl.Dock = 'Fill'
 $mainForm.Controls.Add($tabControl)
 
+# --- AI Analysis Tab ---
+$aiTab = New-Object System.Windows.Forms.TabPage
+$aiTab.Text = "AI Analysis"
+$aiPanel = New-Object System.Windows.Forms.Panel
+$aiPanel.Dock = 'Fill'
+$aiPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+# Title and description
+$aiTitle = New-Object System.Windows.Forms.Label
+$aiTitle.Text = "AI Analysis"
+$aiTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+$aiTitle.Location = New-Object System.Drawing.Point(10,10)
+$aiTitle.AutoSize = $true
+
+$aiDesc = New-Object System.Windows.Forms.Label
+$aiDesc.Text = "Send the latest or selected investigation dataset to Gemini or Claude for analysis. Configure API keys in Settings."
+$aiDesc.Location = New-Object System.Drawing.Point(10,35)
+$aiDesc.Size = New-Object System.Drawing.Size(740, 30)
+
+# Folder selection
+$aiProviderLabel = New-Object System.Windows.Forms.Label
+$aiProviderLabel.Text = "Provider:"
+$aiProviderLabel.Location = New-Object System.Drawing.Point(10,65)
+$aiProviderLabel.AutoSize = $true
+
+$aiProviderCombo = New-Object System.Windows.Forms.ComboBox
+$aiProviderCombo.Location = New-Object System.Drawing.Point(100, 62)
+$aiProviderCombo.Width = 140
+$aiProviderCombo.DropDownStyle = 'DropDownList'
+$aiProviderCombo.Items.AddRange(@('Gemini','Claude'))
+$aiProviderCombo.SelectedIndex = 0
+
+$aiFolderLabel = New-Object System.Windows.Forms.Label
+$aiFolderLabel.Text = "Report Folder:"
+$aiFolderLabel.Location = New-Object System.Drawing.Point(250,65)
+$aiFolderLabel.AutoSize = $true
+
+$aiFolderText = New-Object System.Windows.Forms.TextBox
+$aiFolderText.Location = New-Object System.Drawing.Point(340, 62)
+$aiFolderText.Width = 380
+
+$aiBrowseBtn = New-Object System.Windows.Forms.Button
+$aiBrowseBtn.Text = "Browse..."
+$aiBrowseBtn.Location = New-Object System.Drawing.Point(730, 60)
+$aiBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
+$aiBrowseBtn.add_Click({
+    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+    $fbd.Description = "Select the report folder that contains LLM_Instructions.txt and CSV files"
+    if ($aiFolderText.Text -and (Test-Path $aiFolderText.Text)) { $fbd.SelectedPath = $aiFolderText.Text }
+    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $aiFolderText.Text = $fbd.SelectedPath }
+})
+
+# Extra files list
+$aiExtraLabel = New-Object System.Windows.Forms.Label
+$aiExtraLabel.Text = "Extra Files (optional):"
+$aiExtraLabel.Location = New-Object System.Drawing.Point(10,110)
+$aiExtraLabel.AutoSize = $true
+
+$aiExtraList = New-Object System.Windows.Forms.ListBox
+$aiExtraList.Location = New-Object System.Drawing.Point(10,130)
+$aiExtraList.Size = New-Object System.Drawing.Size(610, 120)
+
+$aiAddExtraBtn = New-Object System.Windows.Forms.Button
+$aiAddExtraBtn.Text = "Add..."
+$aiAddExtraBtn.Location = New-Object System.Drawing.Point(630, 130)
+$aiAddExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
+$aiAddExtraBtn.add_Click({
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Title = "Select additional file(s) to include"
+    $ofd.Filter = "CSV/Text|*.csv;*.txt|All Files|*.*"
+    $ofd.Multiselect = $true
+    if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        foreach ($p in $ofd.FileNames) {
+            if (-not ($aiExtraList.Items -contains $p)) { [void]$aiExtraList.Items.Add($p) }
+        }
+    }
+})
+
+$aiRemoveExtraBtn = New-Object System.Windows.Forms.Button
+$aiRemoveExtraBtn.Text = "Remove"
+$aiRemoveExtraBtn.Location = New-Object System.Drawing.Point(630, 160)
+$aiRemoveExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
+$aiRemoveExtraBtn.add_Click({
+    $sel = @($aiExtraList.SelectedItems)
+    foreach ($it in $sel) { $aiExtraList.Items.Remove($it) }
+})
+
+# Send button and status
+$aiSendBtn = New-Object System.Windows.Forms.Button
+$aiSendBtn.Text = "Send to AI"
+$aiSendBtn.Location = New-Object System.Drawing.Point(10, 265)
+$aiSendBtn.Size = New-Object System.Drawing.Size(140, 30)
+
+$aiStatus = New-Object System.Windows.Forms.Label
+$aiStatus.Location = New-Object System.Drawing.Point(160, 270)
+$aiStatus.Size = New-Object System.Drawing.Size(555, 20)
+$aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+
+$aiPanel.Controls.AddRange(@($aiTitle,$aiDesc,$aiProviderLabel,$aiProviderCombo,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
+$aiTab.Controls.Add($aiPanel)
+$tabControl.TabPages.Add($aiTab)
+
+# Helper: get latest report folder (nested or legacy)
+$getLatestReportFolder = {
+    try {
+        $base = Join-Path $env:USERPROFILE "Documents\ExchangeOnlineAnalyzer\SecurityInvestigation"
+        if (-not (Test-Path $base)) { return $null }
+        $candidates = @()
+        $tenants = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue
+        foreach ($t in $tenants) {
+            $runs = Get-ChildItem -Path $t.FullName -Directory -ErrorAction SilentlyContinue
+            if ($runs) { $candidates += $runs }
+        }
+        $legacy = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{8}_\d{6}$' }
+        if ($legacy) { $candidates += $legacy }
+        if ($candidates -and $candidates.Count -gt 0) { return ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName }
+    } catch {}
+    return $null
+}
+
+# Prefill latest folder when the tab is entered
+$aiTab.add_Enter({
+    try {
+        if (-not $aiFolderText.Text -or -not (Test-Path $aiFolderText.Text)) {
+            $latest = & $getLatestReportFolder
+            if ($latest) { $aiFolderText.Text = $latest }
+        }
+    } catch {}
+})
+
+# Send to Gemini handler
+$aiSendBtn.add_Click({
+    try {
+        $folder = $aiFolderText.Text
+        if (-not $folder -or -not (Test-Path $folder)) { $aiStatus.Text = "Select a valid report folder."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+        $provider = $aiProviderCombo.SelectedItem
+        if ($provider -eq 'Gemini') {
+            $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Gemini.ps1"
+            if (-not (Test-Path $scriptPath)) { $aiStatus.Text = "Gemini sender script not found."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+        } else {
+            $scriptPath = Join-Path $PSScriptRoot "Scripts\Send-To-Claude.ps1"
+            if (-not (Test-Path $scriptPath)) { $aiStatus.Text = "Claude sender script not found."; $aiStatus.ForeColor = [System.Drawing.Color]::Red; return }
+        }
+
+        $extras = @(); foreach ($it in $aiExtraList.Items) { $extras += $it }
+
+        $aiSendBtn.Enabled = $false; $aiStatus.Text = ("Submitting to {0}..." -f $provider); $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $output = $null
+        try {
+            if ($provider -eq 'Gemini') {
+                if ($extras.Count -gt 0) {
+                    $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -Verbose 4>&1 }
+                    $output = & $ps $scriptPath $folder $extras
+                } else {
+                    $ps = { param($sp,$of) & $sp -OutputFolder $of -Verbose 4>&1 }
+                    $output = & $ps $scriptPath $folder
+                }
+            } else {
+                # Ensure Claude API key exists
+                try {
+                    Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                    $s = Get-AppSettings
+                    if (-not $s -or -not $s.ClaudeApiKey -or $s.ClaudeApiKey.Trim().Length -eq 0) {
+                        [System.Windows.Forms.MessageBox]::Show("Please add your Claude API key in the Settings tab first.", "Claude API Key Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        return
+                    }
+                } catch {}
+                if ($extras.Count -gt 0) {
+                    $ps = { param($sp,$of,$ef) & $sp -OutputFolder $of -ExtraFiles $ef -MaxCsvRows 2000 -VerboseOutput 4>&1 }
+                    $output = & $ps $scriptPath $folder $extras
+                } else {
+                    $ps = { param($sp,$of) & $sp -OutputFolder $of -MaxCsvRows 2000 -VerboseOutput 4>&1 }
+                    $output = & $ps $scriptPath $folder
+                }
+            }
+        } catch {
+            $output = $_.Exception.Message
+        } finally {
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $aiSendBtn.Enabled = $true
+        }
+
+        $respFile = if ($provider -eq 'Gemini') { Join-Path $folder "Gemini_Response.md" } else { Join-Path $folder "Claude_Response.md" }
+        $errFile  = if ($provider -eq 'Gemini') { Join-Path $folder "Gemini_Error.txt" } else { Join-Path $folder "Claude_Error.txt" }
+        if (Test-Path $respFile) {
+            $aiStatus.Text = ("Saved: {0}" -f $respFile); $aiStatus.ForeColor = [System.Drawing.Color]::Green
+            try { Start-Process $respFile } catch {}
+        } elseif (Test-Path $errFile) {
+            $aiStatus.Text = ("{0} error. See: {1}" -f $provider, $errFile); $aiStatus.ForeColor = [System.Drawing.Color]::Red
+            try { Start-Process $errFile } catch {}
+        } else {
+            $aiStatus.Text = ("Completed. Check folder for {0} (see console for details)." -f [System.IO.Path]::GetFileName($respFile));
+            $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+            if ($output) { [System.Windows.Forms.MessageBox]::Show(("Output:`n{0}" -f ($output | Out-String)), "Send to AI", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) }
+        }
+    } catch {
+        $aiStatus.Text = $_.Exception.Message; $aiStatus.ForeColor = [System.Drawing.Color]::Red
+    }
+})
+# --- Settings Tab ---
+try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
+$settingsTab = New-Object System.Windows.Forms.TabPage
+$settingsTab.Text = "Settings"
+$settingsPanel = New-Object System.Windows.Forms.Panel
+$settingsPanel.Dock = 'Fill'
+$settingsPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+$sTitle = New-Object System.Windows.Forms.Label
+$sTitle.Text = "Application Settings"
+$sTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+$sTitle.Location = New-Object System.Drawing.Point(10,10)
+$sTitle.AutoSize = $true
+
+$lblInv = New-Object System.Windows.Forms.Label
+$lblInv.Text = "Investigator Name:"
+$lblInv.Location = New-Object System.Drawing.Point(10,45)
+$lblInv.AutoSize = $true
+
+$txtInv = New-Object System.Windows.Forms.TextBox
+$txtInv.Location = New-Object System.Drawing.Point(150, 42)
+$txtInv.Width = 300
+
+$lblCo = New-Object System.Windows.Forms.Label
+$lblCo.Text = "Company Name:"
+$lblCo.Location = New-Object System.Drawing.Point(10,75)
+$lblCo.AutoSize = $true
+
+$txtCo = New-Object System.Windows.Forms.TextBox
+$txtCo.Location = New-Object System.Drawing.Point(150, 72)
+$txtCo.Width = 300
+
+$lblGem = New-Object System.Windows.Forms.Label
+$lblGem.Text = "Gemini API Key:"
+$lblGem.Location = New-Object System.Drawing.Point(10,105)
+$lblGem.AutoSize = $true
+
+$txtGem = New-Object System.Windows.Forms.TextBox
+$txtGem.Location = New-Object System.Drawing.Point(150, 102)
+$txtGem.Width = 300
+$txtGem.UseSystemPasswordChar = $true
+
+$lblClaude = New-Object System.Windows.Forms.Label
+$lblClaude.Text = "Claude API Key:"
+$lblClaude.Location = New-Object System.Drawing.Point(10,135)
+$lblClaude.AutoSize = $true
+
+$txtClaude = New-Object System.Windows.Forms.TextBox
+$txtClaude.Location = New-Object System.Drawing.Point(150, 132)
+$txtClaude.Width = 300
+$txtClaude.UseSystemPasswordChar = $true
+
+$btnSave = New-Object System.Windows.Forms.Button
+$btnSave.Text = "Save"
+$btnSave.Location = New-Object System.Drawing.Point(150, 165)
+$btnSave.Width = 100
+
+$lblStatus = New-Object System.Windows.Forms.Label
+$lblStatus.Location = New-Object System.Drawing.Point(10,200)
+$lblStatus.AutoSize = $true
+$lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+
+$settingsPanel.Controls.AddRange(@($sTitle,$lblInv,$txtInv,$lblCo,$txtCo,$lblGem,$txtGem,$lblClaude,$txtClaude,$btnSave,$lblStatus))
+$settingsTab.Controls.Add($settingsPanel)
+$tabControl.TabPages.Add($settingsTab)
+
+$settingsTab.add_Enter({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        $s = Get-AppSettings
+        if ($s) { $txtInv.Text = $s.InvestigatorName; $txtCo.Text = $s.CompanyName; $txtGem.Text = $s.GeminiApiKey; $txtClaude.Text = $s.ClaudeApiKey }
+        $lblStatus.Text = ""
+    } catch {}
+})
+
+$btnSave.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        $s = [pscustomobject]@{ InvestigatorName=$txtInv.Text; CompanyName=$txtCo.Text; GeminiApiKey=$txtGem.Text; ClaudeApiKey=$txtClaude.Text }
+        if (Save-AppSettings -Settings $s) { $lblStatus.Text = "Saved."; $lblStatus.ForeColor = [System.Drawing.Color]::Green } else { $lblStatus.Text = "Failed to save."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+})
+
+# Add Fix Module Conflicts button to Settings tab
+$fixModsBtn = New-Object System.Windows.Forms.Button
+$fixModsBtn.Text = "Fix Graph Module Conflicts"
+$fixModsBtn.Location = New-Object System.Drawing.Point(270, 165)
+$fixModsBtn.Width = 180
+$settingsPanel.Controls.Add($fixModsBtn)
+$fixModsBtn.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
+        $lblStatus.Text = "Fixing Graph modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        $ok = Fix-GraphModuleConflicts -statusLabel $null
+        if ($ok) { $lblStatus.Text = "Graph modules repaired. Restart PowerShell."; $lblStatus.ForeColor = [System.Drawing.Color]::Green }
+        else { $lblStatus.Text = "Repair failed. See console."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+})
+
+# Ensure Settings tab is the rightmost tab (last position)
+try {
+    $mainForm.add_Shown({
+        try {
+            if ($tabControl.TabPages.Contains($settingsTab)) {
+                $tabControl.TabPages.Remove($settingsTab)
+                $tabControl.TabPages.Add($settingsTab)
+            }
+        } catch {}
+    })
+} catch {}
+
 # --- Exchange Online Controls Instantiation ---
 $connectButton = New-Object System.Windows.Forms.Button
 $connectButton.Text = "Connect"
@@ -2000,10 +2347,8 @@ $analyzeSelectedButton.Visible = $true
 $analyzeSelectedButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $analyzeSelectedButtonTooltip.SetToolTip($analyzeSelectedButton, "Perform detailed analysis (rules & permissions) for selected mailboxes")
 
-# Debug: Log button creation
-Write-Host "Analyze Selected Button created: $($analyzeSelectedButton.Text)"
-Write-Host "Analyze Selected Button Enabled: $($analyzeSelectedButton.Enabled)"
-Write-Host "Analyze Selected Button Visible: $($analyzeSelectedButton.Visible)"
+# Initialize Analyze Selected button state
+$analyzeSelectedButton.Enabled = $false
 
 # Mailbox list grid
 $userMailboxGrid = New-Object System.Windows.Forms.DataGridView
@@ -2325,13 +2670,7 @@ $entraDisconnectGraphButton.Width = 140
 $entraDisconnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDisconnectGraphButtonTooltip.SetToolTip($entraDisconnectGraphButton, "Disconnect from Microsoft Graph")
 
-$entraFixModulesButton = New-Object System.Windows.Forms.Button
-$entraFixModulesButton.Text = "Fix Module Conflicts"
-$entraFixModulesButton.Width = 160
-$entraFixModulesButton.Enabled = $true
-$entraFixModulesButton.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7) # Yellow/Orange color
-$entraFixModulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$entraFixModulesButtonTooltip.SetToolTip($entraFixModulesButton, "Fix Microsoft Graph module version conflicts that prevent connection")
+## Moved Fix Module Conflicts button to Settings tab
 
 $entraOutputFolderLabel = New-Object System.Windows.Forms.Label
 $entraOutputFolderLabel.Text = "Export Folder:"
@@ -2426,14 +2765,7 @@ $entraResetPasswordButton.Enabled = $false
 $entraResetPasswordButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraResetPasswordButtonTooltip.SetToolTip($entraResetPasswordButton, "Reset user password with memorable strong password (select one user)")
 
-# Add restricted senders management button for Entra ID tab
-$entraOpenDefenderRestrictedUsersButton = New-Object System.Windows.Forms.Button
-$entraOpenDefenderRestrictedUsersButton.Text = "Open Defender Restricted Users"
-$entraOpenDefenderRestrictedUsersButton.Width = 200
-$entraOpenDefenderRestrictedUsersButton.Enabled = $true
-$entraOpenDefenderRestrictedUsersButton.BackColor = [System.Drawing.Color]::LightBlue
-$entraOpenDefenderRestrictedUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$entraOpenDefenderRestrictedUsersButtonTooltip.SetToolTip($entraOpenDefenderRestrictedUsersButton, "Open Microsoft Defender Restricted Users page")
+## Removed Open Defender Restricted Users button per request
 
 # Add Select All/Deselect All buttons for Entra ID tab
 $entraSelectAllButton = New-Object System.Windows.Forms.Button
@@ -2551,10 +2883,7 @@ $exchangeTopRow1.Controls.Add($exchangeSearchTextBox)
 $topActionPanel.Controls.Add($exchangeTopRow1)
 $topActionPanel.Controls.Add($exchangeTopRow2)
 
-# Debug: Log button addition to panel
-Write-Host "Exchange Online buttons organized into two rows"
-Write-Host "Row 1 Controls Count: $($exchangeTopRow1.Controls.Count)"
-Write-Host "Row 2 Controls Count: $($exchangeTopRow2.Controls.Count)"
+# No-op: removed verbose layout debug logging
 
 $exchangeTab.Controls.Add($topActionPanel)
 
@@ -3502,6 +3831,30 @@ $searchMailboxesButton.add_Click({
         $statusLabel.Text = "Loaded $mailboxCount mailboxes matching '$searchTerm'"
         [System.Windows.Forms.MessageBox]::Show("Found and loaded $mailboxCount mailboxes matching '$searchTerm'.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         
+        # Populate Org Domains and Keywords based on the loaded subset (any >1)
+        try {
+            $subsetUpns = @()
+            for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
+                $u = $userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value
+                if ($u) { $subsetUpns += $u }
+            }
+            if ($subsetUpns.Count -gt 1) {
+                $doms = @()
+                try { if (Get-Command Get-AutoDetectedDomains -ErrorAction SilentlyContinue) { $doms = Get-AutoDetectedDomains -MailboxUPNs $subsetUpns } } catch {}
+                if (-not $doms -or $doms.Count -eq 0) {
+                    $counts = @{}
+                    foreach ($u in $subsetUpns) { if ($u -match '@(.+)$') { $d=$Matches[1].ToLower(); if ($counts.ContainsKey($d)){$counts[$d]++}else{$counts[$d]=1} } }
+                    $doms = ($counts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { $_.Key })
+                }
+                $orgDomainsTextBox.Text = ($doms -join ", ")
+
+                $autoKw = @(); foreach ($d in $doms) { try { $h=($d -split '\.')[0]; if ($h -and $h.Length -gt 2){ $autoKw += $h } } catch {} }
+                $kw = @(); if (Get-Variable -Name BaseSuspiciousKeywords -Scope Script -ErrorAction SilentlyContinue){ $kw += $script:BaseSuspiciousKeywords } elseif (Get-Variable -Name BaseSuspiciousKeywords -ErrorAction SilentlyContinue){ $kw += $BaseSuspiciousKeywords }
+                $kw += $autoKw
+                $keywordsTextBox.Text = (($kw | Where-Object { $_ -and $_.ToString().Trim().Length -gt 0 } | Sort-Object -Unique) -join ", ")
+            }
+        } catch {}
+        
     } catch {
         $statusLabel.Text = "Error searching mailboxes: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error searching mailboxes: $($_.Exception.Message)", "Search Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -4025,6 +4378,7 @@ $reportGeneratorTab.Text = "Report Generator"
 $reportGeneratorPanel = New-Object System.Windows.Forms.Panel
 $reportGeneratorPanel.Dock = 'Fill'
 $reportGeneratorPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+$reportGeneratorPanel.AutoScroll = $true
 
 # Title label
 $reportGeneratorTitleLabel = New-Object System.Windows.Forms.Label
@@ -4046,8 +4400,9 @@ $reportGeneratorPanel.Controls.Add($reportGeneratorDescLabel)
 # Account Selector Group
 $accountSelectorGroup = New-Object System.Windows.Forms.GroupBox
 $accountSelectorGroup.Text = "Account Selection"
-$accountSelectorGroup.Location = New-Object System.Drawing.Point(10, 100)
-$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 500)
+$accountSelectorGroup.Location = New-Object System.Drawing.Point(10, 90)
+$accountSelectorGroup.Size = New-Object System.Drawing.Size(800, 330)
+$accountSelectorGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $accountSelectorGroup.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 
 # Account selector description
@@ -4061,7 +4416,7 @@ $accountSelectorGroup.Controls.Add($accountSelectorDescLabel)
 # Unified account grid
 $unifiedAccountGrid = New-Object System.Windows.Forms.DataGridView
 $unifiedAccountGrid.Location = New-Object System.Drawing.Point(10, 50)
-$unifiedAccountGrid.Size = New-Object System.Drawing.Size(760, 400)
+$unifiedAccountGrid.Size = New-Object System.Drawing.Size(760, 280)
 $unifiedAccountGrid.ReadOnly = $false
 $unifiedAccountGrid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
 $unifiedAccountGrid.MultiSelect = $true
@@ -4110,7 +4465,7 @@ $accountSelectorGroup.Controls.Add($unifiedAccountGrid)
 # Account selector buttons
 $refreshAccountsButton = New-Object System.Windows.Forms.Button
 $refreshAccountsButton.Text = "🔄 Refresh Account List"
-$refreshAccountsButton.Location = New-Object System.Drawing.Point(10, 460)
+$refreshAccountsButton.Location = New-Object System.Drawing.Point(10, 370)
 $refreshAccountsButton.Size = New-Object System.Drawing.Size(180, 35)
 $refreshAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $refreshAccountsButton.BackColor = [System.Drawing.Color]::LightBlue
@@ -4118,13 +4473,13 @@ $refreshAccountsButton.ForeColor = [System.Drawing.Color]::DarkBlue
 
 $selectAllAccountsButton = New-Object System.Windows.Forms.Button
 $selectAllAccountsButton.Text = "Select All"
-$selectAllAccountsButton.Location = New-Object System.Drawing.Point(200, 460)
+$selectAllAccountsButton.Location = New-Object System.Drawing.Point(200, 370)
 $selectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 35)
 $selectAllAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $deselectAllAccountsButton = New-Object System.Windows.Forms.Button
 $deselectAllAccountsButton.Text = "Deselect All"
-$deselectAllAccountsButton.Location = New-Object System.Drawing.Point(310, 460)
+$deselectAllAccountsButton.Location = New-Object System.Drawing.Point(310, 370)
 $deselectAllAccountsButton.Size = New-Object System.Drawing.Size(100, 35)
 $deselectAllAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
@@ -4248,6 +4603,16 @@ $securityInvestigationButton.add_Click({
         $companyNameTextBox.Location = New-Object System.Drawing.Point(145, 57)
         $companyNameTextBox.Size = New-Object System.Drawing.Size(230, 20)
 
+        # Prefill from saved settings if available
+        try {
+            Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+            $s = Get-AppSettings
+            if ($s) {
+                if ($s.InvestigatorName -and $s.InvestigatorName.Trim().Length -gt 0) { $investigatorNameTextBox.Text = $s.InvestigatorName }
+                if ($s.CompanyName -and $s.CompanyName.Trim().Length -gt 0) { $companyNameTextBox.Text = $s.CompanyName }
+            }
+        } catch {}
+
         # Days to Analyze
         $daysLabel = New-Object System.Windows.Forms.Label
         $daysLabel.Text = "Days to Analyze:"
@@ -4306,8 +4671,10 @@ $securityInvestigationButton.add_Click({
 
         # Generate button click handler
         $generateButton.add_Click({
-            $investigator = $investigatorNameTextBox.Text
-            $company = $companyNameTextBox.Text
+            try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
+            $settings = $null; try { $settings = Get-AppSettings } catch {}
+            $investigator = if ($investigatorNameTextBox.Text -and $investigatorNameTextBox.Text.Trim().Length -gt 0) { $investigatorNameTextBox.Text } elseif ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
+            $company = if ($companyNameTextBox.Text -and $companyNameTextBox.Text.Trim().Length -gt 0) { $companyNameTextBox.Text } elseif ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
             $days = [int]$daysComboBox.SelectedItem
 
             $progressLabel.Text = "🔍 Starting comprehensive security investigation..."
@@ -4320,9 +4687,23 @@ $securityInvestigationButton.add_Click({
                 Import-Module "$PSScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
 
                 # Resolve output folder for this run
+                # Determine tenant-scoped folder root to match ExportUtils behavior
                 $defaultRoot = Join-Path $env:USERPROFILE "Documents\\ExchangeOnlineAnalyzer\\SecurityInvestigation"
-                if (-not (Test-Path $defaultRoot)) { New-Item -ItemType Directory -Path $defaultRoot -Force | Out-Null }
-                $timestampFolder = Join-Path $defaultRoot (Get-Date -Format "yyyyMMdd_HHmmss")
+                $tenantName = $null
+                try {
+                    Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+                    $ti = $null; try { $ti = Get-TenantIdentity } catch {}
+                    if ($ti) { if ($ti.TenantDisplayName) { $tenantName = $ti.TenantDisplayName } elseif ($ti.PrimaryDomain) { $tenantName = $ti.PrimaryDomain } }
+                    if (-not $tenantName) { try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org.DisplayName) { $tenantName = $org.DisplayName } elseif ($org.Name) { $tenantName = $org.Name } } catch {} }
+                } catch {}
+                if (-not $tenantName -or [string]::IsNullOrWhiteSpace($tenantName)) { $tenantName = 'Tenant' }
+                $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+                $safeName = ($tenantName.ToCharArray() | ForEach-Object { if ($invalid -contains $_) { '-' } else { $_ } }) -join ''
+                $safeName = ($safeName -replace '\s+', ' ').Trim()
+                if ($safeName.Length -gt 80) { $safeName = $safeName.Substring(0,80) }
+                $tenantRoot = Join-Path $defaultRoot $safeName
+                if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
+                $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
 
                 # Generate the security investigation report with export paths
                 $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder
@@ -4476,17 +4857,26 @@ $reportGeneratorPanel.Controls.Add($accountSelectorGroup)
 # Add Report Generator tab to tab control
 $tabControl.TabPages.Add($reportGeneratorTab)
 
+# Reposition AI Analysis tab to the right of Report Generator
+try {
+    if ($tabControl.TabPages.Contains($aiTab)) { $tabControl.TabPages.Remove($aiTab) }
+    $tabControl.TabPages.Add($aiTab)
+} catch {}
+
 # Initialize unified account grid when Report Generator tab is first shown
 $reportGeneratorTab.add_Enter({
     try {
         # Update connection status first
         Update-ConnectionStatus
         
-        # Check if we have data from both sources
+        # Check if we have any connection/data and only show popup when neither is connected/loaded
+        $exoConnected = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoConnected = $true } catch {}
+        $mgConnected = $false; try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true } } catch {}
+
         $hasExchangeData = $script:allLoadedMailboxUPNs -and $script:allLoadedMailboxUPNs.Count -gt 0
         $hasEntraData = $entraUserGrid.Rows.Count -gt 0
         
-        if (-not $hasExchangeData -and -not $hasEntraData) {
+        if (-not $exoConnected -and -not $mgConnected -and -not $hasExchangeData -and -not $hasEntraData) {
             $statusLabel.Text = "⚠️ No data available - please connect to Exchange Online and/or Entra ID first"
             [System.Windows.Forms.MessageBox]::Show(
                 "No account data available for reports.`n`nPlease connect to Exchange Online and/or Entra ID first, then refresh the account list.",
@@ -4640,7 +5030,7 @@ $generateReportButton.add_Click({
         })
         $obsidianTab.Controls.Add($copyObsidianButton)
 
-
+        
         # Add tabs to tab control
         $reportTabControl.TabPages.Add($professionalTab)
         $reportTabControl.TabPages.Add($obsidianTab)
@@ -4660,6 +5050,260 @@ $generateReportButton.add_Click({
         [System.Windows.Forms.MessageBox]::Show("Error generating unified professional report: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
+
+# --- Entra Portal Shortcuts (v8.1b) ---
+$entraPortalGroup = New-Object System.Windows.Forms.GroupBox
+$entraPortalGroup.Text = "Entra Portal Shortcuts (Preview)"
+$entraPortalGroup.Location = New-Object System.Drawing.Point(10, 465)
+$entraPortalGroup.Size = New-Object System.Drawing.Size(780, 140)
+$entraPortalGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+$reportGeneratorPanel.Controls.Add($entraPortalGroup)
+$entraPortalGroup.BringToFront()
+
+$profileLabel = New-Object System.Windows.Forms.Label
+$profileLabel.Text = "Firefox Profile:"
+$profileLabel.Location = New-Object System.Drawing.Point(15, 25)
+$profileCombo = New-Object System.Windows.Forms.ComboBox
+$profileCombo.Location = New-Object System.Drawing.Point(115, 22)
+$profileCombo.Width = 100
+
+$containerLabel = New-Object System.Windows.Forms.Label
+$containerLabel.Text = "Container:"
+$containerLabel.Location = New-Object System.Drawing.Point(250, 25)
+$containerCombo = New-Object System.Windows.Forms.ComboBox
+$containerCombo.Location = New-Object System.Drawing.Point(320, 22)
+$containerCombo.Width = 200
+
+$openSignInsBtn = New-Object System.Windows.Forms.Button
+$openSignInsBtn.Text = "Open Sign-in Logs"
+$openSignInsBtn.Location = New-Object System.Drawing.Point(15, 50)
+$openSignInsBtn.Size = New-Object System.Drawing.Size(130, 25)
+
+$openRestrictedBtn = New-Object System.Windows.Forms.Button
+$openRestrictedBtn.Text = "Restricted Entities"
+$openRestrictedBtn.Location = New-Object System.Drawing.Point(290, 50)
+$openRestrictedBtn.Size = New-Object System.Drawing.Size(130, 25)
+
+$openCABtn = New-Object System.Windows.Forms.Button
+$openCABtn.Text = "Conditional Access"
+$openCABtn.Location = New-Object System.Drawing.Point(150, 50)
+$openCABtn.Size = New-Object System.Drawing.Size(130, 25)
+
+$entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabel,$containerCombo,$openSignInsBtn,$openRestrictedBtn,$openCABtn))
+$profileCombo.BringToFront()
+$containerCombo.BringToFront()
+
+# Helper note about required extension
+$extNote = New-Object System.Windows.Forms.Label
+$extNote.AutoSize = $true
+$extNote.Location = New-Object System.Drawing.Point(15, 80)
+$extNote.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
+$extNote.Text = "Requires Firefox add-on 'Open external links in a container'. If not installed, links open in a normal tab."
+$entraPortalGroup.Controls.Add($extNote)
+
+$loadFirefoxUi = {
+    try {
+        $ffStatusLabel.Text = "Loading Firefox profiles..."
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction Stop
+
+        $profilesIniPath = Join-Path $env:APPDATA 'Mozilla\Firefox\profiles.ini'
+        $basePath = Join-Path $env:APPDATA 'Mozilla\Firefox'
+
+        $profiles = @()
+        try { $profiles = Get-FirefoxProfiles } catch { $ffStatusLabel.Text = "Error: Get-FirefoxProfiles failed: $($_.Exception.Message)"; return }
+
+        $profileCombo.Items.Clear()
+        foreach ($p in $profiles) { if ($p -and $p.Name) { [void]$profileCombo.Items.Add($p.Name) } }
+
+        # Prefer the most recently used/updated profile based on containers.json timestamp; fall back to 'Default' then first
+        $latestProfile = $null
+        $latestTime = [datetime]::MinValue
+        foreach ($p in $profiles) {
+            try {
+                if (-not $p -or -not $p.Path) { continue }
+                $pp = if ($p.Path -like '*:*') { $p.Path } else { Join-Path $basePath $p.Path }
+                $cp = Join-Path $pp 'containers.json'
+                $t = $null
+                if (Test-Path $cp) { $t = (Get-Item $cp).LastWriteTime }
+                elseif (Test-Path $pp) { $t = (Get-Item $pp).LastWriteTime }
+                if ($t -and ($t -gt $latestTime)) { $latestTime = $t; $latestProfile = $p }
+            } catch {}
+        }
+        $default = $null
+        try { $default = ($profiles | Where-Object { $_.Default -eq $true } | Select-Object -First 1) } catch {}
+        if ($latestProfile -and $latestProfile.Name) { $profileCombo.SelectedItem = $latestProfile.Name }
+        elseif ($default -and $default.Name) { $profileCombo.SelectedItem = $default.Name }
+        elseif ($profileCombo.Items.Count -gt 0) { $profileCombo.SelectedIndex = 0 }
+
+        $containerCombo.Items.Clear()
+        if ($profileCombo.SelectedItem) {
+            $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+            if ($prof -and $prof.Path) {
+                $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path $basePath $prof.Path }
+                if (Test-Path $ppath) {
+                    try {
+                        $containers = Get-FirefoxContainers -ProfilePath $ppath
+                        # Filter out internal/synthetic names and sort alphabetically
+                        $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+                        $containerCombo.Items.Clear(); foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
+                        if ($containerCombo.Items.Count -gt 0) {
+                            $tenant = Get-TenantIdentity
+                            $bestName = $null; $bestScore = 0.0
+                            try {
+                                Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+                                $names = ($visible | Select-Object -ExpandProperty name)
+                                $best = Get-BestContainerName -ContainerNames $names -TenantIdentity $tenant
+                                if ($best) { $bestName = $best.Name; $bestScore = $best.Score }
+                            } catch {}
+
+                            # Fallback heuristics if low score
+                            if (-not $bestName -or -not ($containerCombo.Items -contains $bestName) -or $bestScore -lt 0.5) {
+                                $norm = @{}
+                                foreach ($n in $containerCombo.Items) {
+                                    $key = ($n.ToString().ToLower() -replace '[^a-z0-9 ]',' ' -replace '\s+',' ').Trim()
+                                    if (-not $norm.ContainsKey($key)) { $norm[$key] = $n }
+                                }
+                                $targets = @()
+                                if ($tenant.TenantDisplayName) { $targets += $tenant.TenantDisplayName }
+                                if ($tenant.PrimaryDomain) { $targets += $tenant.PrimaryDomain; $targets += ($tenant.PrimaryDomain -split '\.')[0] }
+                                if ($tenant.Domains) { $targets += $tenant.Domains }
+                                $picked = $null
+                                foreach ($t in $targets) {
+                                    if (-not $t) { continue }
+                                    $tk = ($t.ToLower() -replace '[^a-z0-9 ]',' ' -replace '\s+',' ').Trim()
+                                    # direct contains/prefix tests across normalized keys
+                                    foreach ($k in $norm.Keys) {
+                                        if ($k.StartsWith($tk) -or $tk.StartsWith($k) -or ($k.Contains($tk)) -or ($tk.Contains($k))) { $picked = $norm[$k]; break }
+                                    }
+                                    if ($picked) { break }
+                                }
+                                if ($picked) { $bestName = $picked }
+                            }
+
+                            if ($bestName -and ($containerCombo.Items -contains $bestName)) { $containerCombo.SelectedItem = $bestName } else { $containerCombo.SelectedIndex = 0 }
+                            if ($ffStatusLabel) {
+                                $bn = if ($bestName) { $bestName } else { '(none)' }
+                                $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s) | Auto-match: {2} (score {3:N2})" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count), $bn, $bestScore)
+                            }
+                        }
+                        $ffStatusLabel.Text = ("Loaded {0} profile(s); {1} container(s)" -f ($profileCombo.Items.Count), ($containerCombo.Items.Count))
+                    } catch {
+                        $ffStatusLabel.Text = "Error loading containers: $($_.Exception.Message)"
+                    }
+                } else {
+                    $ffStatusLabel.Text = "Profile path not found: $ppath"
+                }
+            } else {
+                $ffStatusLabel.Text = "Selected profile has no path"
+            }
+        } else {
+            if ($profiles.Count -eq 0) { $ffStatusLabel.Text = "No Firefox profiles found at: $profilesIniPath" } else { $ffStatusLabel.Text = "Select a Firefox profile" }
+        }
+    } catch {
+        $ffStatusLabel.Text = "Refresh error: $($_.Exception.Message)"
+    }
+}
+
+$refreshContainersBtn = New-Object System.Windows.Forms.Button
+$refreshContainersBtn.Text = "Refresh"
+$refreshContainersBtn.Location = New-Object System.Drawing.Point(525, 20)
+$refreshContainersBtn.Size = New-Object System.Drawing.Size(75, 24)
+$refreshContainersBtn.add_Click({ & $loadFirefoxUi })
+$entraPortalGroup.Controls.Add($refreshContainersBtn)
+$refreshContainersBtn.BringToFront()
+
+$reloadDiskBtn = New-Object System.Windows.Forms.Button
+$reloadDiskBtn.Text = "Reload Disk"
+$reloadDiskBtn.Location = New-Object System.Drawing.Point(605, 20)
+$reloadDiskBtn.Size = New-Object System.Drawing.Size(90, 24)
+$reloadDiskBtn.add_Click({
+    try {
+        $ffStatusLabel.Text = "Reloading from disk..."
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction Stop
+        $basePath = Join-Path $env:APPDATA 'Mozilla\Firefox'
+        $profiles = Get-FirefoxProfiles
+        $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+        if (-not $prof) { $ffStatusLabel.Text = "Select a Firefox profile"; return }
+        $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path $basePath $prof.Path }
+        $cpath = Join-Path $ppath 'containers.json'
+        if (-not (Test-Path $cpath)) { $ffStatusLabel.Text = "containers.json not found: $cpath"; return }
+        $ts = (Get-Item $cpath).LastWriteTime
+        $containers = Get-FirefoxContainers -ProfilePath $ppath
+        $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+        $containerCombo.Items.Clear(); foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
+        if ($containerCombo.Items.Count -gt 0) { $containerCombo.SelectedIndex = 0 }
+        $ffStatusLabel.Text = ("Disk reload OK ({0}); {1} container(s)" -f $ts, $containerCombo.Items.Count)
+    } catch { $ffStatusLabel.Text = "Reload error: $($_.Exception.Message)" }
+})
+$entraPortalGroup.Controls.Add($reloadDiskBtn)
+
+# status label for diagnostics
+$ffStatusLabel = New-Object System.Windows.Forms.Label
+$ffStatusLabel.AutoSize = $true
+$ffStatusLabel.Location = New-Object System.Drawing.Point(15, 100)
+$ffStatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
+$ffStatusLabel.Text = ""
+$entraPortalGroup.Controls.Add($ffStatusLabel)
+
+$entraPortalGroup.add_Enter({
+    # Initial populate immediately
+    & $loadFirefoxUi
+    # Then attempt an eager auto-select using current Graph context
+    try {
+        Start-Sleep -Milliseconds 150
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+        $profiles = Get-FirefoxProfiles
+        $basePath = Join-Path $env:APPDATA 'Mozilla\Firefox'
+        $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+        if ($prof -and $prof.Path) {
+            $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path $basePath $prof.Path }
+            if (Test-Path $ppath) {
+                $containers = Get-FirefoxContainers -ProfilePath $ppath
+                $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+                if ($visible.Count -gt 0) {
+                    $tenant = $null
+                    try { $tenant = Get-TenantIdentity } catch {}
+                    if ($tenant) {
+                        $best = Get-BestContainerName -ContainerNames ($visible | Select-Object -ExpandProperty name) -TenantIdentity $tenant
+                        if ($best -and $best.Name -and ($containerCombo.Items -contains $best.Name)) { $containerCombo.SelectedItem = $best.Name }
+                    }
+                }
+            }
+        }
+    } catch {}
+})
+
+# Initial populate when building the panel (in case Enter doesn't fire yet)
+& $loadFirefoxUi
+
+$profileCombo.add_SelectedIndexChanged({
+    try {
+        Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+        $profiles = Get-FirefoxProfiles
+        $prof = ($profiles | Where-Object { $_.Name -eq $profileCombo.SelectedItem } | Select-Object -First 1)
+        if ($prof -and $prof.Path) {
+            $ppath = if ($prof.Path -like '*:*') { $prof.Path } else { Join-Path (Join-Path $env:APPDATA 'Mozilla\Firefox') $prof.Path }
+            $containers = Get-FirefoxContainers -ProfilePath $ppath
+            $visible = $containers | Where-Object { $_ -and $_.name -and ($_.name.Trim().Length -gt 0) -and ($_.name -notmatch '^userContextIdInternal') } | Sort-Object name
+            $containerCombo.Items.Clear(); foreach ($c in $visible) { [void]$containerCombo.Items.Add($c.name) }
+            if ($containerCombo.Items.Count -gt 0) {
+                $tenant = $null
+                try { $tenant = Get-TenantIdentity } catch {}
+                if ($tenant) {
+                    $best = Get-BestContainerName -ContainerNames ($visible | Select-Object -ExpandProperty name) -TenantIdentity $tenant
+                    if ($best -and $best.Name -and ($containerCombo.Items -contains $best.Name)) { $containerCombo.SelectedItem = $best.Name }
+                    elseif ($containerCombo.Items.Count -gt 0) { $containerCombo.SelectedIndex = 0 }
+                } else {
+                    $containerCombo.SelectedIndex = 0
+                }
+            }
+        }
+    } catch {}
+})
+
+$openSignInsBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'SignIns' } catch {} })
+$openRestrictedBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'RestrictedEntities' } catch {} })
+$openCABtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'ConditionalAccess' } catch {} })
 
 # Incident Checklist button event handler
 $incidentChecklistButton.add_Click({
@@ -4871,50 +5515,71 @@ $helpRichTextBox.WordWrap = $true
 # Create clean, formatted help content
 $helpText = @"
 
-MICROSOFT 365 MANAGEMENT TOOL - HELP
+MICROSOFT 365 MANAGEMENT TOOL – QUICK HELP (v8.1-beta)
 
-OVERVIEW
-This tool provides comprehensive management capabilities for Microsoft 365 environments, including Exchange Online and Entra ID (Azure AD) administration.
+WHAT'S NEW
+- Security Investigation Report (Reports → Security Investigation):
+  - Exchange: Message Trace (last 10 days), Inbox Rules (all mailboxes)
+  - Microsoft Graph: Directory Audit Logs (max detail)
+  - Posture: MFA Coverage (Security Defaults/CA/Per-user), User Security Groups/Roles
+  - Exports to Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
+  - LLM_Instructions.txt generated for AI analysis. Sign-in logs are not included (license); export from Entra portal manually and attach when using AI.
 
-EXCHANGE ONLINE TAB
-• Connect to Exchange Online using modern authentication
-• View and manage user mailboxes with detailed information
-• Export inbox rules for analysis and backup
-• Manage connectors (inbound/outbound) with delete capability
-• Manage transport rules with delete capability
-• Search and filter mailbox data
-• Export data to CSV/Excel formats
+- Entra Portal Shortcuts (Report Generator tab):
+  - Select Firefox Profile and Container; auto-matches best container to signed-in tenant
+  - Refresh and Reload Disk buttons to repopulate containers
+  - Opens Entra deep links (Sign-ins, Conditional Access, Restricted Entities)
+  - Requires Firefox add-on: "Open external links in a container"; protocol: ext+container:name=<Container>&url=<Url>
 
-ENTRA ID INVESTIGATOR TAB
-• Connect to Microsoft Graph API
-• View and manage user accounts
-• Block/unblock user sign-in access
-• Revoke user sessions for security
-• Export sign-in and audit logs
-• Analyze MFA status and user details
-• View user roles and permissions
+- AI Analysis tab:
+  - Provider selector: Gemini or Claude
+  - Choose latest or browse to report folder; optionally add extra files (e.g., portal SignInLogs.csv)
+  - Saves response as Gemini_Response.md or Claude_Response.md in the selected folder
+  - Troubleshooting:
+    • Gemini 404: use a listed model (e.g., models/gemini-1.5-flash-002, models/gemini-2.5-pro)
+    • Gemini 429: your payload exceeded free-tier token quota; trim CSVs or send only LLM_Instructions.txt
+    • Claude 400 invalid_request_error: credits/billing required for Anthropic API
 
-KEYBOARD SHORTCUTS
-• Ctrl+O: Connect to services
-• Ctrl+D: Disconnect from services
-• Ctrl+S: Export rules/data
-• F5: Refresh data
-• Ctrl+A: Select all items
-• Escape: Close dialogs
+- Settings tab:
+  - Persist Investigator Name and Company
+  - API Keys: Gemini and Claude
 
-CONNECTION REQUIREMENTS
-• Exchange Online PowerShell module
-• Microsoft Graph PowerShell module
-• Appropriate admin permissions
-• Modern authentication enabled
+CORE TABS
+- Exchange Online:
+  - Connect/Disconnect (modern auth), export Inbox Rules, manage Transport Rules & Connectors
+  - Bulk mailbox operations; search/filter; export CSV
+
+- Entra ID Investigator:
+  - Connect to Microsoft Graph; block/unblock sign-in; revoke sessions
+  - MFA posture, user roles/groups, and elevated-role highlights
+
+KEYBOARD SHORTCUTS (where applicable)
+- Ctrl+O: Connect   • Ctrl+D: Disconnect   • Ctrl+S: Export   • F5: Refresh
+- Ctrl+A: Select all • Esc: Close dialog
+
+FOLDER LAYOUT
+- Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
+  - MessageTrace.csv, InboxRules.csv, TransportRules.csv, Inbound/OutboundConnectors.csv,
+    GraphAuditLogs.csv, MFAStatus.csv, UserSecurityGroups.csv, LLM_Instructions.txt
+
+KNOWN REQUIREMENTS
+- PowerShell 7+ recommended
+- Modules: ExchangeOnlineManagement, Microsoft.Graph (Authentication, Users, Users.Actions, Identity.SignIns, Reports)
+- Firefox + Multi-Account Containers + "Open external links in a container" (for shortcuts panel)
 
 TROUBLESHOOTING
-• Ensure you have the required PowerShell modules installed
-• Verify you have appropriate admin permissions
-• Check your internet connection
-• Ensure modern authentication is enabled for your tenant
+- Graph "Method not found" after connecting:
+  Use the Fix Module Conflicts button (Entra tab) to remove/reinstall Graph modules, then restart PowerShell.
+- No message trace:
+  Get-MessageTraceV2 is preferred; tool falls back per-day windows if V2 unavailable.
+- Sign-in logs missing:
+  Not included by design (license). Download from Entra portal and add via AI Analysis Extra Files.
+- AI send fails:
+  See Gemini_Error.txt or Claude_Error.txt in the report folder; request JSON is saved alongside.
 
-For detailed documentation, please refer to the readme.md file in the application directory.
+Links:
+- Gemini models & quotas: https://ai.google.dev
+- Anthropic Claude API: https://docs.anthropic.com
 
 "@
 
@@ -5033,36 +5698,85 @@ $entraResetPasswordButton.add_Click({
     
     $userUpn = $selectedUpns[0]
     
-    # Generate memorable password with validation
-    try {
-        $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
-        
-        # Validate password was generated
-        if ([string]::IsNullOrWhiteSpace($newPassword)) {
-            throw "Password generation failed - generated password is null or empty"
-        }
-        
-        # Additional validation - ensure password meets minimum requirements
-        if ($newPassword.Length -lt 8) {
-            throw "Generated password is too short (length: $($newPassword.Length))"
-        }
-        
-        Write-Host "Generated password length: $($newPassword.Length)" -ForegroundColor Green
-        
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nTrying fallback password generation...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        
-        # Fallback password generation
+    # Ask user how to reset: Generate vs Specify
+    $mode = [System.Windows.Forms.MessageBox]::Show("Choose password reset method for $userUpn.`n`nYes = Generate a new password`nNo = Specify a new password`nCancel = Abort", "Reset Password", [System.Windows.Forms.MessageBoxButtons]::YesNoCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($mode -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
+
+    $newPassword = $null
+    $requireChange = $true
+
+    if ($mode -eq [System.Windows.Forms.DialogResult]::Yes) {
+        # Generate memorable password with validation
         try {
-            $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!"
-            Write-Host "Using fallback password: $newPassword" -ForegroundColor Yellow
+            $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
+            if ([string]::IsNullOrWhiteSpace($newPassword)) { throw "Password generation failed - empty result" }
+            if ($newPassword.Length -lt 8) { throw "Generated password is too short (length: $($newPassword.Length))" }
         } catch {
-            [System.Windows.Forms.MessageBox]::Show("Failed to generate fallback password: $($_.Exception.Message)", "Password Generation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            $statusLabel.Text = "Password generation failed"
-            return
+            [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nUsing fallback...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            try { $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!" } catch { $statusLabel.Text = "Password generation failed"; return }
         }
+        $requireChange = $true
+    } else {
+        # Specify password form
+        $pwForm = New-Object System.Windows.Forms.Form
+        $pwForm.Text = "Specify New Password"
+        $pwForm.Size = New-Object System.Drawing.Size(420, 220)
+        $pwForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $pwForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $pwForm.MaximizeBox = $false
+        $pwForm.MinimizeBox = $false
+
+        $lbl1 = New-Object System.Windows.Forms.Label
+        $lbl1.Text = "New Password:"
+        $lbl1.Location = New-Object System.Drawing.Point(15, 20)
+        $lbl1.AutoSize = $true
+
+        $txt1 = New-Object System.Windows.Forms.TextBox
+        $txt1.Location = New-Object System.Drawing.Point(130, 18)
+        $txt1.Width = 250
+        $txt1.UseSystemPasswordChar = $true
+
+        $lbl2 = New-Object System.Windows.Forms.Label
+        $lbl2.Text = "Confirm Password:"
+        $lbl2.Location = New-Object System.Drawing.Point(15, 55)
+        $lbl2.AutoSize = $true
+
+        $txt2 = New-Object System.Windows.Forms.TextBox
+        $txt2.Location = New-Object System.Drawing.Point(130, 53)
+        $txt2.Width = 250
+        $txt2.UseSystemPasswordChar = $true
+
+        $chk = New-Object System.Windows.Forms.CheckBox
+        $chk.Text = "Require change at next sign-in"
+        $chk.Location = New-Object System.Drawing.Point(130, 85)
+        $chk.AutoSize = $true
+        $chk.Checked = $true
+
+        $okBtn = New-Object System.Windows.Forms.Button
+        $okBtn.Text = "OK"
+        $okBtn.Location = New-Object System.Drawing.Point(220, 120)
+        $okBtn.Width = 70
+        $okBtn.add_Click({ $pwForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
+
+        $cancelBtn = New-Object System.Windows.Forms.Button
+        $cancelBtn.Text = "Cancel"
+        $cancelBtn.Location = New-Object System.Drawing.Point(310, 120)
+        $cancelBtn.Width = 70
+        $cancelBtn.add_Click({ $pwForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
+
+        $pwForm.Controls.AddRange(@($lbl1,$txt1,$lbl2,$txt2,$chk,$okBtn,$cancelBtn))
+        $res = $pwForm.ShowDialog($mainForm)
+        if ($res -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        if ([string]::IsNullOrWhiteSpace($txt1.Text) -or [string]::IsNullOrWhiteSpace($txt2.Text)) {
+            [System.Windows.Forms.MessageBox]::Show("Password cannot be empty.", "Validation", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }
+        if ($txt1.Text -ne $txt2.Text) {
+            [System.Windows.Forms.MessageBox]::Show("Passwords do not match.", "Validation", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }
+        if ($txt1.Text.Length -lt 8) {
+            [System.Windows.Forms.MessageBox]::Show("Password must be at least 8 characters.", "Validation", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }
+        $newPassword = $txt1.Text
+        $requireChange = $chk.Checked
     }
-    
+
     try {
         # Reset user password via Microsoft Graph
         $statusLabel.Text = "Resetting password for $userUpn..."
@@ -5085,26 +5799,20 @@ $entraResetPasswordButton.add_Click({
         }
         
         # Reset the password
-        $passwordProfile = @{
-            Password = $newPassword
-            ForceChangePasswordNextSignIn = $true
-        }
+        $passwordProfile = @{ Password = $newPassword; ForceChangePasswordNextSignIn = [bool]$requireChange }
         
         Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
         
-        # Show success dialog with password
-        $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nThis password is memorable and secure. The user will be required to change it on next sign-in.`n`nCopy password to clipboard?"
-        
-        $result = [System.Windows.Forms.MessageBox]::Show(
-            $message,
-            "Password Reset Successful",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        )
-        
-        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-            [System.Windows.Forms.Clipboard]::SetText($newPassword)
-            [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        # Success UI
+        if ($mode -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nRequire change next sign-in: $requireChange`n`nCopy password to clipboard?"
+            $result = [System.Windows.Forms.MessageBox]::Show($message, "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+            if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+                [System.Windows.Forms.Clipboard]::SetText($newPassword)
+                [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Password reset successful for $userUpn.", "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         }
         
         $statusLabel.Text = "Password reset completed for $userUpn"
@@ -5115,9 +5823,7 @@ $entraResetPasswordButton.add_Click({
     }
 })
 
-$entraOpenDefenderRestrictedUsersButton.add_Click({
-    Start-Process "https://security.microsoft.com/restrictedentities"
-})
+## Removed click handler for Open Defender Restricted Users
 
 # Add click handlers for Select All/Deselect All buttons
 $entraSelectAllButton.add_Click({
@@ -5253,30 +5959,39 @@ $entraRequirePwdChangeButton.add_Click({
         }
     }
     if ($selectedUpns.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("Select at least one user to require password change, or the operation will be performed on all loaded users.", "No Users Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        # If no users selected, use all loaded users
-        for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
-            $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
-        }
-        if ($selectedUpns.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("No users available to require password change.", "No Users Available", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            return
-        }
+        [System.Windows.Forms.MessageBox]::Show("Select one or more users to require password change.", "No Users Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
     }
-    $confirm = [System.Windows.Forms.MessageBox]::Show("Require password change at next sign-in for the following user(s)?\n" + ($selectedUpns -join "\n"), "Confirm Require Password Change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    $preview = ($selectedUpns | Select-Object -First 10) -join "\n"
+    if ($selectedUpns.Count -gt 10) { $preview += "\n... +$($selectedUpns.Count-10) more" }
+    $confirm = [System.Windows.Forms.MessageBox]::Show(("Require password change at next sign-in for these user(s)?\n{0}" -f $preview), "Confirm Require Password Change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
     if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     try {
+        $success = New-Object System.Collections.Generic.List[string]
+        $failed  = New-Object System.Collections.Generic.List[string]
+        $total = $selectedUpns.Count; $idx = 0
         foreach ($userUpn in $selectedUpns) {
+            $idx++
             $statusLabel.Text = "Requiring password change for $userUpn..."
             $mainForm.Refresh()
             $context = Get-MgContext -ErrorAction Stop
             if (-not $context) { throw "Not connected to Microsoft Graph. Please connect first." }
-            $passwordProfile = @{ ForceChangePasswordNextSignIn = $true }
-            Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
+            try {
+                # Validate user exists before attempting to set password policy
+                try { $null = Get-MgUser -UserId $userUpn -ErrorAction Stop } catch { throw "User not found: $userUpn" }
+                $passwordProfile = @{ ForceChangePasswordNextSignIn = $true }
+                Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
+                $success.Add($userUpn) | Out-Null
+            } catch {
+                $failed.Add(("{0} ({1})" -f $userUpn, $_.Exception.Message)) | Out-Null
+            }
+            $statusLabel.Text = ("Processed {0}/{1} users..." -f $idx, $total)
+            $mainForm.Refresh()
         }
-        [System.Windows.Forms.MessageBox]::Show("Password change required at next sign-in for selected user(s).", "Require Password Change", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        $statusLabel.Text = "Password change required for selected user(s)"
+        $msg = "Password change required for: `n" + ($success -join "`n")
+        if ($failed.Count -gt 0) { $msg += "`n`nFailed:`n" + ($failed -join "`n") }
+        [System.Windows.Forms.MessageBox]::Show($msg, "Require Password Change", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $statusLabel.Text = ("Password change required for {0} user(s); {1} failed" -f $success.Count, $failed.Count)
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to require password change: $($_.Exception.Message)", "Require Password Change Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         $statusLabel.Text = "Require password change failed"
@@ -5658,7 +6373,8 @@ $entraDisconnectGraphButton.add_Click({
     }
 })
 
-# Fix Module Conflicts button handler
+# Legacy Fix Module Conflicts button handler (button moved to Settings). Guard against null.
+if ($null -ne $entraFixModulesButton) {
 $entraFixModulesButton.add_Click({
     $statusLabel.Text = "🔧 Fixing Microsoft Graph module conflicts..."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
@@ -5754,6 +6470,7 @@ $entraFixModulesButton.add_Click({
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
     }
 })
+}
 
 # Configure grids to auto-expand horizontally
 $userMailboxGrid.AutoSizeColumnsMode = 'Fill'
