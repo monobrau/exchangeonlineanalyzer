@@ -287,42 +287,8 @@ function Get-UserSecurityGroupsReport {
             }) | Out-Null
         }
 
-        if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $computed = $users | ForEach-Object -Parallel {
-                param($u,$map,$hi)
-                $roleNames = @(); $groupNames = @()
-                try {
-                    $mem = @()
-                    $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
-                    do {
-                        $mResp = $null; try { $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction Stop } catch {}
-                        if ($mResp.value) { $mem += $mResp.value }
-                        $mUri = $mResp.'@odata.nextLink'
-                    } while ($mUri)
-                    foreach ($m in $mem) {
-                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { if ($m.DisplayName) { $groupNames += $m.DisplayName } }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
-                            $rname = $map[$m.Id]; if (-not $rname -and $m.DisplayName) { $rname = $m.DisplayName }
-                            if ($rname) { $roleNames += $rname }
-                        }
-                    }
-                } catch {}
-                $roleNames = $roleNames | Sort-Object -Unique
-                $groupNames = $groupNames | Sort-Object -Unique
-                $elevated = @($roleNames | Where-Object { $hi -contains $_ })
-                [pscustomobject]@{
-                    DisplayName        = $u.DisplayName
-                    UserPrincipalName  = $u.UserPrincipalName
-                    Roles              = ($roleNames -join '; ')
-                    Groups             = ($groupNames -join '; ')
-                    ElevatedRoles      = ($elevated -join '; ')
-                    IsElevated         = [bool]($elevated -and $elevated.Count -gt 0)
-                }
-            } -ThrottleLimit $ThrottleLimit -ArgumentList $roleIdToName,$highPrivilegeRoles
-            if ($computed) { foreach($o in $computed){ $results.Add($o) } }
-        } else {
-            foreach ($u in $users) { & $processUser $u $roleIdToName $highPrivilegeRoles $results }
-        }
+        # Use sequential processing for compatibility across module versions
+        foreach ($u in $users) { & $processUser $u $roleIdToName $highPrivilegeRoles $results }
 
         return [System.Collections.ArrayList]$results
     } catch { Write-Error "Get-UserSecurityGroupsReport failed: $($_.Exception.Message)"; return @() }
