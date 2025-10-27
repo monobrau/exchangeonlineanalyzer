@@ -122,6 +122,7 @@ function Get-MfaCoverageReport {
                 }
                 $covered = ($directMfa -or $sec -or $userCaRequiresMfa)
                 [pscustomobject]@{
+                    UserId             = $u.id
                     DisplayName       = $u.displayName
                     UserPrincipalName = $u.userPrincipalName
                     PerUserMfaEnabled = $directMfa
@@ -181,6 +182,7 @@ function Get-MfaCoverageReport {
                 }
                 $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
                 $acc.Add([pscustomobject]@{
+                    UserId             = $u.id
                     DisplayName       = $u.displayName
                     UserPrincipalName = $u.userPrincipalName
                     PerUserMfaEnabled = $directMfa
@@ -725,13 +727,15 @@ function New-SecurityInvestigationReport {
                 $tenantSecDefaults = [bool]($report.MfaCoverage.SecurityDefaultsEnabled)
                 $tenantCaRequires = [bool]($report.MfaCoverage.CAPoliciesRequireMfa)
                 foreach ($u in $report.MfaCoverage.Users) {
-                    $display = $null; $upn = $null; $perUser = $null; $caReq = $null
+                    $id = $null; $display = $null; $upn = $null; $perUser = $null; $caReq = $null
+                    if ($u.PSObject.Properties['UserId']) { $id = $u.UserId } elseif ($u.PSObject.Properties['id']) { $id = $u.id }
                     if ($u.PSObject.Properties['DisplayName']) { $display = $u.DisplayName } elseif ($u.PSObject.Properties['displayName']) { $display = $u.displayName }
                     if ($u.PSObject.Properties['UserPrincipalName']) { $upn = $u.UserPrincipalName } elseif ($u.PSObject.Properties['userPrincipalName']) { $upn = $u.userPrincipalName }
                     if ($u.PSObject.Properties['PerUserMfaEnabled']) { $perUser = [bool]$u.PerUserMfaEnabled }
                     if ($u.PSObject.Properties['CARequiresMfa']) { $caReq = [bool]$u.CARequiresMfa } else { $caReq = $tenantCaRequires }
                     $covered = [bool]($perUser -or $tenantSecDefaults -or $caReq)
                     $mfaRows += [pscustomobject]@{
+                        UserId            = $id
                         DisplayName       = $display
                         UserPrincipalName = $upn
                         PerUserMfaEnabled = $perUser
