@@ -5636,36 +5636,85 @@ $entraResetPasswordButton.add_Click({
     
     $userUpn = $selectedUpns[0]
     
-    # Generate memorable password with validation
-    try {
-        $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
-        
-        # Validate password was generated
-        if ([string]::IsNullOrWhiteSpace($newPassword)) {
-            throw "Password generation failed - generated password is null or empty"
-        }
-        
-        # Additional validation - ensure password meets minimum requirements
-        if ($newPassword.Length -lt 8) {
-            throw "Generated password is too short (length: $($newPassword.Length))"
-        }
-        
-        Write-Host "Generated password length: $($newPassword.Length)" -ForegroundColor Green
-        
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nTrying fallback password generation...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        
-        # Fallback password generation
+    # Ask user how to reset: Generate vs Specify
+    $mode = [System.Windows.Forms.MessageBox]::Show("Choose password reset method for $userUpn.`n`nYes = Generate a new password`nNo = Specify a new password`nCancel = Abort", "Reset Password", [System.Windows.Forms.MessageBoxButtons]::YesNoCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($mode -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
+
+    $newPassword = $null
+    $requireChange = $true
+
+    if ($mode -eq [System.Windows.Forms.DialogResult]::Yes) {
+        # Generate memorable password with validation
         try {
-            $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!"
-            Write-Host "Using fallback password: $newPassword" -ForegroundColor Yellow
+            $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
+            if ([string]::IsNullOrWhiteSpace($newPassword)) { throw "Password generation failed - empty result" }
+            if ($newPassword.Length -lt 8) { throw "Generated password is too short (length: $($newPassword.Length))" }
         } catch {
-            [System.Windows.Forms.MessageBox]::Show("Failed to generate fallback password: $($_.Exception.Message)", "Password Generation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            $statusLabel.Text = "Password generation failed"
-            return
+            [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nUsing fallback...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            try { $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!" } catch { $statusLabel.Text = "Password generation failed"; return }
         }
+        $requireChange = $true
+    } else {
+        # Specify password form
+        $pwForm = New-Object System.Windows.Forms.Form
+        $pwForm.Text = "Specify New Password"
+        $pwForm.Size = New-Object System.Drawing.Size(420, 220)
+        $pwForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $pwForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $pwForm.MaximizeBox = $false
+        $pwForm.MinimizeBox = $false
+
+        $lbl1 = New-Object System.Windows.Forms.Label
+        $lbl1.Text = "New Password:"
+        $lbl1.Location = New-Object System.Drawing.Point(15, 20)
+        $lbl1.AutoSize = $true
+
+        $txt1 = New-Object System.Windows.Forms.TextBox
+        $txt1.Location = New-Object System.Drawing.Point(130, 18)
+        $txt1.Width = 250
+        $txt1.UseSystemPasswordChar = $true
+
+        $lbl2 = New-Object System.Windows.Forms.Label
+        $lbl2.Text = "Confirm Password:"
+        $lbl2.Location = New-Object System.Drawing.Point(15, 55)
+        $lbl2.AutoSize = $true
+
+        $txt2 = New-Object System.Windows.Forms.TextBox
+        $txt2.Location = New-Object System.Drawing.Point(130, 53)
+        $txt2.Width = 250
+        $txt2.UseSystemPasswordChar = $true
+
+        $chk = New-Object System.Windows.Forms.CheckBox
+        $chk.Text = "Require change at next sign-in"
+        $chk.Location = New-Object System.Drawing.Point(130, 85)
+        $chk.AutoSize = $true
+        $chk.Checked = $true
+
+        $okBtn = New-Object System.Windows.Forms.Button
+        $okBtn.Text = "OK"
+        $okBtn.Location = New-Object System.Drawing.Point(220, 120)
+        $okBtn.Width = 70
+        $okBtn.add_Click({ $pwForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
+
+        $cancelBtn = New-Object System.Windows.Forms.Button
+        $cancelBtn.Text = "Cancel"
+        $cancelBtn.Location = New-Object System.Drawing.Point(310, 120)
+        $cancelBtn.Width = 70
+        $cancelBtn.add_Click({ $pwForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
+
+        $pwForm.Controls.AddRange(@($lbl1,$txt1,$lbl2,$txt2,$chk,$okBtn,$cancelBtn))
+        $res = $pwForm.ShowDialog($mainForm)
+        if ($res -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        if ([string]::IsNullOrWhiteSpace($txt1.Text) -or [string]::IsNullOrWhiteSpace($txt2.Text)) {
+            [System.Windows.Forms.MessageBox]::Show("Password cannot be empty.", "Validation", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }
+        if ($txt1.Text -ne $txt2.Text) {
+            [System.Windows.Forms.MessageBox]::Show("Passwords do not match.", "Validation", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }
+        if ($txt1.Text.Length -lt 8) {
+            [System.Windows.Forms.MessageBox]::Show("Password must be at least 8 characters.", "Validation", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }
+        $newPassword = $txt1.Text
+        $requireChange = $chk.Checked
     }
-    
+
     try {
         # Reset user password via Microsoft Graph
         $statusLabel.Text = "Resetting password for $userUpn..."
@@ -5688,26 +5737,20 @@ $entraResetPasswordButton.add_Click({
         }
         
         # Reset the password
-        $passwordProfile = @{
-            Password = $newPassword
-            ForceChangePasswordNextSignIn = $true
-        }
+        $passwordProfile = @{ Password = $newPassword; ForceChangePasswordNextSignIn = [bool]$requireChange }
         
         Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
         
-        # Show success dialog with password
-        $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nThis password is memorable and secure. The user will be required to change it on next sign-in.`n`nCopy password to clipboard?"
-        
-        $result = [System.Windows.Forms.MessageBox]::Show(
-            $message,
-            "Password Reset Successful",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        )
-        
-        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-            [System.Windows.Forms.Clipboard]::SetText($newPassword)
-            [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        # Success UI
+        if ($mode -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nRequire change next sign-in: $requireChange`n`nCopy password to clipboard?"
+            $result = [System.Windows.Forms.MessageBox]::Show($message, "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+            if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+                [System.Windows.Forms.Clipboard]::SetText($newPassword)
+                [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Password reset successful for $userUpn.", "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         }
         
         $statusLabel.Text = "Password reset completed for $userUpn"
