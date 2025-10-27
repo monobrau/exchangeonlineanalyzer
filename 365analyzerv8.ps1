@@ -4651,6 +4651,14 @@ $securityInvestigationButton.add_Click({
         $progressLabel.Size = New-Object System.Drawing.Size(400, 20)
         $progressLabel.ForeColor = [System.Drawing.Color]::Green
 
+        # Progress bar (indeterminate marquee during processing)
+        $progressBarSI = New-Object System.Windows.Forms.ProgressBar
+        $progressBarSI.Location = New-Object System.Drawing.Point(430, 225)
+        $progressBarSI.Size = New-Object System.Drawing.Size(280, 16)
+        $progressBarSI.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+        $progressBarSI.MarqueeAnimationSpeed = 30
+        $progressBarSI.Visible = $false
+
         # Update connection status
         $exchangeConnected = $script:currentExchangeConnection -ne $null
         $graphConnected = $script:graphConnection -ne $null
@@ -4704,6 +4712,9 @@ $securityInvestigationButton.add_Click({
                 $tenantRoot = Join-Path $defaultRoot $safeName
                 if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
                 $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
+
+                # Show progress bar while generating
+                $progressBarSI.Visible = $true
 
                 # Generate the security investigation report with export paths
                 $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder
@@ -4823,6 +4834,7 @@ $securityInvestigationButton.add_Click({
             } finally {
                 $generateButton.Enabled = $true
                 $securityForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                $progressBarSI.Visible = $false
             }
         })
 
@@ -4834,7 +4846,7 @@ $securityInvestigationButton.add_Click({
         $closeButton.add_Click({ $securityForm.Close() })
 
         # Add all controls to main panel
-        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $generateButton, $progressLabel, $closeButton))
+        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $generateButton, $progressLabel, $progressBarSI, $closeButton))
 
         $securityForm.Controls.Add($securityMainPanel)
 
