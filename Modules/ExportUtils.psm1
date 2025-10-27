@@ -536,10 +536,25 @@ function New-SecurityInvestigationReport {
     if ($graphConnected) {
         try {
             Set-ReportProgress -Percent 78 -Text "Evaluating MFA coverage..."
-            $report.MfaCoverage = Get-MfaCoverageReport -Parallel -ThrottleLimit 4
+            try {
+                $report.MfaCoverage = Get-MfaCoverageReport -Parallel -ThrottleLimit 4
+            } catch {
+                $report.MfaCoverage = Get-MfaCoverageReport
+            }
 
             Set-ReportProgress -Percent 84 -Text "Collecting user security groups and roles..."
-            $report.UserSecurityGroups = Get-UserSecurityGroupsReport
+            # Capability check: enable parallel only if Graph supports required switches cleanly
+            $canParallelGroups = $false
+            try {
+                $cmd = Get-Command Get-MgUserMemberOf -ErrorAction SilentlyContinue
+                if ($cmd -and $cmd.Parameters.ContainsKey('All')) { $canParallelGroups = $true }
+            } catch {}
+            if ($canParallelGroups -and $PSVersionTable.PSVersion.Major -ge 7) {
+                try { $report.UserSecurityGroups = Get-UserSecurityGroupsReport -Parallel -ThrottleLimit 6 }
+                catch { $report.UserSecurityGroups = Get-UserSecurityGroupsReport }
+            } else {
+                $report.UserSecurityGroups = Get-UserSecurityGroupsReport
+            }
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
@@ -641,8 +656,8 @@ function New-SecurityInvestigationReport {
 function Get-ExchangeMessageTrace {
 	param([int]$DaysBack = 10,[switch]$Parallel,[int]$ThrottleLimit = 3)
 
-	try {
-		Write-Host "Collecting message trace data..." -ForegroundColor Yellow
+    try {
+        Write-Host "Collecting message trace data..." -ForegroundColor Yellow
 		$utcNow = (Get-Date).ToUniversalTime()
 		$start = $utcNow.AddDays(-[Math]::Max(1,$DaysBack)).Date
 
@@ -681,10 +696,10 @@ function Get-ExchangeMessageTrace {
 		}
 
 		return [System.Collections.ArrayList]$results
-	} catch {
-		Write-Error "Failed to collect message trace: $($_.Exception.Message)"
-		return @()
-	}
+    } catch {
+        Write-Error "Failed to collect message trace: $($_.Exception.Message)"
+        return @()
+    }
 }
 
 function Get-ExchangeInboxRules {
@@ -730,7 +745,12 @@ function Get-ExchangeInboxRules {
                 } catch {}
                 $output
             } -ThrottleLimit $ThrottleLimit
-            if ($computed) { foreach($o in $computed){ $allRules.Add($o) | Out-Null } }
+            if ($computed) {
+                foreach ($o in $computed) {
+                    if ($o -is [System.Array]) { foreach ($e in $o) { if ($e) { [void]$allRules.Add($e) } } }
+                    elseif ($o) { [void]$allRules.Add($o) }
+                }
+            }
         } else {
             foreach ($mbx in $mailboxes) {
                 $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
