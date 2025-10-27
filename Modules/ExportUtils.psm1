@@ -514,6 +514,22 @@ function New-SecurityInvestigationReport {
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
         } catch {}
+
+        # Create a ZIP bundle of all exported files EXCEPT the LLM instructions, for easy ticket upload
+        try {
+            $zipPath = Join-Path $report.OutputFolder "SecurityInvestigation_ForensicBundle.zip"
+            # Collect files to include: everything in the folder except LLM_Instructions.txt and existing zip(s)
+            $includeFiles = Get-ChildItem -Path $report.OutputFolder -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ne 'LLM_Instructions.txt' -and $_.Extension -ne '.zip' }
+            if ($includeFiles -and $includeFiles.Count -gt 0) {
+                # Use Compress-Archive to create the zip; pass explicit file paths
+                if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
+                Compress-Archive -Path ($includeFiles | ForEach-Object { $_.FullName }) -DestinationPath $zipPath -Force -ErrorAction Stop
+                $report.FilePaths.ForensicZip = $zipPath
+            }
+        } catch {
+            Write-Warning ("Failed to create forensic ZIP bundle: {0}" -f $_.Exception.Message)
+        }
     }
 
     return $report
