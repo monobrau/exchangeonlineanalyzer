@@ -590,40 +590,60 @@ function New-SecurityInvestigationReport {
 
             $exportAction = {
                 param($item,$out)
-                if ($item.Data -and $item.Data.Count -gt 0) {
-                    $csvPath  = Join-Path $out $item.Csv
-                    $jsonPath = Join-Path $out $item.Json
-                    try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 }
-                    catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
-                }
+            $csvPath  = Join-Path $out $item.Csv
+            $jsonPath = Join-Path $out $item.Json
+            if ($item.Data -and $item.Data.Count -gt 0) {
+                try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 }
+                catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
+            } else {
+                # Ensure at least a JSON file exists for empty datasets
+                '[]' | Out-File -FilePath $jsonPath -Encoding utf8
+            }
             }
 
             if ($PSVersionTable.PSVersion.Major -ge 7) {
                 $exportItems | ForEach-Object -Parallel {
                     $item = $_
+                    $csvPath  = Join-Path $using:out $item.Csv
+                    $jsonPath = Join-Path $using:out $item.Json
                     if ($item -and $item.Data -and $item.Data.Count -gt 0) {
-                        $csvPath  = Join-Path $using:out $item.Csv
-                        $jsonPath = Join-Path $using:out $item.Json
                         try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 }
                         catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
+                    } else {
+                        '[]' | Out-File -FilePath $jsonPath -Encoding utf8
                     }
                 } -ThrottleLimit 4
             } else {
                 foreach ($it in $exportItems) { & $exportAction $it $out }
             }
 
-            # MFA Coverage export
-            if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
-                $csv = Join-Path $report.OutputFolder "MFAStatus.csv"
-                try { $report.MfaCoverage.Users | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MFAStatusCsv = $csv } catch {}
+            # MFA Coverage export (ensure file exists even if empty)
+            $mfaCsv = Join-Path $report.OutputFolder "MFAStatus.csv"
+            if ($report.MfaCoverage -and $report.MfaCoverage.Users -and $report.MfaCoverage.Users.Count -gt 0) {
+                try { $report.MfaCoverage.Users | Export-Csv -Path $mfaCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
+            } else {
+                $mfaHeader = 'DisplayName,UserPrincipalName,PerUserMfaEnabled,SecurityDefaults,CARequiresMfa,MfaCovered'
+                try { Set-Content -Path $mfaCsv -Value $mfaHeader -Encoding utf8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
             }
 
-            # User Security Groups export
-            if ($report.UserSecurityGroups) {
-                $csv = Join-Path $report.OutputFolder "UserSecurityGroups.csv"
-                try { $report.UserSecurityGroups | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityGroupsCsv = $csv } catch {}
+            # User Security Groups export (ensure file exists even if empty)
+            $usgCsv = Join-Path $report.OutputFolder "UserSecurityGroups.csv"
+            if ($report.UserSecurityGroups -and $report.UserSecurityGroups.Count -gt 0) {
+                try { $report.UserSecurityGroups | Export-Csv -Path $usgCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityGroupsCsv = $usgCsv } catch {}
+            } else {
+                $usgHeader = 'DisplayName,UserPrincipalName,Roles,Groups,ElevatedRoles,IsElevated'
+                try { Set-Content -Path $usgCsv -Value $usgHeader -Encoding utf8; $report.FilePaths.UserSecurityGroupsCsv = $usgCsv } catch {}
             }
         } catch { $exportError = $_ }
+
+        # Ensure InboxRules.csv exists even if no data
+        try {
+            $inboxCsv = Join-Path $report.OutputFolder "InboxRules.csv"
+            if (-not (Test-Path $inboxCsv)) {
+                $inboxHeader = 'MailboxOwner,Name,Enabled,Priority,FromAddressContains,SubjectContains,SentTo,RedirectTo,ForwardTo,ForwardAsAttachment,DeleteMessage,StopProcessing,IsHidden,Description'
+                Set-Content -Path $inboxCsv -Value $inboxHeader -Encoding utf8
+            }
+        } catch {}
 
         # Save only LLM instructions as TXT (no other text files on disk)
         try {
