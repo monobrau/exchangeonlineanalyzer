@@ -472,48 +472,30 @@ function New-SecurityInvestigationReport {
     if ($report.OutputFolder) {
         $exportError = $null
         try {
-            $csv = Join-Path $report.OutputFolder "MessageTrace.csv"
-            $json = Join-Path $report.OutputFolder "MessageTrace.json"
-            if ($report.MessageTrace -and $report.MessageTrace.Count -gt 0) {
-                try { $report.MessageTrace | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MessageTraceCsv = $csv }
-                catch { $report.MessageTrace | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.MessageTraceJson = $json }
+            $out = $report.OutputFolder
+            $exportItems = @(
+                @{ Data=$report.MessageTrace;       Csv='MessageTrace.csv';        Json='MessageTrace.json';        Depth=8 },
+                @{ Data=$report.InboxRules;         Csv='InboxRules.csv';          Json='InboxRules.json';          Depth=6 },
+                @{ Data=$report.TransportRules;     Csv='TransportRules.csv';      Json='TransportRules.json';      Depth=8 },
+                @{ Data=$report.InboundConnectors;  Csv='InboundConnectors.csv';   Json='InboundConnectors.json';   Depth=8 },
+                @{ Data=$report.OutboundConnectors; Csv='OutboundConnectors.csv';  Json='OutboundConnectors.json';  Depth=8 },
+                @{ Data=$report.AuditLogs;          Csv='GraphAuditLogs.csv';      Json='GraphAuditLogs.json';      Depth=8 }
+            )
+
+            $exportAction = {
+                param($item,$out)
+                if ($item.Data -and $item.Data.Count -gt 0) {
+                    $csvPath  = Join-Path $out $item.Csv
+                    $jsonPath = Join-Path $out $item.Json
+                    try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 }
+                    catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
+                }
             }
 
-            $csv = Join-Path $report.OutputFolder "InboxRules.csv"
-            $json = Join-Path $report.OutputFolder "InboxRules.json"
-            if ($report.InboxRules -and $report.InboxRules.Count -gt 0) {
-                try { $report.InboxRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboxRulesCsv = $csv }
-                catch { $report.InboxRules | ConvertTo-Json -Depth 6 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboxRulesJson = $json }
-            }
-
-            # Transport Rules export
-            $csv = Join-Path $report.OutputFolder "TransportRules.csv"
-            $json = Join-Path $report.OutputFolder "TransportRules.json"
-            if ($report.TransportRules -and $report.TransportRules.Count -gt 0) {
-                try { $report.TransportRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.TransportRulesCsv = $csv }
-                catch { $report.TransportRules | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.TransportRulesJson = $json }
-            }
-
-            # Connectors export
-            $csv = Join-Path $report.OutputFolder "InboundConnectors.csv"
-            $json = Join-Path $report.OutputFolder "InboundConnectors.json"
-            if ($report.InboundConnectors -and $report.InboundConnectors.Count -gt 0) {
-                try { $report.InboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboundConnectorsCsv = $csv }
-                catch { $report.InboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboundConnectorsJson = $json }
-            }
-
-            $csv = Join-Path $report.OutputFolder "OutboundConnectors.csv"
-            $json = Join-Path $report.OutputFolder "OutboundConnectors.json"
-            if ($report.OutboundConnectors -and $report.OutboundConnectors.Count -gt 0) {
-                try { $report.OutboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.OutboundConnectorsCsv = $csv }
-                catch { $report.OutboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.OutboundConnectorsJson = $json }
-            }
-
-            $csv = Join-Path $report.OutputFolder "GraphAuditLogs.csv"
-            $json = Join-Path $report.OutputFolder "GraphAuditLogs.json"
-            if ($report.AuditLogs -and $report.AuditLogs.Count -gt 0) {
-                try { $report.AuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.AuditLogsCsv = $csv }
-                catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                $exportItems | ForEach-Object -Parallel { & $using:exportAction $_ $using:out } -ThrottleLimit 4
+            } else {
+                foreach ($it in $exportItems) { & $exportAction $it $out }
             }
 
             # MFA Coverage export
