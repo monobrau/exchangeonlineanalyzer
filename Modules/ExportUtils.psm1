@@ -16,6 +16,17 @@ function Get-MfaCoverageReport {
             $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
             if ($resp.value) { $caPolicies = $resp.value }
         } catch {}
+        
+        # Map roleTemplateIds for directory roles (stable across tenants)
+        $roleTemplates = @{}
+        try {
+            $rtUri = 'https://graph.microsoft.com/v1.0/directoryRoleTemplates?$select=id,displayName&$top=999'
+            do {
+                $rtPage = Invoke-MgGraphRequest -Method GET -Uri $rtUri -ErrorAction SilentlyContinue
+                if ($rtPage.value) { foreach($t in $rtPage.value){ $roleTemplates[$t.id] = $t.displayName } }
+                $rtUri = $rtPage.'@odata.nextLink'
+            } while ($rtUri)
+        } catch {}
 
         # Filter enabled policies that require MFA
         $mfaPolicies = @()
@@ -91,7 +102,7 @@ function Get-MfaCoverageReport {
                     }
                 } catch {}
                 if (-not $directMfa -and $reg.ContainsKey($u.Id)) { $directMfa = [bool]$reg[$u.Id] }
-                $userGroups = @(); $userRoles = @()
+                $userGroups = @(); $userRoles = @(); $userRoleTemplates = @()
                 try {
                     $mem = @()
                     $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
@@ -102,7 +113,10 @@ function Get-MfaCoverageReport {
                     } while ($mUri)
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { 
+                            $userRoles += $m.Id
+                            if ($m.PSObject.Properties['roleTemplateId'] -and $m.roleTemplateId) { $userRoleTemplates += $m.roleTemplateId }
+                        }
                     }
                 } catch {}
                 $userCaRequiresMfa = $false
@@ -113,7 +127,18 @@ function Get-MfaCoverageReport {
                     if ($usersCond) {
                         if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
                         if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
-                        if (-not $incUser -and $usersCond.includeRoles)  { if (@($usersCond.includeRoles)  -ne $null) { if ($usersCond.includeRoles  | Where-Object { $userRoles  -contains $_ }) { $incUser = $true } } }
+                        if (-not $incUser -and $usersCond.includeRoles)  {
+                            if (@($usersCond.includeRoles)  -ne $null) {
+                                $incById = ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ })
+                                $incByTemplate = $false
+                                if ($usersCond.includeRoles) {
+                                    foreach ($rid in $usersCond.includeRoles) {
+                                        if ($roleTemplates.ContainsKey($rid) -and ($userRoleTemplates -contains $rid)) { $incByTemplate = $true; break }
+                                    }
+                                }
+                                if ($incById -or $incByTemplate) { $incUser = $true }
+                            }
+                        }
                         if ($usersCond.excludeUsers  -and ($usersCond.excludeUsers  -contains $u.Id)) { $excluded = $true }
                         if ($usersCond.excludeGroups -and (@($usersCond.excludeGroups) -ne $null)) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } }
                         if ($usersCond.excludeRoles  -and (@($usersCond.excludeRoles)  -ne $null)) { if ($usersCond.excludeRoles  | Where-Object { $userRoles  -contains $_ }) { $excluded = $true } }
@@ -150,7 +175,7 @@ function Get-MfaCoverageReport {
                     }
                 } catch {}
                 if (-not $directMfa -and $regMap.ContainsKey($u.Id)) { $directMfa = [bool]$regMap[$u.Id] }
-                $userGroups = @(); $userRoles = @()
+                $userGroups = @(); $userRoles = @(); $userRoleTemplates = @()
                 try {
                     $mem = @()
                     $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
@@ -161,7 +186,10 @@ function Get-MfaCoverageReport {
                     } while ($mUri)
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { 
+                            $userRoles += $m.Id
+                            if ($m.PSObject.Properties['roleTemplateId'] -and $m.roleTemplateId) { $userRoleTemplates += $m.roleTemplateId }
+                        }
                     }
                 } catch {}
                 $userCaRequiresMfa = $false
@@ -172,7 +200,18 @@ function Get-MfaCoverageReport {
                     if ($usersCond) {
                         if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
                         if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
-                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
+                        if (-not $incUser -and $usersCond.includeRoles) {
+                            if (@($usersCond.includeRoles) -ne $null) {
+                                $incById = ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ })
+                                $incByTemplate = $false
+                                if ($usersCond.includeRoles) {
+                                    foreach ($rid in $usersCond.includeRoles) {
+                                        if ($roleTemplates.ContainsKey($rid) -and ($userRoleTemplates -contains $rid)) { $incByTemplate = $true; break }
+                                    }
+                                }
+                                if ($incById -or $incByTemplate) { $incUser = $true }
+                            }
+                        }
                         if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
                         if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
                         if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }

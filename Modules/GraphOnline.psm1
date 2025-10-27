@@ -150,12 +150,15 @@ function Connect-GraphService {
         # Use global script variables for scopes
         $scopes = $script:graphScopes
         if (-not $scopes) {
-            # Include scopes required for audit and sign-in logs
+            # Include scopes required for audit/sign-in logs, CA policies, reports, and auth methods
             $scopes = @(
                 "User.Read.All",
                 "Directory.Read.All",
                 "AuditLog.Read.All",
-                "SecurityEvents.Read.All"
+                "SecurityEvents.Read.All",
+                "Policy.Read.All",
+                "Reports.Read.All",
+                "UserAuthenticationMethod.Read.All"
             )
         }
 
