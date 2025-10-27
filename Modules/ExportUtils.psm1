@@ -2,49 +2,113 @@
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
 function Get-MfaCoverageReport {
     try {
-        # Security Defaults
+        # 1) Security Defaults status (authoritative)
         $secDefaultsEnabled = $false
         try {
-            $authMethodsPolicy = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy' -ErrorAction Stop
-            if ($authMethodsPolicy -and $authMethodsPolicy.isSoftwareOathEnabled -ne $null) { $secDefaultsEnabled = [bool]($authMethodsPolicy.isSoftwareOathEnabled -or $authMethodsPolicy.isModernAuthBlocked -eq $false) }
+            $secDefaults = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction Stop
+            if ($secDefaults -and $secDefaults.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$secDefaults.isEnabled }
         } catch {}
 
-        # Conditional Access (if present)
-        $caRequiresMfa = $false
+        # 2) Conditional Access policies requiring MFA (tenant-wide set)
+        $caPolicies = @()
         try {
-            $policies = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
-            if ($policies.value) {
-                foreach ($p in $policies.value) {
-                    $grant = $p.grantControls
-                    if ($grant -and ($grant.builtInControls -contains 'mfa')) { $caRequiresMfa = $true; break }
-                }
-            }
+            $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
+            if ($resp.value) { $caPolicies = $resp.value }
         } catch {}
 
-        # Users + Direct per-user MFA state (best-effort via strongAuthenticationMethods)
+        # Filter enabled policies that require MFA
+        $mfaPolicies = @()
+        foreach ($p in $caPolicies) {
+            $enabled = ($p.state -eq 'enabled')
+            if (-not $enabled) { continue }
+            $grant = $p.grantControls
+            $requiresMfa = $false
+            if ($grant) {
+                if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
+                # authenticationStrength also implies MFA, but skip for simplicity if missing
+            }
+            if ($requiresMfa) { $mfaPolicies += $p }
+        }
+
+        # 3) Users and per-user evaluation
         $users = @()
         try {
-            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName,strongAuthenticationDetail,strongAuthenticationMethods' -ErrorAction Stop
+            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+
+            # Directory roles map (for policy role assignment evaluation)
+            $roles = @(); $roleIdToName = @{}
+            try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
+            foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+
             foreach ($u in $userPage) {
                 $directMfa = $false
+                # Attempt to detect registered methods (requires UserAuthenticationMethod.Read.All). Best-effort.
                 try {
-                    if ($u.strongAuthenticationMethods) {
-                        $directMfa = ($u.strongAuthenticationMethods | Where-Object { $_.IsDefault -or $_.IsEnabled }).Count -gt 0
+                    $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
+                    if ($methods.value) {
+                        foreach ($m in $methods.value) {
+                            $otype = $m.'@odata.type'
+                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') {
+                                $directMfa = $true; break
+                            }
+                        }
                     }
                 } catch {}
-                $covered = ($directMfa -or $secDefaultsEnabled -or $caRequiresMfa)
+
+                # Determine if any MFA CA policy applies to this user
+                $userGroups = @()
+                $userRoles = @()
+                try {
+                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    foreach ($m in $mem) {
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
+                    }
+                } catch {}
+
+                $userCaRequiresMfa = $false
+                foreach ($p in $mfaPolicies) {
+                    $conds = $p.conditions
+                    if (-not $conds) { continue }
+                    $usersCond = $conds.users
+                    $incAll = $false
+                    $incUser = $false
+                    $excluded = $false
+
+                    if ($usersCond) {
+                        # Include
+                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
+                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
+                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
+
+                        # Exclude
+                        if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
+                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
+                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
+                    }
+
+                    $applies = ($incAll -or $incUser)
+                    if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
+                }
+
+                $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
                 $users += [pscustomobject]@{
                     DisplayName        = $u.displayName
                     UserPrincipalName  = $u.userPrincipalName
                     PerUserMfaEnabled  = $directMfa
                     SecurityDefaults   = $secDefaultsEnabled
-                    CARequiresMfa      = $caRequiresMfa
+                    CARequiresMfa      = $userCaRequiresMfa
                     MfaCovered         = $covered
                 }
             }
         } catch {}
 
-        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $caRequiresMfa; Users = $users }
+        $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
+        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users }
     } catch {
         Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"; return @{ SecurityDefaultsEnabled=$false; CAPoliciesRequireMfa=$false; Users=@() }
     }
@@ -229,12 +293,36 @@ function New-SecurityInvestigationReport {
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
     $report.FilePaths = @{}
 
-    # Resolve output folder
+    # Resolve output folder (tenant-scoped/timestamped)
     try {
         if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
             $root = Join-Path -Path ([Environment]::GetFolderPath('MyDocuments')) -ChildPath "ExchangeOnlineAnalyzer\SecurityInvestigation"
+
+            # Try to get tenant display name for folder scoping
+            $tenantName = $null
+            try {
+                # Prefer BrowserIntegration helper for a unified identity fetch
+                $bi = Join-Path $PSScriptRoot 'BrowserIntegration.psm1'
+                if (Test-Path $bi) { Import-Module $bi -Force -ErrorAction SilentlyContinue }
+                $ti = $null; try { $ti = Get-TenantIdentity } catch {}
+                if ($ti) { if ($ti.TenantDisplayName) { $tenantName = $ti.TenantDisplayName } elseif ($ti.PrimaryDomain) { $tenantName = $ti.PrimaryDomain } }
+                if (-not $tenantName) {
+                    # Fallback to EXO org display name if available
+                    try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org.DisplayName) { $tenantName = $org.DisplayName } elseif ($org.Name) { $tenantName = $org.Name } } catch {}
+                }
+            } catch {}
+
+            if (-not $tenantName -or [string]::IsNullOrWhiteSpace($tenantName)) { $tenantName = 'Tenant' }
+
+            # Sanitize folder name
+            $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+            $safeName = ($tenantName.ToCharArray() | ForEach-Object { if ($invalid -contains $_) { '-' } else { $_ } }) -join ''
+            $safeName = ($safeName -replace '\s+', ' ').Trim()
+            if ($safeName.Length -gt 80) { $safeName = $safeName.Substring(0,80) }
+
+            $tenantRoot = Join-Path $root $safeName
             $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
-            $OutputFolder = Join-Path $root $ts
+            $OutputFolder = Join-Path $tenantRoot $ts
         }
         if (-not (Test-Path $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null }
         $report.OutputFolder = $OutputFolder
@@ -288,6 +376,13 @@ function New-SecurityInvestigationReport {
 
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
             $report.InboxRules = Get-ExchangeInboxRules
+
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
+            $report.TransportRules = Get-ExchangeTransportRules
+
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
+            $report.InboundConnectors = Get-ExchangeInboundConnectors
+            $report.OutboundConnectors = Get-ExchangeOutboundConnectors
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
             $report.ExchangeDataError = $_.Exception.Message
@@ -348,6 +443,29 @@ function New-SecurityInvestigationReport {
             if ($report.InboxRules -and $report.InboxRules.Count -gt 0) {
                 try { $report.InboxRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboxRulesCsv = $csv }
                 catch { $report.InboxRules | ConvertTo-Json -Depth 6 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboxRulesJson = $json }
+            }
+
+            # Transport Rules export
+            $csv = Join-Path $report.OutputFolder "TransportRules.csv"
+            $json = Join-Path $report.OutputFolder "TransportRules.json"
+            if ($report.TransportRules -and $report.TransportRules.Count -gt 0) {
+                try { $report.TransportRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.TransportRulesCsv = $csv }
+                catch { $report.TransportRules | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.TransportRulesJson = $json }
+            }
+
+            # Connectors export
+            $csv = Join-Path $report.OutputFolder "InboundConnectors.csv"
+            $json = Join-Path $report.OutputFolder "InboundConnectors.json"
+            if ($report.InboundConnectors -and $report.InboundConnectors.Count -gt 0) {
+                try { $report.InboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboundConnectorsCsv = $csv }
+                catch { $report.InboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboundConnectorsJson = $json }
+            }
+
+            $csv = Join-Path $report.OutputFolder "OutboundConnectors.csv"
+            $json = Join-Path $report.OutputFolder "OutboundConnectors.json"
+            if ($report.OutboundConnectors -and $report.OutboundConnectors.Count -gt 0) {
+                try { $report.OutboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.OutboundConnectorsCsv = $csv }
+                catch { $report.OutboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.OutboundConnectorsJson = $json }
             }
 
             $csv = Join-Path $report.OutputFolder "GraphAuditLogs.csv"
@@ -489,6 +607,108 @@ function Get-ExchangeInboxRules {
     }
 }
 
+function Get-ExchangeTransportRules {
+    try {
+        Write-Host "Exporting transport (mail flow) rules..." -ForegroundColor Yellow
+        $rules = @()
+        try { $rules = Get-TransportRule -ResultSize Unlimited -ErrorAction Stop } catch { $rules = Get-TransportRule -ErrorAction Stop }
+
+        function Convert-ShortJson($obj) { try { return ($obj | ConvertTo-Json -Depth 12 -Compress) } catch { return "" } }
+
+        $results = New-Object System.Collections.Generic.List[object]
+        foreach ($r in $rules) {
+            $results.Add([pscustomobject]@{
+                Name               = $r.Name
+                Priority           = $r.Priority
+                State              = $r.State
+                Mode               = $r.Mode
+                Comments           = $r.Comments
+                RuleVersion        = $r.RuleVersion
+                ActivationDate     = $r.ActivationDate
+                ExpiryDate         = $r.ExpiryDate
+                ConditionsSummary  = (Convert-ShortJson $r.Conditions)
+                ExceptionsSummary  = (Convert-ShortJson $r.Exceptions)
+                ActionsSummary     = (Convert-ShortJson $r.Actions)
+                ImmutableId        = $r.ImmutableId
+                Guid               = $r.Guid
+                DlpPolicy          = $r.DlpPolicy
+            }) | Out-Null
+        }
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to export transport rules: $($_.Exception.Message)"; return @()
+    }
+}
+
+function Get-ExchangeInboundConnectors {
+    try {
+        Write-Host "Exporting inbound connectors..." -ForegroundColor Yellow
+        $conns = @()
+        try {
+            $params = @{ ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            $gc = Get-Command Get-InboundConnector -ErrorAction SilentlyContinue
+            if ($gc -and $gc.Parameters.ContainsKey('IncludeTestModeConnectors')) { $params.IncludeTestModeConnectors = $true }
+            $conns = Get-InboundConnector @params
+        } catch { $conns = @() }
+        $results = New-Object System.Collections.Generic.List[object]
+        foreach ($c in $conns) {
+            $results.Add([pscustomobject]@{
+                Name                          = $c.Name
+                ConnectorType                 = $c.ConnectorType
+                Enabled                       = $c.Enabled
+                SenderDomains                 = ($c.SenderDomains -join ';')
+                SenderIPAddresses             = ($c.SenderIPAddresses -join ';')
+                RestrictDomainsToCertificate  = $c.RestrictDomainsToCertificate
+                RestrictDomainsToIPAddresses  = $c.RestrictDomainsToIPAddresses
+                TlsSenderCertificateName      = $c.TlsSenderCertificateName
+                RequireTls                    = $c.RequireTls
+                CloudServicesMailEnabled      = $c.CloudServicesMailEnabled
+                Comment                       = $c.Comment
+                Identity                      = $c.Identity
+                Guid                           = $c.Guid
+                TestMode                      = $(if ($c.PSObject.Properties['TestMode']) { $c.TestMode } elseif ($c.PSObject.Properties['IsTestMode']) { $c.IsTestMode } else { $null })
+            }) | Out-Null
+        }
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to export inbound connectors: $($_.Exception.Message)"; return @()
+    }
+}
+
+function Get-ExchangeOutboundConnectors {
+    try {
+        Write-Host "Exporting outbound connectors..." -ForegroundColor Yellow
+        $conns = @()
+        try {
+            $params = @{ ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            $gc = Get-Command Get-OutboundConnector -ErrorAction SilentlyContinue
+            if ($gc -and $gc.Parameters.ContainsKey('IncludeTestModeConnectors')) { $params.IncludeTestModeConnectors = $true }
+            $conns = Get-OutboundConnector @params
+        } catch { $conns = @() }
+        $results = New-Object System.Collections.Generic.List[object]
+        foreach ($c in $conns) {
+            $results.Add([pscustomobject]@{
+                Name                     = $c.Name
+                ConnectorType            = $c.ConnectorType
+                Enabled                  = $c.Enabled
+                SmartHosts               = ($c.SmartHosts -join ';')
+                RecipientDomains         = ($c.RecipientDomains -join ';')
+                UseMXRecord              = $c.UseMXRecord
+                TlsSettings              = $c.TlsSettings
+                TlsDomain                = $c.TlsDomain
+                CloudServicesMailEnabled = $c.CloudServicesMailEnabled
+                Comment                  = $c.Comment
+                Identity                 = $c.Identity
+                Guid                      = $c.Guid
+                TestMode                 = $(if ($c.PSObject.Properties['TestMode']) { $c.TestMode } elseif ($c.PSObject.Properties['IsTestMode']) { $c.IsTestMode } else { $null })
+            }) | Out-Null
+        }
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to export outbound connectors: $($_.Exception.Message)"; return @()
+    }
+}
+
 function Get-GraphAuditLogs {
     param([int]$DaysBack = 10)
 
@@ -503,10 +723,79 @@ function Get-GraphAuditLogs {
         $startUtc = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max(1,$DaysBack))
         $startIso = $startUtc.ToString("s") + "Z"
 
-        $all = New-Object System.Collections.Generic.List[object]
+        $raw = New-Object System.Collections.Generic.List[object]
         $page = Get-MgAuditLogDirectoryAudit -All -Filter "activityDateTime ge $startIso" -ErrorAction Stop
-        if ($page) { [void]$all.AddRange($page) }
-        return [System.Collections.ArrayList]$all
+        if ($page) { [void]$raw.AddRange($page) }
+
+        # Flatten for CSV detail richness
+        $flattened = New-Object System.Collections.Generic.List[object]
+
+        foreach ($r in $raw) {
+            try {
+                $userObj  = $r.InitiatedBy.User
+                $appObj   = $r.InitiatedBy.App
+                $ipAddr   = $null
+                if ($userObj -and $userObj.IpAddress) { $ipAddr = $userObj.IpAddress }
+
+                $targets = @()
+                if ($r.TargetResources) {
+                    foreach ($t in $r.TargetResources) {
+                        $tname = $t.DisplayName
+                        $tid   = $t.Id
+                        $ttype = $t.Type
+                        $targets += ("{0} ({1}, {2})" -f $tname,$tid,$ttype)
+                    }
+                }
+
+                $modProps = @()
+                if ($r.TargetResources -and $r.TargetResources[0] -and $r.TargetResources[0].ModifiedProperties) {
+                    foreach ($p in $r.TargetResources[0].ModifiedProperties) {
+                        $pname = $p.DisplayName
+                        $oldV  = $p.OldValue
+                        $newV  = $p.NewValue
+                        $modProps += ("{0}: '{1}' → '{2}'" -f $pname,$oldV,$newV)
+                    }
+                }
+
+                $details = @()
+                if ($r.AdditionalDetails) {
+                    foreach ($d in $r.AdditionalDetails) {
+                        $details += ("{0}={1}" -f $d.Key, $d.Value)
+                    }
+                }
+
+                $flattened.Add([pscustomobject]@{
+                    ActivityDateTime         = $r.ActivityDateTime
+                    ActivityDisplayName      = $r.ActivityDisplayName
+                    Category                 = $r.Category
+                    CorrelationId            = $r.CorrelationId
+                    Result                   = $r.Result
+                    ResultReason             = $r.ResultReason
+                    LoggedByService          = $r.LoggedByService
+                    IPAddress                = $ipAddr
+                    InitiatedByUserId        = if ($userObj) { $userObj.Id } else { $null }
+                    InitiatedByUPN           = if ($userObj) { $userObj.UserPrincipalName } else { $null }
+                    InitiatedByUserDisplay   = if ($userObj) { $userObj.DisplayName } else { $null }
+                    InitiatedByAppId         = if ($appObj) { $appObj.ServicePrincipalId } else { $null }
+                    InitiatedByAppDisplay    = if ($appObj) { $appObj.DisplayName } else { $null }
+                    TargetResources          = ($targets -join '; ')
+                    ModifiedProperties       = ($modProps -join '; ')
+                    AdditionalDetails        = ($details -join '; ')
+                    RawId                    = $r.Id
+                }) | Out-Null
+            } catch {
+                # If flattening fails for a record, fall back to a minimal projection
+                $flattened.Add([pscustomobject]@{
+                    ActivityDateTime    = $r.ActivityDateTime
+                    ActivityDisplayName = $r.ActivityDisplayName
+                    Category            = $r.Category
+                    Result              = $r.Result
+                    RawId               = $r.Id
+                }) | Out-Null
+            }
+        }
+
+        return [System.Collections.ArrayList]$flattened
     } catch {
         Write-Error "Failed to collect audit logs: $($_.Exception.Message)"
         return @()
@@ -558,6 +847,9 @@ function New-AISecurityInvestigationPrompt {
     # Calculate data counts outside the here-string to avoid parsing issues
     $messageTraceCount = if($Report.MessageTrace){$Report.MessageTrace.Count}else{0}
     $inboxRulesCount = if($Report.InboxRules){$Report.InboxRules.Count}else{0}
+    $transportRulesCount = if($Report.TransportRules){$Report.TransportRules.Count}else{0}
+    $inboundConnCount = if($Report.InboundConnectors){$Report.InboundConnectors.Count}else{0}
+    $outboundConnCount = if($Report.OutboundConnectors){$Report.OutboundConnectors.Count}else{0}
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
 
@@ -573,6 +865,8 @@ function New-AISecurityInvestigationPrompt {
 ## DATA SOURCES PROVIDED
 - **Message Trace:** $messageTraceCount email records
 - **Inbox Rules:** $inboxRulesCount rules across all mailboxes
+- **Transport Rules (Mail Flow):** $transportRulesCount rules
+- **Connectors:** $inboundConnCount inbound, $outboundConnCount outbound
 - **Audit Logs:** $auditLogsCount directory audit events
 - **MFA Coverage:** tenant-wide defaults/CA and per-user states
 
@@ -672,6 +966,9 @@ function New-TicketSecuritySummary {
     # Calculate data counts outside the here-string to avoid parsing issues
     $messageTraceCount = if($Report.MessageTrace){$Report.MessageTrace.Count}else{0}
     $inboxRulesCount = if($Report.InboxRules){$Report.InboxRules.Count}else{0}
+    $transportRulesCount = if($Report.TransportRules){$Report.TransportRules.Count}else{0}
+    $inboundConnCount = if($Report.InboundConnectors){$Report.InboundConnectors.Count}else{0}
+    $outboundConnCount = if($Report.OutboundConnectors){$Report.OutboundConnectors.Count}else{0}
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
 
@@ -691,6 +988,8 @@ A comprehensive security investigation has been completed for our Microsoft 365 
 ### Data Sources Analyzed:
 - **Email Communications:** $messageTraceCount messages tracked
 - **User Rules:** $inboxRulesCount inbox rules examined
+- **Mail Flow Rules:** $transportRulesCount transport rules examined
+- **Connectors:** $inboundConnCount inbound, $outboundConnCount outbound
 - **Security Logs:** $auditLogsCount audit events reviewed
 - **MFA Coverage:** tenant defaults/CA/per-user evaluated
 
@@ -753,6 +1052,8 @@ Location: $($Report.OutputFolder)
 
 - MessageTrace.csv: Upload to your analysis workspace/LLM to identify unusual external flows and spikes.
 - InboxRules.csv: Review for forwarding/hidden/suspicious rules; feed to LLM for triage.
+- TransportRules.csv: Review for risky conditions/actions (auto-forwarding, allow lists, spoof bypass).
+- InboundConnectors.csv / OutboundConnectors.csv: Validate trusted partners, smart hosts, TLS settings, and domain scopes.
 - AuditLogs.csv: Examine administrative actions and policy changes.
 - MFAStatus.csv: Identify users not covered by any MFA control; prioritize remediation.
 - UserSecurityGroups.csv: Validate privileged group/role membership (e.g., Global Administrator).
@@ -828,6 +1129,9 @@ function New-SecurityInvestigationSummary {
     $mailboxesAnalyzed = if($Report.InboxRules){
         ($Report.InboxRules | Select-Object -Property MailboxOwner -Unique).Count
     }else{0}
+    $transportRulesCount = if($Report.TransportRules){$Report.TransportRules.Count}else{0}
+    $inboundConnCount = if($Report.InboundConnectors){$Report.InboundConnectors.Count}else{0}
+    $outboundConnCount = if($Report.OutboundConnectors){$Report.OutboundConnectors.Count}else{0}
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
     $usersWithActivity = 0
@@ -847,6 +1151,8 @@ function New-SecurityInvestigationSummary {
 - **Message Trace Records:** $messageTraceCount
 - **Inbox Rules Exported:** $inboxRulesCount
 - **Mailboxes Analyzed:** $mailboxesAnalyzed
+- **Transport Rules Exported:** $transportRulesCount
+- **Connectors Exported:** $inboundConnCount inbound, $outboundConnCount outbound
 - **Connection Status:** $($Report.ExchangeConnection)
 
 ### Microsoft Graph Data
@@ -910,4 +1216,4 @@ function New-SecurityInvestigationSummary {
 }
 
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
-Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv
+Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors
