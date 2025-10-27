@@ -624,32 +624,52 @@ function New-SecurityInvestigationReport {
 }
 
 function Get-ExchangeMessageTrace {
-    param([int]$DaysBack = 10,[switch]$Parallel,[int]$ThrottleLimit = 3)
+	param([int]$DaysBack = 10,[switch]$Parallel,[int]$ThrottleLimit = 3)
 
-    try {
-        Write-Host "Collecting message trace data..." -ForegroundColor Yellow
-        $end = (Get-Date).ToUniversalTime()
-        $start = $end.AddDays(-10).Date # always 10 full days; start at 00:00Z
+	try {
+		Write-Host "Collecting message trace data..." -ForegroundColor Yellow
+		$utcNow = (Get-Date).ToUniversalTime()
+		$start = $utcNow.AddDays(-[Math]::Max(1,$DaysBack)).Date
 
-        $results = New-Object System.Collections.Generic.List[object]
+		$results = New-Object System.Collections.Generic.List[object]
 
-        $hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
+		$hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
 
-        # Chunk by day to avoid server-side caps; run per-day windows, optionally in parallel
-		$days = 0..9 | ForEach-Object { $start.AddDays($_) }
-		foreach ($winStart in $days) {
+		# Sequential per-day windows, prefer V2 when available; avoid conflicting params
+		for ($i = 0; $i -lt [Math]::Max(1,$DaysBack); $i++) {
+			$winStart = $start.AddDays($i)
 			$winEnd = $winStart.AddDays(1)
 			try {
-				$batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
-				if ($batch) { [void]$results.AddRange($batch) }
+				if ($hasV2) {
+					# Seek-like pagination via StartingRecipientAddress; keep it simple to avoid parameter set issues
+					$cursor = $null
+					$iterations = 0
+					do {
+						$params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
+						if ($cursor) { $params.StartingRecipientAddress = $cursor }
+						$chunk = Get-MessageTraceV2 @params
+						if ($chunk) {
+							# Append and advance cursor by last recipient to avoid duplicates
+							[void]$results.AddRange($chunk)
+							$last = $chunk[-1]
+							$nextCursor = $last.RecipientAddress
+							if (-not $nextCursor -or $nextCursor -eq $cursor) { break }
+							$cursor = $nextCursor
+						}
+						$iterations++
+					} while ($chunk -and $iterations -lt 500)
+				} else {
+					$batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+					if ($batch) { [void]$results.AddRange($batch) }
+				}
 			} catch {}
 		}
 
-        return [System.Collections.ArrayList]$results
-    } catch {
-        Write-Error "Failed to collect message trace: $($_.Exception.Message)"
-        return @()
-    }
+		return [System.Collections.ArrayList]$results
+	} catch {
+		Write-Error "Failed to collect message trace: $($_.Exception.Message)"
+		return @()
+	}
 }
 
 function Get-ExchangeInboxRules {
