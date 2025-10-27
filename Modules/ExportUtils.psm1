@@ -723,26 +723,49 @@ function New-SecurityInvestigationReport {
             # MFA Coverage export (ensure file exists; project to fixed columns)
             $mfaCsv = Join-Path $report.OutputFolder "MFAStatus.csv"
             $mfaRows = @()
+            # Build a coverage map by user id and UPN from computed results
+            $coverageById  = @{}
+            $coverageByUpn = @{}
             if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
-                $tenantSecDefaults = [bool]($report.MfaCoverage.SecurityDefaultsEnabled)
-                $tenantCaRequires = [bool]($report.MfaCoverage.CAPoliciesRequireMfa)
-                foreach ($u in $report.MfaCoverage.Users) {
-                    $display = $null; $upn = $null
-                    if ($u.PSObject.Properties['DisplayName']) { $display = $u.DisplayName } elseif ($u.PSObject.Properties['displayName']) { $display = $u.displayName }
-                    if ($u.PSObject.Properties['UserPrincipalName']) { $upn = $u.UserPrincipalName } elseif ($u.PSObject.Properties['userPrincipalName']) { $upn = $u.userPrincipalName }
-                    $perUser = $false; if ($u.PSObject.Properties['PerUserMfaEnabled']) { $perUser = [bool]$u.PerUserMfaEnabled }
-                    $caReq = $tenantCaRequires; if ($u.PSObject.Properties['CARequiresMfa']) { $caReq = [bool]$u.CARequiresMfa }
-                    $covered = [bool]($perUser -or $tenantSecDefaults -or $caReq)
-                    $mfaRows += [pscustomobject]@{
-                        DisplayName       = $display
-                        UserPrincipalName = $upn
-                        PerUserMfaEnabled = $perUser
-                        SecurityDefaults  = $tenantSecDefaults
-                        CARequiresMfa     = $caReq
-                        MfaCovered        = $covered
-                    }
+                foreach ($c in $report.MfaCoverage.Users) {
+                    $cid = $null; $cupn = $null
+                    if ($c.PSObject.Properties['UserId']) { $cid = $c.UserId } elseif ($c.PSObject.Properties['id']) { $cid = $c.id }
+                    if ($c.PSObject.Properties['UserPrincipalName']) { $cupn = $c.UserPrincipalName } elseif ($c.PSObject.Properties['userPrincipalName']) { $cupn = $c.userPrincipalName }
+                    if ($cid) { $coverageById[$cid] = $c }
+                    if ($cupn) { $coverageByUpn[$cupn.ToLower()] = $c }
                 }
             }
+            $tenantSecDefaults = [bool]($report.MfaCoverage.SecurityDefaultsEnabled)
+            $tenantCaRequires  = [bool]($report.MfaCoverage.CAPoliciesRequireMfa)
+            # Fetch authoritative identity fields from Graph to prevent blanks
+            try {
+                $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,accountEnabled&$top=999'
+                do {
+                    $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                    if ($page.value) {
+                        foreach ($u in ($page.value | Where-Object { $_.accountEnabled -ne $false })) {
+                            $cov = $null
+                            if ($coverageById.ContainsKey($u.id)) { $cov = $coverageById[$u.id] }
+                            elseif ($coverageByUpn.ContainsKey($u.userPrincipalName.ToLower())) { $cov = $coverageByUpn[$u.userPrincipalName.ToLower()] }
+                            $perUser = $false; $caReq = $tenantCaRequires
+                            if ($cov -ne $null) {
+                                if ($cov.PSObject.Properties['PerUserMfaEnabled']) { $perUser = [bool]$cov.PerUserMfaEnabled }
+                                if ($cov.PSObject.Properties['CARequiresMfa']) { $caReq = [bool]$cov.CARequiresMfa }
+                            }
+                            $covered = [bool]($perUser -or $tenantSecDefaults -or $caReq)
+                            $mfaRows += [pscustomobject]@{
+                                DisplayName       = $u.displayName
+                                UserPrincipalName = $u.userPrincipalName
+                                PerUserMfaEnabled = $perUser
+                                SecurityDefaults  = $tenantSecDefaults
+                                CARequiresMfa     = $caReq
+                                MfaCovered        = $covered
+                            }
+                        }
+                    }
+                    $uri = $page.'@odata.nextLink'
+                } while ($uri)
+            } catch {}
             if ($mfaRows -and $mfaRows.Count -gt 0) {
                 try { $mfaRows | Export-Csv -Path $mfaCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
             } else {
