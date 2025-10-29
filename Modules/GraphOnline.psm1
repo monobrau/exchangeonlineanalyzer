@@ -224,6 +224,7 @@ function Connect-GraphService {
     )
     try {
         try { if ($statusLabel) { $statusLabel.Text = "Connecting to Microsoft Graph..." } } catch {}
+        try { if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Connect-GraphService: start. ForceDeviceCode={0}" -f $ForceDeviceCode.IsPresent) } } catch {}
         try { if ($mainForm -and $mainForm.GetType().Name -eq 'Form') { $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor } } catch {}
 
         # Use global script variables for scopes
@@ -371,6 +372,7 @@ function Connect-GraphService {
         }
 
         $global:graphConnectionAttempted = $true
+        try { if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Connect-GraphService: success." } } catch {}
         try { if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph and modules loaded." } } catch {}
         return $true
     } catch {
@@ -420,6 +422,7 @@ function Connect-GraphService {
         }
 
         try { if ($statusLabel) { $statusLabel.Text = "Microsoft Graph connection failed." } } catch {}
+        try { if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Connect-GraphService: error: {0}" -f $errorMessage) -Level ERROR } } catch {}
         Write-Error "Microsoft Graph connection failed: $($ex.Message)"
         return $false
     } finally {

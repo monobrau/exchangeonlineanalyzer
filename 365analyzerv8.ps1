@@ -1878,6 +1878,31 @@ $script:graphScopes = @(
     "Directory.Read.All"
 )
 
+# --- Lightweight file logging (per-session) ---
+function Get-LogPath {
+    try {
+        $root = Join-Path $env:USERPROFILE "Documents\ExchangeOnlineAnalyzer\Logs"
+        if (-not (Test-Path $root)) { New-Item -ItemType Directory -Path $root -Force | Out-Null }
+        $name = (Get-Date -Format "yyyyMMdd_HHmmss") + "_session.log"
+        $path = Join-Path $root $name
+        return $path
+    } catch { return $null }
+}
+
+if (-not $script:LogPath -or [string]::IsNullOrWhiteSpace($script:LogPath)) { $script:LogPath = Get-LogPath }
+
+function Write-AppLog {
+    param(
+        [Parameter(Mandatory=$true)][string]$Message,
+        [ValidateSet('INFO','WARN','ERROR')][string]$Level = 'INFO'
+    )
+    try {
+        $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+        $line = "[$ts] [$Level] $Message"
+        if ($script:LogPath) { Add-Content -Path $script:LogPath -Value $line -Encoding UTF8 }
+    } catch {}
+}
+
 # --- GUI Setup ---
 Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
 $mainForm = New-Object System.Windows.Forms.Form; $mainForm.Text = "Microsoft 365 Management Tool"; $mainForm.Size = New-Object System.Drawing.Size(1400, 900); $mainForm.MinimumSize = New-Object System.Drawing.Size(1200, 700); $mainForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen; $mainForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable; $mainForm.MaximizeBox = $true; $mainForm.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
@@ -3136,6 +3161,7 @@ $entraConnectGraphButton.add_Click({
         Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction Stop
         $script:graphConnection = $false
         $forceDevice = $false; try { if ($entraUseDeviceCodeCheck.Checked) { $forceDevice = $true } } catch {}
+        if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Graph connect clicked. ForceDeviceCode={0}" -f $forceDevice) }
         $ok = Connect-GraphService -statusLabel $statusLabel -mainForm $mainForm -ForceDeviceCode:$forceDevice
         if ($ok) {
             $script:graphConnection = $true
@@ -3145,6 +3171,7 @@ $entraConnectGraphButton.add_Click({
             $entraDisconnectGraphButton.Enabled = $true
             $entraConnectGraphButton.Enabled = $false
             Write-Host "Microsoft Graph connected. Load buttons enabled: LoadAll=$($loadAllUsersButton.Enabled), Search=$($searchUsersButton.Enabled)"
+            if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Graph connected successfully." }
             $statusLabel.Text = "Connected to Microsoft Graph. Use 'Load All Users' or 'Search Users' to load data."
             Show-Progress -message "Connected to Microsoft Graph successfully." -progress 100
             Update-ConnectionStatus
@@ -3155,6 +3182,7 @@ $entraConnectGraphButton.add_Click({
             $searchUsersButton.Enabled = $false
             $entraDisconnectGraphButton.Enabled = $false
             $entraConnectGraphButton.Enabled = $true
+            if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Graph connection returned false." -Level WARN }
             Update-ConnectionStatus
         }
     } catch {
@@ -3164,8 +3192,10 @@ $entraConnectGraphButton.add_Click({
                              $errorMessage -match "The user cancelled the authentication"
         if ($isUserCancellation) {
             $statusLabel.Text = "Microsoft Graph connection cancelled by user."
+            if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Graph connect cancelled by user." -Level WARN }
         } else {
             $statusLabel.Text = "Failed to connect to Microsoft Graph."
+            if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Graph connect error: {0}" -f $errorMessage) -Level ERROR }
             [System.Windows.Forms.MessageBox]::Show("Failed to connect to Microsoft Graph: $($errorMessage)", "Connection Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
     } finally {
@@ -6537,10 +6567,12 @@ $entraDisconnectGraphButton.add_Click({
         } catch {}
     } catch {
         $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"; Write-Host ("Error disconnecting from Microsoft Graph: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Disconnect error: {0}" -f $_.Exception.Message) -Level ERROR }
         [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     } finally {
         if ($statusLabel.Text -like "Disconnecting*" -or [string]::IsNullOrWhiteSpace($statusLabel.Text)) { $statusLabel.Text = "Disconnected from Microsoft Graph." }
         Write-Host "Disconnected from Microsoft Graph." -ForegroundColor Green
+        if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Graph disconnected (UI state updated)." }
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
         Update-ConnectionStatus
     }
