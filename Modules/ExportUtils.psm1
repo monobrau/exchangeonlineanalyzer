@@ -277,6 +277,8 @@ function Format-InboxRuleXlsx {
             if ($ruleIdCol -gt 0) {
                 $worksheet.Columns.Item($ruleIdCol).NumberFormat = "@"
             }
+            # Final auto-fit pass across all columns after wrap/row adjustments
+            try { $worksheet.Columns.AutoFit() | Out-Null } catch {}
         }
         $workbook.Save(); $workbook.Close()
     } catch {
