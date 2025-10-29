@@ -6537,6 +6537,7 @@ $entraOpenLastExportButton.add_Click({
 
 # --- Disconnect Entra button event handler ---
 $entraDisconnectGraphButton.add_Click({
+    try { [System.Windows.Forms.MessageBox]::Show("Disconnecting from Microsoft Graph...","Entra ID",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information) } catch {}
     if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Disconnect clicked." }
     $statusLabel.Text = "Disconnecting from Microsoft Graph..."; Write-Host "Disconnecting from Microsoft Graph..." -ForegroundColor Yellow
     # Immediately reflect UI state so the user sees feedback even if SDK call hangs
