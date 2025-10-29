@@ -1377,47 +1377,130 @@ function New-LLMInvestigationInstructions {
     $days = $Report.DaysAnalyzed
 
     $instructions = @"
-You are an incident responder assisting $investigator at $company.
+# LLM Instructions: Security Investigation Analysis
 
-Goal: Produce a concise investigation report for a non-technical audience, suitable as a message to the client’s technical contact in our ticketing system.
+## Task
+You are analyzing security logs and a security alert to determine if malicious activity is present. Your output will be a simple text-only document that will be copied and pasted into a support ticket to send to a non-technical contact at $company.
 
-Input files (provided separately):
-- MessageTrace.csv (last $days days)
-- InboxRules.csv
-- AuditLogs.csv
-- MFAStatus.csv
-- UserSecurityGroups.csv
-- Optional: Sign-in logs CSV exported from the Entra portal (if provided)
+## Your Role
+You are acting as a security analyst reviewing evidence to answer: "Is there malicious activity present in the provided logs and security alert?"
 
-Required output:
-1) Executive Investigation Summary
-   - Brief description of the suspected compromise and current status
-   - Key evidence cited from the provided files
-   - Timeline of events (chronological) using exact timestamps and sources
+## Input Data Provided
 
-2) Findings (Non-Technical)
-   - Clear list of findings with minimal jargon
-   - Avoid assumptions; only state what evidence supports
+### Security Log Files (CSV format):
+1. **MessageTrace.csv** - Email message trace data from the last $days days
+   - Contains sender, recipient, subject, timestamps, IP addresses, delivery status
+   
+2. **InboxRules.csv** - All mailbox inbox rules across the organization
+   - Contains rule names, conditions, forwarding/redirect actions, hidden rules
+   
+3. **AuditLogs.csv** - Administrative activity audit logs
+   - Contains user actions, privilege changes, account modifications, policy updates
+   
+4. **MFAStatus.csv** - Multi-factor authentication coverage status
+   - Shows which users have MFA enabled via per-user, Security Defaults, or Conditional Access
+   
+5. **UserSecurityGroups.csv** - User membership in security groups and directory roles
+   - Shows elevated privileges, group memberships, role assignments
 
-3) Recommendations (Minimal)
-   - Only immediate, essential actions
-   - Defer broader hardening guidance for a separate follow-up
+6. **TransportRules.csv** (if present) - Mail flow transport rules
+   
+7. **InboundConnectors.csv / OutboundConnectors.csv** (if present) - Mail flow connectors
 
-Rules:
-- Do not speculate; do not fill gaps without explicit evidence
-- Reference evidence by file and row attributes when possible
-- Keep the message ready to paste into a ticketing system
-- No code blocks unless quoting short data lines for clarity
+### Security Alert (Pasted in Web Form):
+- A security alert or notification has been pasted into the web form interface
+- This alert describes a suspected security incident, suspicious activity, or security concern
+- Review this alert carefully and correlate it with the log data provided
 
-Format:
-Subject: Investigation Update – $company (Timeline + Key Findings)
+## Analysis Process
 
-Body:
-1. Executive Summary
-2. Timeline of Events
-3. Key Findings (Evidence-Backed)
-4. Immediate Next Steps (Minimal)
+### Step 1: Understand the Security Alert
+- Read and understand what the security alert is reporting
+- Identify key indicators: user accounts, timeframes, IP addresses, activities mentioned
+- Note what type of incident is suspected (email compromise, unauthorized access, data exfiltration, etc.)
 
+### Step 2: Correlate Alert with Log Data
+- Search through MessageTrace.csv for email activity matching the alert timeframe and users
+- Check InboxRules.csv for suspicious forwarding rules, especially to external addresses
+- Review AuditLogs.csv for administrative actions related to the alert timeframe and users
+- Verify MFAStatus.csv to see if affected users have MFA protection
+- Check UserSecurityGroups.csv for unexpected privilege escalations
+
+### Step 3: Identify Evidence of Malicious Activity
+Look for these indicators in the logs:
+- **Email Indicators:**
+  - Unusual external email forwarding in inbox rules
+  - Large volumes of emails to external domains not normally contacted
+  - Emails with suspicious subjects or from suspicious senders
+  - Message traces showing failed deliveries or unusual routing
+
+- **Authentication Indicators:**
+  - Users without MFA protection accessing sensitive resources
+  - Unexpected privilege changes in audit logs
+  - Administrative actions outside normal business hours
+
+- **Account Indicators:**
+  - New elevated role assignments
+  - Unexpected group memberships
+  - Account modifications or password resets not initiated by known administrators
+
+### Step 4: Determine Answer
+Based on your analysis, determine:
+- **YES - Malicious activity is present:** Evidence supports the security alert; suspicious activities are confirmed in logs
+- **NO - No malicious activity found:** Logs do not support the alert; activities appear normal or explainable
+- **INCONCLUSIVE - More investigation needed:** Some suspicious indicators present but not clearly malicious; requires additional context or tools
+
+## Required Output Format
+
+Create a **simple, plain text document** (NO markdown, NO code blocks, NO special formatting) that can be directly copied and pasted into a ticket system. The output should be written for a NON-TECHNICAL contact who needs to understand:
+1. Whether malicious activity was found
+2. What evidence supports or refutes the security alert
+3. What immediate actions should be taken (if any)
+
+### Output Structure:
+
+**SECURITY INVESTIGATION ANALYSIS**
+
+[Simple paragraph explaining what was analyzed - the security alert and the log files]
+
+**FINDING: [YES/NO/INCONCLUSIVE - Malicious Activity Detected]**
+
+[2-3 clear paragraphs explaining the finding, written in plain language without technical jargon]
+
+**EVIDENCE FOUND:**
+- [Bullet point list of specific evidence items found in the logs, written in simple terms]
+- [Reference specific findings without technical file names or raw data]
+- [Example: "Email forwarding rule found that automatically forwards all emails to an external address (external@example.com)"]
+
+**EVIDENCE NOT FOUND:**
+- [If applicable, list what was checked but no evidence was found]
+
+**IMMEDIATE RECOMMENDATIONS:**
+- [List 2-4 simple action items if malicious activity is found]
+- [Example: "Disable the email forwarding rule identified above"]
+- [Example: "Enable MFA for User XYZ immediately"]
+
+**CONCLUSION:**
+[1-2 sentence summary restating the finding in clear, non-technical language]
+
+---
+
+## Critical Rules
+
+1. **Plain Text Only:** Your entire output must be plain text - no markdown, no code blocks, no special characters that won't paste cleanly into a ticket
+2. **Non-Technical Language:** Write for someone who is not a security expert - avoid jargon, acronyms, or technical terms without explanation
+3. **Evidence-Based:** Only state findings that are supported by evidence in the provided logs - do not speculate or make assumptions
+4. **Clear Answer:** Start with a clear YES/NO/INCONCLUSIVE answer - do not leave the reader guessing
+5. **Actionable:** If malicious activity is found, provide clear, specific next steps
+6. **Correlate:** Always connect your findings back to the original security alert - explain how the logs support or contradict the alert
+7. **Simple Formatting:** Use basic line breaks, simple bullet points (dashes), and clear section headers in ALL CAPS
+
+## Remember
+- The person reading this is NOT technical - they just need to know if there's a problem and what to do about it
+- The output will be copied and pasted directly into a support ticket - it must be clean, readable plain text
+- Your job is to answer: "Based on the security alert and logs provided, is malicious activity present?" and explain why
+
+Begin your analysis now.
 "@
 
     return $instructions

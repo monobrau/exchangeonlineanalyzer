@@ -4498,7 +4498,8 @@ function Update-ConnectionStatus {
     $mgConnected = $false
     $mgTenantName = $null; $mgPrimaryDomain = $null
     try {
-        $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true }
+        $ctx = Get-MgContext -ErrorAction SilentlyContinue
+        if ($ctx -and $ctx.Account -and ($script:graphConnection -eq $true)) { $mgConnected = $true }
         if ($mgConnected) {
             try {
                 $o = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,verifiedDomains' -ErrorAction Stop
@@ -4515,7 +4516,7 @@ function Update-ConnectionStatus {
                 }
             } catch {}
         }
-    } catch { $mgConnected = ($script:graphConnection -ne $null) }
+    } catch { $mgConnected = $false }
 
     $exchangeStatus = if ($exoConnected) { "✅ Exchange Online" } else { "❌ Exchange Online" }
     $entraStatus = if ($mgConnected) { "✅ Entra ID" } else { "❌ Entra ID" }
@@ -6499,8 +6500,11 @@ $entraOpenLastExportButton.add_Click({
 
 # --- Disconnect Entra button event handler ---
 $entraDisconnectGraphButton.add_Click({
+    $statusLabel.Text = "Disconnecting from Microsoft Graph..."
+    $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    $entraDisconnectGraphButton.Enabled = $false
     try {
-        # Best-effort disconnect and cache clear to ensure clean reconnects
+        # Best-effort disconnect and cache clear to ensure clean reconnects (no module unload)
         try { if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) { Disconnect-MgGraph -ErrorAction SilentlyContinue } } catch {}
         try {
             $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
@@ -6513,7 +6517,12 @@ $entraDisconnectGraphButton.add_Click({
             }
         } catch {}
 
-        $script:graphConnection = $null
+        $script:graphConnection = $false
+        $global:graphConnection = $null
+
+        # Verify context is gone (ignore errors if cmdlet unavailable)
+        try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { Write-Host "Graph context still present after disconnect." -ForegroundColor Yellow } } catch {}
+
         $entraUserGrid.Rows.Clear()
         $loadAllUsersButton.Enabled = $false
         $searchUsersButton.Enabled = $false
@@ -6523,6 +6532,9 @@ $entraDisconnectGraphButton.add_Click({
     } catch {
         $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        Update-ConnectionStatus
     }
 })
 
