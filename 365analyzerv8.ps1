@@ -6537,6 +6537,7 @@ $entraOpenLastExportButton.add_Click({
 
 # --- Disconnect Entra button event handler ---
 $entraDisconnectGraphButton.add_Click({
+    if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Disconnect clicked." }
     $statusLabel.Text = "Disconnecting from Microsoft Graph..."; Write-Host "Disconnecting from Microsoft Graph..." -ForegroundColor Yellow
     # Immediately reflect UI state so the user sees feedback even if SDK call hangs
     $script:graphConnection = $false
@@ -6549,6 +6550,7 @@ $entraDisconnectGraphButton.add_Click({
     Update-ConnectionStatus; [System.Windows.Forms.Application]::DoEvents()
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     try {
+        try { $ctxPre = Get-MgContext -ErrorAction SilentlyContinue; if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Pre-disconnect context: {0}" -f ([bool]($ctxPre -and $ctxPre.Account))) } } catch {}
         # Best-effort disconnect and cache clear to ensure clean reconnects (no module unload)
         try {
             if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) {
@@ -6565,6 +6567,7 @@ $entraDisconnectGraphButton.add_Click({
                 if ($msalCache -and (Test-Path $msalCache)) { Remove-Item $msalCache -Force -ErrorAction SilentlyContinue }
             }
         } catch {}
+        try { $ctxPost = Get-MgContext -ErrorAction SilentlyContinue; if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Post-disconnect context: {0}" -f ([bool]($ctxPost -and $ctxPost.Account))) } } catch {}
     } catch {
         $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"; Write-Host ("Error disconnecting from Microsoft Graph: {0}" -f $_.Exception.Message) -ForegroundColor Red
         if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Disconnect error: {0}" -f $_.Exception.Message) -Level ERROR }
