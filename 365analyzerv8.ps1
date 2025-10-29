@@ -2695,6 +2695,17 @@ $entraDisconnectGraphButton.Width = 140
 $entraDisconnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDisconnectGraphButtonTooltip.SetToolTip($entraDisconnectGraphButton, "Disconnect from Microsoft Graph")
 
+# Early event hook to ensure handler is attached before later sections
+$entraDisconnectGraphButton.add_Click({
+    try { if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Disconnect clicked (early hook)." } } catch {}
+    $statusLabel.Text = "Disconnecting from Microsoft Graph..."
+    $script:graphConnection = $false; $global:graphConnection = $null
+    $entraConnectGraphButton.Enabled = $true; $entraDisconnectGraphButton.Enabled = $false
+    $loadAllUsersButton.Enabled = $false; $searchUsersButton.Enabled = $false
+    try { if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) { try { Disconnect-MgGraph -SignOut -ErrorAction SilentlyContinue } catch { Disconnect-MgGraph -ErrorAction SilentlyContinue } } } catch {}
+    Update-ConnectionStatus
+})
+
 ## Moved Fix Module Conflicts button to Settings tab
 
 $entraOutputFolderLabel = New-Object System.Windows.Forms.Label
@@ -6537,7 +6548,6 @@ $entraOpenLastExportButton.add_Click({
 
 # --- Disconnect Entra button event handler ---
 $entraDisconnectGraphButton.add_Click({
-    try { [System.Windows.Forms.MessageBox]::Show("Disconnecting from Microsoft Graph...","Entra ID",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information) } catch {}
     if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message "Disconnect clicked." }
     $statusLabel.Text = "Disconnecting from Microsoft Graph..."; Write-Host "Disconnecting from Microsoft Graph..." -ForegroundColor Yellow
     # Immediately reflect UI state so the user sees feedback even if SDK call hangs
