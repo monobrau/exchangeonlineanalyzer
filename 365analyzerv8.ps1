@@ -2957,7 +2957,13 @@ $entraTopRow1.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow1.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow1.WrapContents = $true
 $entraTopRow1.AutoSize = $true
-$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $entraFixModulesButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton))
+# Device Code toggle for explicit account/tenant selection
+$entraUseDeviceCodeCheck = New-Object System.Windows.Forms.CheckBox
+$entraUseDeviceCodeCheck.Text = "Device Code (choose account)"
+$entraUseDeviceCodeCheck.AutoSize = $true
+$entraUseDeviceCodeCheck.Checked = $false
+
+$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $entraUseDeviceCodeCheck, $entraFixModulesButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton))
 
 # Second row - User management functions
 $entraTopRow2 = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -3129,7 +3135,8 @@ $entraConnectGraphButton.add_Click({
         # Use the robust connection helper that repairs modules and falls back to device code
         Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction Stop
         $script:graphConnection = $false
-        $ok = Connect-GraphService -statusLabel $statusLabel -mainForm $mainForm
+        $forceDevice = $false; try { if ($entraUseDeviceCodeCheck.Checked) { $forceDevice = $true } } catch {}
+        $ok = Connect-GraphService -statusLabel $statusLabel -mainForm $mainForm -ForceDeviceCode:$forceDevice
         if ($ok) {
             $script:graphConnection = $true
             # Enable load buttons and disable connect button
@@ -6500,7 +6507,7 @@ $entraOpenLastExportButton.add_Click({
 
 # --- Disconnect Entra button event handler ---
 $entraDisconnectGraphButton.add_Click({
-    $statusLabel.Text = "Disconnecting from Microsoft Graph..."
+    $statusLabel.Text = "Disconnecting from Microsoft Graph..."; Write-Host "Disconnecting from Microsoft Graph..." -ForegroundColor Yellow
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     $entraDisconnectGraphButton.Enabled = $false
     try {
@@ -6528,9 +6535,9 @@ $entraDisconnectGraphButton.add_Click({
         $searchUsersButton.Enabled = $false
         $entraConnectGraphButton.Enabled = $true
         $entraDisconnectGraphButton.Enabled = $false
-        $statusLabel.Text = "Disconnected from Microsoft Graph."
+        $statusLabel.Text = "Disconnected from Microsoft Graph."; Write-Host "Disconnected from Microsoft Graph." -ForegroundColor Green
     } catch {
-        $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"
+        $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"; Write-Host ("Error disconnecting from Microsoft Graph: {0}" -f $_.Exception.Message) -ForegroundColor Red
         [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     } finally {
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default

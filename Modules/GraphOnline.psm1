@@ -218,7 +218,9 @@ function Connect-GraphService {
         [Parameter(Mandatory=$false)]
         [object]$statusLabel,
         [Parameter(Mandatory=$false)]
-        [object]$mainForm
+        [object]$mainForm,
+        [Parameter(Mandatory=$false)]
+        [switch]$ForceDeviceCode
     )
     try {
         try { if ($statusLabel) { $statusLabel.Text = "Connecting to Microsoft Graph..." } } catch {}
@@ -262,10 +264,19 @@ function Connect-GraphService {
             # Ignore errors clearing MSAL cache - method may not be available
         }
 
-        # Connect to Graph with improved error handling
-        try {
-            $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
-        } catch {
+        # If caller wants to pick a new account/tenant, prefer Device Code flow
+        if ($ForceDeviceCode) {
+            try {
+                $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ErrorAction Stop
+            } catch {
+                $msg = $_.Exception.Message
+                throw ("Device code connection failed: {0}" -f $msg)
+            }
+        } else {
+            # Connect to Graph with improved error handling
+            try {
+                $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
+            } catch {
             $msg = $_.Exception.Message
             # Retry without -ForceRefresh if not supported by module
             if ($msg -match "parameter name 'ForceRefresh'|matches parameter name 'ForceRefresh'|ForceRefresh") {
@@ -301,6 +312,7 @@ function Connect-GraphService {
             } else {
                 throw
             }
+        }
         }
 
         # Import required Microsoft Graph modules after connection
@@ -369,6 +381,15 @@ function Connect-GraphService {
     } catch {
         $ex = $_.Exception
         $errorMessage = $ex.Message
+
+        # If we already ended up connected (e.g., internal retry succeeded), silently succeed
+        try {
+            $ctxPost = Get-MgContext -ErrorAction SilentlyContinue
+            if ($ctxPost -and $ctxPost.Account) {
+                try { if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph." } } catch {}
+                return $true
+            }
+        } catch {}
 
         # Special-case: intermittent NullReference from underlying SDK. Retry with Device Code.
         if ($errorMessage -match "Object reference not set to an instance of an object|NullReferenceException") {
