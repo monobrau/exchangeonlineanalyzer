@@ -3126,53 +3126,47 @@ $entraConnectGraphButton.add_Click({
     Show-Progress -message "Authentication window should appear. If not visible, check your taskbar or Alt+Tab to find it." -progress 10
 
     try {
-        if (Connect-EntraGraph) {
+        # Use the robust connection helper that repairs modules and falls back to device code
+        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction Stop
+        $script:graphConnection = $false
+        $ok = Connect-GraphService -statusLabel $statusLabel -mainForm $mainForm
+        if ($ok) {
             $script:graphConnection = $true
-            
             # Enable load buttons and disable connect button
             $loadAllUsersButton.Enabled = $true
             $searchUsersButton.Enabled = $true
             $entraDisconnectGraphButton.Enabled = $true
             $entraConnectGraphButton.Enabled = $false
-            
             Write-Host "Microsoft Graph connected. Load buttons enabled: LoadAll=$($loadAllUsersButton.Enabled), Search=$($searchUsersButton.Enabled)"
-            
             $statusLabel.Text = "Connected to Microsoft Graph. Use 'Load All Users' or 'Search Users' to load data."
             Show-Progress -message "Connected to Microsoft Graph successfully." -progress 100
+            Update-ConnectionStatus
         } else {
-            # Check if this is a user cancellation
-            $errorMessage = $_.Exception.Message
-            $isUserCancellation = $errorMessage -match "User cancelled|Operation cancelled|User canceled|Authentication cancelled|Authentication canceled" -or 
-                                 $errorMessage -match "AADSTS50020|AADSTS50076|AADSTS50079" -or
-                                 $errorMessage -match "The user cancelled the authentication"
-            
-            if ($isUserCancellation) {
-                # User cancelled - just update status without showing error popup
-                $statusLabel.Text = "Microsoft Graph connection cancelled by user."
-            } else {
-                # Real error - show user-friendly error message
                 $statusLabel.Text = "Failed to connect to Microsoft Graph."
-                [System.Windows.Forms.MessageBox]::Show("Failed to connect to Microsoft Graph: $($_.Exception.Message)", "Connection Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
+            $script:graphConnection = $false
+            $loadAllUsersButton.Enabled = $false
+            $searchUsersButton.Enabled = $false
+            $entraDisconnectGraphButton.Enabled = $false
+            $entraConnectGraphButton.Enabled = $true
+            Update-ConnectionStatus
         }
     } catch {
-        # Check if this is a user cancellation
         $errorMessage = $_.Exception.Message
         $isUserCancellation = $errorMessage -match "User cancelled|Operation cancelled|User canceled|Authentication cancelled|Authentication canceled" -or 
                              $errorMessage -match "AADSTS50020|AADSTS50076|AADSTS50079" -or
                              $errorMessage -match "The user cancelled the authentication"
-        
         if ($isUserCancellation) {
-            # User cancelled - just update status without showing error popup
             $statusLabel.Text = "Microsoft Graph connection cancelled by user."
         } else {
-            # Real error - show user-friendly error message
             $statusLabel.Text = "Failed to connect to Microsoft Graph."
-            [System.Windows.Forms.MessageBox]::Show("Failed to connect to Microsoft Graph: $($_.Exception.Message)", "Connection Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            [System.Windows.Forms.MessageBox]::Show("Failed to connect to Microsoft Graph: $($errorMessage)", "Connection Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
-    }
+    } finally {
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
-    $entraConnectGraphButton.Enabled = $true
+        $entraConnectGraphButton.Enabled = -not $script:graphConnection
+        $entraDisconnectGraphButton.Enabled = $script:graphConnection
+        Update-ConnectionStatus
+    }
 })
 
 # Load All Users button handler
@@ -3187,7 +3181,7 @@ $loadAllUsersButton.add_Click({
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         
         # Get all users with full details
-        $users = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
+        $users = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses, AccountEnabled -ErrorAction Stop
         $entraUserGrid.Rows.Clear()
         
         $totalUsers = $users.Count
@@ -3267,7 +3261,7 @@ $searchUsersButton.add_Click({
         
         # Search for users using the search term (Microsoft Graph supports startsWith and eq)
         Write-Host "Searching for users with filter: startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')"
-        $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
+        $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses, AccountEnabled -ErrorAction Stop
         
         Write-Host "Found $($users.Count) users"
         
@@ -3277,14 +3271,14 @@ $searchUsersButton.add_Click({
             # Try alternative search methods using supported operators
             try {
                 # Try exact match first
-                $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses, AccountEnabled -ErrorAction SilentlyContinue
                 Write-Host "Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
                 
-                $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses, AccountEnabled -ErrorAction SilentlyContinue
                 Write-Host "Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
                 
                 # Try case-insensitive search by getting all users and filtering client-side
-                $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses, AccountEnabled -ErrorAction SilentlyContinue
                 $usersAlt3 = $allUsers | Where-Object { 
                     $_.DisplayName -like "*$searchTerm*" -or $_.UserPrincipalName -like "*$searchTerm*" 
                 }
@@ -3871,6 +3865,7 @@ $disconnectButton.add_Click({
     $manageRulesButton.Enabled = $false; $manageConnectorsButton.Enabled = $false; $manageTransportRulesButton.Enabled = $false
     $statusLabel.Text = "Disconnected."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+    Update-ConnectionStatus
 })
 $selectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $true } })
 $deselectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $false } })
@@ -4498,13 +4493,33 @@ $accountSelectorGroup.Controls.Add($connectionStatusLabel)
 function Update-ConnectionStatus {
     # Robust checks
     $exoConnected = $false
-    try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoConnected = $true } catch { $exoConnected = ($script:currentExchangeConnection -eq $true) }
+    $exoTenantName = $null
+    try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org) { $exoConnected = $true; $exoTenantName = if ($org.DisplayName) { $org.DisplayName } elseif ($org.Name) { $org.Name } else { $null } } } catch { $exoConnected = ($script:currentExchangeConnection -eq $true) }
     $mgConnected = $false
-    try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true } } catch { $mgConnected = ($script:graphConnection -ne $null) }
+    $mgTenantName = $null; $mgPrimaryDomain = $null
+    try {
+        $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true }
+        if ($mgConnected) {
+            try {
+                $o = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,verifiedDomains' -ErrorAction Stop
+                if ($o.value -and $o.value.Count -ge 1) {
+                    $mgTenantName = $o.value[0].displayName
+                    try {
+                        $vd = $o.value[0].verifiedDomains
+                        if ($vd) {
+                            $def = $vd | Where-Object { $_.isDefault -eq $true } | Select-Object -First 1
+                            if (-not $def) { $def = $vd | Where-Object { $_.isInitial -eq $true } | Select-Object -First 1 }
+                            if ($def) { $mgPrimaryDomain = $def.name }
+                        }
+                    } catch {}
+                }
+            } catch {}
+        }
+    } catch { $mgConnected = ($script:graphConnection -ne $null) }
 
     $exchangeStatus = if ($exoConnected) { "✅ Exchange Online" } else { "❌ Exchange Online" }
     $entraStatus = if ($mgConnected) { "✅ Entra ID" } else { "❌ Entra ID" }
-    $connectionStatusLabel.Text = "Connection Status: $exchangeStatus | $entraStatus"
+    $connectionStatusLabel.Text = "Connection Status: $exchangeStatus$([string]::IsNullOrWhiteSpace($exoTenantName) ? '' : " ($exoTenantName)") | $entraStatus$([string]::IsNullOrWhiteSpace($mgTenantName) ? '' : " ($mgTenantName$([string]::IsNullOrWhiteSpace($mgPrimaryDomain) ? '' : " / $mgPrimaryDomain") )")"
     
     if ($exoConnected -and $mgConnected) {
         $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Green
@@ -4513,6 +4528,15 @@ function Update-ConnectionStatus {
     } else {
         $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Red
     }
+
+    # Also reflect connection state in the global status strip
+    try {
+        $statusText = "EXO: " + (if ($exoConnected) { "Connected" } else { "Not Connected" })
+        if ($exoTenantName) { $statusText += " ($exoTenantName)" }
+        $statusText += " | Graph: " + (if ($mgConnected) { "Connected" } else { "Not Connected" })
+        if ($mgTenantName -or $mgPrimaryDomain) { $statusText += " (" + ($mgTenantName ? $mgTenantName : '') + ($mgTenantName -and $mgPrimaryDomain ? ' / ' : '') + ($mgPrimaryDomain ? $mgPrimaryDomain : '') + ")" }
+        $statusLabel.Text = $statusText
+    } catch {}
 }
 
 # Generate Report button (moved down)
@@ -4634,11 +4658,30 @@ $securityInvestigationButton.add_Click({
 
         $configGroupBox.Controls.AddRange(@($investigatorNameLabel, $investigatorNameTextBox, $companyNameLabel, $companyNameTextBox, $daysLabel, $daysComboBox, $connectionStatusLabel))
 
+        # Export Selection
+        $exportsGroupBox = New-Object System.Windows.Forms.GroupBox
+        $exportsGroupBox.Text = "Select Exports"
+        $exportsGroupBox.Location = New-Object System.Drawing.Point(430, 95)
+        $exportsGroupBox.Size = New-Object System.Drawing.Size(460, 120)
+
+        $cbMsgTrace   = New-Object System.Windows.Forms.CheckBox; $cbMsgTrace.Text = "Message Trace";        $cbMsgTrace.AutoSize = $true; $cbMsgTrace.Checked = $true; $cbMsgTrace.Location = New-Object System.Drawing.Point(15, 22)
+        $cbInboxRules = New-Object System.Windows.Forms.CheckBox; $cbInboxRules.Text = "Inbox Rules";          $cbInboxRules.AutoSize = $true; $cbInboxRules.Checked = $true; $cbInboxRules.Location = New-Object System.Drawing.Point(15, 47)
+        $cbTransport  = New-Object System.Windows.Forms.CheckBox; $cbTransport.Text = "Transport Rules";      $cbTransport.AutoSize = $true; $cbTransport.Checked = $true; $cbTransport.Location = New-Object System.Drawing.Point(15, 72)
+
+        $cbInbConn    = New-Object System.Windows.Forms.CheckBox; $cbInbConn.Text = "Inbound Connectors";    $cbInbConn.AutoSize = $true; $cbInbConn.Checked = $true; $cbInbConn.Location = New-Object System.Drawing.Point(185, 22)
+        $cbOutConn    = New-Object System.Windows.Forms.CheckBox; $cbOutConn.Text = "Outbound Connectors";   $cbOutConn.AutoSize = $true; $cbOutConn.Checked = $true; $cbOutConn.Location = New-Object System.Drawing.Point(185, 47)
+        $cbAudit      = New-Object System.Windows.Forms.CheckBox; $cbAudit.Text = "Audit Logs";             $cbAudit.AutoSize = $true; $cbAudit.Checked = $true; $cbAudit.Location = New-Object System.Drawing.Point(185, 72)
+
+        $cbMfa        = New-Object System.Windows.Forms.CheckBox; $cbMfa.Text = "MFA Status";              $cbMfa.AutoSize = $true; $cbMfa.Checked = $true; $cbMfa.Location = New-Object System.Drawing.Point(335, 22)
+        $cbUserGroups = New-Object System.Windows.Forms.CheckBox; $cbUserGroups.Text = "User Security Groups"; $cbUserGroups.AutoSize = $true; $cbUserGroups.Checked = $true; $cbUserGroups.Location = New-Object System.Drawing.Point(335, 47)
+
+        $exportsGroupBox.Controls.AddRange(@($cbMsgTrace,$cbInboxRules,$cbTransport,$cbInbConn,$cbOutConn,$cbAudit,$cbMfa,$cbUserGroups))
+
         # Generate Button
         $generateButton = New-Object System.Windows.Forms.Button
         $generateButton.Text = "🚀 Generate Security Investigation"
         $generateButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
-        $generateButton.Location = New-Object System.Drawing.Point(430, 140)
+        $generateButton.Location = New-Object System.Drawing.Point(430, 205)
         $generateButton.Size = New-Object System.Drawing.Size(280, 50)
         $generateButton.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
         $generateButton.ForeColor = [System.Drawing.Color]::White
@@ -4647,13 +4690,13 @@ $securityInvestigationButton.add_Click({
         $progressLabel = New-Object System.Windows.Forms.Label
         $progressLabel.Text = "Ready to generate security investigation report."
         $progressLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Italic)
-        $progressLabel.Location = New-Object System.Drawing.Point(430, 200)
+        $progressLabel.Location = New-Object System.Drawing.Point(430, 265)
         $progressLabel.Size = New-Object System.Drawing.Size(400, 20)
         $progressLabel.ForeColor = [System.Drawing.Color]::Green
 
         # Progress bar (indeterminate marquee during processing)
         $progressBarSI = New-Object System.Windows.Forms.ProgressBar
-        $progressBarSI.Location = New-Object System.Drawing.Point(430, 225)
+        $progressBarSI.Location = New-Object System.Drawing.Point(430, 290)
         $progressBarSI.Size = New-Object System.Drawing.Size(280, 16)
         $progressBarSI.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
         $progressBarSI.MarqueeAnimationSpeed = 30
@@ -4684,6 +4727,16 @@ $securityInvestigationButton.add_Click({
             $investigator = if ($investigatorNameTextBox.Text -and $investigatorNameTextBox.Text.Trim().Length -gt 0) { $investigatorNameTextBox.Text } elseif ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
             $company = if ($companyNameTextBox.Text -and $companyNameTextBox.Text.Trim().Length -gt 0) { $companyNameTextBox.Text } elseif ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
             $days = [int]$daysComboBox.SelectedItem
+            $selectedExports = @()
+            if ($cbMsgTrace.Checked)   { $selectedExports += 'MessageTrace' }
+            if ($cbInboxRules.Checked) { $selectedExports += 'InboxRules' }
+            if ($cbTransport.Checked)  { $selectedExports += 'TransportRules' }
+            if ($cbInbConn.Checked)    { $selectedExports += 'InboundConnectors' }
+            if ($cbOutConn.Checked)    { $selectedExports += 'OutboundConnectors' }
+            if ($cbAudit.Checked)      { $selectedExports += 'AuditLogs' }
+            if ($cbMfa.Checked)        { $selectedExports += 'MFAStatus' }
+            if ($cbUserGroups.Checked) { $selectedExports += 'UserSecurityGroups' }
+            if ($selectedExports.Count -eq 0) { $selectedExports = @('All') }
 
             $progressLabel.Text = "🔍 Starting comprehensive security investigation..."
             $progressLabel.ForeColor = [System.Drawing.Color]::Blue
@@ -4717,7 +4770,7 @@ $securityInvestigationButton.add_Click({
                 $progressBarSI.Visible = $true
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -ExportSelection $selectedExports
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -4728,6 +4781,52 @@ $securityInvestigationButton.add_Click({
                     $resultsForm.Text = "Security Investigation Results"
                     $resultsForm.Size = New-Object System.Drawing.Size(1000, 800)
                     $resultsForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+
+            # Tenant banner (top)
+            $tenantDisplay = "Tenant: Unknown"
+            try {
+                # Try helper first
+                Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+                $ti = $null; try { $ti = Get-TenantIdentity } catch {}
+                $tdName = $null; $tdPrim = $null; $tdId = $null
+                if ($ti) {
+                    if ($ti.TenantDisplayName) { $tdName = $ti.TenantDisplayName }
+                    if ($ti.PrimaryDomain) { $tdPrim = $ti.PrimaryDomain }
+                    if ($ti.TenantId) { $tdId = $ti.TenantId }
+                }
+                # If still unknown and Graph is connected, query organization via Graph
+                if (-not $tdName -and -not $tdPrim) {
+                    try {
+                        $ctx = Get-MgContext -ErrorAction Stop
+                        if ($ctx -and $ctx.Account) {
+                            $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,verifiedDomains' -ErrorAction Stop
+                            if ($org.value -and $org.value.Count -ge 1) {
+                                $tdName = $org.value[0].displayName
+                                $tdId = if ($ctx.TenantId) { $ctx.TenantId } else { $org.value[0].id }
+                                try {
+                                    $vd = $org.value[0].verifiedDomains
+                                    if ($vd) {
+                                        $def = $vd | Where-Object { $_.isDefault -eq $true } | Select-Object -First 1
+                                        if (-not $def) { $def = $vd | Where-Object { $_.isInitial -eq $true } | Select-Object -First 1 }
+                                        if ($def) { $tdPrim = $def.name }
+                                    }
+                                } catch {}
+                            }
+                        }
+                    } catch {}
+                }
+                $shown = ($tdName ? $tdName : ($tdPrim ? $tdPrim : 'Unknown'))
+                $tenantDisplay = "Tenant: $shown"
+                if ($tdPrim -or $tdId) {
+                    $tenantDisplay += "  (" + ($tdPrim ? $tdPrim : '') + (($tdPrim -and $tdId) ? ' | ' : '') + ($tdId ? $tdId : '') + ")"
+                }
+            } catch {}
+            $tenantBanner = New-Object System.Windows.Forms.Label
+            $tenantBanner.Text = $tenantDisplay
+            $tenantBanner.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+            $tenantBanner.Dock = 'Top'
+            $tenantBanner.Height = 28
+            $tenantBanner.Padding = New-Object System.Windows.Forms.Padding(10,6,10,4)
 
                     # Create tab control for results
                     $resultsTabControl = New-Object System.Windows.Forms.TabControl
@@ -4817,7 +4916,37 @@ $securityInvestigationButton.add_Click({
 
                     $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn))
 
-                    $resultsForm.Controls.Add($resultsTabControl)
+            # Bottom status summary reflecting current connections
+            $connSummary = New-Object System.Windows.Forms.Label
+            $connSummary.Dock = 'Bottom'
+            $connSummary.Height = 20
+            $connSummary.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+            try {
+                $ctx = Get-MgContext -ErrorAction SilentlyContinue; $gOk = ($ctx -and $ctx.Account)
+                $gName = $null; $gDom = $null
+                if ($gOk) {
+                    try {
+                        $o = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization?$select=displayName,verifiedDomains' -ErrorAction Stop
+                        if ($o.value) {
+                            $gName = $o.value[0].displayName
+                            $vd = $o.value[0].verifiedDomains
+                            if ($vd) {
+                                $def = $vd | Where-Object { $_.isDefault -eq $true } | Select-Object -First 1
+                                if (-not $def) { $def = $vd | Where-Object { $_.isInitial -eq $true } | Select-Object -First 1 }
+                                if ($def) { $gDom = $def.name }
+                            }
+                        }
+                    } catch {}
+                }
+                $eOk = $false; $eName = $null
+                try { $org = Get-OrganizationConfig -ErrorAction Stop; $eOk = $true; $eName = ($org.DisplayName ? $org.DisplayName : $org.Name) } catch {}
+                $connSummary.Text = "EXO: " + (if ($eOk) { "Connected" } else { "Not Connected" }) + (if ($eName) { " ("+$eName+")" } else { '' }) +
+                                    " | Graph: " + (if ($gOk) { "Connected" } else { "Not Connected" }) + (if ($gName -or $gDom) { " (" + ($gName ? $gName : '') + ($gName -and $gDom ? ' / ' : '') + ($gDom ? $gDom : '') + ")" } else { '' })
+            } catch {}
+
+            $resultsForm.Controls.Add($resultsTabControl)
+            $resultsForm.Controls.Add($tenantBanner)
+            $resultsForm.Controls.Add($connSummary)
                     $resultsForm.Controls.Add($copyPanel)
 
                     $resultsForm.ShowDialog()
@@ -4841,12 +4970,12 @@ $securityInvestigationButton.add_Click({
         # Close button
         $closeButton = New-Object System.Windows.Forms.Button
         $closeButton.Text = "Close"
-        $closeButton.Location = New-Object System.Drawing.Point(730, 140)
+        $closeButton.Location = New-Object System.Drawing.Point(730, 205)
         $closeButton.Size = New-Object System.Drawing.Size(100, 50)
         $closeButton.add_Click({ $securityForm.Close() })
 
         # Add all controls to main panel
-        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $generateButton, $progressLabel, $progressBarSI, $closeButton))
+        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $exportsGroupBox, $generateButton, $progressLabel, $progressBarSI, $closeButton))
 
         $securityForm.Controls.Add($securityMainPanel)
 
@@ -6371,7 +6500,19 @@ $entraOpenLastExportButton.add_Click({
 # --- Disconnect Entra button event handler ---
 $entraDisconnectGraphButton.add_Click({
     try {
-        Disconnect-MgGraph -ErrorAction Stop
+        # Best-effort disconnect and cache clear to ensure clean reconnects
+        try { if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) { Disconnect-MgGraph -ErrorAction SilentlyContinue } } catch {}
+        try {
+            $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+            if ($graphSession -and $graphSession.AuthContext) { $graphSession.AuthContext.ClearTokenCache() }
+        } catch {}
+        try {
+            if ([Microsoft.Identity.Client.TokenCacheHelper] -as [type]) {
+                $msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+                if ($msalCache -and (Test-Path $msalCache)) { Remove-Item $msalCache -Force -ErrorAction SilentlyContinue }
+            }
+        } catch {}
+
         $script:graphConnection = $null
         $entraUserGrid.Rows.Clear()
         $loadAllUsersButton.Enabled = $false

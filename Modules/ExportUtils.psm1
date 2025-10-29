@@ -1,296 +1,101 @@
 # Returns:
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
 function Get-MfaCoverageReport {
-    param([switch]$Parallel,[int]$ThrottleLimit = 4)
-    try {
-        # 1) Security Defaults status (authoritative)
-        $secDefaultsEnabled = $false
-        try {
-            $secDefaults = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction Stop
-            if ($secDefaults -and $secDefaults.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$secDefaults.isEnabled }
-        } catch {}
+	param([switch]$Parallel,[int]$ThrottleLimit = 4)
+	try {
+		# Align with GUI analyzer for consistent MFA detection
+		try { Import-Module (Join-Path $PSScriptRoot 'EntraInvestigator.psm1') -Force -ErrorAction SilentlyContinue } catch {}
 
-        # 2) Conditional Access policies requiring MFA (tenant-wide set)
-        $caPolicies = @()
-        try {
-            $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
-            if ($resp.value) { $caPolicies = $resp.value }
-        } catch {}
-        
-        # Map roleTemplateIds for directory roles (stable across tenants)
-        $roleTemplates = @{}
-        try {
-            $rtUri = 'https://graph.microsoft.com/v1.0/directoryRoleTemplates?$select=id,displayName&$top=999'
-            do {
-                $rtPage = Invoke-MgGraphRequest -Method GET -Uri $rtUri -ErrorAction SilentlyContinue
-                if ($rtPage.value) { foreach($t in $rtPage.value){ $roleTemplates[$t.id] = $t.displayName } }
-                $rtUri = $rtPage.'@odata.nextLink'
-            } while ($rtUri)
-        } catch {}
+		# Security Defaults
+		$secDefaultsEnabled = $false
+		try {
+			$sd = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction SilentlyContinue
+			if ($sd -and $sd.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$sd.isEnabled }
+		} catch {}
 
-        # Filter enabled policies that require MFA
-        $mfaPolicies = @()
-        foreach ($p in $caPolicies) {
-            $enabled = ($p.state -eq 'enabled')
-            if (-not $enabled) { continue }
-            $grant = $p.grantControls
-            $requiresMfa = $false
-            if ($grant) {
-                if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
-                # Treat any authenticationStrength grant as MFA requirement
-                if (-not $requiresMfa -and $grant.authenticationStrength) { $requiresMfa = $true }
-            }
-            if ($requiresMfa) { $mfaPolicies += $p }
-        }
+		# Best-effort CA tenant flag computed up front so it's available to parallel runspaces
+		$tenantCa = $false
+		try {
+			$cap = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
+			if ($cap.value) {
+				foreach ($p in $cap.value) { if ($p.state -eq 'enabled' -and $p.grantControls -and ($p.grantControls.builtInControls -contains 'mfa' -or $p.grantControls.authenticationStrength)) { $tenantCa = $true; break } }
+			}
+		} catch {}
 
-        # 3) Users and per-user evaluation (use REST paging to avoid parameter-set issues)
-        $users = @()
-        try {
-            $uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,accountEnabled&$top=999'
-            do {
-                $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-                if ($page.value) { $users += ($page.value | Where-Object { $_.accountEnabled -ne $false }) }
-                $uri = $page.'@odata.nextLink'
-            } while ($uri)
+		# Users
+		$users = @()
+		try {
+			$uri = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,accountEnabled&$top=999'
+			do {
+				$page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction SilentlyContinue
+				if ($page.value) { $users += ($page.value | Where-Object { $_.accountEnabled -ne $false }) }
+				$uri = $page.'@odata.nextLink'
+			} while ($uri)
+		} catch {}
 
-            # Directory roles map (for policy role assignment evaluation) via REST
-            $roles = @(); $roleIdToName = @{}
-            try {
-                $ruri = 'https://graph.microsoft.com/v1.0/directoryRoles?$select=id,displayName&$top=999'
-                do {
-                    $rpage = Invoke-MgGraphRequest -Method GET -Uri $ruri -ErrorAction SilentlyContinue
-                    if ($rpage.value) { $roles += $rpage.value }
-                    $ruri = $rpage.'@odata.nextLink'
-                } while ($ruri)
-            } catch {}
-            foreach ($r in $roles) { if ($r.Id) { $roleIdToName[$r.Id] = $r.DisplayName } }
+		$rows = New-Object System.Collections.Generic.List[object]
+		if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
+			$par = $users | ForEach-Object -Parallel {
+				param($u)
+				try { Import-Module (Join-Path $using:PSScriptRoot 'EntraInvestigator.psm1') -Force -ErrorAction SilentlyContinue } catch {}
+				$perUser = $false; $sdFlag = [bool]$using:secDefaultsEnabled; $caReq = [bool]$using:tenantCa
+				try {
+					$st = Get-EntraUserMfaStatus -UserPrincipalName $u.userPrincipalName
+					if ($st -and $st.PerUserMfa -ne $null -and $st.SecurityDefaults -ne $null -and $st.ConditionalAccess -ne $null) {
+						$perUser = [bool]$st.PerUserMfa.Enabled
+						$sdFlag  = [bool]$st.SecurityDefaults.Enabled
+						$caReq   = [bool]$st.ConditionalAccess.RequiresMfa
+					} else {
+						throw 'Analyzer returned empty'
+					}
+				} catch {
+					# Fallback: direct auth methods check; CA fallback to tenant-level
+					try {
+						$m = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.id) -ErrorAction SilentlyContinue
+						if ($m.value) { $perUser = (($m.value | Where-Object { $_.'@odata.type' -ne '#microsoft.graph.passwordAuthenticationMethod' }).Count -gt 0) }
+					} catch {}
+				}
+				[pscustomobject]@{
+					DisplayName       = $u.displayName
+					UserPrincipalName = $u.userPrincipalName
+					PerUserMfaEnabled = [bool]$perUser
+					SecurityDefaults  = [bool]$sdFlag
+					CARequiresMfa     = [bool]$caReq
+					MfaCovered        = [bool]($perUser -or $sdFlag -or $caReq)
+				}
+			} -ThrottleLimit $ThrottleLimit
+			if ($par) { foreach ($o in $par) { if ($o) { [void]$rows.Add($o) } } }
+		} else {
+			foreach ($u in $users) {
+				$perUser = $false; $sdFlag = [bool]$secDefaultsEnabled; $caReq = [bool]$tenantCa
+				try {
+					$st = Get-EntraUserMfaStatus -UserPrincipalName $u.userPrincipalName
+					if ($st -and $st.PerUserMfa -ne $null -and $st.SecurityDefaults -ne $null -and $st.ConditionalAccess -ne $null) {
+						$perUser = [bool]$st.PerUserMfa.Enabled
+						$sdFlag  = [bool]$st.SecurityDefaults.Enabled
+						$caReq   = [bool]$st.ConditionalAccess.RequiresMfa
+					} else { throw 'Analyzer empty' }
+				} catch {
+					try {
+						$m = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.id) -ErrorAction SilentlyContinue
+						if ($m.value) { $perUser = (($m.value | Where-Object { $_.'@odata.type' -ne '#microsoft.graph.passwordAuthenticationMethod' }).Count -gt 0) }
+					} catch {}
+				}
+				$rows.Add([pscustomobject]@{
+					DisplayName       = $u.displayName
+					UserPrincipalName = $u.userPrincipalName
+					PerUserMfaEnabled = [bool]$perUser
+					SecurityDefaults  = [bool]$sdFlag
+					CARequiresMfa     = [bool]$caReq
+					MfaCovered        = [bool]($perUser -or $sdFlag -or $caReq)
+				}) | Out-Null
+			}
+		}
 
-            # Use the same per-user analyzer as the GUI to ensure consistent MFA detection
-            try { Import-Module (Join-Path $PSScriptRoot 'EntraInvestigator.psm1') -Force -ErrorAction SilentlyContinue } catch {}
-            $rows = New-Object System.Collections.Generic.List[object]
-            foreach ($u in $users) {
-                $perUser = $false; $caReq = $false; $sdFlag = [bool]$secDefaultsEnabled
-                $hadAnalyzer = $false
-                try {
-                    $st = Get-EntraUserMfaStatus -UserPrincipalName $u.userPrincipalName
-                    if ($st -and $st.PerUserMfa -ne $null -and $st.SecurityDefaults -ne $null -and $st.ConditionalAccess -ne $null) {
-                        $perUser = [bool]$st.PerUserMfa.Enabled
-                        $sdFlag  = [bool]$st.SecurityDefaults.Enabled
-                        $caReq   = [bool]$st.ConditionalAccess.RequiresMfa
-                        $hadAnalyzer = $true
-                    }
-                } catch {}
-                if (-not $hadAnalyzer) {
-                    # Fallback: direct method and CA evaluation
-                    try {
-                        $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
-                        if ($methods.value) {
-                            foreach ($m in $methods.value) {
-                                $otype = $m.'@odata.type'
-                                if ($otype -match 'microsoftAuthenticator|phoneAuthentication|softwareOath|fido2|temporaryAccessPass') { $perUser = $true; break }
-                            }
-                        }
-                    } catch {}
-                    try {
-                        foreach ($p in $mfaPolicies) {
-                            if ($p.state -ne 'enabled') { continue }
-                            $cond = $p.conditions; if (-not $cond) { continue }
-                            $usersCond = $cond.users
-                            $applies = $false
-                            if ($usersCond) {
-                                if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $applies = $true }
-                                if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $applies = $false }
-                            }
-                            if ($applies -and $p.grantControls -and ($p.grantControls.builtInControls -contains 'mfa' -or $p.grantControls.authenticationStrength)) { $caReq = $true; break }
-                        }
-                    } catch {}
-                }
-                $rows.Add([pscustomobject]@{
-                    DisplayName       = $u.displayName
-                    UserPrincipalName = $u.userPrincipalName
-                    PerUserMfaEnabled = $perUser
-                    SecurityDefaults  = $sdFlag
-                    CARequiresMfa     = $caReq
-                    MfaCovered        = [bool]($perUser -or $sdFlag -or $caReq)
-                }) | Out-Null
-            }
-            $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
-            return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = [System.Collections.ArrayList]$rows }
-
-        # Preload user registration details as fallback per-user MFA signal
-        $regMap = @{}
-        try {
-            $ruri = 'https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails?$select=id,userPrincipalName,isMfaRegistered,isMfaCapable&$top=999'
-            do {
-                $rpage = Invoke-MgGraphRequest -Method GET -Uri $ruri -ErrorAction SilentlyContinue
-                if ($rpage.value) {
-                    foreach ($row in $rpage.value) {
-                        if ($row.id) { $regMap[$row.id] = @($row.isMfaRegistered,$row.isMfaCapable) -contains $true }
-                    }
-                }
-                $ruri = $rpage.'@odata.nextLink'
-            } while ($ruri)
-        } catch {}
-
-        $acc = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
-        if ($Parallel -and $PSVersionTable.PSVersion.Major -ge 7) {
-            $sec = $secDefaultsEnabled
-            $pols = $mfaPolicies
-            $reg = $regMap
-            $computed = $users | ForEach-Object -Parallel {
-                param($u,$sec,$pols,$reg)
-                $directMfa = $false
-                try {
-                    $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
-                    if ($methods.value) {
-                        foreach ($m in $methods.value) {
-                            $otype = $m.'@odata.type'
-                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') { $directMfa = $true; break }
-                        }
-                    }
-                } catch {}
-                if (-not $directMfa -and $reg.ContainsKey($u.Id)) { $directMfa = [bool]$reg[$u.Id] }
-                $userGroups = @(); $userRoles = @(); $userRoleTemplates = @()
-                try {
-                    $mem = @()
-                    $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
-                    do {
-                        $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
-                        if ($mResp.value) { $mem += $mResp.value }
-                        $mUri = $mResp.'@odata.nextLink'
-                    } while ($mUri)
-                    foreach ($m in $mem) {
-                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { 
-                            $userRoles += $m.Id
-                            if ($m.PSObject.Properties['roleTemplateId'] -and $m.roleTemplateId) { $userRoleTemplates += $m.roleTemplateId }
-                        }
-                    }
-                } catch {}
-                $userCaRequiresMfa = $false
-                foreach ($p in $pols) {
-                    $conds = $p.conditions; if (-not $conds) { continue }
-                    $usersCond = $conds.users
-                    $incAll = $false; $incUser = $false; $excluded = $false
-                    if ($usersCond) {
-                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
-                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
-                        if (-not $incUser -and $usersCond.includeRoles)  {
-                            if (@($usersCond.includeRoles)  -ne $null) {
-                                $incById = ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ })
-                                $incByTemplate = $false
-                                if ($usersCond.includeRoles) {
-                                    foreach ($rid in $usersCond.includeRoles) {
-                                        if ($roleTemplates.ContainsKey($rid) -and ($userRoleTemplates -contains $rid)) { $incByTemplate = $true; break }
-                                    }
-                                }
-                                if ($incById -or $incByTemplate) { $incUser = $true }
-                            }
-                        }
-                        if ($usersCond.excludeUsers  -and ($usersCond.excludeUsers  -contains $u.Id)) { $excluded = $true }
-                        if ($usersCond.excludeGroups -and (@($usersCond.excludeGroups) -ne $null)) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } }
-                        if ($usersCond.excludeRoles  -and (@($usersCond.excludeRoles)  -ne $null)) { if ($usersCond.excludeRoles  | Where-Object { $userRoles  -contains $_ }) { $excluded = $true } }
-                    }
-                    if (($incAll -or $incUser) -and -not $excluded) { $userCaRequiresMfa = $true; break }
-                }
-                $covered = ($directMfa -or $sec -or $userCaRequiresMfa)
-                [pscustomobject]@{
-                    UserId             = $u.id
-                    DisplayName       = $u.displayName
-                    UserPrincipalName = $u.userPrincipalName
-                    PerUserMfaEnabled = $directMfa
-                    SecurityDefaults  = $sec
-                    CARequiresMfa     = $userCaRequiresMfa
-                    MfaCovered        = $covered
-                }
-            } -ThrottleLimit $ThrottleLimit -ArgumentList $sec,$pols,$reg
-            if ($computed) { foreach($o in $computed){ $acc.Add($o) } }
-        } else {
-            foreach ($u in $users) {
-                # sequential path reuse same logic as above (inline for clarity)
-                $directMfa = $false
-                try {
-                    $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
-                    if ($methods.value) {
-                        foreach ($m in $methods.value) {
-                            $otype = $m.'@odata.type'
-                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') { $directMfa = $true; break }
-                        }
-                    }
-                } catch {}
-                if (-not $directMfa -and $regMap.ContainsKey($u.Id)) { $directMfa = [bool]$regMap[$u.Id] }
-                $userGroups = @(); $userRoles = @(); $userRoleTemplates = @()
-                try {
-                    $mem = @()
-                    $mUri = ("https://graph.microsoft.com/v1.0/users/{0}/memberOf?$select=id,displayName&$top=999" -f $u.Id)
-                    do {
-                        $mResp = Invoke-MgGraphRequest -Method GET -Uri $mUri -ErrorAction SilentlyContinue
-                        if ($mResp.value) { $mem += $mResp.value }
-                        $mUri = $mResp.'@odata.nextLink'
-                    } while ($mUri)
-                    foreach ($m in $mem) {
-                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { 
-                            $userRoles += $m.Id
-                            if ($m.PSObject.Properties['roleTemplateId'] -and $m.roleTemplateId) { $userRoleTemplates += $m.roleTemplateId }
-                        }
-                    }
-                } catch {}
-                $userCaRequiresMfa = $false
-                foreach ($p in $mfaPolicies) {
-                    $conds = $p.conditions; if (-not $conds) { continue }
-                    $usersCond = $conds.users
-                    $incAll = $false; $incUser = $false; $excluded = $false
-                    if ($usersCond) {
-                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
-                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
-                        if (-not $incUser -and $usersCond.includeRoles) {
-                            if (@($usersCond.includeRoles) -ne $null) {
-                                $incById = ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ })
-                                $incByTemplate = $false
-                                if ($usersCond.includeRoles) {
-                                    foreach ($rid in $usersCond.includeRoles) {
-                                        if ($roleTemplates.ContainsKey($rid) -and ($userRoleTemplates -contains $rid)) { $incByTemplate = $true; break }
-                                    }
-                                }
-                                if ($incById -or $incByTemplate) { $incUser = $true }
-                            }
-                        }
-                        if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
-                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
-                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
-                    }
-                    $applies = ($incAll -or $incUser)
-                    if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
-                }
-                $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
-                $acc.Add([pscustomobject]@{
-                    UserId             = $u.id
-                    DisplayName       = $u.displayName
-                    UserPrincipalName = $u.userPrincipalName
-                    PerUserMfaEnabled = $directMfa
-                    SecurityDefaults  = $secDefaultsEnabled
-                    CARequiresMfa     = $userCaRequiresMfa
-                    MfaCovered        = $covered
-                }) | Out-Null
-            }
-        }
-        $users = [System.Collections.ArrayList]$acc
-        } catch {}
-
-        $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
-        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users }
-    } catch {
-        Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"; return @{ SecurityDefaultsEnabled=$false; CAPoliciesRequireMfa=$false; Users=@() }
-    }
+		return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantCa; Users = [System.Collections.ArrayList]$rows }
+	} catch {
+		Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"; return @{ SecurityDefaultsEnabled=$false; CAPoliciesRequireMfa=$false; Users=@() }
+	}
 }
 
 # Flattens user membership in directory roles and security groups
@@ -506,7 +311,9 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [string]$OutputFolder,
         [Parameter(Mandatory=$false)]
-        [object]$ProgressBar
+        [object]$ProgressBar,
+        [Parameter(Mandatory=$false)]
+        [string[]]$ExportSelection = @('All')
     )
 
     # Local helper: update progress UI if provided
@@ -612,15 +419,22 @@ function New-SecurityInvestigationReport {
         }
     }
 
+    # Selection helper (used for both collection and export)
+    $sel = @(); if ($ExportSelection) { $sel = $ExportSelection | ForEach-Object { $_.ToLower().Trim() } }
+    function IsSelected([string]$name) { if (-not $sel -or $sel.Count -eq 0) { return $true } if ($sel -contains 'all') { return $true } return ($sel -contains $name.ToLower()) }
+
+    $exoNeeded = (IsSelected 'MessageTrace') -or (IsSelected 'InboxRules') -or (IsSelected 'TransportRules') -or (IsSelected 'InboundConnectors') -or (IsSelected 'OutboundConnectors')
+    $graphNeeded = (IsSelected 'AuditLogs') -or (IsSelected 'MFAStatus') -or (IsSelected 'UserSecurityGroups')
+
     if (-not $exchangeConnected) {
-        Write-Warning "Exchange Online connection required for complete analysis"
+        if ($exoNeeded) { Write-Warning "Exchange Online connection required for selected reports" }
         $report.ExchangeConnection = "Not Connected"
     } else {
         $report.ExchangeConnection = "Connected"
     }
 
     if (-not $graphConnected) {
-        Write-Warning "Microsoft Graph connection required for complete analysis"
+        if ($graphNeeded) { Write-Warning "Microsoft Graph connection required for selected reports" }
         $report.GraphConnection = "Not Connected"
     } else {
         $report.GraphConnection = "Connected"
@@ -628,14 +442,18 @@ function New-SecurityInvestigationReport {
     $report.SourceStatus.ExchangeConnected = $exchangeConnected
     $report.SourceStatus.GraphConnected    = $graphConnected
 
-    # Collect data from Exchange Online
-    if ($exchangeConnected) {
+    # Collect data from Exchange Online (only if needed)
+    if ($exchangeConnected -and $exoNeeded) {
         try {
-            Set-ReportProgress -Percent 10 -Text "Collecting message trace (last $DaysBack days)..."
-            $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 -Parallel -ThrottleLimit 3 # always 10 days per requirement
+            if (IsSelected 'MessageTrace') {
+                Set-ReportProgress -Percent 10 -Text "Collecting message trace (last $DaysBack days)..."
+                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 -Parallel -ThrottleLimit 3
+            }
 
-            Set-ReportProgress -Percent 40 -Text "Exporting inbox rules..."
-            $report.InboxRules = Get-ExchangeInboxRules
+            if (IsSelected 'InboxRules') {
+                Set-ReportProgress -Percent 40 -Text "Exporting inbox rules..."
+                $report.InboxRules = Get-ExchangeInboxRules
+            }
             try {
                 $ri = $report.InboxRules
                 $rc = if ($ri) { $ri.Count } else { 0 }
@@ -643,23 +461,29 @@ function New-SecurityInvestigationReport {
                 Write-Host ("Inbox rules collected via Exchange Online: {0} rules across {1} mailbox(es)" -f $rc, $mbCount) -ForegroundColor Green
             } catch {}
 
-            Set-ReportProgress -Percent 50 -Text "Collecting transport rules..."
-            $report.TransportRules = Get-ExchangeTransportRules
+            if (IsSelected 'TransportRules') {
+                Set-ReportProgress -Percent 50 -Text "Collecting transport rules..."
+                $report.TransportRules = Get-ExchangeTransportRules
+            }
 
-            Set-ReportProgress -Percent 60 -Text "Collecting mail flow connectors..."
-            $report.InboundConnectors = Get-ExchangeInboundConnectors
-            $report.OutboundConnectors = Get-ExchangeOutboundConnectors
+            if ((IsSelected 'InboundConnectors') -or (IsSelected 'OutboundConnectors')) {
+                Set-ReportProgress -Percent 60 -Text "Collecting mail flow connectors..."
+                if (IsSelected 'InboundConnectors') { $report.InboundConnectors = Get-ExchangeInboundConnectors }
+                if (IsSelected 'OutboundConnectors') { $report.OutboundConnectors = Get-ExchangeOutboundConnectors }
+            }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
             $report.ExchangeDataError = $_.Exception.Message
         }
     }
 
-    # Collect data from Microsoft Graph (audit logs only)
-    if ($graphConnected) {
+    # Collect data from Microsoft Graph (only if needed)
+    if ($graphConnected -and $graphNeeded) {
         try {
-            Set-ReportProgress -Percent 70 -Text "Collecting audit logs from Microsoft Graph..."
-            $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
+            if (IsSelected 'AuditLogs') {
+                Set-ReportProgress -Percent 70 -Text "Collecting audit logs from Microsoft Graph..."
+                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
+            }
         } catch {
             Write-Warning "Failed to collect Microsoft Graph data: $($_.Exception.Message)"
             $report.GraphDataError = $_.Exception.Message
@@ -667,31 +491,24 @@ function New-SecurityInvestigationReport {
     }
 
     # MFA Coverage and User Security Groups
-    if ($graphConnected) {
+    if ($graphConnected -and (IsSelected 'MFAStatus' -or IsSelected 'UserSecurityGroups')) {
         try {
-            Set-ReportProgress -Percent 78 -Text "Evaluating MFA coverage..."
-            try {
-                $report.MfaCoverage = Get-MfaCoverageReport -Parallel -ThrottleLimit 4
-            } catch {
-                $report.MfaCoverage = Get-MfaCoverageReport
+            if (IsSelected 'MFAStatus') {
+                Set-ReportProgress -Percent 78 -Text "Evaluating MFA coverage..."
+                try { $report.MfaCoverage = Get-MfaCoverageReport -Parallel -ThrottleLimit 4 } catch { $report.MfaCoverage = Get-MfaCoverageReport }
             }
             try {
                 $uc = if ($report.MfaCoverage -and $report.MfaCoverage.Users) { $report.MfaCoverage.Users.Count } else { 0 }
                 Write-Host ("MFA analysis via Microsoft Graph: evaluated {0} user(s)" -f $uc) -ForegroundColor Green
             } catch {}
 
-            Set-ReportProgress -Percent 84 -Text "Collecting user security groups and roles..."
-            # Capability check: enable parallel only if Graph supports required switches cleanly
-            $canParallelGroups = $false
-            try {
-                $cmd = Get-Command Get-MgUserMemberOf -ErrorAction SilentlyContinue
-                if ($cmd -and $cmd.Parameters.ContainsKey('All')) { $canParallelGroups = $true }
-            } catch {}
-            if ($canParallelGroups -and $PSVersionTable.PSVersion.Major -ge 7) {
-                try { $report.UserSecurityGroups = Get-UserSecurityGroupsReport -Parallel -ThrottleLimit 6 }
-                catch { $report.UserSecurityGroups = Get-UserSecurityGroupsReport }
-            } else {
-                $report.UserSecurityGroups = Get-UserSecurityGroupsReport
+            if (IsSelected 'UserSecurityGroups') {
+                Set-ReportProgress -Percent 84 -Text "Collecting user security groups and roles..."
+                # Capability check: enable parallel only if Graph supports required switches cleanly
+                $canParallelGroups = $false
+                try { $cmd = Get-Command Get-MgUserMemberOf -ErrorAction SilentlyContinue; if ($cmd -and $cmd.Parameters.ContainsKey('All')) { $canParallelGroups = $true } } catch {}
+                if ($canParallelGroups -and $PSVersionTable.PSVersion.Major -ge 7) { try { $report.UserSecurityGroups = Get-UserSecurityGroupsReport -Parallel -ThrottleLimit 6 } catch { $report.UserSecurityGroups = Get-UserSecurityGroupsReport } }
+                else { $report.UserSecurityGroups = Get-UserSecurityGroupsReport }
             }
             try {
                 $ugc = if ($report.UserSecurityGroups) { $report.UserSecurityGroups.Count } else { 0 }
@@ -773,21 +590,63 @@ function New-SecurityInvestigationReport {
                 }
             }
 
-            $exportItems = @(
-                @{ Data=$mtShaped;                  Csv='MessageTrace.csv';        Json='MessageTrace.json';        Depth=8 },
-                @{ Data=$irShaped;                  Csv='InboxRules.csv';          Json='InboxRules.json';          Depth=6 },
-                @{ Data=$report.TransportRules;     Csv='TransportRules.csv';      Json='TransportRules.json';      Depth=8 },
-                @{ Data=$report.InboundConnectors;  Csv='InboundConnectors.csv';   Json='InboundConnectors.json';   Depth=8 },
-                @{ Data=$report.OutboundConnectors; Csv='OutboundConnectors.csv';  Json='OutboundConnectors.json';  Depth=8 },
-                @{ Data=$report.AuditLogs;          Csv='GraphAuditLogs.csv';      Json='GraphAuditLogs.json';      Depth=8 }
-            )
+            # Apply export selection filters
+            $sel = @(); if ($ExportSelection) { $sel = $ExportSelection | ForEach-Object { $_.ToLower().Trim() } }
+            function IsSelected([string]$name) { if (-not $sel -or $sel.Count -eq 0) { return $true } if ($sel -contains 'all') { return $true } return ($sel -contains $name.ToLower()) }
+
+            $exportItems = @()
+            if (IsSelected 'MessageTrace')       { $exportItems += @{ Data=$mtShaped;                  Csv='MessageTrace.csv';        Json='MessageTrace.json';        Depth=8 } }
+            if (IsSelected 'InboxRules')         { $exportItems += @{ Data=$irShaped;                  Csv='InboxRules.csv';          Json='InboxRules.json';          Depth=6 } }
+            if (IsSelected 'TransportRules')     { $exportItems += @{ Data=$report.TransportRules;     Csv='TransportRules.csv';      Json='TransportRules.json';      Depth=8 } }
+            if (IsSelected 'InboundConnectors')  { $exportItems += @{ Data=$report.InboundConnectors;  Csv='InboundConnectors.csv';   Json='InboundConnectors.json';   Depth=8 } }
+            if (IsSelected 'OutboundConnectors') { $exportItems += @{ Data=$report.OutboundConnectors; Csv='OutboundConnectors.csv';  Json='OutboundConnectors.json';  Depth=8 } }
+            if (IsSelected 'AuditLogs')          { $exportItems += @{ Data=$report.AuditLogs;          Csv='GraphAuditLogs.csv';      Json='GraphAuditLogs.json';      Depth=8 } }
+
+            function Split-CsvIfTooLarge {
+                param([Parameter(Mandatory=$true)][string]$Path,[long]$MaxBytes = (50MB))
+                try {
+                    if (-not (Test-Path $Path)) { return }
+                    $fi = Get-Item -LiteralPath $Path -ErrorAction Stop
+                    if ($fi.Length -le $MaxBytes) { return }
+                    $dir = Split-Path -Parent $Path
+                    $base = [System.IO.Path]::GetFileNameWithoutExtension($Path)
+                    $ext = [System.IO.Path]::GetExtension($Path)
+                    $header = (Get-Content -LiteralPath $Path -TotalCount 1)
+                    if (-not $header) { return }
+                    $enc = [System.Text.Encoding]::UTF8
+                    $partIndex = 1
+                    $sw = $null
+                    $openWriter = {
+                        param([int]$idx)
+                        if ($sw) { $sw.Flush(); $sw.Dispose(); $script:sw = $null }
+                        $partPath = Join-Path $dir ("{0}.part{1}{2}" -f $base, $idx, $ext)
+                        $script:sw = New-Object System.IO.StreamWriter($partPath, $false, $enc)
+                        $script:sw.WriteLine($header)
+                        $script:writtenBytes = $enc.GetByteCount(($header + "`r`n"))
+                    }
+                    $writtenBytes = 0
+                    & $openWriter $partIndex
+                    Get-Content -LiteralPath $Path | Select-Object -Skip 1 | ForEach-Object {
+                        $line = $_
+                        $lineBytes = $enc.GetByteCount(($line + "`r`n"))
+                        if (($writtenBytes + $lineBytes) -gt $MaxBytes) {
+                            $partIndex++
+                            & $openWriter $partIndex
+                        }
+                        $sw.WriteLine($line)
+                        $writtenBytes += $lineBytes
+                    }
+                    if ($sw) { $sw.Flush(); $sw.Dispose(); $sw = $null }
+                    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                } catch {}
+            }
 
             $exportAction = {
                 param($item,$out)
             $csvPath  = Join-Path $out $item.Csv
             $jsonPath = Join-Path $out $item.Json
             if ($item.Data -and $item.Data.Count -gt 0) {
-                try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 }
+                try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8; Split-CsvIfTooLarge -Path $csvPath -MaxBytes (50MB) }
                 catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
             } else {
                 # Ensure at least a JSON file exists for empty datasets
@@ -801,7 +660,7 @@ function New-SecurityInvestigationReport {
                     $csvPath  = Join-Path $using:out $item.Csv
                     $jsonPath = Join-Path $using:out $item.Json
                     if ($item -and $item.Data -and $item.Data.Count -gt 0) {
-                        try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 }
+                        try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8; Split-CsvIfTooLarge -Path $csvPath -MaxBytes (50MB) }
                         catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
                     } else {
                         '[]' | Out-File -FilePath $jsonPath -Encoding utf8
@@ -857,31 +716,38 @@ function New-SecurityInvestigationReport {
                     $uri = $page.'@odata.nextLink'
                 } while ($uri)
             } catch {}
-            if ($mfaRows -and $mfaRows.Count -gt 0) {
-                try { $mfaRows | Export-Csv -Path $mfaCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
-            } else {
-                $mfaHeader = 'DisplayName,UserPrincipalName,PerUserMfaEnabled,SecurityDefaults,CARequiresMfa,MfaCovered'
-                try { Set-Content -Path $mfaCsv -Value $mfaHeader -Encoding utf8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
+            if ((Get-Command IsSelected -ErrorAction SilentlyContinue) -or $true) { $null = $null }
+            if ((-not (Get-Variable sel -Scope Local -ErrorAction SilentlyContinue)) -or (IsSelected 'MFAStatus')) {
+                if ($mfaRows -and $mfaRows.Count -gt 0) {
+                    try { $mfaRows | Export-Csv -Path $mfaCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MFAStatusCsv = $mfaCsv; Split-CsvIfTooLarge -Path $mfaCsv -MaxBytes (50MB) } catch {}
+                } else {
+                    $mfaHeader = 'DisplayName,UserPrincipalName,PerUserMfaEnabled,SecurityDefaults,CARequiresMfa,MfaCovered'
+                    try { Set-Content -Path $mfaCsv -Value $mfaHeader -Encoding utf8; $report.FilePaths.MFAStatusCsv = $mfaCsv } catch {}
+                }
             }
 
             # User Security Groups export (ensure file exists even if empty)
             $usgCsv = Join-Path $report.OutputFolder "UserSecurityGroups.csv"
-            if ($report.UserSecurityGroups -and $report.UserSecurityGroups.Count -gt 0) {
-                try { $report.UserSecurityGroups | Export-Csv -Path $usgCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityGroupsCsv = $usgCsv } catch {}
-            } else {
-                $usgHeader = 'DisplayName,UserPrincipalName,Roles,Groups,ElevatedRoles,IsElevated'
-                try { Set-Content -Path $usgCsv -Value $usgHeader -Encoding utf8; $report.FilePaths.UserSecurityGroupsCsv = $usgCsv } catch {}
+            if ((-not (Get-Variable sel -Scope Local -ErrorAction SilentlyContinue)) -or (IsSelected 'UserSecurityGroups')) {
+                if ($report.UserSecurityGroups -and $report.UserSecurityGroups.Count -gt 0) {
+                    try { $report.UserSecurityGroups | Export-Csv -Path $usgCsv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityGroupsCsv = $usgCsv; Split-CsvIfTooLarge -Path $usgCsv -MaxBytes (50MB) } catch {}
+                } else {
+                    $usgHeader = 'DisplayName,UserPrincipalName,Roles,Groups,ElevatedRoles,IsElevated'
+                    try { Set-Content -Path $usgCsv -Value $usgHeader -Encoding utf8; $report.FilePaths.UserSecurityGroupsCsv = $usgCsv } catch {}
+                }
             }
         } catch { $exportError = $_ }
 
-        # Ensure InboxRules.csv exists even if no data
-        try {
-            $inboxCsv = Join-Path $report.OutputFolder "InboxRules.csv"
-            if (-not (Test-Path $inboxCsv)) {
-                $inboxHeader = 'MailboxOwner,Name,Enabled,Priority,FromAddressContains,SubjectContains,SentTo,RedirectTo,ForwardTo,ForwardAsAttachment,DeleteMessage,StopProcessing,IsHidden,Description'
-                Set-Content -Path $inboxCsv -Value $inboxHeader -Encoding utf8
-            }
-        } catch {}
+        # Ensure InboxRules.csv exists even if no data (only if selected)
+        if (IsSelected 'InboxRules') {
+            try {
+                $inboxCsv = Join-Path $report.OutputFolder "InboxRules.csv"
+                if (-not (Test-Path $inboxCsv)) {
+                    $inboxHeader = 'MailboxOwner,Name,Enabled,Priority,FromAddressContains,SubjectContains,SentTo,RedirectTo,ForwardTo,ForwardAsAttachment,DeleteMessage,StopProcessing,IsHidden,Description'
+                    Set-Content -Path $inboxCsv -Value $inboxHeader -Encoding utf8
+                }
+            } catch {}
+        }
 
         # Save only LLM instructions as TXT (no other text files on disk)
         try {
@@ -903,7 +769,7 @@ function New-SecurityInvestigationReport {
                 Compress-Archive -Path ($includeFiles | ForEach-Object { $_.FullName }) -DestinationPath $zipPath -Force -ErrorAction Stop
                 $report.FilePaths.ForensicZip = $zipPath
             }
-        } catch {
+    } catch {
             Write-Warning ("Failed to create forensic ZIP bundle: {0}" -f $_.Exception.Message)
         }
     }

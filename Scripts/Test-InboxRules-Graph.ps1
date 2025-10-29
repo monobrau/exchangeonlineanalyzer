@@ -2,7 +2,8 @@ param(
     [string]$OutputFolder,
     [int]$ThrottleLimit = 8,
     [int]$BatchSize = 20,
-    [switch]$Diag
+    [switch]$Diag,
+    [switch]$Delegated
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,19 +18,41 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
 Import-Module (Join-Path $root 'Scripts/lib/GraphAppAuth.psm1') -Force -ErrorAction Stop
 
-# Load test configuration
+# Load test configuration; if missing and not explicitly using app mode, fall back to delegated
 $cfg = Get-TestConfig
-if (-not $cfg.TenantId -or -not $cfg.ClientId -or -not $cfg.ClientSecret) {
-    Write-Err 'Missing test.config.json with TenantId, ClientId, ClientSecret in Scripts\'
-    Write-Host 'Create Scripts\test.config.json like:'
-    Write-Host '{"TenantId":"<tenant>","ClientId":"<appId>","ClientSecret":"<secret>","ThrottleLimit":8}'
-    exit 1
-}
+if (-not $cfg.TenantId -or -not $cfg.ClientId -or -not $cfg.ClientSecret) { $Delegated = $true }
 if ($cfg.ThrottleLimit) { $ThrottleLimit = [int]$cfg.ThrottleLimit }
 
-# App token
-Write-Info 'Acquiring Graph application token...'
-$token = Get-GraphAppToken -TenantId $cfg.TenantId -ClientId $cfg.ClientId -ClientSecret $cfg.ClientSecret
+# Acquire token (delegated or application)
+if ($Delegated) {
+    Write-Info 'Connecting to Microsoft Graph (delegated interactive)...'
+    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+    # Scopes: list users and read mail rules
+    $scopes = @('User.Read.All','Mail.Read','MailboxSettings.Read')
+    try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch {}
+    $connected = $false
+    try {
+        Connect-MgGraph -Scopes $scopes -ErrorAction Stop | Out-Null
+        $connected = $true
+    } catch {
+        $msg = $_.Exception.Message
+        if ($msg -match 'BaseAbstractApplicationBuilder.*WithLogging|InteractiveBrowserCredential authentication failed') {
+            Write-Warning 'Graph module conflict detected; attempting repair and device code fallback...'
+            try { Import-Module (Join-Path (Split-Path -Parent $root) 'Modules/GraphOnline.psm1') -Force -ErrorAction SilentlyContinue } catch {}
+            try { $null = Fix-GraphModuleConflicts -statusLabel $null } catch {}
+            try { Connect-MgGraph -Scopes $scopes -ErrorAction Stop | Out-Null; $connected = $true } catch {}
+            if (-not $connected) {
+                try { Connect-MgGraph -Scopes $scopes -UseDeviceCode -ErrorAction Stop | Out-Null; $connected = $true } catch {}
+            }
+        } else { throw }
+    }
+    if (-not $connected) { throw 'Failed to connect to Microsoft Graph with delegated auth.' }
+    try { $token = (Get-MgContext).AccessToken } catch { throw "Failed to obtain delegated access token" }
+} else {
+    Write-Info 'Acquiring Graph application token...'
+    $token = Get-GraphAppToken -TenantId $cfg.TenantId -ClientId $cfg.ClientId -ClientSecret $cfg.ClientSecret
+}
+
 $headers = @{ Authorization = "Bearer $token" }
 
 # Resolve output folder (tenant-scoped)
@@ -75,24 +98,44 @@ foreach ($u in $users) {
     $reqs.Add(@{ id = $u.id; method = 'GET'; url = ("users/{0}/mailFolders/inbox/messageRules" -f $u.id) }) | Out-Null
 }
 
-# Partition into chunks of (BatchSize * ThrottleLimit) and run Invoke-GraphBatch in parallel
-Write-Info ("Fetching rules with $batch (BatchSize={0}, Throttle={1})..." -f $BatchSize, $ThrottleLimit)
-$responses = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
+# Partition into chunks of (BatchSize * ThrottleLimit) and run
+Write-Info ("Fetching rules with Graph $batch (BatchSize={0}, Throttle={1})..." -f $BatchSize, $ThrottleLimit)
+$responses = New-Object System.Collections.Generic.List[object]
+$haveToken = -not [string]::IsNullOrWhiteSpace($token)
 
-if ($PSVersionTable.PSVersion.Major -ge 7) {
-    $sliceSize = $BatchSize * $ThrottleLimit
-    for ($i=0; $i -lt $reqs.Count; $i += $sliceSize) {
-        $slice = $reqs[$i..([Math]::Min($i+$sliceSize-1, $reqs.Count-1))]
-        $chunks = @(); for ($j=0; $j -lt $slice.Count; $j += $BatchSize) { $chunks += ,$slice[$j..([Math]::Min($j+$BatchSize-1, $slice.Count-1))] }
-        $null = $chunks | ForEach-Object -Parallel {
-            param($chunk,$token)
-            Import-Module (Join-Path (Split-Path -Parent $using:here) 'Scripts/lib/GraphAppAuth.psm1') -Force -ErrorAction Stop
-            $resp = Invoke-GraphBatch -AccessToken $token -Requests $chunk -ChunkSize $using:BatchSize
-            if ($resp) { foreach ($r in $resp) { $using:responses.Add($r) | Out-Null } }
-        } -ThrottleLimit $ThrottleLimit -ArgumentList $token
+if ($haveToken) {
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $sliceSize = $BatchSize * $ThrottleLimit
+        for ($i=0; $i -lt $reqs.Count; $i += $sliceSize) {
+            $slice = $reqs[$i..([Math]::Min($i+$sliceSize-1, $reqs.Count-1))]
+            $chunks = @(); for ($j=0; $j -lt $slice.Count; $j += $BatchSize) { $chunks += ,$slice[$j..([Math]::Min($j+$BatchSize-1, $slice.Count-1))] }
+            $parOut = $chunks | ForEach-Object -Parallel {
+                param($chunk)
+                Import-Module (Join-Path (Split-Path -Parent $using:here) 'Scripts/lib/GraphAppAuth.psm1') -Force -ErrorAction Stop
+                $resp = Invoke-GraphBatch -AccessToken $using:token -Requests $chunk -ChunkSize $using:BatchSize
+                if ($resp) { $resp }
+            } -ThrottleLimit $ThrottleLimit
+            if ($parOut) {
+                foreach ($r in $parOut) {
+                    if ($r -is [System.Array]) { foreach ($e in $r) { if ($e) { [void]$responses.Add($e) } } }
+                    elseif ($r) { [void]$responses.Add($r) }
+                }
+            }
+        }
+    } else {
+        $resp = Invoke-GraphBatch -AccessToken $token -Requests $reqs -ChunkSize $BatchSize
+        if ($resp) { foreach ($e in $resp) { if ($e) { [void]$responses.Add($e) } } }
     }
 } else {
-    $responses = Invoke-GraphBatch -AccessToken $token -Requests $reqs -ChunkSize $BatchSize
+    Write-Warning 'Access token unavailable from context; using Graph SDK request path (sequential $batch).'
+    try { Import-Module Microsoft.Graph -ErrorAction SilentlyContinue } catch {}
+    $endpoint = 'https://graph.microsoft.com/v1.0/$batch'
+    for ($j=0; $j -lt $reqs.Count; $j += $BatchSize) {
+        $chunk = $reqs[$j..([Math]::Min($j+$BatchSize-1, $reqs.Count-1))]
+        $payload = @{ requests = $chunk } | ConvertTo-Json -Depth 8
+        $resp = Invoke-MgGraphRequest -Method POST -Uri $endpoint -Body $payload -ErrorAction Stop
+        if ($resp.responses) { foreach ($e in $resp.responses) { if ($e) { [void]$responses.Add($e) } } }
+    }
 }
 
 # Map user id -> UPN for shaping

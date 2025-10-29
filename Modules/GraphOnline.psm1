@@ -43,6 +43,7 @@ function Fix-GraphModuleConflicts {
     if ($statusLabel) { $statusLabel.Text = "Fixing Graph module conflicts..." }
 
     try {
+        $oldPP = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
         # Disconnect any existing connections (only if cmdlet exists)
         try {
             if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) {
@@ -60,9 +61,13 @@ function Fix-GraphModuleConflicts {
             $installed = Get-InstalledModule -Name 'Microsoft.Graph*' -AllVersions -ErrorAction SilentlyContinue
         } catch { $installed = @() }
         if (-not $installed -or $installed.Count -eq 0) {
-            # Fallback to list-available
-            $available = Get-Module -ListAvailable -Name 'Microsoft.Graph*'
-            $installed = $available | Sort-Object -Property Name, Version -Unique | ForEach-Object { @{ Name=$_.Name; Version=$_.Version } }
+            # Fallback to list-available; guard against corrupted manifests
+            try {
+                $available = Get-Module -ListAvailable -Name 'Microsoft.Graph*' -ErrorAction SilentlyContinue
+            } catch { $available = @() }
+            if ($available) {
+                $installed = $available | Sort-Object -Property Name, Version -Unique | ForEach-Object { @{ Name=$_.Name; Version=$_.Version } }
+            }
         }
         foreach ($m in $installed) {
             try {
@@ -77,14 +82,45 @@ function Fix-GraphModuleConflicts {
             }
         }
 
-        # Clear any cached modules
-        Get-Module -Name "Microsoft.Graph*" -ListAvailable | ForEach-Object {
+        # Aggressively remove any lingering Graph module folders in all PSModulePath roots
+        $moduleRoots = ($env:PSModulePath -split ';') | Where-Object { $_ -and (Test-Path $_) }
+        foreach ($root in $moduleRoots) {
             try {
-                Remove-Item -Path $_.ModuleBase -Recurse -Force -ErrorAction SilentlyContinue
-            } catch {
-                Write-Warning "Could not remove module directory: $($_.ModuleBase)"
-            }
+                Get-ChildItem -Path $root -Directory -Filter 'Microsoft.Graph*' -ErrorAction SilentlyContinue | ForEach-Object {
+                    try { Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+                }
+            } catch {}
         }
+
+        # Ensure package infrastructure is healthy (NuGet provider, PowerShellGet, PSGallery)
+        try {
+            try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12 } catch {}
+            # NuGet provider
+            if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+                Write-Host "Installing NuGet package provider..." -ForegroundColor Cyan
+                try { Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -ErrorAction Stop } catch {}
+            }
+            # PowerShellGet (newer version)
+            $psgetOk = $false
+            try {
+                $pg = Get-Module -ListAvailable -Name PowerShellGet | Sort-Object Version -Descending | Select-Object -First 1
+                if (-not $pg -or $pg.Version -lt [version]'2.0.0') {
+                    Write-Host "Updating PowerShellGet for CurrentUser..." -ForegroundColor Cyan
+                    Install-Module -Name PowerShellGet -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue
+                }
+                Import-Module PowerShellGet -Force -ErrorAction SilentlyContinue
+                $psgetOk = $true
+            } catch { $psgetOk = $false }
+            # PSGallery repo
+            try {
+                $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+                if (-not $repo) {
+                    Register-PSRepository -Name PSGallery -SourceLocation 'https://www.powershellgallery.com/api/v2' -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+                } else {
+                    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        } catch {}
 
         # Clear MSAL cache (if available)
         try {
@@ -102,6 +138,7 @@ function Fix-GraphModuleConflicts {
 
         # Reinstall using umbrella to ensure consistent versions (prefer CurrentUser)
         Write-Host "Installing Microsoft.Graph umbrella module for consistent versions..." -ForegroundColor Cyan
+        if ($statusLabel) { $statusLabel.Text = "Downloading Microsoft.Graph (this may take several minutes)..." }
         $umbrellaOk = $false
         try {
             try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue } catch {}
@@ -109,23 +146,63 @@ function Fix-GraphModuleConflicts {
             Write-Host "✓ Microsoft.Graph installed successfully" -ForegroundColor Green
             $umbrellaOk = $true
         } catch {
-            Write-Warning ("Umbrella install failed: {0}" -f $_.Exception.Message)
-            Write-Host "Falling back to installing required Microsoft.Graph submodules to CurrentUser scope..." -ForegroundColor Yellow
-            $req = @('Microsoft.Graph.Authentication','Microsoft.Graph.Users','Microsoft.Graph.Users.Actions','Microsoft.Graph.Identity.SignIns','Microsoft.Graph.Reports')
-            $subOk = $true
-            foreach ($m in $req) {
-                try { Install-Module -Name $m -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop; Write-Host ("✓ {0} installed" -f $m) -ForegroundColor Green }
-                catch { Write-Warning ("Failed to install {0}: {1}" -f $m, $_.Exception.Message); $subOk = $false }
+            $installErr = $_.Exception.Message
+            Write-Warning ("Umbrella install failed: {0}" -f $installErr)
+            # If install is failing due to corrupted local module cache, use Save-Module to a temp path and copy manually
+            try {
+                if ($statusLabel) { $statusLabel.Text = "Downloading Microsoft.Graph via Save-Module (may take several minutes)..." }
+                $temp = Join-Path $env:TEMP ("GraphModules_" + (Get-Random))
+                New-Item -ItemType Directory -Path $temp -Force | Out-Null
+                Save-Module -Name Microsoft.Graph -Path $temp -Repository PSGallery -Force
+                $currentUserRoot = Join-Path $env:USERPROFILE 'Documents/PowerShell/Modules'
+                Get-ChildItem -Path $temp -Directory -Filter 'Microsoft.Graph*' | ForEach-Object {
+                    $dest = Join-Path $currentUserRoot $_.Name
+                    try { Remove-Item -Path $dest -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+                    Copy-Item -Path $_.FullName -Destination $currentUserRoot -Recurse -Force -ErrorAction Stop
+                }
+                Write-Host "✓ Microsoft.Graph installed via Save-Module fallback" -ForegroundColor Green
+                $umbrellaOk = $true
+            } catch {
+                Write-Warning ("Save-Module fallback failed: {0}" -f $_.Exception.Message)
+                Write-Host "Falling back to installing required Microsoft.Graph submodules to CurrentUser scope..." -ForegroundColor Yellow
+                $req = @('Microsoft.Graph.Authentication','Microsoft.Graph.Users','Microsoft.Graph.Users.Actions','Microsoft.Graph.Identity.SignIns','Microsoft.Graph.Reports')
+                $subOk = $true
+                foreach ($m in $req) {
+                    if ($statusLabel) { $statusLabel.Text = "Installing $m (this may take a while)..." }
+                    try { Install-Module -Name $m -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop; Write-Host ("✓ {0} installed" -f $m) -ForegroundColor Green }
+                    catch { Write-Warning ("Failed to install {0}: {1}" -f $m, $_.Exception.Message); $subOk = $false }
+                }
+                if ($subOk) { $umbrellaOk = $true }
             }
-            if ($subOk) { $umbrellaOk = $true }
         }
         if (-not $umbrellaOk) {
+            # As a last resort, attempt Save-Module for individual submodules and copy
+            try {
+                if ($statusLabel) { $statusLabel.Text = "Downloading Microsoft.Graph submodules (Save-Module)…" }
+                $temp2 = Join-Path $env:TEMP ("GraphSubModules_" + (Get-Random))
+                New-Item -ItemType Directory -Path $temp2 -Force | Out-Null
+                $req = @('Microsoft.Graph.Authentication','Microsoft.Graph.Users','Microsoft.Graph.Users.Actions','Microsoft.Graph.Identity.SignIns','Microsoft.Graph.Reports')
+                foreach ($m in $req) { Save-Module -Name $m -Path $temp2 -Repository PSGallery -Force }
+                $currentUserRoot = Join-Path $env:USERPROFILE 'Documents/PowerShell/Modules'
+                Get-ChildItem -Path $temp2 -Directory -Filter 'Microsoft.Graph*' | ForEach-Object {
+                    $dest = Join-Path $currentUserRoot $_.Name
+                    try { Remove-Item -Path $dest -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+                    Copy-Item -Path $_.FullName -Destination $currentUserRoot -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+
+        # Validate: can we import core modules now?
+        $core = @('Microsoft.Graph.Authentication','Microsoft.Graph.Users','Microsoft.Graph.Identity.SignIns','Microsoft.Graph.Reports')
+        $okAll = $true
+        foreach ($cm in $core) { try { Import-Module $cm -ErrorAction Stop } catch { $okAll = $false } }
+        if (-not $okAll) {
             Write-Error "Failed to install required Microsoft Graph modules in CurrentUser scope. Please run PowerShell as admin or install manually."
             return $false
         }
 
-        Write-Host "Microsoft Graph module conflicts fixed! Please restart PowerShell and try connecting again." -ForegroundColor Green
-        if ($statusLabel) { $statusLabel.Text = "Graph module conflicts fixed. Restart PowerShell." }
+        Write-Host "Microsoft Graph module conflicts fixed!" -ForegroundColor Green
+        if ($statusLabel) { $statusLabel.Text = "Graph modules repaired." }
 
         return $true
 
@@ -133,7 +210,7 @@ function Fix-GraphModuleConflicts {
         Write-Error "Failed to fix Microsoft Graph module conflicts: $($_.Exception.Message)"
         if ($statusLabel) { $statusLabel.Text = "Error fixing Graph modules. See console." }
         return $false
-    }
+    } finally { try { $ProgressPreference = $oldPP } catch {} }
 }
 
 function Connect-GraphService {
@@ -252,6 +329,16 @@ function Connect-GraphService {
             }
         }
 
+        # Verify connection context is healthy
+        try {
+            $ctx = Get-MgContext -ErrorAction Stop
+            if (-not $ctx -or -not $ctx.Account) { throw "Graph context not initialized" }
+            # Light-weight probe to validate token usability
+            try { Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id' -ErrorAction Stop | Out-Null } catch { throw }
+        } catch {
+            throw "Graph connected but unusable: $($_.Exception.Message)"
+        }
+
         # Verify that required functions are available
         $requiredFunctions = @(
             "Update-MgUser",
@@ -282,6 +369,23 @@ function Connect-GraphService {
     } catch {
         $ex = $_.Exception
         $errorMessage = $ex.Message
+
+        # Special-case: intermittent NullReference from underlying SDK. Retry with Device Code.
+        if ($errorMessage -match "Object reference not set to an instance of an object|NullReferenceException") {
+            try {
+                Write-Warning "Encountered NullReference during Graph connect. Retrying with Device Code..."
+                try { if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) { Disconnect-MgGraph -ErrorAction SilentlyContinue } } catch {}
+                try {
+                    $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ErrorAction Stop
+                    if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph (Device Code)" }
+                    return $true
+                } catch {
+                    # If fallback failed, proceed to standard error handling
+                    $ex = $_.Exception
+                    $errorMessage = $ex.Message
+                }
+            } catch {}
+        }
 
         # Check if this is a module version conflict
         if ($errorMessage -match "Method not found|Could not load type|Assembly.*not found") {
