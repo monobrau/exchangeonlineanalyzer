@@ -590,31 +590,35 @@ function UpdateEntraButtonStates {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) { $checkedCount++ }
     }
     # Only export buttons require export folder path and selection
-    $entraExportSignInLogsButton.Enabled = $hasPath -and ($checkedCount -gt 0)
-    $entraExportAuditLogsButton.Enabled = $hasPath -and ($checkedCount -eq 1)
+    if ($entraExportSignInLogsButton) { $entraExportSignInLogsButton.Enabled = $hasPath -and ($checkedCount -gt 0) }
+    if ($entraExportAuditLogsButton) { $entraExportAuditLogsButton.Enabled = $hasPath -and ($checkedCount -eq 1) }
     # View, User Details, and Analyze MFA buttons are always enabled
-    $entraViewSignInLogsButton.Enabled = $true
-    $entraViewAuditLogsButton.Enabled = $true
-    $entraDetailsFetchButton.Enabled = $true
-    $entraMfaFetchButton.Enabled = $true
-    # User management buttons are always enabled when connected to Graph
+    if ($entraViewSignInLogsButton) { $entraViewSignInLogsButton.Enabled = $true }
+    if ($entraViewAuditLogsButton)  { $entraViewAuditLogsButton.Enabled  = $true }
+    if ($entraDetailsFetchButton)   { $entraDetailsFetchButton.Enabled   = $true }
+    if ($entraMfaFetchButton)       { $entraMfaFetchButton.Enabled       = $true }
     # Select All/Deselect All buttons enabled when users are loaded
-    $entraSelectAllButton.Enabled = ($entraUserGrid.Rows.Count -gt 0)
-    $entraDeselectAllButton.Enabled = ($entraUserGrid.Rows.Count -gt 0)
-    
-    # User management buttons are always enabled when connected to Graph
-    $entraBlockUserButton.Enabled = $true
-    $entraUnblockUserButton.Enabled = $true
-    $entraRevokeSessionsButton.Enabled = $true
-    $entraResetPasswordButton.Enabled = $true
-    $entraOpenDefenderRestrictedUsersButton.Enabled = $true
-    $entraRequirePwdChangeButton.Enabled = $true
-    $entraRefreshRolesButton.Enabled = $true
-    $entraViewAdminsButton.Enabled = $true
-    
+    $hasRows = ($entraUserGrid.Rows.Count -gt 0)
+    if ($entraSelectAllButton)   { $entraSelectAllButton.Enabled   = $hasRows }
+    if ($entraDeselectAllButton) { $entraDeselectAllButton.Enabled = $hasRows }
+
+    # User management buttons (guard for removed/hidden controls)
+    foreach ($btn in @(
+        $entraBlockUserButton,
+        $entraUnblockUserButton,
+        $entraRevokeSessionsButton,
+        $entraResetPasswordButton,
+        # $entraOpenDefenderRestrictedUsersButton was removed; do not reference
+        $entraRequirePwdChangeButton,
+        $entraRefreshRolesButton,
+        $entraViewAdminsButton
+    )) {
+        if ($btn) { $btn.Enabled = $true }
+    }
+
     # Load buttons are enabled when connected to Graph
-    $loadAllUsersButton.Enabled = $script:graphConnection
-    $searchUsersButton.Enabled = $script:graphConnection
+    if ($loadAllUsersButton) { $loadAllUsersButton.Enabled = $script:graphConnection }
+    if ($searchUsersButton)  { $searchUsersButton.Enabled  = $script:graphConnection }
 }
 
 # Function to generate professional report
@@ -1856,6 +1860,7 @@ $script:allLoadedMailboxUPNs = @()
 # MS Graph related script-level variables
 $script:graphConnection = $null
 $script:graphConnectionAttempted = $false
+$global:allowGraphAutoRepair = $false
 $script:requiredGraphModules = @(
     @{Name="Microsoft.Graph.Authentication"; MinVersion="2.0"},
     @{Name="Microsoft.Graph.Users"; MinVersion="2.0"},
@@ -3173,7 +3178,9 @@ $entraConnectGraphButton.add_Click({
         $script:graphConnection = $false
         $forceDevice = $false; try { if ($entraUseDeviceCodeCheck.Checked) { $forceDevice = $true } } catch {}
         if (Get-Command Write-AppLog -ErrorAction SilentlyContinue) { Write-AppLog -Message ("Graph connect clicked. ForceDeviceCode={0}" -f $forceDevice) }
+        $global:allowGraphAutoRepair = $true
         $ok = Connect-GraphService -statusLabel $statusLabel -mainForm $mainForm -ForceDeviceCode:$forceDevice
+        $global:allowGraphAutoRepair = $false
         if ($ok) {
             $script:graphConnection = $true
             # Enable load buttons and disable connect button

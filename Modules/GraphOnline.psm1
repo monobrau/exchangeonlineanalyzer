@@ -283,16 +283,23 @@ function Connect-GraphService {
                 }
             }
             elseif ($msg -match "Method not found|Could not load type|BaseAbstractApplicationBuilder.*WithLogging") {
-                Write-Warning "Graph module conflict detected. Attempting automatic repair..."
-                if ($statusLabel) { $statusLabel.Text = "Fixing Graph modules..." }
-                $fixOk = $false
-                try { $fixOk = Fix-GraphModuleConflicts -statusLabel $statusLabel } catch {}
-                if ($fixOk) {
+                # Only auto-repair if explicitly allowed by the caller (user-initiated Graph connect)
+                $allowRepair = $false
+                try { if (Get-Variable -Name allowGraphAutoRepair -Scope Global -ErrorAction SilentlyContinue) { $allowRepair = [bool]$global:allowGraphAutoRepair } } catch {}
+                if (-not $allowRepair) {
+                    Write-Warning "Graph module conflict detected. Use Settings → Fix Graph Module Conflicts to repair."
+                } else {
+                    Write-Warning "Graph module conflict detected. Attempting automatic repair..."
+                    if ($statusLabel) { $statusLabel.Text = "Fixing Graph modules..." }
+                    $fixOk = $false
+                    try { $fixOk = Fix-GraphModuleConflicts -statusLabel $statusLabel } catch {}
+                    if ($fixOk) {
                     Write-Host "Retrying Graph connection after repair..." -ForegroundColor Yellow
                     try {
                         $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ContextScope Process -ErrorAction Stop
                     } catch {
                         try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ContextScope Process -ErrorAction Stop } catch {}
+                    }
                     }
                 }
                 # If still not connected, fall back to Device Code flow (bypasses InteractiveBrowserCredential path)
