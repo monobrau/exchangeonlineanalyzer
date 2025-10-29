@@ -6508,8 +6508,16 @@ $entraOpenLastExportButton.add_Click({
 # --- Disconnect Entra button event handler ---
 $entraDisconnectGraphButton.add_Click({
     $statusLabel.Text = "Disconnecting from Microsoft Graph..."; Write-Host "Disconnecting from Microsoft Graph..." -ForegroundColor Yellow
-    $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    # Immediately reflect UI state so the user sees feedback even if SDK call hangs
+    $script:graphConnection = $false
+    $global:graphConnection = $null
+    $entraConnectGraphButton.Enabled = $true
     $entraDisconnectGraphButton.Enabled = $false
+    $loadAllUsersButton.Enabled = $false
+    $searchUsersButton.Enabled = $false
+    $entraUserGrid.Rows.Clear()
+    Update-ConnectionStatus; [System.Windows.Forms.Application]::DoEvents()
+    $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     try {
         # Best-effort disconnect and cache clear to ensure clean reconnects (no module unload)
         try {
@@ -6531,13 +6539,6 @@ $entraDisconnectGraphButton.add_Click({
         $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"; Write-Host ("Error disconnecting from Microsoft Graph: {0}" -f $_.Exception.Message) -ForegroundColor Red
         [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     } finally {
-        $script:graphConnection = $false
-        $global:graphConnection = $null
-        $entraUserGrid.Rows.Clear()
-        $loadAllUsersButton.Enabled = $false
-        $searchUsersButton.Enabled = $false
-        $entraConnectGraphButton.Enabled = $true
-        $entraDisconnectGraphButton.Enabled = $false
         if ($statusLabel.Text -like "Disconnecting*" -or [string]::IsNullOrWhiteSpace($statusLabel.Text)) { $statusLabel.Text = "Disconnected from Microsoft Graph." }
         Write-Host "Disconnected from Microsoft Graph." -ForegroundColor Green
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
