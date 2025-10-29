@@ -247,27 +247,22 @@ function Connect-GraphService {
         # Clear authentication context and token cache more thoroughly
         try {
             $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
-            if ($graphSession -and $graphSession.AuthContext) {
-                $graphSession.AuthContext.ClearTokenCache()
-            }
-        } catch {
-            # Ignore errors clearing token cache
-        }
+            if ($graphSession -and $graphSession.AuthContext) { $graphSession.AuthContext.ClearTokenCache() }
+        } catch {}
 
-        # Also try to clear any MSAL cache
-        try {
-            $msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
-            if ($msalCache -and (Test-Path $msalCache)) {
-                Remove-Item $msalCache -Force -ErrorAction SilentlyContinue
-            }
-        } catch {
-            # Ignore errors clearing MSAL cache - method may not be available
-        }
+        # Also try to clear any MSAL cache (best-effort across common locations)
+        $candidateCaches = @()
+        try { if ([Microsoft.Identity.Client.TokenCacheHelper] -as [type]) { $candidateCaches += [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath() } } catch {}
+        $candidateCaches += @(
+            (Join-Path $env:LOCALAPPDATA 'IdentityService\msal.cache'),
+            (Join-Path $env:LOCALAPPDATA '.IdentityService\msal.cache')
+        ) | Where-Object { $_ -and (Test-Path $_) }
+        foreach ($c in $candidateCaches | Select-Object -Unique) { try { Remove-Item $c -Force -ErrorAction SilentlyContinue } catch {} }
 
         # If caller wants to pick a new account/tenant, prefer Device Code flow
         if ($ForceDeviceCode) {
             try {
-                $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ErrorAction Stop
+                $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ContextScope Process -ErrorAction Stop
             } catch {
                 $msg = $_.Exception.Message
                 throw ("Device code connection failed: {0}" -f $msg)
@@ -275,13 +270,13 @@ function Connect-GraphService {
         } else {
             # Connect to Graph with improved error handling
             try {
-                $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
+                $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ContextScope Process -ErrorAction Stop
             } catch {
             $msg = $_.Exception.Message
             # Retry without -ForceRefresh if not supported by module
             if ($msg -match "parameter name 'ForceRefresh'|matches parameter name 'ForceRefresh'|ForceRefresh") {
                 try {
-                    $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop
+                    $global:graphConnection = Connect-MgGraph -Scopes $scopes -ContextScope Process -ErrorAction Stop
                 } catch {
                     throw
                 }
@@ -294,16 +289,16 @@ function Connect-GraphService {
                 if ($fixOk) {
                     Write-Host "Retrying Graph connection after repair..." -ForegroundColor Yellow
                     try {
-                        $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
+                        $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ContextScope Process -ErrorAction Stop
                     } catch {
-                        try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop } catch {}
+                        try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ContextScope Process -ErrorAction Stop } catch {}
                     }
                 }
                 # If still not connected, fall back to Device Code flow (bypasses InteractiveBrowserCredential path)
                 if (-not $global:graphConnection) {
                     Write-Warning "Falling back to Device Code authentication for Microsoft Graph..."
                     try {
-                        $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ErrorAction Stop
+                        $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ContextScope Process -ErrorAction Stop
                         Write-Host "Connected to Graph via Device Code." -ForegroundColor Green
                     } catch {
                         throw

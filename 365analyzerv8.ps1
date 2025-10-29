@@ -6512,7 +6512,11 @@ $entraDisconnectGraphButton.add_Click({
     $entraDisconnectGraphButton.Enabled = $false
     try {
         # Best-effort disconnect and cache clear to ensure clean reconnects (no module unload)
-        try { if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) { Disconnect-MgGraph -ErrorAction SilentlyContinue } } catch {}
+        try {
+            if (Get-Command -Name Disconnect-MgGraph -ErrorAction SilentlyContinue) {
+                try { Disconnect-MgGraph -SignOut -ErrorAction SilentlyContinue } catch { Disconnect-MgGraph -ErrorAction SilentlyContinue }
+            }
+        } catch {}
         try {
             $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
             if ($graphSession -and $graphSession.AuthContext) { $graphSession.AuthContext.ClearTokenCache() }
@@ -6523,23 +6527,19 @@ $entraDisconnectGraphButton.add_Click({
                 if ($msalCache -and (Test-Path $msalCache)) { Remove-Item $msalCache -Force -ErrorAction SilentlyContinue }
             }
         } catch {}
-
+    } catch {
+        $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"; Write-Host ("Error disconnecting from Microsoft Graph: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
         $script:graphConnection = $false
         $global:graphConnection = $null
-
-        # Verify context is gone (ignore errors if cmdlet unavailable)
-        try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { Write-Host "Graph context still present after disconnect." -ForegroundColor Yellow } } catch {}
-
         $entraUserGrid.Rows.Clear()
         $loadAllUsersButton.Enabled = $false
         $searchUsersButton.Enabled = $false
         $entraConnectGraphButton.Enabled = $true
         $entraDisconnectGraphButton.Enabled = $false
-        $statusLabel.Text = "Disconnected from Microsoft Graph."; Write-Host "Disconnected from Microsoft Graph." -ForegroundColor Green
-    } catch {
-        $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"; Write-Host ("Error disconnecting from Microsoft Graph: {0}" -f $_.Exception.Message) -ForegroundColor Red
-        [System.Windows.Forms.MessageBox]::Show("Error disconnecting from Microsoft Graph: $($_.Exception.Message)", "Disconnect Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    } finally {
+        if ($statusLabel.Text -like "Disconnecting*" -or [string]::IsNullOrWhiteSpace($statusLabel.Text)) { $statusLabel.Text = "Disconnected from Microsoft Graph." }
+        Write-Host "Disconnected from Microsoft Graph." -ForegroundColor Green
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
         Update-ConnectionStatus
     }
