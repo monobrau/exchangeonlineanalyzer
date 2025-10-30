@@ -597,12 +597,12 @@ function New-SecurityInvestigationReport {
             function IsSelected([string]$name) { if (-not $sel -or $sel.Count -eq 0) { return $true } if ($sel -contains 'all') { return $true } return ($sel -contains $name.ToLower()) }
 
             $exportItems = @()
-            if (IsSelected 'MessageTrace')       { $exportItems += @{ Data=$mtShaped;                  Csv='MessageTrace.csv';        Json='MessageTrace.json';        Depth=8 } }
-            if (IsSelected 'InboxRules')         { $exportItems += @{ Data=$irShaped;                  Csv='InboxRules.csv';          Json='InboxRules.json';          Depth=6 } }
-            if (IsSelected 'TransportRules')     { $exportItems += @{ Data=$report.TransportRules;     Csv='TransportRules.csv';      Json='TransportRules.json';      Depth=8 } }
-            if (IsSelected 'InboundConnectors')  { $exportItems += @{ Data=$report.InboundConnectors;  Csv='InboundConnectors.csv';   Json='InboundConnectors.json';   Depth=8 } }
-            if (IsSelected 'OutboundConnectors') { $exportItems += @{ Data=$report.OutboundConnectors; Csv='OutboundConnectors.csv';  Json='OutboundConnectors.json';  Depth=8 } }
-            if (IsSelected 'AuditLogs')          { $exportItems += @{ Data=$report.AuditLogs;          Csv='GraphAuditLogs.csv';      Json='GraphAuditLogs.json';      Depth=8 } }
+            if (IsSelected 'MessageTrace')       { $exportItems += @{ Data=$mtShaped;                  Csv='MessageTrace.csv';       Depth=8 } }
+            if (IsSelected 'InboxRules')         { $exportItems += @{ Data=$irShaped;                  Csv='InboxRules.csv';         Depth=6 } }
+            if (IsSelected 'TransportRules')     { $exportItems += @{ Data=$report.TransportRules;     Csv='TransportRules.csv';     Depth=8 } }
+            if (IsSelected 'InboundConnectors')  { $exportItems += @{ Data=$report.InboundConnectors;  Csv='InboundConnectors.csv';  Depth=8 } }
+            if (IsSelected 'OutboundConnectors') { $exportItems += @{ Data=$report.OutboundConnectors; Csv='OutboundConnectors.csv'; Depth=8 } }
+            if (IsSelected 'AuditLogs')          { $exportItems += @{ Data=$report.AuditLogs;          Csv='GraphAuditLogs.csv';     Depth=8 } }
 
             function Split-CsvIfTooLarge {
                 param([Parameter(Mandatory=$true)][string]$Path,[long]$MaxBytes = (50MB))
@@ -645,27 +645,18 @@ function New-SecurityInvestigationReport {
 
             $exportAction = {
                 param($item,$out)
-            $csvPath  = Join-Path $out $item.Csv
-            $jsonPath = Join-Path $out $item.Json
-            if ($item.Data -and $item.Data.Count -gt 0) {
-                try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8; Split-CsvIfTooLarge -Path $csvPath -MaxBytes (50MB) }
-                catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
-            } else {
-                # Ensure at least a JSON file exists for empty datasets
-                '[]' | Out-File -FilePath $jsonPath -Encoding utf8
-            }
+                $csvPath  = Join-Path $out $item.Csv
+                if ($item.Data -and $item.Data.Count -gt 0) {
+                    try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8; Split-CsvIfTooLarge -Path $csvPath -MaxBytes (50MB) } catch {}
+                }
             }
 
             if ($PSVersionTable.PSVersion.Major -ge 7) {
                 $exportItems | ForEach-Object -Parallel {
                     $item = $_
                     $csvPath  = Join-Path $using:out $item.Csv
-                    $jsonPath = Join-Path $using:out $item.Json
                     if ($item -and $item.Data -and $item.Data.Count -gt 0) {
-                        try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8; Split-CsvIfTooLarge -Path $csvPath -MaxBytes (50MB) }
-                        catch { $item.Data | ConvertTo-Json -Depth $item.Depth | Out-File -FilePath $jsonPath -Encoding utf8 }
-                    } else {
-                        '[]' | Out-File -FilePath $jsonPath -Encoding utf8
+                        try { $item.Data | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8; Split-CsvIfTooLarge -Path $csvPath -MaxBytes (50MB) } catch {}
                     }
                 } -ThrottleLimit 4
             } else {
