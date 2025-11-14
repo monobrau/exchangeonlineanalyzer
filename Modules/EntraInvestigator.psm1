@@ -167,61 +167,536 @@ function Get-EntraUserAuditLogs {
 function Get-EntraUserMfaStatus {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$UserPrincipalName)
-    $results = @{ PerUserMfa = @{ Enabled = $false; Methods = @(); Details = "Not configured" }; SecurityDefaults = @{ Enabled = $false; Details = "Unknown" }; ConditionalAccess = @{ Policies = @(); RequiresMfa = $false; Details = "No applicable policies" }; OverallStatus = "Unknown"; Summary = "" }
+    $results = @{
+        PerUserMfa = @{ Enabled = $false; Enforced = $false; Methods = @(); MethodDetails = @(); Details = "Not configured"; Warnings = @() }
+        SecurityDefaults = @{ Enabled = $false; Details = "Unknown" }
+        ConditionalAccess = @{ Policies = @(); RequiresMfa = $false; ConditionalMfa = $false; Details = "No applicable policies" }
+        ThirdPartyMfa = @{ Detected = $false; Type = "None"; Details = "No third-party MFA detected" }
+        OverallStatus = "Unknown"
+        Summary = ""
+        Warnings = @()
+    }
     try {
-        $user = Get-MgUser -UserId $UserPrincipalName -Property Id
+        # Get user with expanded properties
+        $user = Get-MgUser -UserId $UserPrincipalName -Property Id,UserPrincipalName,DisplayName -ErrorAction Stop
+
+        # Check for federated/third-party authentication
+        try {
+            # Extract domain from UPN
+            $userDomain = $UserPrincipalName.Split('@')[1]
+            if ($userDomain) {
+                $domain = Get-MgDomain -DomainId $userDomain -ErrorAction SilentlyContinue
+                if ($domain) {
+                    # Check authentication type
+                    if ($domain.AuthenticationType -eq "Federated") {
+                        $results.ThirdPartyMfa.Detected = $true
+                        $results.ThirdPartyMfa.Type = "Federated Identity Provider"
+
+                        # Try to get federation settings for more details
+                        try {
+                            $fedSettings = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/domains/$userDomain/federationConfiguration" -ErrorAction SilentlyContinue
+                            if ($fedSettings.value -and $fedSettings.value.Count -gt 0) {
+                                $issuerUri = $fedSettings.value[0].issuerUri
+                                $fedDetails = "Domain is federated"
+
+                                # Detect common providers by issuer URI
+                                if ($issuerUri -match "duosecurity\.com") {
+                                    $fedDetails = "Federated to Duo Security"
+                                } elseif ($issuerUri -match "okta\.com") {
+                                    $fedDetails = "Federated to Okta"
+                                } elseif ($issuerUri -match "pingidentity\.com|pingone\.com") {
+                                    $fedDetails = "Federated to Ping Identity"
+                                } elseif ($issuerUri -match "auth0\.com") {
+                                    $fedDetails = "Federated to Auth0"
+                                } elseif ($issuerUri -match "onelogin\.com") {
+                                    $fedDetails = "Federated to OneLogin"
+                                } elseif ($issuerUri -match "adfs") {
+                                    $fedDetails = "Federated to on-premises AD FS"
+                                } else {
+                                    $fedDetails = "Federated to external IdP: $issuerUri"
+                                }
+
+                                $results.ThirdPartyMfa.Details = "$fedDetails - MFA likely enforced by IdP (cannot verify from Azure AD)"
+                            } else {
+                                $results.ThirdPartyMfa.Details = "Domain is federated - MFA likely enforced by external identity provider"
+                            }
+                        } catch {
+                            $results.ThirdPartyMfa.Details = "Domain is federated - MFA likely enforced by external identity provider"
+                        }
+                    }
+                }
+            }
+        } catch {
+            # Domain check failed, continue with other checks
+        }
+
+        # Get user's group and role memberships for CA policy evaluation (including transitive/nested groups)
+        $userGroups = @()
+        $userRoles = @()
+        try {
+            # Use transitive membership to get all groups including nested ones
+            $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($user.Id)/transitiveMemberOf?`$select=id" -ErrorAction SilentlyContinue
+            if ($transitiveMembers -and $transitiveMembers.value) {
+                foreach ($member in $transitiveMembers.value) {
+                    if ($member.'@odata.type' -eq '#microsoft.graph.group') {
+                        $userGroups += $member.id
+                    } elseif ($member.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                        $userRoles += $member.id
+                    }
+                }
+            }
+
+            # If transitive query failed or returned nothing, fall back to direct membership
+            if ($userGroups.Count -eq 0 -and $userRoles.Count -eq 0) {
+                $memberOf = Get-MgUserMemberOf -UserId $user.Id -All -ErrorAction SilentlyContinue
+                if ($memberOf) {
+                    $userGroups = $memberOf | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.group' } | Select-Object -ExpandProperty Id
+                    $userRoles = $memberOf | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.directoryRole' } | Select-Object -ExpandProperty Id
+                }
+            }
+        } catch {
+            $results.Warnings += "Could not retrieve group/role memberships - CA policy evaluation may be incomplete"
+        }
+
+        # Check authentication methods with quality assessment
         $authMethods = Get-MgUserAuthenticationMethod -UserId $user.Id -ErrorAction SilentlyContinue
         if ($authMethods) {
             $mfaMethods = $authMethods | Where-Object { $_.'@odata.type' -ne '#microsoft.graph.passwordAuthenticationMethod' }
             if ($mfaMethods) {
                 $results.PerUserMfa.Enabled = $true
-                $results.PerUserMfa.Methods = $mfaMethods | ForEach-Object { $_.'@odata.type' -replace '#microsoft.graph.', '' -replace 'AuthenticationMethod', '' }
-                $results.PerUserMfa.Details = "Methods: $($results.PerUserMfa.Methods -join ', ')"
+                $methodList = @()
+                $weakMethods = @()
+
+                foreach ($method in $mfaMethods) {
+                    $methodType = $method.'@odata.type' -replace '#microsoft.graph.', '' -replace 'AuthenticationMethod', ''
+                    $methodList += $methodType
+
+                    # Detailed method info with security assessment
+                    $methodDetail = @{ Type = $methodType; Strong = $true; Details = "" }
+
+                    switch ($method.'@odata.type') {
+                        '#microsoft.graph.phoneAuthenticationMethod' {
+                            $methodDetail.Strong = $false
+                            $methodDetail.Details = "Phone: $($method.PhoneNumber) - ⚠️ Vulnerable to SIM swapping"
+                            $weakMethods += "SMS/Voice (SIM swapping risk)"
+                        }
+                        '#microsoft.graph.emailAuthenticationMethod' {
+                            $methodDetail.Strong = $false
+                            $methodDetail.Details = "Email: $($method.EmailAddress) - ⚠️ Not recommended for MFA"
+                            $weakMethods += "Email (not secure)"
+                        }
+                        '#microsoft.graph.fido2AuthenticationMethod' {
+                            $methodDetail.Details = "FIDO2: $($method.Model) - ✓ Phishing-resistant"
+                        }
+                        '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' {
+                            $methodDetail.Details = "Microsoft Authenticator - ✓ Strong"
+                        }
+                        '#microsoft.graph.softwareOathAuthenticationMethod' {
+                            $methodDetail.Details = "Software OATH Token - ✓ Strong"
+                        }
+                        '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod' {
+                            $methodDetail.Details = "Windows Hello for Business - ✓ Phishing-resistant"
+                        }
+                        '#microsoft.graph.temporaryAccessPassAuthenticationMethod' {
+                            $tapExpiry = $method.LifetimeInMinutes
+                            $tapCreated = $method.CreatedDateTime
+                            if ($tapCreated) {
+                                $expiryDate = ([DateTime]$tapCreated).AddMinutes($tapExpiry)
+                                if ($expiryDate -lt (Get-Date)) {
+                                    $methodDetail.Details = "TAP: EXPIRED on $expiryDate"
+                                    $results.Warnings += "Temporary Access Pass is expired"
+                                } else {
+                                    $methodDetail.Details = "TAP: Expires $expiryDate"
+                                }
+                            }
+                        }
+                    }
+
+                    $results.PerUserMfa.MethodDetails += $methodDetail
+                }
+
+                $results.PerUserMfa.Methods = $methodList
+                $results.PerUserMfa.Details = "Methods: $($methodList -join ', ')"
+
+                if ($weakMethods.Count -gt 0) {
+                    $results.PerUserMfa.Warnings = $weakMethods
+                    $results.Warnings += "Weak MFA methods detected: $($weakMethods -join ', ')"
+                }
             } else {
                 $results.PerUserMfa.Details = "No MFA methods registered"
             }
         }
+
+        # Check per-user MFA enforcement state (legacy)
+        try {
+            # Try to get strong authentication requirements
+            $authReq = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($user.Id)?`$select=strongAuthenticationRequirements" -ErrorAction SilentlyContinue
+            if ($authReq.strongAuthenticationRequirements -and $authReq.strongAuthenticationRequirements.Count -gt 0) {
+                $state = $authReq.strongAuthenticationRequirements[0].state
+                if ($state -eq "Enforced" -or $state -eq "Enabled") {
+                    $results.PerUserMfa.Enforced = $true
+                    $results.PerUserMfa.Details += " | Per-User MFA State: $state"
+                }
+            }
+        } catch {
+            # Property not available in all tenants/licenses
+        }
+
+        # Check Security Defaults
         $securityDefaults = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy -ErrorAction SilentlyContinue
         if ($securityDefaults) {
             $results.SecurityDefaults.Enabled = $securityDefaults.IsEnabled
             $results.SecurityDefaults.Details = if ($securityDefaults.IsEnabled) { "Enabled (requires MFA for all users)" } else { "Disabled" }
         }
-        $caPolicies = Get-MgIdentityConditionalAccessPolicy -All -ErrorAction SilentlyContinue
-        if ($caPolicies) {
-            $applicablePolicies = @()
-            foreach ($policy in $caPolicies) {
-                if ($policy.State -eq "enabled") {
-                    $appliesToUser = $false
-                    if (($policy.Conditions.Users.IncludeUsers -contains "All") -or ($policy.Conditions.Users.IncludeUsers -contains $user.Id)) { $appliesToUser = $true }
-                    if ($policy.Conditions.Users.ExcludeUsers -contains $user.Id) { $appliesToUser = $false }
-                    if ($appliesToUser) {
-                        $requiresMfa = $false
-                        if ($policy.GrantControls.BuiltInControls -contains "mfa") { $requiresMfa = $true }
-                        $policyInfo = @{ Name = $policy.DisplayName; State = $policy.State; Controls = $policy.GrantControls.BuiltInControls -join ", "; Conditions = $policy.Conditions | Out-String; RequiresMfa = $requiresMfa }
-                        $applicablePolicies += $policyInfo
-                        if ($requiresMfa) { $results.ConditionalAccess.RequiresMfa = $true }
+
+        # Cache enterprise applications to detect third-party MFA providers (Duo, Okta, etc.)
+        $thirdPartyMfaApps = @{}
+        try {
+            $enterpriseApps = Get-MgServicePrincipal -All -Property "DisplayName,AppId,ServicePrincipalType" -ErrorAction SilentlyContinue
+            if ($enterpriseApps) {
+                foreach ($app in $enterpriseApps) {
+                    $displayName = $app.DisplayName.ToLower()
+                    # Detect common third-party MFA providers
+                    if ($displayName -match "duo|okta|ping|auth0|onelogin|rsa|symantec|thales") {
+                        $provider = "Unknown"
+                        if ($displayName -match "duo") { $provider = "Duo Security" }
+                        elseif ($displayName -match "okta") { $provider = "Okta" }
+                        elseif ($displayName -match "ping") { $provider = "Ping Identity" }
+                        elseif ($displayName -match "auth0") { $provider = "Auth0" }
+                        elseif ($displayName -match "onelogin") { $provider = "OneLogin" }
+                        elseif ($displayName -match "rsa") { $provider = "RSA SecurID" }
+                        elseif ($displayName -match "symantec") { $provider = "Symantec VIP" }
+                        elseif ($displayName -match "thales") { $provider = "Thales" }
+
+                        $thirdPartyMfaApps[$app.AppId] = @{
+                            DisplayName = $app.DisplayName
+                            Provider = $provider
+                            AppId = $app.AppId
+                        }
                     }
                 }
             }
+        } catch {
+            # If we can't get enterprise apps, continue with other checks
+        }
+
+        # Evaluate Conditional Access policies with complete logic
+        $caPolicies = Get-MgIdentityConditionalAccessPolicy -All -ErrorAction SilentlyContinue
+        if ($caPolicies) {
+            $applicablePolicies = @()
+
+            foreach ($policy in $caPolicies) {
+                if ($policy.State -ne "enabled") { continue }
+
+                # Evaluate user assignment (include/exclude logic)
+                $included = $false
+                $excluded = $false
+
+                # Check includes
+                if ($policy.Conditions.Users.IncludeUsers -contains "All") {
+                    $included = $true
+                } elseif ($policy.Conditions.Users.IncludeUsers -contains $user.Id) {
+                    $included = $true
+                } elseif ($policy.Conditions.Users.IncludeGroups) {
+                    foreach ($groupId in $policy.Conditions.Users.IncludeGroups) {
+                        if ($userGroups -contains $groupId) {
+                            $included = $true
+                            break
+                        }
+                    }
+                } elseif ($policy.Conditions.Users.IncludeRoles) {
+                    foreach ($roleId in $policy.Conditions.Users.IncludeRoles) {
+                        if ($userRoles -contains $roleId) {
+                            $included = $true
+                            break
+                        }
+                    }
+                }
+
+                # Check exclusions (take precedence)
+                if ($policy.Conditions.Users.ExcludeUsers -contains $user.Id) {
+                    $excluded = $true
+                } elseif ($policy.Conditions.Users.ExcludeGroups) {
+                    foreach ($groupId in $policy.Conditions.Users.ExcludeGroups) {
+                        if ($userGroups -contains $groupId) {
+                            $excluded = $true
+                            break
+                        }
+                    }
+                } elseif ($policy.Conditions.Users.ExcludeRoles) {
+                    foreach ($roleId in $policy.Conditions.Users.ExcludeRoles) {
+                        if ($userRoles -contains $roleId) {
+                            $excluded = $true
+                            break
+                        }
+                    }
+                }
+
+                if ($included -and -not $excluded) {
+                    # Check grant controls for MFA requirement
+                    $requiresMfa = $false
+                    $isConditional = $false
+                    $controlDetails = ""
+
+                    if ($policy.GrantControls) {
+                        # Check built-in controls
+                        if ($policy.GrantControls.BuiltInControls -contains "mfa") {
+                            $requiresMfa = $true
+                            $controlDetails = "Requires MFA"
+                        }
+
+                        # Check authentication strength (newer, more granular)
+                        if ($policy.GrantControls.AuthenticationStrength) {
+                            $requiresMfa = $true
+                            $strengthId = $policy.GrantControls.AuthenticationStrength.Id
+                            try {
+                                $strength = Get-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $strengthId -ErrorAction SilentlyContinue
+                                if ($strength) {
+                                    $controlDetails = "Requires Authentication Strength: $($strength.DisplayName)"
+                                    $allowedMethods = $strength.AllowedCombinations -join ', '
+                                    $controlDetails += " (Methods: $allowedMethods)"
+
+                                    # Check if authentication strength name indicates third-party MFA
+                                    $strengthName = $strength.DisplayName.ToLower()
+                                    if ($strengthName -match "duo|okta|ping|auth0|onelogin|rsa|symantec|thales") {
+                                        if (-not $results.ThirdPartyMfa.Detected) {
+                                            $provider = "Unknown Third-Party MFA"
+                                            if ($strengthName -match "duo") { $provider = "Duo Security" }
+                                            elseif ($strengthName -match "okta") { $provider = "Okta" }
+                                            elseif ($strengthName -match "ping") { $provider = "Ping Identity" }
+                                            elseif ($strengthName -match "auth0") { $provider = "Auth0" }
+                                            elseif ($strengthName -match "onelogin") { $provider = "OneLogin" }
+                                            elseif ($strengthName -match "rsa") { $provider = "RSA SecurID" }
+                                            elseif ($strengthName -match "symantec") { $provider = "Symantec VIP" }
+                                            elseif ($strengthName -match "thales") { $provider = "Thales" }
+
+                                            $results.ThirdPartyMfa.Detected = $true
+                                            $results.ThirdPartyMfa.Type = $provider
+                                            $results.ThirdPartyMfa.Details = "CA policy '$($policy.DisplayName)' uses authentication strength '$($strength.DisplayName)' - third-party MFA provider"
+                                        }
+                                    }
+                                }
+                            } catch {
+                                $controlDetails = "Requires Authentication Strength (ID: $strengthId)"
+                            }
+                        }
+
+                        # Check for custom controls (third-party MFA like Duo) - deprecated but still check
+                        if ($policy.GrantControls.CustomAuthenticationFactors) {
+                            foreach ($customControl in $policy.GrantControls.CustomAuthenticationFactors) {
+                                if (-not $results.ThirdPartyMfa.Detected) {
+                                    $results.ThirdPartyMfa.Detected = $true
+                                    $results.ThirdPartyMfa.Type = "Custom Authentication Control"
+                                    $results.ThirdPartyMfa.Details = "CA policy uses custom authentication control (likely third-party MFA like Duo)"
+                                }
+                                $controlDetails += " [Includes custom auth control]"
+                            }
+                        }
+
+                        # Check for Terms of Use (sometimes used with third-party MFA)
+                        if ($policy.GrantControls.TermsOfUse -and $policy.GrantControls.TermsOfUse.Count -gt 0) {
+                            foreach ($touId in $policy.GrantControls.TermsOfUse) {
+                                try {
+                                    $tou = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/agreements/$touId" -ErrorAction SilentlyContinue
+                                    if ($tou -and $tou.displayName -match "duo|okta|mfa|multi.?factor") {
+                                        if (-not $results.ThirdPartyMfa.Detected) {
+                                            $results.ThirdPartyMfa.Detected = $true
+                                            $results.ThirdPartyMfa.Type = "Terms of Use with MFA"
+                                            $results.ThirdPartyMfa.Details = "CA policy requires Terms of Use that may include third-party MFA: $($tou.displayName)"
+                                        }
+                                        $controlDetails += " [Includes ToU: $($tou.displayName)]"
+                                    }
+                                } catch {
+                                    # ToU check failed, continue
+                                }
+                            }
+                        }
+
+                        # Check operator (all vs any)
+                        if ($policy.GrantControls.Operator -eq "OR") {
+                            $controlDetails += " [One of multiple controls required]"
+                        }
+                    }
+
+                    # Check for third-party MFA application targeting in CA policy conditions
+                    if ($policy.Conditions.Applications -and $thirdPartyMfaApps.Count -gt 0) {
+                        $includeApps = $policy.Conditions.Applications.IncludeApplications
+                        if ($includeApps) {
+                            foreach ($appId in $includeApps) {
+                                if ($thirdPartyMfaApps.ContainsKey($appId)) {
+                                    $mfaApp = $thirdPartyMfaApps[$appId]
+                                    if (-not $results.ThirdPartyMfa.Detected) {
+                                        $results.ThirdPartyMfa.Detected = $true
+                                        $results.ThirdPartyMfa.Type = $mfaApp.Provider
+                                        $results.ThirdPartyMfa.Details = "CA policy '$($policy.DisplayName)' targets third-party MFA application: $($mfaApp.DisplayName)"
+                                    } else {
+                                        $results.ThirdPartyMfa.Details += " | Also targets: $($mfaApp.DisplayName)"
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    # Check for authentication context (newer method for third-party MFA)
+                    if ($policy.Conditions.AuthenticationContextClassReferences -and $policy.Conditions.AuthenticationContextClassReferences.Count -gt 0) {
+                        if ($requiresMfa -and $thirdPartyMfaApps.Count -gt 0) {
+                            $authContexts = $policy.Conditions.AuthenticationContextClassReferences -join ', '
+                            if (-not $results.ThirdPartyMfa.Detected) {
+                                $results.ThirdPartyMfa.Detected = $true
+                                $results.ThirdPartyMfa.Type = "Authentication Context"
+                                $results.ThirdPartyMfa.Details = "CA policy uses authentication context ($authContexts) with MFA requirement - may use third-party MFA provider"
+                            }
+                            $controlDetails += " [Auth Context: $authContexts]"
+                        }
+                    }
+
+                    # If CA policy requires MFA and we have third-party MFA apps in tenant, flag for investigation
+                    if ($requiresMfa -and $thirdPartyMfaApps.Count -gt 0 -and -not $results.ThirdPartyMfa.Detected) {
+                        # Check if user's domain is NOT federated (already detected earlier)
+                        if ($results.ThirdPartyMfa.Type -ne "Federated Identity Provider") {
+                            # Policy requires MFA and third-party MFA apps exist - likely using one of them
+                            $providerNames = ($thirdPartyMfaApps.Values | Select-Object -ExpandProperty Provider -Unique) -join ', '
+                            $results.ThirdPartyMfa.Detected = $true
+                            $results.ThirdPartyMfa.Type = "Potential Third-Party MFA"
+                            $results.ThirdPartyMfa.Details = "CA policy requires MFA and tenant has third-party MFA provider(s): $providerNames - MFA may be handled by these providers"
+                        }
+                    }
+
+                    # Check session controls (can indicate third-party integrations)
+                    if ($policy.SessionControls) {
+                        if ($policy.SessionControls.ApplicationEnforcedRestrictions -or
+                            $policy.SessionControls.CloudAppSecurity -or
+                            $policy.SessionControls.PersistentBrowser) {
+                            # Some session controls with MFA can indicate third-party solutions
+                            if ($requiresMfa -and $policy.SessionControls.CloudAppSecurity) {
+                                if (-not $results.ThirdPartyMfa.Detected) {
+                                    $results.ThirdPartyMfa.Detected = $true
+                                    $results.ThirdPartyMfa.Type = "Conditional Access App Control"
+                                    $results.ThirdPartyMfa.Details = "CA policy uses Cloud App Security/Defender for Cloud Apps controls (may include third-party MFA)"
+                                }
+                            }
+                        }
+                    }
+
+                    # Evaluate conditions that make MFA conditional
+                    $conditionSummary = @()
+
+                    # Application conditions
+                    if ($policy.Conditions.Applications) {
+                        $apps = $policy.Conditions.Applications
+                        if ($apps.IncludeApplications -notcontains "All") {
+                            $isConditional = $true
+                            $appCount = ($apps.IncludeApplications | Measure-Object).Count
+                            $conditionSummary += "Specific apps only ($appCount apps)"
+                        }
+                    }
+
+                    # Platform conditions
+                    if ($policy.Conditions.Platforms -and $policy.Conditions.Platforms.IncludePlatforms) {
+                        if ($policy.Conditions.Platforms.IncludePlatforms -notcontains "all") {
+                            $isConditional = $true
+                            $platforms = $policy.Conditions.Platforms.IncludePlatforms -join ', '
+                            $conditionSummary += "Platforms: $platforms"
+                        }
+                    }
+
+                    # Location conditions
+                    if ($policy.Conditions.Locations -and ($policy.Conditions.Locations.IncludeLocations -or $policy.Conditions.Locations.ExcludeLocations)) {
+                        $isConditional = $true
+                        if ($policy.Conditions.Locations.ExcludeLocations -contains "AllTrusted") {
+                            $conditionSummary += "Excludes trusted locations"
+                        } else {
+                            $conditionSummary += "Location-based"
+                        }
+                    }
+
+                    # Risk conditions
+                    if ($policy.Conditions.SignInRiskLevels -or $policy.Conditions.UserRiskLevels) {
+                        $isConditional = $true
+                        $conditionSummary += "Risk-based"
+                    }
+
+                    # Device conditions
+                    if ($policy.Conditions.Devices) {
+                        $isConditional = $true
+                        $conditionSummary += "Device-based"
+                    }
+
+                    $policyInfo = @{
+                        Name = $policy.DisplayName
+                        State = $policy.State
+                        RequiresMfa = $requiresMfa
+                        IsConditional = $isConditional
+                        Controls = $controlDetails
+                        Conditions = if ($conditionSummary.Count -gt 0) { $conditionSummary -join "; " } else { "Applies to all scenarios" }
+                    }
+
+                    $applicablePolicies += $policyInfo
+
+                    if ($requiresMfa) {
+                        $results.ConditionalAccess.RequiresMfa = $true
+                        if ($isConditional) {
+                            $results.ConditionalAccess.ConditionalMfa = $true
+                        }
+                    }
+                }
+            }
+
             $results.ConditionalAccess.Policies = $applicablePolicies
             if ($applicablePolicies.Count -gt 0) {
                 $mfaPoliciesCount = ($applicablePolicies | Where-Object { $_.RequiresMfa }).Count
-                $results.ConditionalAccess.Details = "Found $($applicablePolicies.Count) applicable policies ($($mfaPoliciesCount) require MFA)"
+                $conditionalCount = ($applicablePolicies | Where-Object { $_.IsConditional }).Count
+                $results.ConditionalAccess.Details = "Found $($applicablePolicies.Count) applicable policies ($mfaPoliciesCount require MFA, $conditionalCount are conditional)"
             }
         }
-        if ($results.SecurityDefaults.Enabled) {
-            $results.OverallStatus = "Protected (Security Defaults)"
-            $results.Summary = "MFA required via Security Defaults."
-        } elseif ($results.ConditionalAccess.RequiresMfa) {
-            $results.OverallStatus = "Protected (Conditional Access)"
-            $results.Summary = "MFA required via one or more Conditional Access policies."
+
+        # Determine overall status with improved categorization
+        if ($results.ThirdPartyMfa.Detected) {
+            # Third-party/federated MFA takes precedence in status
+            $results.OverallStatus = "✓ PROTECTED (Third-Party MFA)"
+            $results.Summary = "$($results.ThirdPartyMfa.Details). Note: MFA enforcement cannot be verified from Azure AD when using external identity providers."
+            $results.Warnings += "Third-party MFA detected - actual enforcement depends on external provider configuration"
+        } elseif ($results.SecurityDefaults.Enabled) {
+            $results.OverallStatus = "✓ PROTECTED (Security Defaults)"
+            $results.Summary = "MFA required via Security Defaults for all users in all scenarios."
+        } elseif ($results.ConditionalAccess.RequiresMfa -and -not $results.ConditionalAccess.ConditionalMfa) {
+            $results.OverallStatus = "✓ PROTECTED (Conditional Access)"
+            $results.Summary = "MFA required via Conditional Access policy for all scenarios."
+        } elseif ($results.ConditionalAccess.RequiresMfa -and $results.ConditionalAccess.ConditionalMfa) {
+            $results.OverallStatus = "⚠️ CONDITIONALLY PROTECTED (Conditional Access)"
+            $results.Summary = "MFA required by CA policy, but only for specific apps, platforms, or locations. May not cover all sign-in scenarios."
+            $results.Warnings += "MFA is conditional - user may be able to sign in without MFA in some scenarios"
+        } elseif ($results.PerUserMfa.Enforced) {
+            $results.OverallStatus = "✓ PROTECTED (Per-User MFA)"
+            $results.Summary = "Per-user MFA is enforced for this account."
         } elseif ($results.PerUserMfa.Enabled) {
-            $results.OverallStatus = "Protected (Per-User MFA)"
-            $results.Summary = "MFA methods are registered, but protection may not be enforced by policy."
+            $results.OverallStatus = "⚠️ METHODS REGISTERED (NO ENFORCEMENT)"
+            $results.Summary = "MFA methods are registered, but no policy enforces their use. User can still sign in without MFA."
+            $results.Warnings += "MFA methods exist but no enforcement policy detected - user can bypass MFA"
         } else {
-            $results.OverallStatus = "⚠️ NOT PROTECTED"
-            $results.Summary = "No MFA enforcement method detected."
+            $results.OverallStatus = "❌ NOT PROTECTED"
+            $results.Summary = "No MFA methods registered and no enforcement policy detected."
         }
+
+        # Additional warnings for privileged users
+        if ($userRoles.Count -gt 0) {
+            try {
+                $allRoles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue
+                $privilegedRoles = @("Global Administrator", "Privileged Role Administrator", "Security Administrator", "Exchange Administrator")
+                foreach ($role in $allRoles) {
+                    if ($userRoles -contains $role.Id -and $privilegedRoles -contains $role.DisplayName) {
+                        $hasPhishingResistant = $results.PerUserMfa.MethodDetails | Where-Object {
+                            $_.Type -eq "fido2" -or $_.Type -eq "windowsHelloForBusiness"
+                        }
+                        if (-not $hasPhishingResistant) {
+                            $results.Warnings += "⚠️ CRITICAL: Privileged admin role ($($role.DisplayName)) without phishing-resistant MFA"
+                        }
+                        break
+                    }
+                }
+            } catch {}
+        }
+
     } catch {
         $results.OverallStatus = "Error"
         $results.Summary = "Failed to analyze MFA status: $_"
