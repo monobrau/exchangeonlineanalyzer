@@ -11,6 +11,57 @@ function Get-MfaCoverageReport {
             if ($secDefaults -and $secDefaults.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$secDefaults.isEnabled }
         } catch {}
 
+        # Check for federated domains (third-party MFA)
+        $federatedDomains = @()
+        $federatedDomainsDetails = @{}
+        try {
+            $allDomains = Get-MgDomain -All -ErrorAction SilentlyContinue
+            foreach ($domain in $allDomains) {
+                if ($domain.AuthenticationType -eq "Federated") {
+                    $federatedDomains += $domain.Id
+
+                    # Try to identify the federation provider
+                    try {
+                        $fedSettings = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/domains/$($domain.Id)/federationConfiguration" -ErrorAction SilentlyContinue
+                        if ($fedSettings.value -and $fedSettings.value.Count -gt 0) {
+                            $issuerUri = $fedSettings.value[0].issuerUri
+                            $provider = "Unknown"
+
+                            if ($issuerUri -match "duosecurity\.com") {
+                                $provider = "Duo Security"
+                            } elseif ($issuerUri -match "okta\.com") {
+                                $provider = "Okta"
+                            } elseif ($issuerUri -match "pingidentity\.com|pingone\.com") {
+                                $provider = "Ping Identity"
+                            } elseif ($issuerUri -match "auth0\.com") {
+                                $provider = "Auth0"
+                            } elseif ($issuerUri -match "onelogin\.com") {
+                                $provider = "OneLogin"
+                            } elseif ($issuerUri -match "adfs") {
+                                $provider = "AD FS"
+                            } else {
+                                $provider = "External IdP"
+                            }
+
+                            $federatedDomainsDetails[$domain.Id] = $provider
+                        } else {
+                            $federatedDomainsDetails[$domain.Id] = "Federated (Unknown Provider)"
+                        }
+                    } catch {
+                        $federatedDomainsDetails[$domain.Id] = "Federated"
+                    }
+                }
+            }
+
+            if ($federatedDomains.Count -gt 0) {
+                Write-Host "Found $($federatedDomains.Count) federated domain(s) - third-party MFA may be in use" -ForegroundColor Cyan
+                foreach ($fd in $federatedDomains) {
+                    $provider = $federatedDomainsDetails[$fd]
+                    Write-Host "  - $fd : $provider" -ForegroundColor Gray
+                }
+            }
+        } catch {}
+
         # 2) Conditional Access policies requiring MFA (tenant-wide set)
         $caPolicies = @()
         try {
@@ -82,6 +133,17 @@ function Get-MfaCoverageReport {
                 if ($userCount % 100 -eq 0) {
                     Write-Host "Processing user $userCount of $totalUsers..." -ForegroundColor Gray
                 }
+
+                # Check if user's domain is federated (third-party MFA)
+                $isFederated = $false
+                $federatedProvider = ""
+                try {
+                    $userDomain = $u.userPrincipalName.Split('@')[1]
+                    if ($federatedDomains -contains $userDomain) {
+                        $isFederated = $true
+                        $federatedProvider = $federatedDomainsDetails[$userDomain]
+                    }
+                } catch {}
 
                 # Check for registered MFA methods
                 $directMfa = $false
@@ -261,7 +323,12 @@ function Get-MfaCoverageReport {
                 $coverageType = "None"
                 $warnings = @()
 
-                if ($secDefaultsEnabled) {
+                if ($isFederated) {
+                    # Federated users - MFA handled by external IdP
+                    $covered = $true
+                    $coverageType = "ThirdParty-Federated"
+                    $warnings += "Federated to $federatedProvider - MFA depends on IdP config"
+                } elseif ($secDefaultsEnabled) {
                     $covered = $true
                     $coverageType = "SecurityDefaults"
                 } elseif ($userCaRequiresMfa -and -not $userCaIsConditional) {
@@ -294,6 +361,8 @@ function Get-MfaCoverageReport {
                 $users += [pscustomobject]@{
                     DisplayName           = $u.displayName
                     UserPrincipalName     = $u.userPrincipalName
+                    IsFederated           = $isFederated
+                    FederatedProvider     = $federatedProvider
                     PerUserMfaEnabled     = $directMfa
                     PerUserMfaEnforced    = $mfaEnforced
                     MfaMethods            = ($methodTypes -join ',')
@@ -319,11 +388,15 @@ function Get-MfaCoverageReport {
         $uncoveredUsers = $totalUsers - $coveredUsers
         $privilegedUncovered = ($users | Where-Object { $_.IsPrivileged -and -not $_.MfaCovered }).Count
         $weakMethodsCount = ($users | Where-Object { $_.WeakMfaOnly }).Count
+        $federatedUsersCount = ($users | Where-Object { $_.IsFederated }).Count
 
         Write-Host "`nMFA Coverage Summary:" -ForegroundColor Green
         Write-Host "  Total Users: $totalUsers" -ForegroundColor White
         Write-Host "  Covered: $coveredUsers ($([math]::Round($coveredUsers/$totalUsers*100,1))%)" -ForegroundColor Green
         Write-Host "  Uncovered: $uncoveredUsers ($([math]::Round($uncoveredUsers/$totalUsers*100,1))%)" -ForegroundColor $(if($uncoveredUsers -gt 0){"Red"}else{"Green"})
+        if ($federatedUsersCount -gt 0) {
+            Write-Host "  Federated Users (Third-Party MFA): $federatedUsersCount" -ForegroundColor Cyan
+        }
         if ($privilegedUncovered -gt 0) {
             Write-Host "  ⚠️ Privileged users uncovered: $privilegedUncovered" -ForegroundColor Red
         }
@@ -336,11 +409,14 @@ function Get-MfaCoverageReport {
             SecurityDefaultsEnabled = $secDefaultsEnabled
             CAPoliciesRequireMfa = $tenantLevelCaMfa
             TotalCAPolicies = $mfaPolicies.Count
+            FederatedDomains = $federatedDomains
+            FederatedDomainsDetails = $federatedDomainsDetails
             Users = $users
             Summary = @{
                 TotalUsers = $totalUsers
                 CoveredUsers = $coveredUsers
                 UncoveredUsers = $uncoveredUsers
+                FederatedUsers = $federatedUsersCount
                 PrivilegedUncovered = $privilegedUncovered
                 WeakMethodsOnly = $weakMethodsCount
             }
@@ -351,6 +427,8 @@ function Get-MfaCoverageReport {
             SecurityDefaultsEnabled = $false
             CAPoliciesRequireMfa = $false
             TotalCAPolicies = 0
+            FederatedDomains = @()
+            FederatedDomainsDetails = @{}
             Users = @()
             Summary = @{}
         }

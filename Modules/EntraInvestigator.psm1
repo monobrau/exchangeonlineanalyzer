@@ -171,6 +171,7 @@ function Get-EntraUserMfaStatus {
         PerUserMfa = @{ Enabled = $false; Enforced = $false; Methods = @(); MethodDetails = @(); Details = "Not configured"; Warnings = @() }
         SecurityDefaults = @{ Enabled = $false; Details = "Unknown" }
         ConditionalAccess = @{ Policies = @(); RequiresMfa = $false; ConditionalMfa = $false; Details = "No applicable policies" }
+        ThirdPartyMfa = @{ Detected = $false; Type = "None"; Details = "No third-party MFA detected" }
         OverallStatus = "Unknown"
         Summary = ""
         Warnings = @()
@@ -178,6 +179,56 @@ function Get-EntraUserMfaStatus {
     try {
         # Get user with expanded properties
         $user = Get-MgUser -UserId $UserPrincipalName -Property Id,UserPrincipalName,DisplayName -ErrorAction Stop
+
+        # Check for federated/third-party authentication
+        try {
+            # Extract domain from UPN
+            $userDomain = $UserPrincipalName.Split('@')[1]
+            if ($userDomain) {
+                $domain = Get-MgDomain -DomainId $userDomain -ErrorAction SilentlyContinue
+                if ($domain) {
+                    # Check authentication type
+                    if ($domain.AuthenticationType -eq "Federated") {
+                        $results.ThirdPartyMfa.Detected = $true
+                        $results.ThirdPartyMfa.Type = "Federated Identity Provider"
+
+                        # Try to get federation settings for more details
+                        try {
+                            $fedSettings = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/domains/$userDomain/federationConfiguration" -ErrorAction SilentlyContinue
+                            if ($fedSettings.value -and $fedSettings.value.Count -gt 0) {
+                                $issuerUri = $fedSettings.value[0].issuerUri
+                                $fedDetails = "Domain is federated"
+
+                                # Detect common providers by issuer URI
+                                if ($issuerUri -match "duosecurity\.com") {
+                                    $fedDetails = "Federated to Duo Security"
+                                } elseif ($issuerUri -match "okta\.com") {
+                                    $fedDetails = "Federated to Okta"
+                                } elseif ($issuerUri -match "pingidentity\.com|pingone\.com") {
+                                    $fedDetails = "Federated to Ping Identity"
+                                } elseif ($issuerUri -match "auth0\.com") {
+                                    $fedDetails = "Federated to Auth0"
+                                } elseif ($issuerUri -match "onelogin\.com") {
+                                    $fedDetails = "Federated to OneLogin"
+                                } elseif ($issuerUri -match "adfs") {
+                                    $fedDetails = "Federated to on-premises AD FS"
+                                } else {
+                                    $fedDetails = "Federated to external IdP: $issuerUri"
+                                }
+
+                                $results.ThirdPartyMfa.Details = "$fedDetails - MFA likely enforced by IdP (cannot verify from Azure AD)"
+                            } else {
+                                $results.ThirdPartyMfa.Details = "Domain is federated - MFA likely enforced by external identity provider"
+                            }
+                        } catch {
+                            $results.ThirdPartyMfa.Details = "Domain is federated - MFA likely enforced by external identity provider"
+                        }
+                    }
+                }
+            }
+        } catch {
+            # Domain check failed, continue with other checks
+        }
 
         # Get user's group and role memberships for CA policy evaluation
         $userGroups = @()
@@ -364,9 +415,37 @@ function Get-EntraUserMfaStatus {
                             }
                         }
 
+                        # Check for custom controls (third-party MFA like Duo)
+                        if ($policy.GrantControls.CustomAuthenticationFactors) {
+                            foreach ($customControl in $policy.GrantControls.CustomAuthenticationFactors) {
+                                if (-not $results.ThirdPartyMfa.Detected) {
+                                    $results.ThirdPartyMfa.Detected = $true
+                                    $results.ThirdPartyMfa.Type = "Custom Authentication Control"
+                                    $results.ThirdPartyMfa.Details = "CA policy uses custom authentication control (likely third-party MFA like Duo)"
+                                }
+                                $controlDetails += " [Includes custom auth control]"
+                            }
+                        }
+
                         # Check operator (all vs any)
                         if ($policy.GrantControls.Operator -eq "OR") {
                             $controlDetails += " [One of multiple controls required]"
+                        }
+                    }
+
+                    # Check session controls (can indicate third-party integrations)
+                    if ($policy.SessionControls) {
+                        if ($policy.SessionControls.ApplicationEnforcedRestrictions -or
+                            $policy.SessionControls.CloudAppSecurity -or
+                            $policy.SessionControls.PersistentBrowser) {
+                            # Some session controls with MFA can indicate third-party solutions
+                            if ($requiresMfa -and $policy.SessionControls.CloudAppSecurity) {
+                                if (-not $results.ThirdPartyMfa.Detected) {
+                                    $results.ThirdPartyMfa.Detected = $true
+                                    $results.ThirdPartyMfa.Type = "Conditional Access App Control"
+                                    $results.ThirdPartyMfa.Details = "CA policy uses Cloud App Security/Defender for Cloud Apps controls (may include third-party MFA)"
+                                }
+                            }
                         }
                     }
 
@@ -443,7 +522,12 @@ function Get-EntraUserMfaStatus {
         }
 
         # Determine overall status with improved categorization
-        if ($results.SecurityDefaults.Enabled) {
+        if ($results.ThirdPartyMfa.Detected) {
+            # Third-party/federated MFA takes precedence in status
+            $results.OverallStatus = "✓ PROTECTED (Third-Party MFA)"
+            $results.Summary = "$($results.ThirdPartyMfa.Details). Note: MFA enforcement cannot be verified from Azure AD when using external identity providers."
+            $results.Warnings += "Third-party MFA detected - actual enforcement depends on external provider configuration"
+        } elseif ($results.SecurityDefaults.Enabled) {
             $results.OverallStatus = "✓ PROTECTED (Security Defaults)"
             $results.Summary = "MFA required via Security Defaults for all users in all scenarios."
         } elseif ($results.ConditionalAccess.RequiresMfa -and -not $results.ConditionalAccess.ConditionalMfa) {
