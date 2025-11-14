@@ -213,14 +213,21 @@ function Get-MfaCoverageReport {
                 }
             }
 
-            # Process users with progress indicator
+            # Process users with progress indicator and time estimation
             $userCount = 0
             $totalUsers = ($userPage | Measure-Object).Count
+            $startTime = Get-Date
+            $userMembershipCache = @{}  # Cache for reuse in other reports
 
             foreach ($u in $userPage) {
                 $userCount++
                 if ($userCount % 100 -eq 0) {
-                    Write-Host "Processing user $userCount of $totalUsers..." -ForegroundColor Gray
+                    $elapsed = (Get-Date) - $startTime
+                    $rate = $userCount / $elapsed.TotalSeconds
+                    $remaining = $totalUsers - $userCount
+                    $eta = if ($rate -gt 0) { [TimeSpan]::FromSeconds($remaining / $rate) } else { [TimeSpan]::Zero }
+                    $percent = [math]::Round(($userCount / $totalUsers) * 100, 1)
+                    Write-Host "Processing MFA coverage: $userCount of $totalUsers users ($percent%) - ETA: $($eta.ToString('mm\:ss'))" -ForegroundColor Cyan
                 }
 
                 # Check if user's domain is federated (third-party MFA)
@@ -314,8 +321,12 @@ function Get-MfaCoverageReport {
 
                 try {
                     # Use transitive membership to get all groups including nested ones
-                    $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($u.Id)/transitiveMemberOf?`$select=id" -ErrorAction SilentlyContinue
+                    # Only select the properties we need to reduce data transfer
+                    $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($u.Id)/transitiveMemberOf?`$select=id,displayName" -ErrorAction SilentlyContinue
                     if ($transitiveMembers -and $transitiveMembers.value) {
+                        # Cache the full transitive membership data for reuse in other reports
+                        $userMembershipCache[$u.Id] = $transitiveMembers.value
+
                         foreach ($m in $transitiveMembers.value) {
                             if ($m.'@odata.type' -eq '#microsoft.graph.group') {
                                 $userGroups += $m.id
@@ -331,14 +342,19 @@ function Get-MfaCoverageReport {
                     # If transitive query failed or returned nothing, fall back to direct membership
                     if ($userGroups.Count -eq 0 -and $userRoles.Count -eq 0) {
                         $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
-                        foreach ($m in $mem) {
-                            if ($m.'@odata.type' -eq '#microsoft.graph.group') {
-                                $userGroups += $m.Id
-                            }
-                            elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
-                                $userRoles += $m.Id
-                                if ($privilegedRoleIds -contains $m.Id) {
-                                    $isPrivileged = $true
+                        if ($mem) {
+                            # Cache direct membership as well
+                            $userMembershipCache[$u.Id] = $mem
+
+                            foreach ($m in $mem) {
+                                if ($m.'@odata.type' -eq '#microsoft.graph.group') {
+                                    $userGroups += $m.Id
+                                }
+                                elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                                    $userRoles += $m.Id
+                                    if ($privilegedRoleIds -contains $m.Id) {
+                                        $isPrivileged = $true
+                                    }
                                 }
                             }
                         }
@@ -519,6 +535,7 @@ function Get-MfaCoverageReport {
             FederatedDomains = $federatedDomains
             FederatedDomainsDetails = $federatedDomainsDetails
             Users = $users
+            UserMembershipCache = $userMembershipCache  # Cache for reuse in other reports
             Summary = @{
                 TotalUsers = $totalUsers
                 CoveredUsers = $coveredUsers
@@ -544,6 +561,10 @@ function Get-MfaCoverageReport {
 
 # Flattens user membership in directory roles and security groups
 function Get-UserSecurityGroupsReport {
+    param(
+        [Parameter(Mandatory=$false)]
+        [hashtable]$UserMembershipCache = $null
+    )
     try {
         $results = New-Object System.Collections.Generic.List[object]
 
@@ -557,26 +578,56 @@ function Get-UserSecurityGroupsReport {
         $users = @()
         try { $users = Get-MgUser -All -Filter "userType eq 'Member' and accountEnabled eq true" -Property 'id,displayName,userPrincipalName,userType,accountEnabled' -ConsistencyLevel eventual -ErrorAction Stop } catch {}
 
+        # Add progress tracking
+        $userCount = 0
+        $totalUsers = $users.Count
+        $startTime = Get-Date
+        $usedCache = 0
+
         foreach ($u in $users) {
+            $userCount++
+            if ($userCount % 100 -eq 0) {
+                $elapsed = (Get-Date) - $startTime
+                $rate = $userCount / $elapsed.TotalSeconds
+                $remaining = $totalUsers - $userCount
+                $eta = if ($rate -gt 0) { [TimeSpan]::FromSeconds($remaining / $rate) } else { [TimeSpan]::Zero }
+                $percent = [math]::Round(($userCount / $totalUsers) * 100, 1)
+                Write-Host "Processing security groups: $userCount of $totalUsers users ($percent%) - ETA: $($eta.ToString('mm\:ss')) [$usedCache cached]" -ForegroundColor Cyan
+            }
+
             $groups = @()
             try {
-                # Use transitive membership to get all groups including nested ones
-                $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($u.Id)/transitiveMemberOf" -ErrorAction SilentlyContinue
-                if ($transitiveMembers -and $transitiveMembers.value) {
-                    foreach ($m in $transitiveMembers.value) {
+                # Check if we have cached membership data for this user
+                if ($UserMembershipCache -and $UserMembershipCache.ContainsKey($u.Id)) {
+                    # Use cached data - MUCH faster!
+                    $usedCache++
+                    $cachedMembers = $UserMembershipCache[$u.Id]
+                    foreach ($m in $cachedMembers) {
                         $name = $null
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.displayName }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.id)) { $roleIdToName[$m.id] } else { 'Directory Role' } }
                         if ($name) { $groups += $name }
                     }
                 } else {
-                    # Fall back to direct membership
-                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
-                    foreach ($m in $mem) {
-                        $name = $null
-                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.DisplayName }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.Id)) { $roleIdToName[$m.Id] } else { 'Directory Role' } }
-                        if ($name) { $groups += $name }
+                    # No cache available - fetch from API
+                    # Only select the properties we need to reduce data transfer
+                    $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($u.Id)/transitiveMemberOf?`$select=id,displayName" -ErrorAction SilentlyContinue
+                    if ($transitiveMembers -and $transitiveMembers.value) {
+                        foreach ($m in $transitiveMembers.value) {
+                            $name = $null
+                            if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.displayName }
+                            elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.id)) { $roleIdToName[$m.id] } else { 'Directory Role' } }
+                            if ($name) { $groups += $name }
+                        }
+                    } else {
+                        # Fall back to direct membership
+                        $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                        foreach ($m in $mem) {
+                            $name = $null
+                            if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.DisplayName }
+                            elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.Id)) { $roleIdToName[$m.Id] } else { 'Directory Role' } }
+                            if ($name) { $groups += $name }
+                        }
                     }
                 }
             } catch {}
@@ -867,14 +918,23 @@ function New-SecurityInvestigationReport {
     # MFA Coverage and User Security Groups
     if ($graphConnected) {
         try {
+            # Variable to cache user membership data between reports
+            $userMembershipCache = $null
+
             if ($IncludeMfaCoverage) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
                 $report.MfaCoverage = Get-MfaCoverageReport
+                # Extract cached membership data for reuse
+                if ($report.MfaCoverage -and $report.MfaCoverage.UserMembershipCache) {
+                    $userMembershipCache = $report.MfaCoverage.UserMembershipCache
+                    Write-Host "Cached group membership data for $($userMembershipCache.Count) users (will reuse for Security Groups report)" -ForegroundColor Green
+                }
             }
 
             if ($IncludeUserSecurityGroups) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
-                $report.UserSecurityGroups = Get-UserSecurityGroupsReport
+                # Pass cached membership data to avoid duplicate API calls
+                $report.UserSecurityGroups = Get-UserSecurityGroupsReport -UserMembershipCache $userMembershipCache
             }
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
