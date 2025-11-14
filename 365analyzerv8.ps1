@@ -4525,7 +4525,7 @@ $securityInvestigationButton.add_Click({
         # Create Security Investigation form
         $securityForm = New-Object System.Windows.Forms.Form
         $securityForm.Text = "Security Investigation Report Generator"
-        $securityForm.Size = New-Object System.Drawing.Size(900, 700)
+        $securityForm.Size = New-Object System.Drawing.Size(900, 600)
         $securityForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
         $securityForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
         $securityForm.MaximizeBox = $true
@@ -4561,7 +4561,7 @@ $securityInvestigationButton.add_Click({
         $reportSelectionGroupBox = New-Object System.Windows.Forms.GroupBox
         $reportSelectionGroupBox.Text = "Reports to Include"
         $reportSelectionGroupBox.Location = New-Object System.Drawing.Point(430, 110)
-        $reportSelectionGroupBox.Size = New-Object System.Drawing.Size(420, 260)
+        $reportSelectionGroupBox.Size = New-Object System.Drawing.Size(420, 330)
 
         # Investigator Name
         $investigatorNameLabel = New-Object System.Windows.Forms.Label
@@ -4727,7 +4727,7 @@ $securityInvestigationButton.add_Click({
         $generateButton = New-Object System.Windows.Forms.Button
         $generateButton.Text = "🚀 Generate Security Investigation"
         $generateButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
-        $generateButton.Location = New-Object System.Drawing.Point(15, 385)
+        $generateButton.Location = New-Object System.Drawing.Point(15, 455)
         $generateButton.Size = New-Object System.Drawing.Size(400, 50)
         $generateButton.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
         $generateButton.ForeColor = [System.Drawing.Color]::White
@@ -4736,7 +4736,7 @@ $securityInvestigationButton.add_Click({
         $progressLabel = New-Object System.Windows.Forms.Label
         $progressLabel.Text = "Ready to generate security investigation report."
         $progressLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Italic)
-        $progressLabel.Location = New-Object System.Drawing.Point(15, 445)
+        $progressLabel.Location = New-Object System.Drawing.Point(15, 515)
         $progressLabel.Size = New-Object System.Drawing.Size(800, 20)
         $progressLabel.ForeColor = [System.Drawing.Color]::Green
 
@@ -4931,7 +4931,7 @@ $securityInvestigationButton.add_Click({
         # Close button
         $closeButton = New-Object System.Windows.Forms.Button
         $closeButton.Text = "Close"
-        $closeButton.Location = New-Object System.Drawing.Point(750, 385)
+        $closeButton.Location = New-Object System.Drawing.Point(750, 455)
         $closeButton.Size = New-Object System.Drawing.Size(100, 50)
         $closeButton.add_Click({ $securityForm.Close() })
 
