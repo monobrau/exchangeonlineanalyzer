@@ -307,21 +307,39 @@ function Get-MfaCoverageReport {
                     }
                 } catch {}
 
-                # Get user group and role memberships for CA evaluation
+                # Get user group and role memberships for CA evaluation (including transitive/nested groups)
                 $userGroups = @()
                 $userRoles = @()
                 $isPrivileged = $false
 
                 try {
-                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
-                    foreach ($m in $mem) {
-                        if ($m.'@odata.type' -eq '#microsoft.graph.group') {
-                            $userGroups += $m.Id
+                    # Use transitive membership to get all groups including nested ones
+                    $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($u.Id)/transitiveMemberOf?`$select=id" -ErrorAction SilentlyContinue
+                    if ($transitiveMembers -and $transitiveMembers.value) {
+                        foreach ($m in $transitiveMembers.value) {
+                            if ($m.'@odata.type' -eq '#microsoft.graph.group') {
+                                $userGroups += $m.id
+                            } elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                                $userRoles += $m.id
+                                if ($privilegedRoleIds -contains $m.id) {
+                                    $isPrivileged = $true
+                                }
+                            }
                         }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
-                            $userRoles += $m.Id
-                            if ($privilegedRoleIds -contains $m.Id) {
-                                $isPrivileged = $true
+                    }
+
+                    # If transitive query failed or returned nothing, fall back to direct membership
+                    if ($userGroups.Count -eq 0 -and $userRoles.Count -eq 0) {
+                        $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                        foreach ($m in $mem) {
+                            if ($m.'@odata.type' -eq '#microsoft.graph.group') {
+                                $userGroups += $m.Id
+                            }
+                            elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                                $userRoles += $m.Id
+                                if ($privilegedRoleIds -contains $m.Id) {
+                                    $isPrivileged = $true
+                                }
                             }
                         }
                     }
@@ -542,12 +560,24 @@ function Get-UserSecurityGroupsReport {
         foreach ($u in $users) {
             $groups = @()
             try {
-                $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
-                foreach ($m in $mem) {
-                    $name = $null
-                    if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.DisplayName }
-                    elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.Id)) { $roleIdToName[$m.Id] } else { 'Directory Role' } }
-                    if ($name) { $groups += $name }
+                # Use transitive membership to get all groups including nested ones
+                $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($u.Id)/transitiveMemberOf" -ErrorAction SilentlyContinue
+                if ($transitiveMembers -and $transitiveMembers.value) {
+                    foreach ($m in $transitiveMembers.value) {
+                        $name = $null
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.displayName }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.id)) { $roleIdToName[$m.id] } else { 'Directory Role' } }
+                        if ($name) { $groups += $name }
+                    }
+                } else {
+                    # Fall back to direct membership
+                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    foreach ($m in $mem) {
+                        $name = $null
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $name = $m.DisplayName }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.Id)) { $roleIdToName[$m.Id] } else { 'Directory Role' } }
+                        if ($name) { $groups += $name }
+                    }
                 }
             } catch {}
 

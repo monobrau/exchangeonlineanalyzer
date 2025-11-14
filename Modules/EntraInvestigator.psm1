@@ -230,14 +230,29 @@ function Get-EntraUserMfaStatus {
             # Domain check failed, continue with other checks
         }
 
-        # Get user's group and role memberships for CA policy evaluation
+        # Get user's group and role memberships for CA policy evaluation (including transitive/nested groups)
         $userGroups = @()
         $userRoles = @()
         try {
-            $memberOf = Get-MgUserMemberOf -UserId $user.Id -All -ErrorAction SilentlyContinue
-            if ($memberOf) {
-                $userGroups = $memberOf | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.group' } | Select-Object -ExpandProperty Id
-                $userRoles = $memberOf | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.directoryRole' } | Select-Object -ExpandProperty Id
+            # Use transitive membership to get all groups including nested ones
+            $transitiveMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($user.Id)/transitiveMemberOf?`$select=id" -ErrorAction SilentlyContinue
+            if ($transitiveMembers -and $transitiveMembers.value) {
+                foreach ($member in $transitiveMembers.value) {
+                    if ($member.'@odata.type' -eq '#microsoft.graph.group') {
+                        $userGroups += $member.id
+                    } elseif ($member.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                        $userRoles += $member.id
+                    }
+                }
+            }
+
+            # If transitive query failed or returned nothing, fall back to direct membership
+            if ($userGroups.Count -eq 0 -and $userRoles.Count -eq 0) {
+                $memberOf = Get-MgUserMemberOf -UserId $user.Id -All -ErrorAction SilentlyContinue
+                if ($memberOf) {
+                    $userGroups = $memberOf | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.group' } | Select-Object -ExpandProperty Id
+                    $userRoles = $memberOf | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.directoryRole' } | Select-Object -ExpandProperty Id
+                }
             }
         } catch {
             $results.Warnings += "Could not retrieve group/role memberships - CA policy evaluation may be incomplete"
