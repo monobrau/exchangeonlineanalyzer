@@ -3136,40 +3136,31 @@ $entraConnectGraphButton.add_Click({
     try {
         if (Connect-EntraGraph) {
             $script:graphConnection = $true
-            
+
             # Enable load buttons and disable connect button
             $loadAllUsersButton.Enabled = $true
             $searchUsersButton.Enabled = $true
             $entraDisconnectGraphButton.Enabled = $true
             $entraConnectGraphButton.Enabled = $false
-            
+
             Write-Host "Microsoft Graph connected. Load buttons enabled: LoadAll=$($loadAllUsersButton.Enabled), Search=$($searchUsersButton.Enabled)"
-            
+
             $statusLabel.Text = "Connected to Microsoft Graph. Use 'Load All Users' or 'Search Users' to load data."
             Show-Progress -message "Connected to Microsoft Graph successfully." -progress 100
         } else {
-            # Check if this is a user cancellation
-            $errorMessage = $_.Exception.Message
-            $isUserCancellation = $errorMessage -match "User cancelled|Operation cancelled|User canceled|Authentication cancelled|Authentication canceled" -or 
-                                 $errorMessage -match "AADSTS50020|AADSTS50076|AADSTS50079" -or
-                                 $errorMessage -match "The user cancelled the authentication"
-            
-            if ($isUserCancellation) {
-                # User cancelled - just update status without showing error popup
-                $statusLabel.Text = "Microsoft Graph connection cancelled by user."
-            } else {
-                # Real error - show user-friendly error message
-                $statusLabel.Text = "Failed to connect to Microsoft Graph."
-                [System.Windows.Forms.MessageBox]::Show("Failed to connect to Microsoft Graph: $($_.Exception.Message)", "Connection Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
+            # Connection failed or was cancelled (Connect-EntraGraph returned false)
+            $statusLabel.Text = "Microsoft Graph connection failed or was cancelled."
+            Show-Progress -message "Connection failed or cancelled." -progress -1
+            # Re-enable connect button so user can try again
+            $entraConnectGraphButton.Enabled = $true
         }
     } catch {
-        # Check if this is a user cancellation
+        # Unexpected error in the click handler itself
         $errorMessage = $_.Exception.Message
-        $isUserCancellation = $errorMessage -match "User cancelled|Operation cancelled|User canceled|Authentication cancelled|Authentication canceled" -or 
+        $isUserCancellation = $errorMessage -match "User cancelled|Operation cancelled|User canceled|Authentication cancelled|Authentication canceled" -or
                              $errorMessage -match "AADSTS50020|AADSTS50076|AADSTS50079" -or
                              $errorMessage -match "The user cancelled the authentication"
-        
+
         if ($isUserCancellation) {
             # User cancelled - just update status without showing error popup
             $statusLabel.Text = "Microsoft Graph connection cancelled by user."
@@ -3178,9 +3169,11 @@ $entraConnectGraphButton.add_Click({
             $statusLabel.Text = "Failed to connect to Microsoft Graph."
             [System.Windows.Forms.MessageBox]::Show("Failed to connect to Microsoft Graph: $($_.Exception.Message)", "Connection Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
+        # Re-enable connect button on error
+        $entraConnectGraphButton.Enabled = $true
+    } finally {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
     }
-    $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
-    $entraConnectGraphButton.Enabled = $true
 })
 
 # Load All Users button handler

@@ -35,16 +35,17 @@ function Connect-EntraGraph {
     [CmdletBinding()]
     param()
     try {
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
+        # Connect-MgGraph handles existing connections gracefully, no need to disconnect first
+        # Removed Disconnect-MgGraph to prevent potential conflicts with Exchange Online connection
         Connect-MgGraph -Scopes $script:requiredScopes -ErrorAction Stop
         return $true
     } catch {
         # Check if this is a user cancellation
         $errorMessage = $_.Exception.Message
-        $isUserCancellation = $errorMessage -match "User cancelled|Operation cancelled|User canceled|Authentication cancelled|Authentication canceled" -or 
+        $isUserCancellation = $errorMessage -match "User cancelled|Operation cancelled|User canceled|Authentication cancelled|Authentication canceled" -or
                              $errorMessage -match "AADSTS50020|AADSTS50076|AADSTS50079" -or
                              $errorMessage -match "The user cancelled the authentication"
-        
+
         if ($isUserCancellation) {
             # User cancelled - return false without writing error
             return $false
