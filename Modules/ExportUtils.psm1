@@ -709,7 +709,21 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [object]$MainForm,
         [Parameter(Mandatory=$false)]
-        [string]$OutputFolder
+        [string]$OutputFolder,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeMessageTrace = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeInboxRules = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeTransportRules = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeConnectors = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeAuditLogs = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeMfaCoverage = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeUserSecurityGroups = $true
     )
 
     try {
@@ -811,29 +825,39 @@ function New-SecurityInvestigationReport {
     # Collect data from Exchange Online
     if ($exchangeConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last $DaysBack days)..." }
-            $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 # always 10 days per requirement
+            if ($IncludeMessageTrace) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last 10 days)..." }
+                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 # always 10 days per requirement
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
-            $report.InboxRules = Get-ExchangeInboxRules
+            if ($IncludeInboxRules) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
+                $report.InboxRules = Get-ExchangeInboxRules
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
-            $report.TransportRules = Get-ExchangeTransportRules
+            if ($IncludeTransportRules) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
+                $report.TransportRules = Get-ExchangeTransportRules
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
-            $report.InboundConnectors = Get-ExchangeInboundConnectors
-            $report.OutboundConnectors = Get-ExchangeOutboundConnectors
+            if ($IncludeConnectors) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
+                $report.InboundConnectors = Get-ExchangeInboundConnectors
+                $report.OutboundConnectors = Get-ExchangeOutboundConnectors
+            }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
             $report.ExchangeDataError = $_.Exception.Message
         }
     }
 
-    # Collect data from Microsoft Graph (audit logs only)
+    # Collect data from Microsoft Graph
     if ($graphConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
-            $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
+            if ($IncludeAuditLogs) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
+                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
+            }
         } catch {
             Write-Warning "Failed to collect Microsoft Graph data: $($_.Exception.Message)"
             $report.GraphDataError = $_.Exception.Message
@@ -843,11 +867,15 @@ function New-SecurityInvestigationReport {
     # MFA Coverage and User Security Groups
     if ($graphConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
-            $report.MfaCoverage = Get-MfaCoverageReport
+            if ($IncludeMfaCoverage) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
+                $report.MfaCoverage = Get-MfaCoverageReport
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
-            $report.UserSecurityGroups = Get-UserSecurityGroupsReport
+            if ($IncludeUserSecurityGroups) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
+                $report.UserSecurityGroups = Get-UserSecurityGroupsReport
+            }
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
