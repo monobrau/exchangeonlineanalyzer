@@ -2806,6 +2806,14 @@ $entraRequirePwdChangeButton.Enabled = $false
 $entraRequirePwdChangeButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraRequirePwdChangeButtonTooltip.SetToolTip($entraRequirePwdChangeButton, "Require selected user(s) to change password at next sign-in (no password change)")
 
+# Add open Defender restricted users button for Entra ID tab
+$entraOpenDefenderRestrictedUsersButton = New-Object System.Windows.Forms.Button
+$entraOpenDefenderRestrictedUsersButton.Text = "Open Defender Restricted Users"
+$entraOpenDefenderRestrictedUsersButton.Width = 210
+$entraOpenDefenderRestrictedUsersButton.Enabled = $false
+$entraOpenDefenderRestrictedUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$entraOpenDefenderRestrictedUsersButtonTooltip.SetToolTip($entraOpenDefenderRestrictedUsersButton, "Open Microsoft Defender restricted users page in browser")
+
 $entraSignInGrid              = New-Object System.Windows.Forms.DataGridView
 $entraSignInGrid.ReadOnly     = $true
 $entraSignInGrid.AllowUserToAddRows = $false
@@ -6281,6 +6289,19 @@ $entraViewAdminsButton.add_Click({
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
         $statusLabel.Text = "Error generating admin report: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error generating admin report: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
+# Add click handler for Open Defender Restricted Users button
+$entraOpenDefenderRestrictedUsersButton.add_Click({
+    try {
+        # Open Microsoft Defender portal restricted users page
+        $defenderUrl = "https://security.microsoft.com/restrictedusers"
+        Start-Process $defenderUrl
+        $statusLabel.Text = "Opening Microsoft Defender restricted users page in browser..."
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error opening Microsoft Defender page: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $statusLabel.Text = "Error opening Defender page"
     }
 })
 
