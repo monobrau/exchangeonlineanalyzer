@@ -334,6 +334,37 @@ function Get-EntraUserMfaStatus {
             $results.SecurityDefaults.Details = if ($securityDefaults.IsEnabled) { "Enabled (requires MFA for all users)" } else { "Disabled" }
         }
 
+        # Cache enterprise applications to detect third-party MFA providers (Duo, Okta, etc.)
+        $thirdPartyMfaApps = @{}
+        try {
+            $enterpriseApps = Get-MgServicePrincipal -All -Property "DisplayName,AppId,ServicePrincipalType" -ErrorAction SilentlyContinue
+            if ($enterpriseApps) {
+                foreach ($app in $enterpriseApps) {
+                    $displayName = $app.DisplayName.ToLower()
+                    # Detect common third-party MFA providers
+                    if ($displayName -match "duo|okta|ping|auth0|onelogin|rsa|symantec|thales") {
+                        $provider = "Unknown"
+                        if ($displayName -match "duo") { $provider = "Duo Security" }
+                        elseif ($displayName -match "okta") { $provider = "Okta" }
+                        elseif ($displayName -match "ping") { $provider = "Ping Identity" }
+                        elseif ($displayName -match "auth0") { $provider = "Auth0" }
+                        elseif ($displayName -match "onelogin") { $provider = "OneLogin" }
+                        elseif ($displayName -match "rsa") { $provider = "RSA SecurID" }
+                        elseif ($displayName -match "symantec") { $provider = "Symantec VIP" }
+                        elseif ($displayName -match "thales") { $provider = "Thales" }
+
+                        $thirdPartyMfaApps[$app.AppId] = @{
+                            DisplayName = $app.DisplayName
+                            Provider = $provider
+                            AppId = $app.AppId
+                        }
+                    }
+                }
+            }
+        } catch {
+            # If we can't get enterprise apps, continue with other checks
+        }
+
         # Evaluate Conditional Access policies with complete logic
         $caPolicies = Get-MgIdentityConditionalAccessPolicy -All -ErrorAction SilentlyContinue
         if ($caPolicies) {
@@ -415,7 +446,7 @@ function Get-EntraUserMfaStatus {
                             }
                         }
 
-                        # Check for custom controls (third-party MFA like Duo)
+                        # Check for custom controls (third-party MFA like Duo) - deprecated but still check
                         if ($policy.GrantControls.CustomAuthenticationFactors) {
                             foreach ($customControl in $policy.GrantControls.CustomAuthenticationFactors) {
                                 if (-not $results.ThirdPartyMfa.Detected) {
@@ -427,9 +458,72 @@ function Get-EntraUserMfaStatus {
                             }
                         }
 
+                        # Check for Terms of Use (sometimes used with third-party MFA)
+                        if ($policy.GrantControls.TermsOfUse -and $policy.GrantControls.TermsOfUse.Count -gt 0) {
+                            foreach ($touId in $policy.GrantControls.TermsOfUse) {
+                                try {
+                                    $tou = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/agreements/$touId" -ErrorAction SilentlyContinue
+                                    if ($tou -and $tou.displayName -match "duo|okta|mfa|multi.?factor") {
+                                        if (-not $results.ThirdPartyMfa.Detected) {
+                                            $results.ThirdPartyMfa.Detected = $true
+                                            $results.ThirdPartyMfa.Type = "Terms of Use with MFA"
+                                            $results.ThirdPartyMfa.Details = "CA policy requires Terms of Use that may include third-party MFA: $($tou.displayName)"
+                                        }
+                                        $controlDetails += " [Includes ToU: $($tou.displayName)]"
+                                    }
+                                } catch {
+                                    # ToU check failed, continue
+                                }
+                            }
+                        }
+
                         # Check operator (all vs any)
                         if ($policy.GrantControls.Operator -eq "OR") {
                             $controlDetails += " [One of multiple controls required]"
+                        }
+                    }
+
+                    # Check for third-party MFA application targeting in CA policy conditions
+                    if ($policy.Conditions.Applications -and $thirdPartyMfaApps.Count -gt 0) {
+                        $includeApps = $policy.Conditions.Applications.IncludeApplications
+                        if ($includeApps) {
+                            foreach ($appId in $includeApps) {
+                                if ($thirdPartyMfaApps.ContainsKey($appId)) {
+                                    $mfaApp = $thirdPartyMfaApps[$appId]
+                                    if (-not $results.ThirdPartyMfa.Detected) {
+                                        $results.ThirdPartyMfa.Detected = $true
+                                        $results.ThirdPartyMfa.Type = $mfaApp.Provider
+                                        $results.ThirdPartyMfa.Details = "CA policy '$($policy.DisplayName)' targets third-party MFA application: $($mfaApp.DisplayName)"
+                                    } else {
+                                        $results.ThirdPartyMfa.Details += " | Also targets: $($mfaApp.DisplayName)"
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    # Check for authentication context (newer method for third-party MFA)
+                    if ($policy.Conditions.AuthenticationContextClassReferences -and $policy.Conditions.AuthenticationContextClassReferences.Count -gt 0) {
+                        if ($requiresMfa -and $thirdPartyMfaApps.Count -gt 0) {
+                            $authContexts = $policy.Conditions.AuthenticationContextClassReferences -join ', '
+                            if (-not $results.ThirdPartyMfa.Detected) {
+                                $results.ThirdPartyMfa.Detected = $true
+                                $results.ThirdPartyMfa.Type = "Authentication Context"
+                                $results.ThirdPartyMfa.Details = "CA policy uses authentication context ($authContexts) with MFA requirement - may use third-party MFA provider"
+                            }
+                            $controlDetails += " [Auth Context: $authContexts]"
+                        }
+                    }
+
+                    # If CA policy requires MFA and we have third-party MFA apps in tenant, flag for investigation
+                    if ($requiresMfa -and $thirdPartyMfaApps.Count -gt 0 -and -not $results.ThirdPartyMfa.Detected) {
+                        # Check if user's domain is NOT federated (already detected earlier)
+                        if ($results.ThirdPartyMfa.Type -ne "Federated Identity Provider") {
+                            # Policy requires MFA and third-party MFA apps exist - likely using one of them
+                            $providerNames = ($thirdPartyMfaApps.Values | Select-Object -ExpandProperty Provider -Unique) -join ', '
+                            $results.ThirdPartyMfa.Detected = $true
+                            $results.ThirdPartyMfa.Type = "Potential Third-Party MFA"
+                            $results.ThirdPartyMfa.Details = "CA policy requires MFA and tenant has third-party MFA provider(s): $providerNames - MFA may be handled by these providers"
                         }
                     }
 

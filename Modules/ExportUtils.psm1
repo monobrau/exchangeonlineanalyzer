@@ -62,6 +62,42 @@ function Get-MfaCoverageReport {
             }
         } catch {}
 
+        # Cache enterprise applications to detect third-party MFA providers (Duo, Okta, etc.)
+        $thirdPartyMfaApps = @{}
+        try {
+            Write-Host "Scanning for third-party MFA applications..." -ForegroundColor Yellow
+            $enterpriseApps = Get-MgServicePrincipal -All -Property "DisplayName,AppId,ServicePrincipalType" -ErrorAction SilentlyContinue
+            if ($enterpriseApps) {
+                foreach ($app in $enterpriseApps) {
+                    $displayName = $app.DisplayName.ToLower()
+                    # Detect common third-party MFA providers
+                    if ($displayName -match "duo|okta|ping|auth0|onelogin|rsa|symantec|thales") {
+                        $provider = "Unknown"
+                        if ($displayName -match "duo") { $provider = "Duo Security" }
+                        elseif ($displayName -match "okta") { $provider = "Okta" }
+                        elseif ($displayName -match "ping") { $provider = "Ping Identity" }
+                        elseif ($displayName -match "auth0") { $provider = "Auth0" }
+                        elseif ($displayName -match "onelogin") { $provider = "OneLogin" }
+                        elseif ($displayName -match "rsa") { $provider = "RSA SecurID" }
+                        elseif ($displayName -match "symantec") { $provider = "Symantec VIP" }
+                        elseif ($displayName -match "thales") { $provider = "Thales" }
+
+                        $thirdPartyMfaApps[$app.AppId] = @{
+                            DisplayName = $app.DisplayName
+                            Provider = $provider
+                            AppId = $app.AppId
+                        }
+                    }
+                }
+            }
+            if ($thirdPartyMfaApps.Count -gt 0) {
+                $providerNames = ($thirdPartyMfaApps.Values | Select-Object -ExpandProperty Provider -Unique) -join ', '
+                Write-Host "Found $($thirdPartyMfaApps.Count) third-party MFA application(s): $providerNames" -ForegroundColor Cyan
+            }
+        } catch {
+            # If we can't get enterprise apps, continue with other checks
+        }
+
         # 2) Conditional Access policies requiring MFA (tenant-wide set)
         $caPolicies = @()
         try {
@@ -78,6 +114,8 @@ function Get-MfaCoverageReport {
             if (-not $enabled) { continue }
             $grant = $p.grantControls
             $requiresMfa = $false
+            $hasThirdPartyMfaIndicator = $false
+
             if ($grant) {
                 # Check built-in MFA control
                 if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
@@ -95,7 +133,43 @@ function Get-MfaCoverageReport {
                         } catch {}
                     }
                 }
+
+                # Check for custom controls (third-party MFA like Duo) - deprecated but still check
+                if ($grant.customAuthenticationFactors -and $grant.customAuthenticationFactors.Count -gt 0) {
+                    $hasThirdPartyMfaIndicator = $true
+                }
+
+                # Check for Terms of Use (sometimes used with third-party MFA)
+                if ($grant.termsOfUse -and $grant.termsOfUse.Count -gt 0) {
+                    $hasThirdPartyMfaIndicator = $true
+                }
             }
+
+            # Check for third-party MFA application targeting in CA policy conditions
+            if ($p.conditions.applications -and $thirdPartyMfaApps.Count -gt 0) {
+                $includeApps = $p.conditions.applications.includeApplications
+                if ($includeApps) {
+                    foreach ($appId in $includeApps) {
+                        if ($thirdPartyMfaApps.ContainsKey($appId)) {
+                            $hasThirdPartyMfaIndicator = $true
+                            break
+                        }
+                    }
+                }
+            }
+
+            # Check for authentication context (newer method for third-party MFA)
+            if ($p.conditions.authenticationContextClassReferences -and $p.conditions.authenticationContextClassReferences.Count -gt 0) {
+                if ($requiresMfa -and $thirdPartyMfaApps.Count -gt 0) {
+                    $hasThirdPartyMfaIndicator = $true
+                }
+            }
+
+            # Add metadata about third-party MFA detection
+            if ($hasThirdPartyMfaIndicator) {
+                Add-Member -InputObject $p -MemberType NoteProperty -Name 'HasThirdPartyMfaIndicator' -Value $true -Force
+            }
+
             if ($requiresMfa) { $mfaPolicies += $p }
         }
 
