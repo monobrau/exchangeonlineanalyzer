@@ -2,6 +2,8 @@
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
 function Get-MfaCoverageReport {
     try {
+        Write-Host "Analyzing tenant MFA coverage..." -ForegroundColor Yellow
+
         # 1) Security Defaults status (authoritative)
         $secDefaultsEnabled = $false
         try {
@@ -18,99 +20,340 @@ function Get-MfaCoverageReport {
 
         # Filter enabled policies that require MFA
         $mfaPolicies = @()
+        $authStrengthCache = @{}
+
         foreach ($p in $caPolicies) {
             $enabled = ($p.state -eq 'enabled')
             if (-not $enabled) { continue }
             $grant = $p.grantControls
             $requiresMfa = $false
             if ($grant) {
+                # Check built-in MFA control
                 if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
-                # authenticationStrength also implies MFA, but skip for simplicity if missing
+
+                # Check authentication strength (newer method)
+                if ($grant.authenticationStrength -and $grant.authenticationStrength.id) {
+                    $requiresMfa = $true
+                    # Cache authentication strength details
+                    if (-not $authStrengthCache.ContainsKey($grant.authenticationStrength.id)) {
+                        try {
+                            $strength = Get-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $grant.authenticationStrength.id -ErrorAction SilentlyContinue
+                            if ($strength) {
+                                $authStrengthCache[$grant.authenticationStrength.id] = $strength
+                            }
+                        } catch {}
+                    }
+                }
             }
             if ($requiresMfa) { $mfaPolicies += $p }
         }
 
-        # 3) Users and per-user evaluation
+        Write-Host "Found $($mfaPolicies.Count) CA policies requiring MFA" -ForegroundColor Cyan
+
+        # 3) Load all users with optimized batching
         $users = @()
         try {
-            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+            Write-Host "Loading all users..." -ForegroundColor Yellow
+            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ConsistencyLevel eventual -ErrorAction Stop
+            Write-Host "Loaded $($userPage.Count) users" -ForegroundColor Cyan
 
             # Directory roles map (for policy role assignment evaluation)
             $roles = @(); $roleIdToName = @{}
-            try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
-            foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+            try {
+                $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue
+                foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+            } catch {}
+
+            # Cache privileged role IDs for warning detection
+            $privilegedRoles = @("Global Administrator", "Privileged Role Administrator", "Security Administrator", "Exchange Administrator", "User Administrator")
+            $privilegedRoleIds = @()
+            foreach ($role in $roles) {
+                if ($privilegedRoles -contains $role.DisplayName) {
+                    $privilegedRoleIds += $role.Id
+                }
+            }
+
+            # Process users with progress indicator
+            $userCount = 0
+            $totalUsers = ($userPage | Measure-Object).Count
 
             foreach ($u in $userPage) {
+                $userCount++
+                if ($userCount % 100 -eq 0) {
+                    Write-Host "Processing user $userCount of $totalUsers..." -ForegroundColor Gray
+                }
+
+                # Check for registered MFA methods
                 $directMfa = $false
-                # Attempt to detect registered methods (requires UserAuthenticationMethod.Read.All). Best-effort.
+                $mfaEnforced = $false
+                $weakMfaOnly = $false
+                $hasStrongMfa = $false
+                $methodTypes = @()
+
                 try {
                     $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
                     if ($methods.value) {
                         foreach ($m in $methods.value) {
                             $otype = $m.'@odata.type'
-                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') {
-                                $directMfa = $true; break
+
+                            # Categorize method strength
+                            $isStrongMethod = $false
+                            $isWeakMethod = $false
+
+                            switch ($otype) {
+                                '#microsoft.graph.fido2AuthenticationMethod' {
+                                    $directMfa = $true
+                                    $isStrongMethod = $true
+                                    $methodTypes += "FIDO2"
+                                }
+                                '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod' {
+                                    $directMfa = $true
+                                    $isStrongMethod = $true
+                                    $methodTypes += "WindowsHello"
+                                }
+                                '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' {
+                                    $directMfa = $true
+                                    $isStrongMethod = $true
+                                    $methodTypes += "Authenticator"
+                                }
+                                '#microsoft.graph.softwareOathAuthenticationMethod' {
+                                    $directMfa = $true
+                                    $isStrongMethod = $true
+                                    $methodTypes += "OATH"
+                                }
+                                '#microsoft.graph.phoneAuthenticationMethod' {
+                                    $directMfa = $true
+                                    $isWeakMethod = $true
+                                    $methodTypes += "Phone"
+                                }
+                                '#microsoft.graph.emailAuthenticationMethod' {
+                                    $directMfa = $true
+                                    $isWeakMethod = $true
+                                    $methodTypes += "Email"
+                                }
+                                '#microsoft.graph.temporaryAccessPassAuthenticationMethod' {
+                                    $directMfa = $true
+                                    $methodTypes += "TAP"
+                                }
+                            }
+
+                            if ($isStrongMethod) { $hasStrongMfa = $true }
+                        }
+
+                        # Determine if only weak methods are registered
+                        if ($directMfa -and -not $hasStrongMfa) { $weakMfaOnly = $true }
+                    }
+                } catch {}
+
+                # Check per-user MFA enforcement state
+                try {
+                    $authReq = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($u.Id)?`$select=strongAuthenticationRequirements" -ErrorAction SilentlyContinue
+                    if ($authReq.strongAuthenticationRequirements -and $authReq.strongAuthenticationRequirements.Count -gt 0) {
+                        $state = $authReq.strongAuthenticationRequirements[0].state
+                        if ($state -eq "Enforced" -or $state -eq "Enabled") {
+                            $mfaEnforced = $true
+                        }
+                    }
+                } catch {}
+
+                # Get user group and role memberships for CA evaluation
+                $userGroups = @()
+                $userRoles = @()
+                $isPrivileged = $false
+
+                try {
+                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
+                    foreach ($m in $mem) {
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') {
+                            $userGroups += $m.Id
+                        }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                            $userRoles += $m.Id
+                            if ($privilegedRoleIds -contains $m.Id) {
+                                $isPrivileged = $true
                             }
                         }
                     }
                 } catch {}
 
-                # Determine if any MFA CA policy applies to this user
-                $userGroups = @()
-                $userRoles = @()
-                try {
-                    $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
-                    foreach ($m in $mem) {
-                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
-                    }
-                } catch {}
-
+                # Evaluate CA policy applicability
                 $userCaRequiresMfa = $false
+                $userCaIsConditional = $false
+                $applicablePolicyCount = 0
+
                 foreach ($p in $mfaPolicies) {
                     $conds = $p.conditions
                     if (-not $conds) { continue }
                     $usersCond = $conds.users
-                    $incAll = $false
-                    $incUser = $false
+                    $included = $false
                     $excluded = $false
 
                     if ($usersCond) {
-                        # Include
-                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
-                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
-                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
+                        # Check includes
+                        if ($usersCond.includeUsers -contains 'All') {
+                            $included = $true
+                        } elseif ($usersCond.includeUsers -contains $u.Id) {
+                            $included = $true
+                        } elseif ($usersCond.includeGroups) {
+                            foreach ($groupId in $usersCond.includeGroups) {
+                                if ($userGroups -contains $groupId) {
+                                    $included = $true
+                                    break
+                                }
+                            }
+                        } elseif ($usersCond.includeRoles) {
+                            foreach ($roleId in $usersCond.includeRoles) {
+                                if ($userRoles -contains $roleId) {
+                                    $included = $true
+                                    break
+                                }
+                            }
+                        }
 
-                        # Exclude
-                        if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
-                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
-                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
+                        # Check exclusions
+                        if ($usersCond.excludeUsers -contains $u.Id) {
+                            $excluded = $true
+                        } elseif ($usersCond.excludeGroups) {
+                            foreach ($groupId in $usersCond.excludeGroups) {
+                                if ($userGroups -contains $groupId) {
+                                    $excluded = $true
+                                    break
+                                }
+                            }
+                        } elseif ($usersCond.excludeRoles) {
+                            foreach ($roleId in $usersCond.excludeRoles) {
+                                if ($userRoles -contains $roleId) {
+                                    $excluded = $true
+                                    break
+                                }
+                            }
+                        }
                     }
 
-                    $applies = ($incAll -or $incUser)
-                    if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
+                    # If policy applies, check if it's conditional
+                    if ($included -and -not $excluded) {
+                        $userCaRequiresMfa = $true
+                        $applicablePolicyCount++
+
+                        # Check if policy has conditions that make it conditional
+                        if ($conds.applications -and $conds.applications.includeApplications -notcontains "All") {
+                            $userCaIsConditional = $true
+                        }
+                        if ($conds.platforms -and $conds.platforms.includePlatforms -notcontains "all") {
+                            $userCaIsConditional = $true
+                        }
+                        if ($conds.locations) {
+                            $userCaIsConditional = $true
+                        }
+                        if ($conds.signInRiskLevels -or $conds.userRiskLevels) {
+                            $userCaIsConditional = $true
+                        }
+
+                        # If any policy is unconditional, user has full MFA coverage
+                        if (-not $userCaIsConditional) {
+                            break
+                        }
+                    }
                 }
 
-                $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
+                # Determine overall coverage status
+                $covered = $false
+                $coverageType = "None"
+                $warnings = @()
+
+                if ($secDefaultsEnabled) {
+                    $covered = $true
+                    $coverageType = "SecurityDefaults"
+                } elseif ($userCaRequiresMfa -and -not $userCaIsConditional) {
+                    $covered = $true
+                    $coverageType = "ConditionalAccess-Full"
+                } elseif ($userCaRequiresMfa -and $userCaIsConditional) {
+                    $covered = $true
+                    $coverageType = "ConditionalAccess-Partial"
+                    $warnings += "Conditional MFA only"
+                } elseif ($mfaEnforced) {
+                    $covered = $true
+                    $coverageType = "PerUserMFA-Enforced"
+                } elseif ($directMfa) {
+                    $covered = $false
+                    $coverageType = "MethodsOnly-NoEnforcement"
+                    $warnings += "Methods registered but not enforced"
+                }
+
+                # Add warnings
+                if ($weakMfaOnly) {
+                    $warnings += "Weak MFA methods only"
+                }
+                if ($isPrivileged -and -not $hasStrongMfa) {
+                    $warnings += "PRIVILEGED USER WITHOUT STRONG MFA"
+                }
+                if ($isPrivileged -and -not $covered) {
+                    $warnings += "CRITICAL: PRIVILEGED USER NOT COVERED"
+                }
+
                 $users += [pscustomobject]@{
-                    DisplayName        = $u.displayName
-                    UserPrincipalName  = $u.userPrincipalName
-                    PerUserMfaEnabled  = $directMfa
-                    SecurityDefaults   = $secDefaultsEnabled
-                    CARequiresMfa      = $userCaRequiresMfa
-                    MfaCovered         = $covered
+                    DisplayName           = $u.displayName
+                    UserPrincipalName     = $u.userPrincipalName
+                    PerUserMfaEnabled     = $directMfa
+                    PerUserMfaEnforced    = $mfaEnforced
+                    MfaMethods            = ($methodTypes -join ',')
+                    HasStrongMfa          = $hasStrongMfa
+                    WeakMfaOnly           = $weakMfaOnly
+                    SecurityDefaults      = $secDefaultsEnabled
+                    CARequiresMfa         = $userCaRequiresMfa
+                    CAIsConditional       = $userCaIsConditional
+                    CAPolicyCount         = $applicablePolicyCount
+                    IsPrivileged          = $isPrivileged
+                    MfaCovered            = $covered
+                    CoverageType          = $coverageType
+                    Warnings              = ($warnings -join '; ')
                 }
             }
-        } catch {}
+        } catch {
+            Write-Warning "Error processing users: $($_.Exception.Message)"
+        }
+
+        # Calculate summary statistics
+        $totalUsers = ($users | Measure-Object).Count
+        $coveredUsers = ($users | Where-Object { $_.MfaCovered }).Count
+        $uncoveredUsers = $totalUsers - $coveredUsers
+        $privilegedUncovered = ($users | Where-Object { $_.IsPrivileged -and -not $_.MfaCovered }).Count
+        $weakMethodsCount = ($users | Where-Object { $_.WeakMfaOnly }).Count
+
+        Write-Host "`nMFA Coverage Summary:" -ForegroundColor Green
+        Write-Host "  Total Users: $totalUsers" -ForegroundColor White
+        Write-Host "  Covered: $coveredUsers ($([math]::Round($coveredUsers/$totalUsers*100,1))%)" -ForegroundColor Green
+        Write-Host "  Uncovered: $uncoveredUsers ($([math]::Round($uncoveredUsers/$totalUsers*100,1))%)" -ForegroundColor $(if($uncoveredUsers -gt 0){"Red"}else{"Green"})
+        if ($privilegedUncovered -gt 0) {
+            Write-Host "  ⚠️ Privileged users uncovered: $privilegedUncovered" -ForegroundColor Red
+        }
+        if ($weakMethodsCount -gt 0) {
+            Write-Host "  ⚠️ Users with weak MFA only: $weakMethodsCount" -ForegroundColor Yellow
+        }
 
         $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
-        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users }
+        return @{
+            SecurityDefaultsEnabled = $secDefaultsEnabled
+            CAPoliciesRequireMfa = $tenantLevelCaMfa
+            TotalCAPolicies = $mfaPolicies.Count
+            Users = $users
+            Summary = @{
+                TotalUsers = $totalUsers
+                CoveredUsers = $coveredUsers
+                UncoveredUsers = $uncoveredUsers
+                PrivilegedUncovered = $privilegedUncovered
+                WeakMethodsOnly = $weakMethodsCount
+            }
+        }
     } catch {
-        Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"; return @{ SecurityDefaultsEnabled=$false; CAPoliciesRequireMfa=$false; Users=@() }
+        Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"
+        return @{
+            SecurityDefaultsEnabled = $false
+            CAPoliciesRequireMfa = $false
+            TotalCAPolicies = 0
+            Users = @()
+            Summary = @{}
+        }
     }
 }
 
