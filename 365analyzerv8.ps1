@@ -4557,6 +4557,12 @@ $securityInvestigationButton.add_Click({
         $configGroupBox.Location = New-Object System.Drawing.Point(15, 110)
         $configGroupBox.Size = New-Object System.Drawing.Size(400, 140)
 
+        # Report Selection section
+        $reportSelectionGroupBox = New-Object System.Windows.Forms.GroupBox
+        $reportSelectionGroupBox.Text = "Reports to Include"
+        $reportSelectionGroupBox.Location = New-Object System.Drawing.Point(430, 110)
+        $reportSelectionGroupBox.Size = New-Object System.Drawing.Size(420, 260)
+
         # Investigator Name
         $investigatorNameLabel = New-Object System.Windows.Forms.Label
         $investigatorNameLabel.Text = "Investigator Name:"
@@ -4610,12 +4616,119 @@ $securityInvestigationButton.add_Click({
 
         $configGroupBox.Controls.AddRange(@($investigatorNameLabel, $investigatorNameTextBox, $companyNameLabel, $companyNameTextBox, $daysLabel, $daysComboBox, $connectionStatusLabel))
 
+        # Report selection checkboxes
+        $yPos = 25
+
+        # Select/Deselect All button
+        $selectAllButton = New-Object System.Windows.Forms.Button
+        $selectAllButton.Text = "Select All"
+        $selectAllButton.Location = New-Object System.Drawing.Point(20, $yPos)
+        $selectAllButton.Size = New-Object System.Drawing.Size(90, 25)
+
+        $deselectAllButton = New-Object System.Windows.Forms.Button
+        $deselectAllButton.Text = "Deselect All"
+        $deselectAllButton.Location = New-Object System.Drawing.Point(120, $yPos)
+        $deselectAllButton.Size = New-Object System.Drawing.Size(90, 25)
+
+        $yPos += 35
+
+        # Exchange Online Reports
+        $exoHeaderLabel = New-Object System.Windows.Forms.Label
+        $exoHeaderLabel.Text = "Exchange Online Reports:"
+        $exoHeaderLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+        $exoHeaderLabel.Location = New-Object System.Drawing.Point(20, $yPos)
+        $exoHeaderLabel.Size = New-Object System.Drawing.Size(180, 20)
+        $yPos += 25
+
+        $chkMessageTrace = New-Object System.Windows.Forms.CheckBox
+        $chkMessageTrace.Text = "Message Trace (last 10 days)"
+        $chkMessageTrace.Location = New-Object System.Drawing.Point(40, $yPos)
+        $chkMessageTrace.Size = New-Object System.Drawing.Size(200, 20)
+        $chkMessageTrace.Checked = $true
+        $yPos += 25
+
+        $chkInboxRules = New-Object System.Windows.Forms.CheckBox
+        $chkInboxRules.Text = "Inbox Rules (all users)"
+        $chkInboxRules.Location = New-Object System.Drawing.Point(40, $yPos)
+        $chkInboxRules.Size = New-Object System.Drawing.Size(200, 20)
+        $chkInboxRules.Checked = $true
+        $yPos += 25
+
+        $chkTransportRules = New-Object System.Windows.Forms.CheckBox
+        $chkTransportRules.Text = "Transport Rules"
+        $chkTransportRules.Location = New-Object System.Drawing.Point(40, $yPos)
+        $chkTransportRules.Size = New-Object System.Drawing.Size(200, 20)
+        $chkTransportRules.Checked = $true
+        $yPos += 25
+
+        $chkConnectors = New-Object System.Windows.Forms.CheckBox
+        $chkConnectors.Text = "Mail Flow Connectors"
+        $chkConnectors.Location = New-Object System.Drawing.Point(40, $yPos)
+        $chkConnectors.Size = New-Object System.Drawing.Size(200, 20)
+        $chkConnectors.Checked = $true
+        $yPos += 30
+
+        # Microsoft Graph / Entra Reports
+        $graphHeaderLabel = New-Object System.Windows.Forms.Label
+        $graphHeaderLabel.Text = "Microsoft Graph / Entra Reports:"
+        $graphHeaderLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+        $graphHeaderLabel.Location = New-Object System.Drawing.Point(20, $yPos)
+        $graphHeaderLabel.Size = New-Object System.Drawing.Size(220, 20)
+        $yPos += 25
+
+        $chkAuditLogs = New-Object System.Windows.Forms.CheckBox
+        $chkAuditLogs.Text = "Audit Logs"
+        $chkAuditLogs.Location = New-Object System.Drawing.Point(40, $yPos)
+        $chkAuditLogs.Size = New-Object System.Drawing.Size(200, 20)
+        $chkAuditLogs.Checked = $true
+        $yPos += 25
+
+        $chkMfaCoverage = New-Object System.Windows.Forms.CheckBox
+        $chkMfaCoverage.Text = "MFA Coverage Report"
+        $chkMfaCoverage.Location = New-Object System.Drawing.Point(40, $yPos)
+        $chkMfaCoverage.Size = New-Object System.Drawing.Size(200, 20)
+        $chkMfaCoverage.Checked = $true
+        $yPos += 25
+
+        $chkUserSecurityGroups = New-Object System.Windows.Forms.CheckBox
+        $chkUserSecurityGroups.Text = "User Security Groups & Roles"
+        $chkUserSecurityGroups.Location = New-Object System.Drawing.Point(40, $yPos)
+        $chkUserSecurityGroups.Size = New-Object System.Drawing.Size(220, 20)
+        $chkUserSecurityGroups.Checked = $true
+
+        # Select/Deselect All handlers
+        $selectAllButton.add_Click({
+            $chkMessageTrace.Checked = $true
+            $chkInboxRules.Checked = $true
+            $chkTransportRules.Checked = $true
+            $chkConnectors.Checked = $true
+            $chkAuditLogs.Checked = $true
+            $chkMfaCoverage.Checked = $true
+            $chkUserSecurityGroups.Checked = $true
+        })
+
+        $deselectAllButton.add_Click({
+            $chkMessageTrace.Checked = $false
+            $chkInboxRules.Checked = $false
+            $chkTransportRules.Checked = $false
+            $chkConnectors.Checked = $false
+            $chkAuditLogs.Checked = $false
+            $chkMfaCoverage.Checked = $false
+            $chkUserSecurityGroups.Checked = $false
+        })
+
+        $reportSelectionGroupBox.Controls.AddRange(@(
+            $selectAllButton, $deselectAllButton,
+            $exoHeaderLabel, $chkMessageTrace, $chkInboxRules, $chkTransportRules, $chkConnectors,
+            $graphHeaderLabel, $chkAuditLogs, $chkMfaCoverage, $chkUserSecurityGroups
+        ))
+
         # Generate Button
         $generateButton = New-Object System.Windows.Forms.Button
         $generateButton.Text = "🚀 Generate Security Investigation"
         $generateButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
-        $generateButton.Location = New-Object System.Drawing.Point(430, 140)
-        $generateButton.Size = New-Object System.Drawing.Size(280, 50)
+        $generateButton.Location = New-Object System.Drawing.Point(15, 385)
+        $generateButton.Size = New-Object System.Drawing.Size(400, 50)
         $generateButton.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
         $generateButton.ForeColor = [System.Drawing.Color]::White
 
@@ -4623,8 +4736,8 @@ $securityInvestigationButton.add_Click({
         $progressLabel = New-Object System.Windows.Forms.Label
         $progressLabel.Text = "Ready to generate security investigation report."
         $progressLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Italic)
-        $progressLabel.Location = New-Object System.Drawing.Point(430, 200)
-        $progressLabel.Size = New-Object System.Drawing.Size(400, 20)
+        $progressLabel.Location = New-Object System.Drawing.Point(15, 445)
+        $progressLabel.Size = New-Object System.Drawing.Size(800, 20)
         $progressLabel.ForeColor = [System.Drawing.Color]::Green
 
         # Update connection status
@@ -4681,8 +4794,21 @@ $securityInvestigationButton.add_Click({
                 if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
                 $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
 
-                # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder
+                # Generate the security investigation report with export paths and selected reports
+                $securityReport = New-SecurityInvestigationReport `
+                    -InvestigatorName $investigator `
+                    -CompanyName $company `
+                    -DaysBack $days `
+                    -StatusLabel $progressLabel `
+                    -MainForm $securityForm `
+                    -OutputFolder $timestampFolder `
+                    -IncludeMessageTrace $chkMessageTrace.Checked `
+                    -IncludeInboxRules $chkInboxRules.Checked `
+                    -IncludeTransportRules $chkTransportRules.Checked `
+                    -IncludeConnectors $chkConnectors.Checked `
+                    -IncludeAuditLogs $chkAuditLogs.Checked `
+                    -IncludeMfaCoverage $chkMfaCoverage.Checked `
+                    -IncludeUserSecurityGroups $chkUserSecurityGroups.Checked
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -4805,12 +4931,12 @@ $securityInvestigationButton.add_Click({
         # Close button
         $closeButton = New-Object System.Windows.Forms.Button
         $closeButton.Text = "Close"
-        $closeButton.Location = New-Object System.Drawing.Point(730, 140)
+        $closeButton.Location = New-Object System.Drawing.Point(750, 385)
         $closeButton.Size = New-Object System.Drawing.Size(100, 50)
         $closeButton.add_Click({ $securityForm.Close() })
 
         # Add all controls to main panel
-        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $generateButton, $progressLabel, $closeButton))
+        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $reportSelectionGroupBox, $generateButton, $progressLabel, $closeButton))
 
         $securityForm.Controls.Add($securityMainPanel)
 
