@@ -190,12 +190,12 @@ function Get-MfaCoverageReport {
 
         Write-Host "Found $($mfaPolicies.Count) CA policies requiring MFA" -ForegroundColor Cyan
 
-        # 3) Load all users with optimized batching
+        # 3) Load all users with optimized batching (exclude guests and disabled accounts)
         $users = @()
         try {
-            Write-Host "Loading all users..." -ForegroundColor Yellow
-            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ConsistencyLevel eventual -ErrorAction Stop
-            Write-Host "Loaded $($userPage.Count) users" -ForegroundColor Cyan
+            Write-Host "Loading active member users (excluding guests and disabled accounts)..." -ForegroundColor Yellow
+            $userPage = Get-MgUser -All -Filter "userType eq 'Member' and accountEnabled eq true" -Property 'id,displayName,userPrincipalName,userType,accountEnabled' -ConsistencyLevel eventual -ErrorAction Stop
+            Write-Host "Loaded $($userPage.Count) active member users" -ForegroundColor Cyan
 
             # Directory roles map (for policy role assignment evaluation)
             $roles = @(); $roleIdToName = @{}
@@ -553,9 +553,9 @@ function Get-UserSecurityGroupsReport {
         $roleIdToName = @{}
         foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
-        # Users
+        # Users (exclude guests and disabled accounts)
         $users = @()
-        try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
+        try { $users = Get-MgUser -All -Filter "userType eq 'Member' and accountEnabled eq true" -Property 'id,displayName,userPrincipalName,userType,accountEnabled' -ConsistencyLevel eventual -ErrorAction Stop } catch {}
 
         foreach ($u in $users) {
             $groups = @()
