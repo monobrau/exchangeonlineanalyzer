@@ -129,8 +129,23 @@ function Get-MfaCoverageReport {
                             $strength = Get-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $grant.authenticationStrength.id -ErrorAction SilentlyContinue
                             if ($strength) {
                                 $authStrengthCache[$grant.authenticationStrength.id] = $strength
+
+                                # Check if authentication strength name indicates third-party MFA
+                                $strengthName = $strength.DisplayName.ToLower()
+                                if ($strengthName -match "duo|okta|ping|auth0|onelogin|rsa|symantec|thales") {
+                                    $hasThirdPartyMfaIndicator = $true
+                                }
                             }
                         } catch {}
+                    } else {
+                        # Use cached strength to check for third-party MFA
+                        $cachedStrength = $authStrengthCache[$grant.authenticationStrength.id]
+                        if ($cachedStrength) {
+                            $strengthName = $cachedStrength.DisplayName.ToLower()
+                            if ($strengthName -match "duo|okta|ping|auth0|onelogin|rsa|symantec|thales") {
+                                $hasThirdPartyMfaIndicator = $true
+                            }
+                        }
                     }
                 }
 

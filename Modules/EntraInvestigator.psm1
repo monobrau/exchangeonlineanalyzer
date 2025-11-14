@@ -440,6 +440,26 @@ function Get-EntraUserMfaStatus {
                                     $controlDetails = "Requires Authentication Strength: $($strength.DisplayName)"
                                     $allowedMethods = $strength.AllowedCombinations -join ', '
                                     $controlDetails += " (Methods: $allowedMethods)"
+
+                                    # Check if authentication strength name indicates third-party MFA
+                                    $strengthName = $strength.DisplayName.ToLower()
+                                    if ($strengthName -match "duo|okta|ping|auth0|onelogin|rsa|symantec|thales") {
+                                        if (-not $results.ThirdPartyMfa.Detected) {
+                                            $provider = "Unknown Third-Party MFA"
+                                            if ($strengthName -match "duo") { $provider = "Duo Security" }
+                                            elseif ($strengthName -match "okta") { $provider = "Okta" }
+                                            elseif ($strengthName -match "ping") { $provider = "Ping Identity" }
+                                            elseif ($strengthName -match "auth0") { $provider = "Auth0" }
+                                            elseif ($strengthName -match "onelogin") { $provider = "OneLogin" }
+                                            elseif ($strengthName -match "rsa") { $provider = "RSA SecurID" }
+                                            elseif ($strengthName -match "symantec") { $provider = "Symantec VIP" }
+                                            elseif ($strengthName -match "thales") { $provider = "Thales" }
+
+                                            $results.ThirdPartyMfa.Detected = $true
+                                            $results.ThirdPartyMfa.Type = $provider
+                                            $results.ThirdPartyMfa.Details = "CA policy '$($policy.DisplayName)' uses authentication strength '$($strength.DisplayName)' - third-party MFA provider"
+                                        }
+                                    }
                                 }
                             } catch {
                                 $controlDetails = "Requires Authentication Strength (ID: $strengthId)"
