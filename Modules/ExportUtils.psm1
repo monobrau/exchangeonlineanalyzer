@@ -364,6 +364,7 @@ function Get-MfaCoverageReport {
                 # Evaluate CA policy applicability
                 $userCaRequiresMfa = $false
                 $userCaIsConditional = $false
+                $userCaThirdPartyMfa = $false
                 $applicablePolicyCount = 0
 
                 foreach ($p in $mfaPolicies) {
@@ -415,10 +416,15 @@ function Get-MfaCoverageReport {
                         }
                     }
 
-                    # If policy applies, check if it's conditional
+                    # If policy applies, check if it's conditional and if it uses third-party MFA
                     if ($included -and -not $excluded) {
                         $userCaRequiresMfa = $true
                         $applicablePolicyCount++
+
+                        # Check if this policy has third-party MFA indicators
+                        if ($p.HasThirdPartyMfaIndicator) {
+                            $userCaThirdPartyMfa = $true
+                        }
 
                         # Check if policy has conditions that make it conditional
                         if ($conds.applications -and $conds.applications.includeApplications -notcontains "All") {
@@ -441,26 +447,37 @@ function Get-MfaCoverageReport {
                     }
                 }
 
+                # Determine if third-party MFA is in use (federated domain OR CA with third-party auth strength)
+                $thirdPartyMfa = $isFederated -or $userCaThirdPartyMfa
+
                 # Determine overall coverage status
                 $covered = $false
                 $coverageType = "None"
                 $warnings = @()
 
                 if ($isFederated) {
-                    # Federated users - MFA handled by external IdP
+                    # Federated users - MFA handled by external IdP (cannot verify IdP enforces MFA)
                     $covered = $true
                     $coverageType = "ThirdParty-Federated"
-                    $warnings += "Federated to $federatedProvider - MFA depends on IdP config"
+                    $warnings += "Federated to $federatedProvider - MFA enforcement depends on IdP config (cannot verify)"
                 } elseif ($secDefaultsEnabled) {
                     $covered = $true
                     $coverageType = "SecurityDefaults"
                 } elseif ($userCaRequiresMfa -and -not $userCaIsConditional) {
                     $covered = $true
-                    $coverageType = "ConditionalAccess-Full"
+                    if ($userCaThirdPartyMfa) {
+                        $coverageType = "ConditionalAccess-Full-ThirdParty"
+                    } else {
+                        $coverageType = "ConditionalAccess-Full"
+                    }
                 } elseif ($userCaRequiresMfa -and $userCaIsConditional) {
                     $covered = $true
-                    $coverageType = "ConditionalAccess-Partial"
-                    $warnings += "Conditional MFA only"
+                    if ($userCaThirdPartyMfa) {
+                        $coverageType = "ConditionalAccess-Partial-ThirdParty"
+                    } else {
+                        $coverageType = "ConditionalAccess-Partial"
+                    }
+                    $warnings += "Conditional MFA only - may not be required for all sign-ins"
                 } elseif ($mfaEnforced) {
                     $covered = $true
                     $coverageType = "PerUserMFA-Enforced"
@@ -489,6 +506,7 @@ function Get-MfaCoverageReport {
                     CAIsConditional       = $userCaIsConditional
                     CAPolicyCount         = $applicablePolicyCount
                     PerUserMfaEnforced    = $mfaEnforced
+                    ThirdPartyMfa         = $thirdPartyMfa
                     IsFederated           = $isFederated
                     FederatedProvider     = $federatedProvider
                     HasMfaMethods         = $directMfa
