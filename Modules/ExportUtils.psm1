@@ -1,6 +1,10 @@
 # Returns:
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
 function Get-MfaCoverageReport {
+    param(
+        [Parameter(Mandatory=$false)]
+        [System.Windows.Forms.Label]$StatusLabel = $null
+    )
     try {
         Write-Host "Analyzing tenant MFA coverage..." -ForegroundColor Yellow
 
@@ -227,7 +231,12 @@ function Get-MfaCoverageReport {
                     $remaining = $totalUsers - $userCount
                     $eta = if ($rate -gt 0) { [TimeSpan]::FromSeconds($remaining / $rate) } else { [TimeSpan]::Zero }
                     $percent = [math]::Round(($userCount / $totalUsers) * 100, 1)
-                    Write-Host "Processing MFA coverage: $userCount of $totalUsers users ($percent%) - ETA: $($eta.ToString('mm\:ss'))" -ForegroundColor Cyan
+                    $progressMessage = "Processing MFA coverage: $userCount of $totalUsers users ($percent%) - ETA: $($eta.ToString('mm\:ss'))"
+                    Write-Host $progressMessage -ForegroundColor Cyan
+                    if ($StatusLabel) {
+                        $StatusLabel.Text = $progressMessage
+                        [System.Windows.Forms.Application]::DoEvents()
+                    }
                 }
 
                 # Check if user's domain is federated (third-party MFA)
@@ -523,6 +532,12 @@ function Get-MfaCoverageReport {
             Write-Warning "Error processing users: $($_.Exception.Message)"
         }
 
+        # Show completion message
+        if ($StatusLabel) {
+            $StatusLabel.Text = "MFA coverage analysis complete - processed $totalUsers users"
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
         # Calculate summary statistics
         $totalUsers = ($users | Measure-Object).Count
         $coveredUsers = ($users | Where-Object { $_.MfaCovered }).Count
@@ -581,7 +596,9 @@ function Get-MfaCoverageReport {
 function Get-UserSecurityGroupsReport {
     param(
         [Parameter(Mandatory=$false)]
-        [hashtable]$UserMembershipCache = $null
+        [hashtable]$UserMembershipCache = $null,
+        [Parameter(Mandatory=$false)]
+        [System.Windows.Forms.Label]$StatusLabel = $null
     )
     try {
         $results = New-Object System.Collections.Generic.List[object]
@@ -610,7 +627,12 @@ function Get-UserSecurityGroupsReport {
                 $remaining = $totalUsers - $userCount
                 $eta = if ($rate -gt 0) { [TimeSpan]::FromSeconds($remaining / $rate) } else { [TimeSpan]::Zero }
                 $percent = [math]::Round(($userCount / $totalUsers) * 100, 1)
-                Write-Host "Processing security groups: $userCount of $totalUsers users ($percent%) - ETA: $($eta.ToString('mm\:ss')) [$usedCache cached]" -ForegroundColor Cyan
+                $progressMessage = "Processing security groups: $userCount of $totalUsers users ($percent%) - ETA: $($eta.ToString('mm\:ss')) [$usedCache cached]"
+                Write-Host $progressMessage -ForegroundColor Cyan
+                if ($StatusLabel) {
+                    $StatusLabel.Text = $progressMessage
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
             }
 
             $groups = @()
@@ -655,6 +677,12 @@ function Get-UserSecurityGroupsReport {
                 UserPrincipalName = $u.UserPrincipalName
                 GroupsAndRoles    = ($groups | Sort-Object -Unique) -join '; '
             }) | Out-Null
+        }
+
+        # Show completion message
+        if ($StatusLabel) {
+            $StatusLabel.Text = "Security groups analysis complete - processed $totalUsers users ($usedCache from cache)"
+            [System.Windows.Forms.Application]::DoEvents()
         }
 
         return [System.Collections.ArrayList]$results
@@ -941,7 +969,7 @@ function New-SecurityInvestigationReport {
 
             if ($IncludeMfaCoverage) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
-                $report.MfaCoverage = Get-MfaCoverageReport
+                $report.MfaCoverage = Get-MfaCoverageReport -StatusLabel $StatusLabel
                 # Extract cached membership data for reuse
                 if ($report.MfaCoverage -and $report.MfaCoverage.UserMembershipCache) {
                     $userMembershipCache = $report.MfaCoverage.UserMembershipCache
@@ -951,8 +979,8 @@ function New-SecurityInvestigationReport {
 
             if ($IncludeUserSecurityGroups) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
-                # Pass cached membership data to avoid duplicate API calls
-                $report.UserSecurityGroups = Get-UserSecurityGroupsReport -UserMembershipCache $userMembershipCache
+                # Pass cached membership data and status label to avoid duplicate API calls and show progress
+                $report.UserSecurityGroups = Get-UserSecurityGroupsReport -UserMembershipCache $userMembershipCache -StatusLabel $StatusLabel
             }
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
