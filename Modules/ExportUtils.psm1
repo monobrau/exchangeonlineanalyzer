@@ -495,6 +495,27 @@ function New-SecurityInvestigationReport {
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
         } catch {}
+
+        # Create ZIP archive of all reports excluding the LLM_Instructions.txt file
+        try {
+            $zipPath = Join-Path $report.OutputFolder "SecurityInvestigation_Reports.zip"
+
+            # Get all files in the output folder except LLM_Instructions.txt
+            $filesToZip = Get-ChildItem -Path $report.OutputFolder -File | Where-Object { $_.Name -ne "LLM_Instructions.txt" }
+
+            if ($filesToZip -and $filesToZip.Count -gt 0) {
+                # Create temporary file list for Compress-Archive
+                $tempFileList = $filesToZip | Select-Object -ExpandProperty FullName
+
+                # Create the ZIP archive
+                Compress-Archive -Path $tempFileList -DestinationPath $zipPath -Force -ErrorAction Stop
+                $report.FilePaths.SecurityReportsZip = $zipPath
+
+                Write-Host "Created ZIP archive: $zipPath" -ForegroundColor Green
+            }
+        } catch {
+            Write-Warning "Failed to create ZIP archive: $($_.Exception.Message)"
+        }
     }
 
     return $report
