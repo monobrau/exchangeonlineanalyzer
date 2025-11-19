@@ -1948,7 +1948,7 @@ $aiBrowseBtn.Location = New-Object System.Drawing.Point(730, 60)
 $aiBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiBrowseBtn.add_Click({
     $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select the report folder that contains LLM_Instructions.txt and CSV files"
+    $fbd.Description = "Select the report folder that contains _AI_Readme.txt and CSV files"
     if ($aiFolderText.Text -and (Test-Path $aiFolderText.Text)) { $fbd.SelectedPath = $aiFolderText.Text }
     if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $aiFolderText.Text = $fbd.SelectedPath }
 })
@@ -4768,7 +4768,7 @@ $securityInvestigationButton.add_Click({
                     $instructionsLabel.AutoSize = $true
                     $instructionsLabel.Location = New-Object System.Drawing.Point(15, 10)
                     $instructionsLabel.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
-                    $instructionsLabel.Text = "Instructions: All reports have been exported as individual CSV files AND a zip archive (excluding LLM_Instructions.txt). Use 'Open Zip Location' to find the zip file for easy upload to your analysis workspace. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them for full analysis."
+                    $instructionsLabel.Text = "Instructions: All reports have been exported as individual CSV files AND a zip archive (excluding _AI_Readme.txt). Use 'Open Zip Location' to find the zip file for easy upload to your analysis workspace. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them for full analysis."
 
                     $copySummaryBtn = New-Object System.Windows.Forms.Button
                     $copySummaryBtn.Text = "📋 Copy Summary"
@@ -5545,7 +5545,7 @@ WHAT'S NEW
   - Microsoft Graph: Directory Audit Logs (max detail)
   - Posture: MFA Coverage (Security Defaults/CA/Per-user), User Security Groups/Roles
   - Exports to Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
-  - LLM_Instructions.txt generated for AI analysis. Sign-in logs are not included (license); export from Entra portal manually and attach when using AI.
+  - _AI_Readme.txt generated for AI analysis. Sign-in logs are not included (license); export from Entra portal manually and attach when using AI.
 
 - Entra Portal Shortcuts (Report Generator tab):
   - Select Firefox Profile and Container; auto-matches best container to signed-in tenant
@@ -5559,7 +5559,7 @@ WHAT'S NEW
   - Saves response as Gemini_Response.md or Claude_Response.md in the selected folder
   - Troubleshooting:
     • Gemini 404: use a listed model (e.g., models/gemini-1.5-flash-002, models/gemini-2.5-pro)
-    • Gemini 429: your payload exceeded free-tier token quota; trim CSVs or send only LLM_Instructions.txt
+    • Gemini 429: your payload exceeded free-tier token quota; trim CSVs or send only _AI_Readme.txt
     • Claude 400 invalid_request_error: credits/billing required for Anthropic API
 
 - Settings tab:
@@ -5582,7 +5582,7 @@ KEYBOARD SHORTCUTS (where applicable)
 FOLDER LAYOUT
 - Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
   - MessageTrace.csv, InboxRules.csv, TransportRules.csv, Inbound/OutboundConnectors.csv,
-    GraphAuditLogs.csv, MFAStatus.csv, UserSecurityGroups.csv, LLM_Instructions.txt
+    GraphAuditLogs.csv, MFAStatus.csv, UserSecurityGroups.csv, _AI_Readme.txt
 
 KNOWN REQUIREMENTS
 - PowerShell 7+ recommended
