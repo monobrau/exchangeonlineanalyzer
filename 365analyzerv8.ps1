@@ -4799,12 +4799,35 @@ $securityInvestigationButton.add_Click({
 
                     # Open folder button if files were exported
                     $openFolderBtn = New-Object System.Windows.Forms.Button
-                    $openFolderBtn.Text = "Open Export Folder"
-                    $openFolderBtn.Location = New-Object System.Drawing.Point(465, 35)
-                    $openFolderBtn.Size = New-Object System.Drawing.Size(150, 30)
+                    $openFolderBtn.Text = "📁 Open Export Folder"
+                    $openFolderBtn.Location = New-Object System.Drawing.Point(455, 35)
+                    $openFolderBtn.Size = New-Object System.Drawing.Size(160, 30)
                     $openFolderBtn.add_Click({ if ($securityReport.OutputFolder) { Start-Process $securityReport.OutputFolder } })
 
-                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn))
+                    # Create zip button
+                    $createZipBtn = New-Object System.Windows.Forms.Button
+                    $createZipBtn.Text = "📦 Create Reports Zip"
+                    $createZipBtn.Location = New-Object System.Drawing.Point(625, 35)
+                    $createZipBtn.Size = New-Object System.Drawing.Size(160, 30)
+                    $createZipBtn.add_Click({
+                        if ($securityReport.OutputFolder) {
+                            try {
+                                $zipPath = New-SecurityInvestigationZip -OutputFolder $securityReport.OutputFolder
+                                if ($zipPath) {
+                                    $result = [System.Windows.Forms.MessageBox]::Show("Zip file created successfully!`n`nPath: $zipPath`n`nWould you like to open the folder containing the zip file?", "Zip Created", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+                                    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+                                        Start-Process (Split-Path $zipPath -Parent)
+                                    }
+                                } else {
+                                    [System.Windows.Forms.MessageBox]::Show("Failed to create zip file. Please check the error messages.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                                }
+                            } catch {
+                                [System.Windows.Forms.MessageBox]::Show("Error creating zip file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                            }
+                        }
+                    })
+
+                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn, $createZipBtn))
 
                     $resultsForm.Controls.Add($resultsTabControl)
                     $resultsForm.Controls.Add($copyPanel)

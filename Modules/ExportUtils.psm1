@@ -1217,5 +1217,62 @@ function New-SecurityInvestigationSummary {
     return $summary
 }
 
+function New-SecurityInvestigationZip {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OutputFolder,
+        [Parameter(Mandatory=$false)]
+        [string]$ZipFileName
+    )
+
+    try {
+        # Validate output folder exists
+        if (-not (Test-Path $OutputFolder)) {
+            Write-Error "Output folder does not exist: $OutputFolder"
+            return $null
+        }
+
+        # Determine zip file name
+        if ([string]::IsNullOrWhiteSpace($ZipFileName)) {
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $ZipFileName = "SecurityInvestigation_$timestamp.zip"
+        }
+
+        # Ensure .zip extension
+        if (-not $ZipFileName.EndsWith('.zip')) {
+            $ZipFileName += '.zip'
+        }
+
+        # Create zip file path in parent directory of output folder
+        $parentFolder = Split-Path $OutputFolder -Parent
+        $zipPath = Join-Path $parentFolder $ZipFileName
+
+        # Get all CSV and JSON files, excluding LLM_Instructions.txt
+        $filesToZip = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse |
+                      Where-Object { $_.Name -ne 'LLM_Instructions.txt' }
+
+        if ($filesToZip.Count -eq 0) {
+            Write-Warning "No CSV or JSON files found to zip in $OutputFolder"
+            return $null
+        }
+
+        # Remove existing zip file if it exists
+        if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+        }
+
+        # Create the zip file using Compress-Archive
+        Compress-Archive -Path $filesToZip.FullName -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
+
+        Write-Host "Successfully created zip file: $zipPath" -ForegroundColor Green
+        Write-Host "Files included: $($filesToZip.Count)" -ForegroundColor Cyan
+
+        return $zipPath
+    } catch {
+        Write-Error "Failed to create zip file: $($_.Exception.Message)"
+        return $null
+    }
+}
+
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
-Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors
+Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
