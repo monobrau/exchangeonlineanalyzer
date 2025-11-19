@@ -1129,7 +1129,7 @@ Tone & Formatting Guidelines
 
     Signature: Sign off as [Your Name] (I will replace this manually).
 
-    Attachments: Always include a sentence stating that you have attached the relevant logs for their review.
+    Attachments: Always include a casual sentence mentioning that the relevant logs are attached for reference if needed. Use language that does not imply any action is required (e.g., "I've attached the logs for your reference" or "Logs are attached if you'd like to review them").
 
     Format: Output a single text-only artifact with clearly separated emails (use *** as a separator). Include the Ticket Number in the Subject Line.
 
