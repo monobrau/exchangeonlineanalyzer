@@ -1109,6 +1109,8 @@ Context & Rules of Engagement
 
         Travel: If a login comes from a standard residential ISP in a different state (e.g., CenturyLink in Florida) and not a VPN/Hosting provider, assume it is Authorized Activity (user traveling).
 
+        Shared Public IP: If multiple users have the same public IP or activity from the same public IP, it indicates that this is likely Authorized Activity (shared office/corporate network). Multiple users logging in from the same IP is a strong indicator of a legitimate business location.
+
         Suspicious: If a standard user (not an admin account) logs in from a Datacenter/Hosting IP (e.g., DigitalOcean, AWS) that is not a known business tool, flag it as suspicious.
 
     Analyzing "Agent Disabled" Alerts:
