@@ -4768,7 +4768,7 @@ $securityInvestigationButton.add_Click({
                     $instructionsLabel.AutoSize = $true
                     $instructionsLabel.Location = New-Object System.Drawing.Point(15, 10)
                     $instructionsLabel.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
-                    $instructionsLabel.Text = "Instructions: Review exported CSVs in the folder (use 'Open Export Folder'). Upload MessageTrace.csv, InboxRules.csv, AuditLogs.csv, MFAStatus.csv, and UserSecurityGroups.csv to your analysis workspace or LLM. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them alongside these files for full analysis."
+                    $instructionsLabel.Text = "Instructions: All reports have been exported as individual CSV files AND a zip archive (excluding LLM_Instructions.txt). Use 'Open Zip Location' to find the zip file for easy upload to your analysis workspace. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them for full analysis."
 
                     $copySummaryBtn = New-Object System.Windows.Forms.Button
                     $copySummaryBtn.Text = "📋 Copy Summary"
@@ -4804,30 +4804,29 @@ $securityInvestigationButton.add_Click({
                     $openFolderBtn.Size = New-Object System.Drawing.Size(160, 30)
                     $openFolderBtn.add_Click({ if ($securityReport.OutputFolder) { Start-Process $securityReport.OutputFolder } })
 
-                    # Create zip button
-                    $createZipBtn = New-Object System.Windows.Forms.Button
-                    $createZipBtn.Text = "📦 Create Reports Zip"
-                    $createZipBtn.Location = New-Object System.Drawing.Point(625, 35)
-                    $createZipBtn.Size = New-Object System.Drawing.Size(160, 30)
-                    $createZipBtn.add_Click({
-                        if ($securityReport.OutputFolder) {
-                            try {
-                                $zipPath = New-SecurityInvestigationZip -OutputFolder $securityReport.OutputFolder
-                                if ($zipPath) {
-                                    $result = [System.Windows.Forms.MessageBox]::Show("Zip file created successfully!`n`nPath: $zipPath`n`nWould you like to open the folder containing the zip file?", "Zip Created", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
-                                    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-                                        Start-Process (Split-Path $zipPath -Parent)
-                                    }
-                                } else {
-                                    [System.Windows.Forms.MessageBox]::Show("Failed to create zip file. Please check the error messages.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                                }
-                            } catch {
-                                [System.Windows.Forms.MessageBox]::Show("Error creating zip file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    # Open zip location button (zip is auto-created during export)
+                    $openZipBtn = New-Object System.Windows.Forms.Button
+                    $openZipBtn.Text = "📦 Open Zip Location"
+                    $openZipBtn.Location = New-Object System.Drawing.Point(625, 35)
+                    $openZipBtn.Size = New-Object System.Drawing.Size(160, 30)
+                    $openZipBtn.add_Click({
+                        if ($securityReport.FilePaths -and $securityReport.FilePaths.ZipFile) {
+                            if (Test-Path $securityReport.FilePaths.ZipFile) {
+                                # Open folder and select the zip file
+                                Start-Process "explorer.exe" -ArgumentList "/select,`"$($securityReport.FilePaths.ZipFile)`""
+                            } else {
+                                [System.Windows.Forms.MessageBox]::Show("Zip file not found at: $($securityReport.FilePaths.ZipFile)", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                             }
+                        } else {
+                            [System.Windows.Forms.MessageBox]::Show("Zip file was not created during export.", "Not Available", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                         }
                     })
+                    # Disable button if zip wasn't created
+                    if (-not ($securityReport.FilePaths -and $securityReport.FilePaths.ZipFile)) {
+                        $openZipBtn.Enabled = $false
+                    }
 
-                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn, $createZipBtn))
+                    $copyPanel.Controls.AddRange(@($instructionsLabel, $copySummaryBtn, $copyAIBtn, $copyTicketBtn, $openFolderBtn, $openZipBtn))
 
                     $resultsForm.Controls.Add($resultsTabControl)
                     $resultsForm.Controls.Add($copyPanel)
