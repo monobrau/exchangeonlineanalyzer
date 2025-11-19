@@ -491,17 +491,17 @@ function New-SecurityInvestigationReport {
         # Save only LLM instructions as TXT (no other text files on disk)
         try {
             $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
-            $llmPath = Join-Path $report.OutputFolder "LLM_Instructions.txt"
+            $llmPath = Join-Path $report.OutputFolder "_AI_Readme.txt"
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
         } catch {}
 
-        # Create ZIP archive of all reports excluding the LLM_Instructions.txt file
+        # Create ZIP archive of all reports excluding the _AI_Readme.txt file
         try {
             $zipPath = Join-Path $report.OutputFolder "SecurityInvestigation_Reports.zip"
 
-            # Get all files in the output folder except LLM_Instructions.txt
-            $filesToZip = Get-ChildItem -Path $report.OutputFolder -File | Where-Object { $_.Name -ne "LLM_Instructions.txt" }
+            # Get all files in the output folder except _AI_Readme.txt
+            $filesToZip = Get-ChildItem -Path $report.OutputFolder -File | Where-Object { $_.Name -ne "_AI_Readme.txt" }
 
             if ($filesToZip -and $filesToZip.Count -gt 0) {
                 # Create temporary file list for Compress-Archive
