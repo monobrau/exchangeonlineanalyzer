@@ -491,12 +491,12 @@ function New-SecurityInvestigationReport {
         # Save only LLM instructions as TXT (no other text files on disk)
         try {
             $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
-            $llmPath = Join-Path $report.OutputFolder "LLM_Instructions.txt"
+            $llmPath = Join-Path $report.OutputFolder "_AI_Readme.txt"
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
         } catch {}
 
-        # Automatically create zip file of all reports (excluding LLM_Instructions.txt)
+        # Automatically create zip file of all reports (excluding _AI_Readme.txt)
         try {
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
                 $StatusLabel.Text = "Creating zip archive of security reports..."
@@ -1263,9 +1263,9 @@ function New-SecurityInvestigationZip {
         $parentFolder = Split-Path $OutputFolder -Parent
         $zipPath = Join-Path $parentFolder $ZipFileName
 
-        # Get all CSV and JSON files, excluding LLM_Instructions.txt
+        # Get all CSV and JSON files, excluding _AI_Readme.txt
         $filesToZip = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse |
-                      Where-Object { $_.Name -ne 'LLM_Instructions.txt' }
+                      Where-Object { $_.Name -ne '_AI_Readme.txt' }
 
         if ($filesToZip.Count -eq 0) {
             Write-Warning "No CSV or JSON files found to zip in $OutputFolder"

@@ -38,7 +38,7 @@ Write-Verbose ("Model endpoints (fallback order):`n - {0}`n - {1}`n - {2}" -f $e
 
 # Collect files to attach
 $files = @(
-    'LLM_Instructions.txt',
+    '_AI_Readme.txt',
     'MessageTrace.csv',
     'InboxRules.csv',
     'TransportRules.csv',

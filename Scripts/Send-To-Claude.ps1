@@ -53,7 +53,7 @@ function Get-AttachPath { param([string]$path,[int]$maxRows)
     return $path
 }
 
-$defaults = @('LLM_Instructions.txt','MessageTrace.csv','InboxRules.csv','TransportRules.csv','InboundConnectors.csv','OutboundConnectors.csv','GraphAuditLogs.csv','MFAStatus.csv','UserSecurityGroups.csv')
+$defaults = @('_AI_Readme.txt','MessageTrace.csv','InboxRules.csv','TransportRules.csv','InboundConnectors.csv','OutboundConnectors.csv','GraphAuditLogs.csv','MFAStatus.csv','UserSecurityGroups.csv')
 $files = @()
 foreach ($f in $defaults) { $p = Join-Path $OutputFolder $f; if (Test-Path $p) { $files += $p } }
 if ($ExtraFiles) {
