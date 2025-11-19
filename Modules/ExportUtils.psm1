@@ -1106,6 +1106,8 @@ Mobile vs. Wi-Fi: If a user logs in from a residential ISP (e.g., Charter, Comca
 
 Travel: If a login comes from a standard residential ISP in a different state (e.g., CenturyLink in Florida) and not a VPN/Hosting provider, assume it is Authorized Activity (user traveling).
 
+Shared IP / Office Network: If multiple users have the same public IP address or activity from the same public IP, this indicates a shared office network or VPN and is likely Authorized Activity. This is normal for organizations where multiple employees connect from the same location or through a corporate VPN.
+
 Suspicious: If a standard user (not an admin account) logs in from a Datacenter/Hosting IP (e.g., DigitalOcean, AWS) that is not a known business tool, flag it as suspicious.
 
 Analyzing "Agent Disabled" Alerts:
