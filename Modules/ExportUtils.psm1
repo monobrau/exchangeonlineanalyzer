@@ -495,6 +495,20 @@ function New-SecurityInvestigationReport {
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
         } catch {}
+
+        # Automatically create zip file of all reports (excluding LLM_Instructions.txt)
+        try {
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
+                $StatusLabel.Text = "Creating zip archive of security reports..."
+            }
+            $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder
+            if ($zipPath) {
+                $report.FilePaths.ZipFile = $zipPath
+                Write-Host "Zip archive created: $zipPath" -ForegroundColor Green
+            }
+        } catch {
+            Write-Warning "Failed to create zip archive: $($_.Exception.Message)"
+        }
     }
 
     return $report
