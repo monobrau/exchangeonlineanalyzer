@@ -269,7 +269,19 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [object]$MainForm,
         [Parameter(Mandatory=$false)]
-        [string]$OutputFolder
+        [string]$OutputFolder,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeMessageTrace = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeInboxRules = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeTransportRules = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeMailFlowConnectors = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeMailboxForwarding = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeAuditLogs = $true
     )
 
     try {
@@ -371,20 +383,30 @@ function New-SecurityInvestigationReport {
     # Collect data from Exchange Online
     if ($exchangeConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last $DaysBack days)..." }
-            $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 # always 10 days per requirement
+            if ($IncludeMessageTrace) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last $DaysBack days)..." }
+                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 # always 10 days per requirement
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
-            $report.InboxRules = Get-ExchangeInboxRules
+            if ($IncludeInboxRules) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
+                $report.InboxRules = Get-ExchangeInboxRules
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
-            $report.TransportRules = Get-ExchangeTransportRules
+            if ($IncludeTransportRules) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
+                $report.TransportRules = Get-ExchangeTransportRules
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
-            $report.MailFlowConnectors = Get-MailFlowConnectors
+            if ($IncludeMailFlowConnectors) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
+                $report.MailFlowConnectors = Get-MailFlowConnectors
+            }
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mailbox forwarding and delegation..." }
-            $report.MailboxForwarding = Get-MailboxForwardingAndDelegation
+            if ($IncludeMailboxForwarding) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mailbox forwarding and delegation..." }
+                $report.MailboxForwarding = Get-MailboxForwardingAndDelegation
+            }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
             $report.ExchangeDataError = $_.Exception.Message
@@ -394,8 +416,10 @@ function New-SecurityInvestigationReport {
     # Collect data from Microsoft Graph (audit logs only)
     if ($graphConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
-            $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
+            if ($IncludeAuditLogs) {
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
+                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
+            }
         } catch {
             Write-Warning "Failed to collect Microsoft Graph data: $($_.Exception.Message)"
             $report.GraphDataError = $_.Exception.Message
