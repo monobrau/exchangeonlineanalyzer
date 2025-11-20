@@ -607,7 +607,6 @@ function UpdateEntraButtonStates {
     $entraUnblockUserButton.Enabled = $true
     $entraRevokeSessionsButton.Enabled = $true
     $entraResetPasswordButton.Enabled = $true
-    $entraOpenDefenderRestrictedUsersButton.Enabled = $true
     $entraRequirePwdChangeButton.Enabled = $true
     $entraRefreshRolesButton.Enabled = $true
     $entraViewAdminsButton.Enabled = $true
@@ -618,135 +617,6 @@ function UpdateEntraButtonStates {
 }
 
 # Function to generate professional report
-function Generate-ProfessionalReport {
-    $report = @"
-# Microsoft 365 Environment Analysis Report
-**Generated:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-**Tool:** Microsoft 365 Management Tool v8.0
-
-## Executive Summary
-This report provides a comprehensive analysis of the Microsoft 365 environment, including Exchange Online configuration and Entra ID (Azure AD) security posture.
-
----
-
-## Exchange Online Analysis
-
-### Connection Status
-- **Status:** $(if ($script:currentExchangeConnection) { "Connected" } else { "Not Connected" })
-- **Mailboxes Loaded:** $(if ($script:allLoadedMailboxUPNs) { $script:allLoadedMailboxUPNs.Count } else { "0" })
-
-### Mailbox Analysis
-$(if ($script:allLoadedMailboxUPNs -and $script:allLoadedMailboxUPNs.Count -gt 0) {
-    $mailboxStats = @"
-- **Total Mailboxes:** $($script:allLoadedMailboxUPNs.Count)
-- **Sample Mailboxes:** $($script:allLoadedMailboxUPNs[0..4] -join ", ")
-$(if ($script:allLoadedMailboxUPNs.Count -gt 5) { "- **Additional:** +$($script:allLoadedMailboxUPNs.Count - 5) more mailboxes" })
-"@
-    $mailboxStats
-} else {
-    "- No mailboxes loaded"
-})
-
-### Inbox Rules Analysis
-$(if ($userMailboxGrid.Rows.Count -gt 0) {
-    $selectedCount = 0
-    for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
-        if ($userMailboxGrid.Rows[$i].Cells["Select"].Value -eq $true) { $selectedCount++ }
-    }
-    "- **Mailboxes Selected for Analysis:** $selectedCount"
-} else {
-    "- No mailboxes selected"
-})
-
-### Transport Rules & Connectors
-- **Transport Rules:** Available for review via Manage Transport Rules
-- **Connectors:** Available for review via Manage Connectors
-- **Restricted Senders:** Available for management
-
----
-
-## Entra ID (Azure AD) Analysis
-
-### Connection Status
-- **Status:** $(if ($script:graphConnection) { "Connected" } else { "Not Connected" })
-
-### User Management
-$(if ($entraUserGrid.Rows.Count -gt 0) {
-    $userStats = @"
-- **Total Users Loaded:** $($entraUserGrid.Rows.Count)
-- **User Management Features:** Available
-  - Block/Unblock User Sign-in
-  - Revoke User Sessions
-  - View User Details & Roles
-  - MFA Analysis
-"@
-    $userStats
-} else {
-    "- No users loaded"
-})
-
-### Security Features
-- **Sign-in Logs:** Available for export and analysis
-- **Audit Logs:** Available for export and analysis
-- **MFA Analysis:** Available for individual users
-- **User Role Analysis:** Available
-
----
-
-## Security Posture Assessment
-
-### Exchange Online Security
-- **Inbox Rules Review:** $(if ($userMailboxGrid.Rows.Count -gt 0) { "Available" } else { "Not Available" })
-- **Forwarding Analysis:** Available
-- **External Access:** Monitored via rules analysis
-- **Suspicious Keywords:** Configured for detection
-
-### Entra ID Security
-- **User Account Status:** $(if ($entraUserGrid.Rows.Count -gt 0) { "Available for review" } else { "Not available" })
-- **Sign-in Monitoring:** Available
-- **Session Management:** Available
-- **MFA Status:** Available for analysis
-
----
-
-## Recommendations
-
-### Immediate Actions
-1. Review any suspicious inbox rules identified
-2. Check for unauthorized external forwarding
-3. Verify user account status and permissions
-4. Review sign-in logs for suspicious activity
-
-### Ongoing Monitoring
-1. Regular inbox rules audits
-2. Monitor user sign-in patterns
-3. Review transport rules and connectors
-4. Maintain MFA compliance
-
----
-
-## Technical Details
-
-### Environment Information
-- **Tool Version:** 8.0
-- **Report Generated:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-- **Exchange Connection:** $(if ($script:currentExchangeConnection) { "Active" } else { "Inactive" })
-- **Graph Connection:** $(if ($script:graphConnection) { "Active" } else { "Inactive" })
-
-### Data Sources
-- Exchange Online PowerShell
-- Microsoft Graph API
-- User mailbox analysis
-- Sign-in and audit logs
-
----
-
-*This report was generated automatically by the Microsoft 365 Management Tool. For detailed analysis, use the individual tabs for specific data exports.*
-"@
-
-    return $report
-}
-
 # Function to generate Obsidian note format
 function Generate-ObsidianNote {
     $note = "Microsoft 365 Environment Analysis`n"
@@ -2966,7 +2836,7 @@ $entraTopRow2.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow2.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow2.WrapContents = $false
 $entraTopRow2.AutoSize = $false
-$entraTopRow2.Controls.AddRange(@($entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton, $entraOpenDefenderRestrictedUsersButton))
+$entraTopRow2.Controls.AddRange(@($entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton))
 
 # Add search controls to the top panel
 $entraSearchLabel = New-Object System.Windows.Forms.Label
@@ -4382,7 +4252,7 @@ $reportGeneratorPanel.AutoScroll = $true
 
 # Title label
 $reportGeneratorTitleLabel = New-Object System.Windows.Forms.Label
-$reportGeneratorTitleLabel.Text = "Professional Report Generator"
+$reportGeneratorTitleLabel.Text = "Report Generator"
 $reportGeneratorTitleLabel.Font = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
 $reportGeneratorTitleLabel.Location = New-Object System.Drawing.Point(10, 10)
 $reportGeneratorTitleLabel.Size = New-Object System.Drawing.Size(400, 30)
@@ -4514,15 +4384,6 @@ function Update-ConnectionStatus {
         $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Red
     }
 }
-
-# Generate Report button (moved down)
-$generateReportButton = New-Object System.Windows.Forms.Button
-$generateReportButton.Text = "Generate Professional Report"
-$generateReportButton.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$generateReportButton.Location = New-Object System.Drawing.Point(10, 620)
-$generateReportButton.Size = New-Object System.Drawing.Size(250, 40)
-$generateReportButton.BackColor = [System.Drawing.Color]::LightBlue
-$reportGeneratorPanel.Controls.Add($generateReportButton)
 
 # Incident Checklist Button
 $incidentChecklistButton = New-Object System.Windows.Forms.Button
@@ -4978,100 +4839,6 @@ $deselectAllAccountsButton.add_Click({
 })
 
 # Generate Report button event handler
-$generateReportButton.add_Click({
-    try {
-        $statusLabel.Text = "Generating unified professional report..."
-        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-        
-        # Get selected accounts
-        $selectedAccounts = Get-SelectedUnifiedAccounts
-        
-        if ($selectedAccounts.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("Please select at least one account for unified reporting.", "No Accounts Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
-            return
-        }
-        
-        # Generate both report formats with selected accounts
-        $professionalReport = Generate-UnifiedProfessionalReport -selectedAccounts $selectedAccounts
-        $obsidianNote = Generate-UnifiedObsidianNote -selectedAccounts $selectedAccounts
-        
-        # Create popup form
-        $reportForm = New-Object System.Windows.Forms.Form
-        $reportForm.Text = "Unified Professional Report Generator"
-        $reportForm.Size = New-Object System.Drawing.Size(900, 700)
-        $reportForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-        $reportForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
-        $reportForm.MaximizeBox = $true
-        
-        # Create tab control for different formats
-        $reportTabControl = New-Object System.Windows.Forms.TabControl
-        $reportTabControl.Dock = 'Fill'
-        
-        # Professional Report Tab
-        $professionalTab = New-Object System.Windows.Forms.TabPage
-        $professionalTab.Text = "Professional Report"
-        
-        $professionalTextBox = New-Object System.Windows.Forms.RichTextBox
-        $professionalTextBox.Dock = 'Fill'
-        $professionalTextBox.ReadOnly = $true
-        $professionalTextBox.Font = New-Object System.Drawing.Font('Consolas', 10)
-        $professionalTextBox.Text = $professionalReport
-        $professionalTab.Controls.Add($professionalTextBox)
-        
-        # Copy button for professional report
-        $copyProfessionalButton = New-Object System.Windows.Forms.Button
-        $copyProfessionalButton.Text = "Copy Professional Report"
-        $copyProfessionalButton.Location = New-Object System.Drawing.Point(10, 10)
-        $copyProfessionalButton.Size = New-Object System.Drawing.Size(200, 30)
-        $copyProfessionalButton.add_Click({
-            [System.Windows.Forms.Clipboard]::SetText($professionalReport)
-            [System.Windows.Forms.MessageBox]::Show("Professional report copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        })
-        $professionalTab.Controls.Add($copyProfessionalButton)
-        
-        # Obsidian Note Tab
-        $obsidianTab = New-Object System.Windows.Forms.TabPage
-        $obsidianTab.Text = "Obsidian Note"
-        
-        $obsidianTextBox = New-Object System.Windows.Forms.RichTextBox
-        $obsidianTextBox.Dock = 'Fill'
-        $obsidianTextBox.ReadOnly = $true
-        $obsidianTextBox.Font = New-Object System.Drawing.Font('Consolas', 10)
-        $obsidianTextBox.Text = $obsidianNote
-        $obsidianTab.Controls.Add($obsidianTextBox)
-        
-        # Copy button for Obsidian note
-        $copyObsidianButton = New-Object System.Windows.Forms.Button
-        $copyObsidianButton.Text = "Copy Obsidian Note"
-        $copyObsidianButton.Location = New-Object System.Drawing.Point(10, 10)
-        $copyObsidianButton.Size = New-Object System.Drawing.Size(200, 30)
-        $copyObsidianButton.add_Click({
-            [System.Windows.Forms.Clipboard]::SetText($obsidianNote)
-            [System.Windows.Forms.MessageBox]::Show("Obsidian note copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        })
-        $obsidianTab.Controls.Add($copyObsidianButton)
-
-        
-        # Add tabs to tab control
-        $reportTabControl.TabPages.Add($professionalTab)
-        $reportTabControl.TabPages.Add($obsidianTab)
-        
-        # Add tab control to form
-        $reportForm.Controls.Add($reportTabControl)
-        
-        # Show the form
-        $reportForm.ShowDialog()
-        
-        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
-        $statusLabel.Text = "Unified professional report generated successfully"
-        
-    } catch {
-        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
-        $statusLabel.Text = "Error generating unified professional report: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error generating unified professional report: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-})
 
 # --- Entra Portal Shortcuts (v8.1b) ---
 $entraPortalGroup = New-Object System.Windows.Forms.GroupBox
@@ -6203,87 +5970,6 @@ $entraViewAdminsButton.add_Click({
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
         $statusLabel.Text = "Error generating admin report: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error generating admin report: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-})
-
-# Update Reset Password button to always show confirmation before applying
-$entraResetPasswordButton.add_Click({
-    $entraUserGrid.EndEdit()
-    $selectedUpns = @()
-    for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
-        if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
-            $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
-        }
-    }
-    if ($selectedUpns.Count -ne 1) {
-        [System.Windows.Forms.MessageBox]::Show("Select exactly one user to reset password.", "Select One User", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        return
-    }
-    $userUpn = $selectedUpns[0]
-    $confirm = [System.Windows.Forms.MessageBox]::Show("Reset password for user $userUpn? This will generate a new password and require the user to change it at next sign-in.", "Confirm Password Reset", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
-    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    
-    # Generate memorable password with validation
-    try {
-        $newPassword = New-XKCDPassword -WordCount 4 -IncludeSeparator
-        
-        # Validate password was generated
-        if ([string]::IsNullOrWhiteSpace($newPassword)) {
-            throw "Password generation failed - generated password is null or empty"
-        }
-        
-        # Additional validation - ensure password meets minimum requirements
-        if ($newPassword.Length -lt 8) {
-            throw "Generated password is too short (length: $($newPassword.Length))"
-        }
-        
-        Write-Host "Generated password length: $($newPassword.Length)" -ForegroundColor Green
-        
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nTrying fallback password generation...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        
-        # Fallback password generation
-        try {
-            $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!"
-            Write-Host "Using fallback password: $newPassword" -ForegroundColor Yellow
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show("Failed to generate fallback password: $($_.Exception.Message)", "Password Generation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            $statusLabel.Text = "Password generation failed"
-            return
-        }
-    }
-    
-    try {
-        $statusLabel.Text = "Resetting password for $userUpn..."
-        $mainForm.Refresh()
-        $context = Get-MgContext -ErrorAction Stop
-        if (-not $context) { throw "Not connected to Microsoft Graph. Please connect first." }
-        
-        # Validate user exists before attempting password reset
-        try {
-            $user = Get-MgUser -UserId $userUpn -ErrorAction Stop
-            if (-not $user) {
-                throw "User not found: $userUpn"
-            }
-        } catch {
-            throw "Failed to validate user $userUpn : $($_.Exception.Message)"
-        }
-        
-        $passwordProfile = @{ Password = $newPassword; ForceChangePasswordNextSignIn = $true }
-        Update-MgUser -UserId $userUpn -PasswordProfile $passwordProfile -ErrorAction Stop
-        
-        $message = "Password reset successful for user: $userUpn`n`nNew Password: $newPassword`n`nThis password is memorable and secure. The user will be required to change it on next sign-in.`n`nCopy password to clipboard?"
-        
-        $result = [System.Windows.Forms.MessageBox]::Show($message, "Password Reset Successful", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
-        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-            [System.Windows.Forms.Clipboard]::SetText($newPassword)
-            [System.Windows.Forms.MessageBox]::Show("Password copied to clipboard!", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        }
-        $statusLabel.Text = "Password reset completed for $userUpn"
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to reset password for $userUpn : $($_.Exception.Message)", "Password Reset Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        $statusLabel.Text = "Password reset failed for $userUpn"
     }
 })
 
