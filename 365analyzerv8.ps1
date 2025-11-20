@@ -5581,8 +5581,10 @@ KEYBOARD SHORTCUTS (where applicable)
 
 FOLDER LAYOUT
 - Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
-  - MessageTrace.csv, InboxRules.csv, TransportRules.csv, Inbound/OutboundConnectors.csv,
-    GraphAuditLogs.csv, MFAStatus.csv, UserSecurityGroups.csv, _AI_Readme.txt
+  - MessageTrace.csv, InboxRules.csv, TransportRules.csv, MailFlowConnectors.csv,
+    GraphAuditLogs.csv, UserSecurityPosture.csv, _AI_Readme.txt
+  - UserSecurityPosture.csv = MFA + Groups + Mailbox Forwarding/Delegation (consolidated)
+  - MailFlowConnectors.csv = Inbound + Outbound Connectors (consolidated)
 
 KNOWN REQUIREMENTS
 - PowerShell 7+ recommended

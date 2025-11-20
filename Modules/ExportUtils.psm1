@@ -381,8 +381,10 @@ function New-SecurityInvestigationReport {
             $report.TransportRules = Get-ExchangeTransportRules
 
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
-            $report.InboundConnectors = Get-ExchangeInboundConnectors
-            $report.OutboundConnectors = Get-ExchangeOutboundConnectors
+            $report.MailFlowConnectors = Get-MailFlowConnectors
+
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mailbox forwarding and delegation..." }
+            $report.MailboxForwarding = Get-MailboxForwardingAndDelegation
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
             $report.ExchangeDataError = $_.Exception.Message
@@ -453,19 +455,12 @@ function New-SecurityInvestigationReport {
                 catch { $report.TransportRules | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.TransportRulesJson = $json }
             }
 
-            # Connectors export
-            $csv = Join-Path $report.OutputFolder "InboundConnectors.csv"
-            $json = Join-Path $report.OutputFolder "InboundConnectors.json"
-            if ($report.InboundConnectors -and $report.InboundConnectors.Count -gt 0) {
-                try { $report.InboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboundConnectorsCsv = $csv }
-                catch { $report.InboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboundConnectorsJson = $json }
-            }
-
-            $csv = Join-Path $report.OutputFolder "OutboundConnectors.csv"
-            $json = Join-Path $report.OutputFolder "OutboundConnectors.json"
-            if ($report.OutboundConnectors -and $report.OutboundConnectors.Count -gt 0) {
-                try { $report.OutboundConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.OutboundConnectorsCsv = $csv }
-                catch { $report.OutboundConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.OutboundConnectorsJson = $json }
+            # Mail Flow Connectors export (combined Inbound + Outbound)
+            $csv = Join-Path $report.OutputFolder "MailFlowConnectors.csv"
+            $json = Join-Path $report.OutputFolder "MailFlowConnectors.json"
+            if ($report.MailFlowConnectors -and $report.MailFlowConnectors.Count -gt 0) {
+                try { $report.MailFlowConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MailFlowConnectorsCsv = $csv }
+                catch { $report.MailFlowConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.MailFlowConnectorsJson = $json }
             }
 
             $csv = Join-Path $report.OutputFolder "GraphAuditLogs.csv"
@@ -475,16 +470,63 @@ function New-SecurityInvestigationReport {
                 catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
             }
 
-            # MFA Coverage export
-            if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
-                $csv = Join-Path $report.OutputFolder "MFAStatus.csv"
-                try { $report.MfaCoverage.Users | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MFAStatusCsv = $csv } catch {}
-            }
+            # User Security Posture export (combined MFA + Groups + Mailbox Forwarding/Delegation)
+            try {
+                $userPosture = New-Object System.Collections.Generic.List[object]
 
-            # User Security Groups export
-            if ($report.UserSecurityGroups) {
-                $csv = Join-Path $report.OutputFolder "UserSecurityGroups.csv"
-                try { $report.UserSecurityGroups | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityGroupsCsv = $csv } catch {}
+                # Create lookup dictionary for mailbox forwarding/delegation by UPN
+                $mbxLookup = @{}
+                if ($report.MailboxForwarding) {
+                    foreach ($mbx in $report.MailboxForwarding) {
+                        $mbxLookup[$mbx.UserPrincipalName] = $mbx
+                    }
+                }
+
+                # Create lookup dictionary for user groups by UPN
+                $groupsLookup = @{}
+                if ($report.UserSecurityGroups) {
+                    foreach ($userGroup in $report.UserSecurityGroups) {
+                        $groupsLookup[$userGroup.UserPrincipalName] = $userGroup.GroupsAndRoles
+                    }
+                }
+
+                # Start with MFA users as the base (most complete user list)
+                if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
+                    foreach ($mfaUser in $report.MfaCoverage.Users) {
+                        $upn = $mfaUser.UserPrincipalName
+                        $mbxData = $mbxLookup[$upn]
+                        $groupsData = $groupsLookup[$upn]
+
+                        $userPosture.Add([pscustomobject]@{
+                            UserPrincipalName           = $upn
+                            DisplayName                 = $mfaUser.DisplayName
+                            RecipientType               = if ($mbxData) { $mbxData.RecipientType } else { $null }
+                            # MFA columns
+                            PerUserMfaEnabled           = $mfaUser.PerUserMfaEnabled
+                            SecurityDefaults            = $mfaUser.SecurityDefaults
+                            CARequiresMfa               = $mfaUser.CARequiresMfa
+                            MfaCovered                  = $mfaUser.MfaCovered
+                            # Groups/Roles
+                            GroupsAndRoles              = $groupsData
+                            # Mailbox Forwarding
+                            ForwardingAddress           = if ($mbxData) { $mbxData.ForwardingAddress } else { $null }
+                            ForwardingSmtpAddress       = if ($mbxData) { $mbxData.ForwardingSmtpAddress } else { $null }
+                            DeliverToMailboxAndForward  = if ($mbxData) { $mbxData.DeliverToMailboxAndForward } else { $null }
+                            # Delegation
+                            FullAccessUsers             = if ($mbxData) { $mbxData.FullAccessUsers } else { $null }
+                            SendAsUsers                 = if ($mbxData) { $mbxData.SendAsUsers } else { $null }
+                            SendOnBehalfUsers           = if ($mbxData) { $mbxData.SendOnBehalfUsers } else { $null }
+                        }) | Out-Null
+                    }
+                }
+
+                # Export combined user security posture
+                if ($userPosture.Count -gt 0) {
+                    $csv = Join-Path $report.OutputFolder "UserSecurityPosture.csv"
+                    try { $userPosture | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityPostureCsv = $csv } catch {}
+                }
+            } catch {
+                Write-Warning "Failed to create UserSecurityPosture export: $($_.Exception.Message)"
             }
         } catch { $exportError = $_ }
 
@@ -817,6 +859,158 @@ function Get-GraphAuditLogs {
 }
 
 function Get-GraphSignInLogs { param([int]$DaysBack = 10,[switch]$MaxAvailable) return @() }
+
+function Get-MailboxForwardingAndDelegation {
+    try {
+        Write-Host "Collecting mailbox forwarding and delegation settings..." -ForegroundColor Yellow
+
+        $mailboxes = @()
+        try {
+            $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
+        } catch {
+            # Fallback narrower call if needed
+            $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
+        }
+
+        $results = New-Object System.Collections.Generic.List[object]
+
+        foreach ($mbx in $mailboxes) {
+            $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
+
+            try {
+                # Get mailbox-level forwarding settings
+                $forwardingAddress = $mbx.ForwardingAddress
+                $forwardingSmtpAddress = $mbx.ForwardingSmtpAddress
+                $deliverToMailboxAndForward = $mbx.DeliverToMailboxAndForward
+
+                # Get delegation/permissions
+                $fullAccessUsers = @()
+                $sendAsUsers = @()
+                $sendOnBehalfUsers = @()
+
+                try {
+                    $permissions = Get-MailboxPermission -Identity $upn -ErrorAction SilentlyContinue |
+                                   Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" -and $_.IsInherited -eq $false }
+
+                    $fullAccessUsers = $permissions | Where-Object { $_.AccessRights -contains "FullAccess" } |
+                                      Select-Object -ExpandProperty User | ForEach-Object { $_.ToString() }
+
+                    $sendAsUsers = $permissions | Where-Object { $_.AccessRights -contains "SendAs" } |
+                                  Select-Object -ExpandProperty User | ForEach-Object { $_.ToString() }
+                } catch {}
+
+                # Get Send-On-Behalf
+                try {
+                    if ($mbx.GrantSendOnBehalfTo -and $mbx.GrantSendOnBehalfTo.Count -gt 0) {
+                        $sendOnBehalfUsers = $mbx.GrantSendOnBehalfTo | ForEach-Object { $_.ToString() }
+                    }
+                } catch {}
+
+                $obj = [pscustomobject]@{
+                    UserPrincipalName           = $upn
+                    DisplayName                 = $mbx.DisplayName
+                    RecipientType               = $mbx.RecipientTypeDetails
+                    ForwardingAddress           = if ($forwardingAddress) { $forwardingAddress.ToString() } else { $null }
+                    ForwardingSmtpAddress       = $forwardingSmtpAddress
+                    DeliverToMailboxAndForward  = $deliverToMailboxAndForward
+                    FullAccessUsers             = ($fullAccessUsers -join '; ')
+                    SendAsUsers                 = ($sendAsUsers -join '; ')
+                    SendOnBehalfUsers           = ($sendOnBehalfUsers -join '; ')
+                }
+                [void]$results.Add($obj)
+
+            } catch {
+                Write-Warning "Failed to process mailbox ${upn}: $($_.Exception.Message)"
+            }
+        }
+
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect mailbox forwarding and delegation: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-MailFlowConnectors {
+    try {
+        Write-Host "Collecting mail flow connectors..." -ForegroundColor Yellow
+
+        $results = New-Object System.Collections.Generic.List[object]
+
+        # Get inbound connectors
+        $inboundConns = @()
+        try {
+            $params = @{ ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            $gc = Get-Command Get-InboundConnector -ErrorAction SilentlyContinue
+            if ($gc -and $gc.Parameters.ContainsKey('IncludeTestModeConnectors')) { $params.IncludeTestModeConnectors = $true }
+            $inboundConns = Get-InboundConnector @params
+        } catch { $inboundConns = @() }
+
+        foreach ($c in $inboundConns) {
+            $results.Add([pscustomobject]@{
+                Direction                     = 'Inbound'
+                Name                          = $c.Name
+                ConnectorType                 = $c.ConnectorType
+                Enabled                       = $c.Enabled
+                SenderDomains                 = ($c.SenderDomains -join ';')
+                SenderIPAddresses             = ($c.SenderIPAddresses -join ';')
+                RecipientDomains              = $null
+                SmartHosts                    = $null
+                RestrictDomainsToCertificate  = $c.RestrictDomainsToCertificate
+                RestrictDomainsToIPAddresses  = $c.RestrictDomainsToIPAddresses
+                TlsSenderCertificateName      = $c.TlsSenderCertificateName
+                TlsSettings                   = $null
+                TlsDomain                     = $null
+                RequireTls                    = $c.RequireTls
+                UseMXRecord                   = $null
+                CloudServicesMailEnabled      = $c.CloudServicesMailEnabled
+                Comment                       = $c.Comment
+                Identity                      = $c.Identity
+                Guid                          = $c.Guid
+                TestMode                      = $(if ($c.PSObject.Properties['TestMode']) { $c.TestMode } elseif ($c.PSObject.Properties['IsTestMode']) { $c.IsTestMode } else { $null })
+            }) | Out-Null
+        }
+
+        # Get outbound connectors
+        $outboundConns = @()
+        try {
+            $params = @{ ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            $gc = Get-Command Get-OutboundConnector -ErrorAction SilentlyContinue
+            if ($gc -and $gc.Parameters.ContainsKey('IncludeTestModeConnectors')) { $params.IncludeTestModeConnectors = $true }
+            $outboundConns = Get-OutboundConnector @params
+        } catch { $outboundConns = @() }
+
+        foreach ($c in $outboundConns) {
+            $results.Add([pscustomobject]@{
+                Direction                     = 'Outbound'
+                Name                          = $c.Name
+                ConnectorType                 = $c.ConnectorType
+                Enabled                       = $c.Enabled
+                SenderDomains                 = $null
+                SenderIPAddresses             = $null
+                RecipientDomains              = ($c.RecipientDomains -join ';')
+                SmartHosts                    = ($c.SmartHosts -join ';')
+                RestrictDomainsToCertificate  = $null
+                RestrictDomainsToIPAddresses  = $null
+                TlsSenderCertificateName      = $null
+                TlsSettings                   = $c.TlsSettings
+                TlsDomain                     = $c.TlsDomain
+                RequireTls                    = $null
+                UseMXRecord                   = $c.UseMXRecord
+                CloudServicesMailEnabled      = $c.CloudServicesMailEnabled
+                Comment                       = $c.Comment
+                Identity                      = $c.Identity
+                Guid                          = $c.Guid
+                TestMode                      = $(if ($c.PSObject.Properties['TestMode']) { $c.TestMode } elseif ($c.PSObject.Properties['IsTestMode']) { $c.IsTestMode } else { $null })
+            }) | Out-Null
+        }
+
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect mail flow connectors: $($_.Exception.Message)"
+        return @()
+    }
+}
 
 # Portal-like export fallback using Entra Sign-in Logs export API without AAD Premium
 function Export-EntraPortalSignInCsv {
@@ -1292,3 +1486,4 @@ function New-SecurityInvestigationZip {
 
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
+Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors

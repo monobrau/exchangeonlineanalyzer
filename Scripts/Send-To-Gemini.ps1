@@ -42,11 +42,9 @@ $files = @(
     'MessageTrace.csv',
     'InboxRules.csv',
     'TransportRules.csv',
-    'InboundConnectors.csv',
-    'OutboundConnectors.csv',
+    'MailFlowConnectors.csv',
     'GraphAuditLogs.csv',
-    'MFAStatus.csv',
-    'UserSecurityGroups.csv'
+    'UserSecurityPosture.csv'
 )
 
 $existing = @()
