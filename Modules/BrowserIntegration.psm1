@@ -266,7 +266,7 @@ function Open-EntraDeepLink {
         [Parameter(Mandatory=$true)][ValidateSet('SignIns','RestrictedEntities','ConditionalAccess')][string]$Target
     )
     switch ($Target) {
-        'SignIns'            { $url = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SignInsMenuBlade/~/SignIns' }
+        'SignIns'            { $url = 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/SignIns/menuId/' }
         'RestrictedEntities' { $url = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SecurityRestrictedEntitiesBlade/~/Overview' }
         'ConditionalAccess'  { $url = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConditionalAccessBlade/~/Policies' }
     }

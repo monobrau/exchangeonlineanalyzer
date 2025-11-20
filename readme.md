@@ -38,7 +38,7 @@ Quick test (CLI):
 ```powershell
 Start-Process 'firefox.exe' -ArgumentList (
   "ext+container:name=MyContainer&url={0}" -f [uri]::EscapeUriString(
-    'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SignInsMenuBlade/~/SignIns'
+    'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/SignIns/menuId/'
   )
 )
 ```
