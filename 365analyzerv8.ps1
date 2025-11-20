@@ -5662,44 +5662,24 @@ $entraRefreshRolesButton.add_Click({
         return
     }
     
-    $statusLabel.Text = "Fetching directory roles from server..."
-    $mainForm.Refresh()
-    
-    # Get all directory roles once (server-side)
-    $directoryRoles = Get-MgDirectoryRole -ErrorAction Stop
-    
     $statusLabel.Text = "Refreshing roles for selected users..."
     $mainForm.Refresh()
-    
+
     $processedCount = 0
     foreach ($userUpn in $selectedUpns) {
         $processedCount++
         $statusLabel.Text = "Refreshing roles for user $processedCount of $($selectedUpns.Count): $userUpn"
         $mainForm.Refresh()
-        
+
         try {
-            # Get the user's object ID (GUID) for matching
-            $userObj = Get-MgUser -UserId $userUpn -Property Id -ErrorAction SilentlyContinue
-            if (-not $userObj) {
-                continue
-            }
-            $userId = $userObj.Id
+            # Get user roles using Get-MgUserMemberOf (more efficient)
             $userRoles = @()
-            
-            # Check each directory role for this user (server-side)
-            foreach ($role in $directoryRoles) {
-                try {
-                    $roleMembers = Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -ErrorAction SilentlyContinue
-                    if ($roleMembers) {
-                        foreach ($member in $roleMembers) {
-                            if ($member.Id -eq $userId) {
-                                $userRoles += $role.DisplayName
-                                break
-                            }
-                        }
+            $userRoleMemberships = Get-MgUserMemberOf -UserId $userUpn -ErrorAction SilentlyContinue
+            if ($userRoleMemberships) {
+                foreach ($role in $userRoleMemberships) {
+                    if ($role.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                        $userRoles += $role.DisplayName
                     }
-                } catch {
-                    # Silently continue if role member lookup fails
                 }
             }
             $rolesText = if ($userRoles.Count -gt 0) { ($userRoles -join ", ") } else { "No Roles" }
