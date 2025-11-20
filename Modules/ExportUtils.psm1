@@ -1453,9 +1453,8 @@ function New-SecurityInvestigationZip {
             $ZipFileName += '.zip'
         }
 
-        # Create zip file path in parent directory of output folder
-        $parentFolder = Split-Path $OutputFolder -Parent
-        $zipPath = Join-Path $parentFolder $ZipFileName
+        # Create zip file path in the output folder
+        $zipPath = Join-Path $OutputFolder $ZipFileName
 
         # Get all CSV and JSON files, excluding _AI_Readme.txt
         $filesToZip = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse |
