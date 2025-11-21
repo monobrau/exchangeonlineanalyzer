@@ -592,11 +592,12 @@ function UpdateEntraButtonStates {
     # Only export buttons require export folder path and selection
     $entraExportSignInLogsButton.Enabled = $hasPath -and ($checkedCount -gt 0)
     $entraExportAuditLogsButton.Enabled = $hasPath -and ($checkedCount -eq 1)
-    # View, User Details, and Analyze MFA buttons are always enabled
+    # View, User Details, Analyze MFA, and Check Licenses buttons are always enabled
     $entraViewSignInLogsButton.Enabled = $true
     $entraViewAuditLogsButton.Enabled = $true
     $entraDetailsFetchButton.Enabled = $true
     $entraMfaFetchButton.Enabled = $true
+    $entraCheckLicensesButton.Enabled = $true
     # User management buttons are always enabled when connected to Graph
     # Select All/Deselect All buttons enabled when users are loaded
     $entraSelectAllButton.Enabled = ($entraUserGrid.Rows.Count -gt 0)
@@ -2605,6 +2606,13 @@ $entraMfaFetchButton.Width = 120
 $entraMfaFetchButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraMfaFetchButtonTooltip.SetToolTip($entraMfaFetchButton, "Analyze MFA status for selected user (select one user)")
 
+$entraCheckLicensesButton = New-Object System.Windows.Forms.Button
+$entraCheckLicensesButton.Text = "Check Licenses"
+$entraCheckLicensesButton.Width = 120
+$entraCheckLicensesButton.Enabled = $false
+$entraCheckLicensesButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$entraCheckLicensesButtonTooltip.SetToolTip($entraCheckLicensesButton, "View detailed M365/O365 license information for selected user(s)")
+
 # Add user management buttons for Entra ID tab
 $entraBlockUserButton = New-Object System.Windows.Forms.Button
 $entraBlockUserButton.Text = "Block User"
@@ -2827,7 +2835,7 @@ $entraTopRow1.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow1.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow1.WrapContents = $true
 $entraTopRow1.AutoSize = $true
-$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $entraFixModulesButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton))
+$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $entraFixModulesButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton, $entraCheckLicensesButton))
 
 # Second row - User management functions
 $entraTopRow2 = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -3423,6 +3431,66 @@ $entraMfaFetchButton.add_Click({
         $form.Dispose()
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Error analyzing MFA: $($_.Exception.Message)", "MFA Analysis Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally { $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
+})
+
+# Check Licenses button handler
+$entraCheckLicensesButton.add_Click({
+    $entraUserGrid.EndEdit()
+    $selectedUpns = @()
+    for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
+        if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
+            $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+        }
+    }
+    if ($selectedUpns.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Select at least one user with a valid UPN.", "No Users Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); return
+    }
+    $statusLabel.Text = "Checking licenses..."; $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    try {
+        $licenseDetails = ""
+        foreach ($upn in $selectedUpns) {
+            $result = Get-UserLicenseDetails -UserPrincipalName $upn
+            if ($result) {
+                $licenseDetails += "User: $($result.DisplayName) ($($result.UserPrincipalName))`r`n"
+                $licenseDetails += "License Status: $($result.LicenseStatus)`r`n"
+                if ($result.Licenses.Count -gt 0) {
+                    $licenseDetails += "Licenses:`r`n"
+                    foreach ($license in $result.Licenses) {
+                        $licenseDetails += "  - $license`r`n"
+                    }
+                } else {
+                    $licenseDetails += "No licenses assigned`r`n"
+                }
+                $licenseDetails += "`r`n-----------------------------`r`n`r`n"
+            }
+        }
+
+        # Create form to display results
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = "M365/O365 License Information"
+        $form.Size = New-Object System.Drawing.Size(700, 500)
+        $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+        $form.MaximizeBox = $true
+
+        $textbox = New-Object System.Windows.Forms.TextBox
+        $textbox.Multiline = $true
+        $textbox.ReadOnly = $true
+        $textbox.ScrollBars = 'Both'
+        $textbox.Dock = 'Fill'
+        $textbox.Font = New-Object System.Drawing.Font('Consolas', 10)
+        $textbox.Text = $licenseDetails
+
+        $form.Controls.Add($textbox)
+        $form.ShowDialog($mainForm)
+        $form.Dispose()
+
+        $statusLabel.Text = "License check completed"
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error checking licenses: $($_.Exception.Message)", "License Check Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $statusLabel.Text = "Error checking licenses"
     } finally { $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
 })
 
@@ -4385,6 +4453,16 @@ function Update-ConnectionStatus {
     }
 }
 
+# Export User Licenses Button
+$exportUserLicensesButton = New-Object System.Windows.Forms.Button
+$exportUserLicensesButton.Text = "📋 Export User Licenses Report"
+$exportUserLicensesButton.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$exportUserLicensesButton.Location = New-Object System.Drawing.Point(10, 620)
+$exportUserLicensesButton.Size = New-Object System.Drawing.Size(250, 40)
+$exportUserLicensesButton.BackColor = [System.Drawing.Color]::FromArgb(76, 175, 80) # Green color
+$exportUserLicensesButton.ForeColor = [System.Drawing.Color]::White
+$reportGeneratorPanel.Controls.Add($exportUserLicensesButton)
+
 # Incident Checklist Button
 $incidentChecklistButton = New-Object System.Windows.Forms.Button
 $incidentChecklistButton.Text = "Generate Incident Remediation Checklist"
@@ -5093,6 +5171,85 @@ $profileCombo.add_SelectedIndexChanged({
 $openSignInsBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'SignIns' } catch {} })
 $openRestrictedBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'RestrictedEntities' } catch {} })
 $openCABtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'ConditionalAccess' } catch {} })
+
+# Export User Licenses Report button event handler
+$exportUserLicensesButton.add_Click({
+    try {
+        $statusLabel.Text = "Exporting user licenses report..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+
+        # Check if connected to Microsoft Graph
+        $mgConnected = $false
+        try {
+            $ctx = Get-MgContext -ErrorAction Stop
+            if ($ctx -and $ctx.Account) { $mgConnected = $true }
+        } catch {}
+
+        if (-not $mgConnected) {
+            [System.Windows.Forms.MessageBox]::Show("Please connect to Microsoft Graph (Entra ID) first to export user licenses.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "License export cancelled - not connected to Graph"
+            return
+        }
+
+        # Prompt for output folder
+        $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderDialog.Description = "Select folder to save user licenses report"
+        $folderDialog.ShowNewFolderButton = $true
+
+        # Set default to Documents folder
+        $defaultPath = [Environment]::GetFolderPath('MyDocuments')
+        $defaultExportPath = Join-Path $defaultPath "ExchangeOnlineAnalyzer\UserLicenses"
+
+        if (-not (Test-Path $defaultExportPath)) {
+            try {
+                New-Item -ItemType Directory -Path $defaultExportPath -Force | Out-Null
+            } catch {}
+        }
+
+        $folderDialog.SelectedPath = $defaultExportPath
+
+        if ($folderDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $outputFolder = $folderDialog.SelectedPath
+
+            # Export the report
+            $statusLabel.Text = "Generating user licenses report (this may take a few minutes)..."
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $resultPath = Export-UserLicenseReport -OutputFolder $outputFolder
+
+            if ($resultPath) {
+                $statusLabel.Text = "User licenses report exported successfully"
+
+                # Ask if user wants to open the file
+                $result = [System.Windows.Forms.MessageBox]::Show(
+                    "User licenses report exported successfully to:`n$resultPath`n`nWould you like to open the file now?",
+                    "Export Successful",
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+
+                if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+                    try {
+                        Start-Process $resultPath
+                    } catch {
+                        [System.Windows.Forms.MessageBox]::Show("Could not open file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    }
+                }
+            } else {
+                $statusLabel.Text = "Failed to export user licenses report"
+                [System.Windows.Forms.MessageBox]::Show("Failed to export user licenses report. Check the console for details.", "Export Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            }
+        } else {
+            $statusLabel.Text = "License export cancelled by user"
+        }
+    } catch {
+        $statusLabel.Text = "Error exporting user licenses: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error exporting user licenses report: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
+})
 
 # Incident Checklist button event handler
 $incidentChecklistButton.add_Click({
