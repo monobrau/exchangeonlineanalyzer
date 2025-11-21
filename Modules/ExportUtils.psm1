@@ -1483,6 +1483,270 @@ function New-SecurityInvestigationZip {
     }
 }
 
+# Get M365/O365 license SKU mapping from tenant
+function Get-TenantLicenseSkus {
+    try {
+        $skus = @{}
+        $tenantSkus = Get-MgSubscribedSku -All -ErrorAction Stop
+
+        foreach ($sku in $tenantSkus) {
+            $skuId = $sku.SkuId
+            $skuPartNumber = $sku.SkuPartNumber
+
+            # Create friendly name mapping
+            $friendlyName = switch ($skuPartNumber) {
+                'ENTERPRISEPACK' { 'Microsoft 365 E3' }
+                'ENTERPRISEPREMIUM' { 'Microsoft 365 E5' }
+                'ENTERPRISEPACK_B_PILOT' { 'Microsoft 365 E3' }
+                'ENTERPRISEPREMIUM_NOPSTNCONF' { 'Microsoft 365 E5 (No Audio Conferencing)' }
+                'SPE_E3' { 'Microsoft 365 E3' }
+                'SPE_E5' { 'Microsoft 365 E5' }
+                'STANDARDPACK' { 'Office 365 E1' }
+                'STANDARDWOFFPACK' { 'Office 365 E2' }
+                'DESKLESSPACK' { 'Microsoft 365 F3' }
+                'SPE_F1' { 'Microsoft 365 F3' }
+                'EXCHANGESTANDARD' { 'Exchange Online (Plan 1)' }
+                'EXCHANGEENTERPRISE' { 'Exchange Online (Plan 2)' }
+                'EXCHANGEDESKLESS' { 'Exchange Online Kiosk' }
+                'MCOSTANDARD' { 'Skype for Business Online (Plan 2)' }
+                'POWER_BI_PRO' { 'Power BI Pro' }
+                'POWER_BI_STANDARD' { 'Power BI (Free)' }
+                'PROJECTPROFESSIONAL' { 'Project Plan 3' }
+                'PROJECTONLINE_PLAN_1' { 'Project Plan 1' }
+                'VISIOCLIENT' { 'Visio Plan 2' }
+                'ATP_ENTERPRISE' { 'Microsoft Defender for Office 365 (Plan 1)' }
+                'THREAT_INTELLIGENCE' { 'Microsoft Defender for Office 365 (Plan 2)' }
+                'EMS' { 'Enterprise Mobility + Security E3' }
+                'EMSPREMIUM' { 'Enterprise Mobility + Security E5' }
+                'AAD_PREMIUM' { 'Azure Active Directory Premium P1' }
+                'AAD_PREMIUM_P2' { 'Azure Active Directory Premium P2' }
+                'RIGHTSMANAGEMENT' { 'Azure Rights Management' }
+                'FLOW_FREE' { 'Power Automate Free' }
+                'POWERAPPS_VIRAL' { 'Power Apps Trial' }
+                'TEAMS_EXPLORATORY' { 'Microsoft Teams Exploratory' }
+                'M365_F1_COMM' { 'Microsoft 365 F1' }
+                'SPB' { 'Microsoft 365 Business Premium' }
+                'SMB_BUSINESS' { 'Microsoft 365 Business Basic' }
+                'SMB_BUSINESS_ESSENTIALS' { 'Microsoft 365 Business Basic' }
+                'SMB_BUSINESS_PREMIUM' { 'Microsoft 365 Business Standard' }
+                'O365_BUSINESS' { 'Microsoft 365 Apps for Business' }
+                'O365_BUSINESS_ESSENTIALS' { 'Microsoft 365 Business Basic' }
+                'O365_BUSINESS_PREMIUM' { 'Microsoft 365 Business Standard' }
+                'DEVELOPERPACK_E5' { 'Microsoft 365 E5 Developer' }
+                'STREAM' { 'Microsoft Stream' }
+                'ENTERPRISEPREMIUM_FACULTY' { 'Microsoft 365 A5 for Faculty' }
+                'ENTERPRISEPREMIUM_STUDENT' { 'Microsoft 365 A5 for Students' }
+                'ENTERPRISEPACK_FACULTY' { 'Microsoft 365 A3 for Faculty' }
+                'ENTERPRISEPACK_STUDENT' { 'Microsoft 365 A3 for Students' }
+                default { $skuPartNumber }
+            }
+
+            $skus[$skuId] = [PSCustomObject]@{
+                SkuId = $skuId
+                SkuPartNumber = $skuPartNumber
+                FriendlyName = $friendlyName
+                ConsumedUnits = $sku.ConsumedUnits
+                TotalUnits = if ($sku.PrepaidUnits) { $sku.PrepaidUnits.Enabled } else { 0 }
+            }
+        }
+
+        return $skus
+    } catch {
+        Write-Error "Failed to get tenant license SKUs: $($_.Exception.Message)"
+        return @{}
+    }
+}
+
+# Get user license details
+function Get-UserLicenseDetails {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$UserPrincipalName
+    )
+
+    try {
+        $user = Get-MgUser -UserId $UserPrincipalName -Property Id,UserPrincipalName,DisplayName,AssignedLicenses -ErrorAction Stop
+
+        if (-not $user.AssignedLicenses -or $user.AssignedLicenses.Count -eq 0) {
+            return [PSCustomObject]@{
+                UserPrincipalName = $user.UserPrincipalName
+                DisplayName = $user.DisplayName
+                LicenseStatus = 'Unlicensed'
+                Licenses = @()
+                LicenseNames = 'None'
+            }
+        }
+
+        # Get SKU mapping
+        $skuMapping = Get-TenantLicenseSkus
+
+        $licenses = @()
+        foreach ($assignedLicense in $user.AssignedLicenses) {
+            $skuId = $assignedLicense.SkuId
+            if ($skuMapping.ContainsKey($skuId)) {
+                $licenses += $skuMapping[$skuId].FriendlyName
+            } else {
+                $licenses += "Unknown SKU: $skuId"
+            }
+        }
+
+        return [PSCustomObject]@{
+            UserPrincipalName = $user.UserPrincipalName
+            DisplayName = $user.DisplayName
+            LicenseStatus = 'Licensed'
+            Licenses = $licenses
+            LicenseNames = ($licenses -join '; ')
+        }
+    } catch {
+        Write-Error "Failed to get license details for $UserPrincipalName : $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Get all users with their license information
+function Get-AllUsersLicenseReport {
+    try {
+        $users = Get-MgUser -All -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -ErrorAction Stop
+
+        # Get SKU mapping once
+        $skuMapping = Get-TenantLicenseSkus
+
+        $report = @()
+        $totalUsers = $users.Count
+        $processedCount = 0
+
+        foreach ($user in $users) {
+            $processedCount++
+
+            # Progress reporting
+            if ($processedCount % 50 -eq 0) {
+                Write-Progress -Activity "Processing user licenses" -Status "$processedCount of $totalUsers users processed" -PercentComplete (($processedCount / $totalUsers) * 100)
+            }
+
+            $licenses = @()
+            if ($user.AssignedLicenses -and $user.AssignedLicenses.Count -gt 0) {
+                foreach ($assignedLicense in $user.AssignedLicenses) {
+                    $skuId = $assignedLicense.SkuId
+                    if ($skuMapping.ContainsKey($skuId)) {
+                        $licenses += $skuMapping[$skuId].FriendlyName
+                    } else {
+                        $licenses += "Unknown SKU: $skuId"
+                    }
+                }
+            }
+
+            $licenseStatus = if ($licenses.Count -gt 0) { 'Licensed' } else { 'Unlicensed' }
+            $licenseNames = if ($licenses.Count -gt 0) { ($licenses -join '; ') } else { 'None' }
+
+            $report += [PSCustomObject]@{
+                UserPrincipalName = $user.UserPrincipalName
+                DisplayName = $user.DisplayName
+                AccountEnabled = $user.AccountEnabled
+                LicenseStatus = $licenseStatus
+                LicenseCount = $licenses.Count
+                Licenses = $licenseNames
+            }
+        }
+
+        Write-Progress -Activity "Processing user licenses" -Completed
+        return $report
+    } catch {
+        Write-Error "Failed to generate user license report: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+# Export user license report to CSV and convert to XLSX
+function Export-UserLicenseReport {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OutputFolder
+    )
+
+    try {
+        # Create output folder if it doesn't exist
+        if (-not (Test-Path $OutputFolder)) {
+            New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
+        }
+
+        # Generate timestamp
+        $timestamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
+        $csvPath = Join-Path $OutputFolder "UserLicenses_$timestamp.csv"
+        $xlsxPath = Join-Path $OutputFolder "UserLicenses_$timestamp.xlsx"
+
+        # Get license report
+        Write-Host "Gathering user license information..." -ForegroundColor Cyan
+        $report = Get-AllUsersLicenseReport
+
+        if ($report.Count -eq 0) {
+            Write-Warning "No user data found to export."
+            return $null
+        }
+
+        # Export to CSV
+        Write-Host "Exporting to CSV: $csvPath" -ForegroundColor Cyan
+        $report | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+
+        # Convert to XLSX
+        Write-Host "Converting to Excel format..." -ForegroundColor Cyan
+        $excel = $null
+        $workbook = $null
+
+        try {
+            $excel = New-Object -ComObject Excel.Application -ErrorAction Stop
+            $excel.Visible = $false
+            $excel.DisplayAlerts = $false
+
+            $workbook = $excel.Workbooks.Open($csvPath)
+            $workbook.SaveAs($xlsxPath, 51) # 51 = xlOpenXMLWorkbook (.xlsx)
+
+            # Format the worksheet
+            $worksheet = $workbook.Worksheets.Item(1)
+            $worksheet.Name = "User Licenses"
+
+            $usedRange = $worksheet.UsedRange
+            $usedRange.Columns.AutoFit() | Out-Null
+            $usedRange.Rows.AutoFit() | Out-Null
+
+            # Format header row
+            $headerRow = $worksheet.Rows.Item(1)
+            $headerRow.Font.Bold = $true
+            $headerRow.Interior.Color = 15773696 # Light blue
+            $headerRow.Font.Color = 1 # Black
+            $headerRow.Borders.LineStyle = 1
+
+            # Add filters
+            $usedRange.AutoFilter() | Out-Null
+
+            $workbook.Save()
+            $workbook.Close($false)
+
+            Write-Host "Successfully exported user license report to: $xlsxPath" -ForegroundColor Green
+            Write-Host "Total users: $($report.Count)" -ForegroundColor Cyan
+
+            return $xlsxPath
+        } catch {
+            Write-Warning "Failed to convert to Excel format: $($_.Exception.Message)"
+            Write-Host "CSV file available at: $csvPath" -ForegroundColor Yellow
+            return $csvPath
+        } finally {
+            if ($workbook) {
+                try { $workbook.Close($false) } catch {}
+                [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+            }
+            if ($excel) {
+                try { $excel.Quit() } catch {}
+                [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+            }
+            [System.GC]::Collect()
+            [System.GC]::WaitForPendingFinalizers()
+        }
+    } catch {
+        Write-Error "Failed to export user license report: $($_.Exception.Message)"
+        return $null
+    }
+}
+
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
-Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors
+Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport
