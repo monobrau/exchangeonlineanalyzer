@@ -1585,7 +1585,10 @@ function Get-TenantLicenseSkus {
 function Get-UserLicenseDetails {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$UserPrincipalName
+        [string]$UserPrincipalName,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$SkuMappingCache
     )
 
     try {
@@ -1601,8 +1604,8 @@ function Get-UserLicenseDetails {
             }
         }
 
-        # Get SKU mapping
-        $skuMapping = Get-TenantLicenseSkus
+        # Get SKU mapping - use cached version if provided, otherwise fetch it
+        $skuMapping = if ($SkuMappingCache) { $SkuMappingCache } else { Get-TenantLicenseSkus }
 
         $licenses = @()
         foreach ($assignedLicense in $user.AssignedLicenses) {
@@ -1715,6 +1718,9 @@ function Export-UserLicenseReport {
         Write-Host "Converting to Excel format..." -ForegroundColor Cyan
         $excel = $null
         $workbook = $null
+        $worksheet = $null
+        $usedRange = $null
+        $headerRow = $null
 
         try {
             $excel = New-Object -ComObject Excel.Application -ErrorAction Stop
@@ -1748,19 +1754,37 @@ function Export-UserLicenseReport {
             Write-Host "Successfully exported user license report to: $xlsxPath" -ForegroundColor Green
             Write-Host "Total users: $($report.Count)" -ForegroundColor Cyan
 
+            # Clean up temporary CSV file after successful XLSX creation
+            try { Remove-Item $csvPath -Force -ErrorAction SilentlyContinue } catch {}
+
             return $xlsxPath
         } catch {
             Write-Warning "Failed to convert to Excel format: $($_.Exception.Message)"
             Write-Host "CSV file available at: $csvPath" -ForegroundColor Yellow
             return $csvPath
         } finally {
+            # Release all COM objects to prevent memory leaks
+            if ($headerRow) {
+                try { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($headerRow) | Out-Null } catch {}
+                $headerRow = $null
+            }
+            if ($usedRange) {
+                try { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($usedRange) | Out-Null } catch {}
+                $usedRange = $null
+            }
+            if ($worksheet) {
+                try { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($worksheet) | Out-Null } catch {}
+                $worksheet = $null
+            }
             if ($workbook) {
                 try { $workbook.Close($false) } catch {}
-                [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+                try { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null } catch {}
+                $workbook = $null
             }
             if ($excel) {
                 try { $excel.Quit() } catch {}
-                [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+                try { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null } catch {}
+                $excel = $null
             }
             [System.GC]::Collect()
             [System.GC]::WaitForPendingFinalizers()

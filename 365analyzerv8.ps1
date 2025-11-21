@@ -3449,9 +3449,19 @@ $entraCheckLicensesButton.add_Click({
     }
     $statusLabel.Text = "Checking licenses..."; $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     try {
+        # Fetch SKU mapping once for all users (performance optimization)
+        $statusLabel.Text = "Loading license information..."
+        [System.Windows.Forms.Application]::DoEvents()
+        $skuMapping = Get-TenantLicenseSkus
+
         $licenseDetails = ""
+        $processedCount = 0
         foreach ($upn in $selectedUpns) {
-            $result = Get-UserLicenseDetails -UserPrincipalName $upn
+            $processedCount++
+            $statusLabel.Text = "Checking licenses... ($processedCount/$($selectedUpns.Count))"
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $result = Get-UserLicenseDetails -UserPrincipalName $upn -SkuMappingCache $skuMapping
             if ($result) {
                 $licenseDetails += "User: $($result.DisplayName) ($($result.UserPrincipalName))`r`n"
                 $licenseDetails += "License Status: $($result.LicenseStatus)`r`n"
