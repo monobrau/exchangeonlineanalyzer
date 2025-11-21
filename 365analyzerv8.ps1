@@ -4573,6 +4573,86 @@ $securityInvestigationButton.add_Click({
 
         $configGroupBox.Controls.AddRange(@($investigatorNameLabel, $investigatorNameTextBox, $companyNameLabel, $companyNameTextBox, $daysLabel, $daysComboBox, $connectionStatusLabel))
 
+        # Report Selection section
+        $reportsGroupBox = New-Object System.Windows.Forms.GroupBox
+        $reportsGroupBox.Text = "Select Reports to Export"
+        $reportsGroupBox.Location = New-Object System.Drawing.Point(15, 260)
+        $reportsGroupBox.Size = New-Object System.Drawing.Size(400, 220)
+
+        # Select All / Deselect All buttons
+        $selectAllReportsBtn = New-Object System.Windows.Forms.Button
+        $selectAllReportsBtn.Text = "Select All"
+        $selectAllReportsBtn.Location = New-Object System.Drawing.Point(20, 25)
+        $selectAllReportsBtn.Size = New-Object System.Drawing.Size(80, 25)
+
+        $deselectAllReportsBtn = New-Object System.Windows.Forms.Button
+        $deselectAllReportsBtn.Text = "Deselect All"
+        $deselectAllReportsBtn.Location = New-Object System.Drawing.Point(110, 25)
+        $deselectAllReportsBtn.Size = New-Object System.Drawing.Size(90, 25)
+
+        # Checkboxes for each report type
+        $messageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
+        $messageTraceCheckBox.Text = "Message Trace (last 10 days)"
+        $messageTraceCheckBox.Location = New-Object System.Drawing.Point(20, 60)
+        $messageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $messageTraceCheckBox.Checked = $true
+
+        $inboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
+        $inboxRulesCheckBox.Text = "Inbox Rules"
+        $inboxRulesCheckBox.Location = New-Object System.Drawing.Point(20, 85)
+        $inboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $inboxRulesCheckBox.Checked = $true
+
+        $transportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
+        $transportRulesCheckBox.Text = "Transport Rules"
+        $transportRulesCheckBox.Location = New-Object System.Drawing.Point(20, 110)
+        $transportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $transportRulesCheckBox.Checked = $true
+
+        $mailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
+        $mailFlowCheckBox.Text = "Mail Flow Connectors"
+        $mailFlowCheckBox.Location = New-Object System.Drawing.Point(20, 135)
+        $mailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $mailFlowCheckBox.Checked = $true
+
+        $mailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
+        $mailboxForwardingCheckBox.Text = "Mailbox Forwarding && Delegation"
+        $mailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(20, 160)
+        $mailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $mailboxForwardingCheckBox.Checked = $true
+
+        $auditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $auditLogsCheckBox.Text = "Audit Logs (Graph)"
+        $auditLogsCheckBox.Location = New-Object System.Drawing.Point(20, 185)
+        $auditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $auditLogsCheckBox.Checked = $true
+
+        # Select All button click handler
+        $selectAllReportsBtn.add_Click({
+            $messageTraceCheckBox.Checked = $true
+            $inboxRulesCheckBox.Checked = $true
+            $transportRulesCheckBox.Checked = $true
+            $mailFlowCheckBox.Checked = $true
+            $mailboxForwardingCheckBox.Checked = $true
+            $auditLogsCheckBox.Checked = $true
+        })
+
+        # Deselect All button click handler
+        $deselectAllReportsBtn.add_Click({
+            $messageTraceCheckBox.Checked = $false
+            $inboxRulesCheckBox.Checked = $false
+            $transportRulesCheckBox.Checked = $false
+            $mailFlowCheckBox.Checked = $false
+            $mailboxForwardingCheckBox.Checked = $false
+            $auditLogsCheckBox.Checked = $false
+        })
+
+        $reportsGroupBox.Controls.AddRange(@(
+            $selectAllReportsBtn, $deselectAllReportsBtn,
+            $messageTraceCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
+            $mailFlowCheckBox, $mailboxForwardingCheckBox, $auditLogsCheckBox
+        ))
+
         # Generate Button
         $generateButton = New-Object System.Windows.Forms.Button
         $generateButton.Text = "🚀 Generate Security Investigation"
@@ -4644,8 +4724,30 @@ $securityInvestigationButton.add_Click({
                 if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
                 $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
 
+                # Get report selections from checkboxes
+                $reportSelections = @{
+                    IncludeMessageTrace = $messageTraceCheckBox.Checked
+                    IncludeInboxRules = $inboxRulesCheckBox.Checked
+                    IncludeTransportRules = $transportRulesCheckBox.Checked
+                    IncludeMailFlowConnectors = $mailFlowCheckBox.Checked
+                    IncludeMailboxForwarding = $mailboxForwardingCheckBox.Checked
+                    IncludeAuditLogs = $auditLogsCheckBox.Checked
+                }
+
+                # Validate at least one report is selected
+                $anySelected = $false
+                foreach ($key in $reportSelections.Keys) {
+                    if ($reportSelections[$key]) { $anySelected = $true; break }
+                }
+                if (-not $anySelected) {
+                    [System.Windows.Forms.MessageBox]::Show("Please select at least one report to export.", "No Reports Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    $generateButton.Enabled = $true
+                    $securityForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                    return
+                }
+
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -4795,7 +4897,7 @@ $securityInvestigationButton.add_Click({
         $closeButton.add_Click({ $securityForm.Close() })
 
         # Add all controls to main panel
-        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $generateButton, $progressLabel, $closeButton))
+        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $reportsGroupBox, $generateButton, $progressLabel, $closeButton))
 
         $securityForm.Controls.Add($securityMainPanel)
 
@@ -5819,44 +5921,24 @@ $entraRefreshRolesButton.add_Click({
         return
     }
     
-    $statusLabel.Text = "Fetching directory roles from server..."
-    $mainForm.Refresh()
-    
-    # Get all directory roles once (server-side)
-    $directoryRoles = Get-MgDirectoryRole -ErrorAction Stop
-    
     $statusLabel.Text = "Refreshing roles for selected users..."
     $mainForm.Refresh()
-    
+
     $processedCount = 0
     foreach ($userUpn in $selectedUpns) {
         $processedCount++
         $statusLabel.Text = "Refreshing roles for user $processedCount of $($selectedUpns.Count): $userUpn"
         $mainForm.Refresh()
-        
+
         try {
-            # Get the user's object ID (GUID) for matching
-            $userObj = Get-MgUser -UserId $userUpn -Property Id -ErrorAction SilentlyContinue
-            if (-not $userObj) {
-                continue
-            }
-            $userId = $userObj.Id
+            # Get user roles using Get-MgUserMemberOf (more efficient)
             $userRoles = @()
-            
-            # Check each directory role for this user (server-side)
-            foreach ($role in $directoryRoles) {
-                try {
-                    $roleMembers = Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -ErrorAction SilentlyContinue
-                    if ($roleMembers) {
-                        foreach ($member in $roleMembers) {
-                            if ($member.Id -eq $userId) {
-                                $userRoles += $role.DisplayName
-                                break
-                            }
-                        }
+            $userRoleMemberships = Get-MgUserMemberOf -UserId $userUpn -ErrorAction SilentlyContinue
+            if ($userRoleMemberships) {
+                foreach ($role in $userRoleMemberships) {
+                    if ($role.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                        $userRoles += $role.DisplayName
                     }
-                } catch {
-                    # Silently continue if role member lookup fails
                 }
             }
             $rolesText = if ($userRoles.Count -gt 0) { ($userRoles -join ", ") } else { "No Roles" }
