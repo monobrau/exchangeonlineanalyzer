@@ -7,14 +7,18 @@ function Get-MfaCoverageReport {
         try {
             $secDefaults = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction Stop
             if ($secDefaults -and $secDefaults.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$secDefaults.isEnabled }
-        } catch {}
+        } catch {
+            Write-Verbose "Failed to get Security Defaults status: $($_.Exception.Message)"
+        }
 
         # 2) Conditional Access policies requiring MFA (tenant-wide set)
         $caPolicies = @()
         try {
             $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
             if ($resp.value) { $caPolicies = $resp.value }
-        } catch {}
+        } catch {
+            Write-Verbose "Failed to get Conditional Access policies: $($_.Exception.Message)"
+        }
 
         # Filter enabled policies that require MFA
         $mfaPolicies = @()
@@ -37,7 +41,11 @@ function Get-MfaCoverageReport {
 
             # Directory roles map (for policy role assignment evaluation)
             $roles = @(); $roleIdToName = @{}
-            try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
+            try {
+                $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue
+            } catch {
+                Write-Verbose "Failed to get directory roles: $($_.Exception.Message)"
+            }
             foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
             foreach ($u in $userPage) {
@@ -57,7 +65,9 @@ function Get-MfaCoverageReport {
                             }
                         }
                     }
-                } catch {}
+                } catch {
+                    Write-Verbose "Failed to get authentication methods for user $($u.Id): $($_.Exception.Message)"
+                }
 
                 # Determine if any MFA CA policy applies to this user
                 $userGroups = @()
@@ -68,7 +78,9 @@ function Get-MfaCoverageReport {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
                     }
-                } catch {}
+                } catch {
+                    Write-Verbose "Failed to get group membership for user $($u.Id): $($_.Exception.Message)"
+                }
 
                 $userCaRequiresMfa = $false
                 foreach ($p in $mfaPolicies) {
@@ -105,7 +117,9 @@ function Get-MfaCoverageReport {
                     MfaCovered         = $covered
                 }
             }
-        } catch {}
+        } catch {
+            Write-Verbose "Failed to get users for MFA coverage report: $($_.Exception.Message)"
+        }
 
         $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
         return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users }
@@ -121,13 +135,21 @@ function Get-UserSecurityGroupsReport {
 
         # Directory roles (e.g., Global Administrator)
         $roles = @()
-        try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
+        try {
+            $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue
+        } catch {
+            Write-Verbose "Failed to get directory roles: $($_.Exception.Message)"
+        }
         $roleIdToName = @{}
         foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
         # Users
         $users = @()
-        try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
+        try {
+            $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+        } catch {
+            Write-Verbose "Failed to get users: $($_.Exception.Message)"
+        }
 
         foreach ($u in $users) {
             $groups = @()
@@ -139,7 +161,9 @@ function Get-UserSecurityGroupsReport {
                     elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.Id)) { $roleIdToName[$m.Id] } else { 'Directory Role' } }
                     if ($name) { $groups += $name }
                 }
-            } catch {}
+            } catch {
+                Write-Verbose "Failed to get group membership for user $($u.Id): $($_.Exception.Message)"
+            }
 
             $results.Add([pscustomobject]@{
                 DisplayName       = $u.DisplayName
@@ -597,6 +621,12 @@ function Get-ExchangeMessageTrace {
             $winStart = $start.AddDays($d)
             $winEnd   = $winStart.AddDays(1)
 
+            # Update progress for each day
+            $percentComplete = [Math]::Floor((($d + 1) / 10) * 100)
+            Write-Progress -Activity "Collecting message trace data" `
+                          -Status "Processing day $($d + 1) of 10 ($($winStart.ToString('yyyy-MM-dd')))" `
+                          -PercentComplete $percentComplete
+
             try {
                 if ($hasV2) {
                     # Seek-based pagination using StartingRecipientAddress and ResultSize
@@ -629,12 +659,20 @@ function Get-ExchangeMessageTrace {
                     $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
                     if ($batch) { [void]$results.AddRange($batch) }
                 }
-            } catch {}
+            } catch {
+                Write-Verbose "Failed to get message trace for day $d ($winStart): $($_.Exception.Message)"
+                # Continue to next day
+            }
         }
+
+        Write-Progress -Activity "Collecting message trace data" -Completed
+        Write-Host "Collected $($results.Count) message trace records" -ForegroundColor Green
 
         return [System.Collections.ArrayList]$results
     } catch {
+        Write-Progress -Activity "Collecting message trace data" -Completed
         Write-Error "Failed to collect message trace: $($_.Exception.Message)"
+        Write-Verbose "Error details: $($_.Exception.ToString())"
         return @()
     }
 }
@@ -647,13 +685,28 @@ function Get-ExchangeInboxRules {
         try {
             $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
         } catch {
+            Write-Verbose "Failed to get all mailboxes, falling back to limited result size"
             # Fallback narrower call if needed
             $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
         }
 
+        $totalMailboxes = $mailboxes.Count
+        $processedCount = 0
+        Write-Host "Found $totalMailboxes mailboxes to process" -ForegroundColor Cyan
+
         $allRules = New-Object System.Collections.Generic.List[object]
         foreach ($mbx in $mailboxes) {
+            $processedCount++
             $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
+
+            # Update progress every 10 mailboxes
+            if ($processedCount % 10 -eq 0 -or $processedCount -eq $totalMailboxes) {
+                $percentComplete = [Math]::Floor(($processedCount / $totalMailboxes) * 100)
+                Write-Progress -Activity "Analyzing inbox rules" `
+                              -Status "$processedCount of $totalMailboxes mailboxes processed" `
+                              -PercentComplete $percentComplete
+            }
+
             try {
                 $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
                 foreach ($r in $rules) {
@@ -676,13 +729,19 @@ function Get-ExchangeInboxRules {
                     [void]$allRules.Add($obj)
                 }
             } catch {
-                Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
+                Write-Verbose "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
+                # Continue processing other mailboxes
             }
         }
 
+        Write-Progress -Activity "Analyzing inbox rules" -Completed
+        Write-Host "Processed $processedCount mailboxes, found $($allRules.Count) inbox rules" -ForegroundColor Green
+
         return [System.Collections.ArrayList]$allRules
     } catch {
+        Write-Progress -Activity "Analyzing inbox rules" -Completed
         Write-Error "Failed to export inbox rules: $($_.Exception.Message)"
+        Write-Verbose "Error details: $($_.Exception.ToString())"
         return @()
     }
 }
@@ -892,14 +951,28 @@ function Get-MailboxForwardingAndDelegation {
         try {
             $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
         } catch {
+            Write-Verbose "Failed to get all mailboxes, falling back to limited result size"
             # Fallback narrower call if needed
             $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
         }
 
+        $totalMailboxes = $mailboxes.Count
+        $processedCount = 0
+        Write-Host "Found $totalMailboxes mailboxes to process" -ForegroundColor Cyan
+
         $results = New-Object System.Collections.Generic.List[object]
 
         foreach ($mbx in $mailboxes) {
+            $processedCount++
             $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
+
+            # Update progress every 10 mailboxes
+            if ($processedCount % 10 -eq 0 -or $processedCount -eq $totalMailboxes) {
+                $percentComplete = [Math]::Floor(($processedCount / $totalMailboxes) * 100)
+                Write-Progress -Activity "Analyzing mailbox forwarding and delegation" `
+                              -Status "$processedCount of $totalMailboxes mailboxes processed" `
+                              -PercentComplete $percentComplete
+            }
 
             try {
                 # Get mailbox-level forwarding settings
@@ -921,14 +994,18 @@ function Get-MailboxForwardingAndDelegation {
 
                     $sendAsUsers = $permissions | Where-Object { $_.AccessRights -contains "SendAs" } |
                                   Select-Object -ExpandProperty User | ForEach-Object { $_.ToString() }
-                } catch {}
+                } catch {
+                    Write-Verbose "Failed to get permissions for ${upn}: $($_.Exception.Message)"
+                }
 
                 # Get Send-On-Behalf
                 try {
                     if ($mbx.GrantSendOnBehalfTo -and $mbx.GrantSendOnBehalfTo.Count -gt 0) {
                         $sendOnBehalfUsers = $mbx.GrantSendOnBehalfTo | ForEach-Object { $_.ToString() }
                     }
-                } catch {}
+                } catch {
+                    Write-Verbose "Failed to get Send-On-Behalf for ${upn}: $($_.Exception.Message)"
+                }
 
                 $obj = [pscustomobject]@{
                     UserPrincipalName           = $upn
@@ -944,13 +1021,19 @@ function Get-MailboxForwardingAndDelegation {
                 [void]$results.Add($obj)
 
             } catch {
-                Write-Warning "Failed to process mailbox ${upn}: $($_.Exception.Message)"
+                Write-Verbose "Failed to process mailbox ${upn}: $($_.Exception.Message)"
+                # Continue processing other mailboxes
             }
         }
 
+        Write-Progress -Activity "Analyzing mailbox forwarding and delegation" -Completed
+        Write-Host "Processed $processedCount mailboxes" -ForegroundColor Green
+
         return [System.Collections.ArrayList]$results
     } catch {
+        Write-Progress -Activity "Analyzing mailbox forwarding and delegation" -Completed
         Write-Error "Failed to collect mailbox forwarding and delegation: $($_.Exception.Message)"
+        Write-Verbose "Error details: $($_.Exception.ToString())"
         return @()
     }
 }
@@ -1632,53 +1715,123 @@ function Get-UserLicenseDetails {
 
 # Get all users with their license information
 function Get-AllUsersLicenseReport {
-    try {
-        $users = Get-MgUser -All -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -ErrorAction Stop
+    param(
+        [Parameter(Mandatory=$false)]
+        [int]$PageSize = 999  # Maximum users per API call
+    )
 
+    try {
         # Get SKU mapping once
         $skuMapping = Get-TenantLicenseSkus
 
-        $report = @()
-        $totalUsers = $users.Count
-        $processedCount = 0
+        # Use ArrayList for better performance than array concatenation
+        $report = New-Object System.Collections.ArrayList
 
-        foreach ($user in $users) {
-            $processedCount++
-
-            # Progress reporting
-            if ($processedCount % 50 -eq 0) {
-                Write-Progress -Activity "Processing user licenses" -Status "$processedCount of $totalUsers users processed" -PercentComplete (($processedCount / $totalUsers) * 100)
+        # Get total user count first for progress reporting
+        Write-Progress -Activity "Counting users" -Status "Getting user count..."
+        $userCount = 0
+        try {
+            # Try to get count using ConsistencyLevel header
+            $countResult = Get-MgUser -Top 1 -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+            if ($userCount -eq 0) {
+                # Fallback: estimate based on first page
+                $firstPage = Get-MgUser -Top $PageSize -Property Id -ErrorAction Stop
+                $userCount = $firstPage.Count * 10  # Rough estimate
             }
-
-            $licenses = @()
-            if ($user.AssignedLicenses -and $user.AssignedLicenses.Count -gt 0) {
-                foreach ($assignedLicense in $user.AssignedLicenses) {
-                    $skuId = $assignedLicense.SkuId
-                    if ($skuMapping.ContainsKey($skuId)) {
-                        $licenses += $skuMapping[$skuId].FriendlyName
-                    } else {
-                        $licenses += "Unknown SKU: $skuId"
-                    }
-                }
-            }
-
-            $licenseStatus = if ($licenses.Count -gt 0) { 'Licensed' } else { 'Unlicensed' }
-            $licenseNames = if ($licenses.Count -gt 0) { ($licenses -join '; ') } else { 'None' }
-
-            $report += [PSCustomObject]@{
-                UserPrincipalName = $user.UserPrincipalName
-                DisplayName = $user.DisplayName
-                AccountEnabled = $user.AccountEnabled
-                LicenseStatus = $licenseStatus
-                LicenseCount = $licenses.Count
-                Licenses = $licenseNames
-            }
+        } catch {
+            Write-Verbose "Could not get user count, will report as processed"
+            $userCount = -1  # Unknown count
         }
 
+        $processedCount = 0
+        $currentPage = 0
+
+        # Paginate through users to avoid loading all at once
+        do {
+            # Fetch one page of users
+            $pageParams = @{
+                Top = $PageSize
+                Property = 'Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled'
+                ErrorAction = 'Stop'
+            }
+
+            if ($currentPage -gt 0) {
+                $pageParams['Skip'] = $currentPage * $PageSize
+            }
+
+            try {
+                $users = Get-MgUser @pageParams -ConsistencyLevel eventual
+            } catch {
+                # If pagination fails, try without skip
+                Write-Verbose "Pagination failed, attempting to get all users at once"
+                $users = Get-MgUser -All -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -ErrorAction Stop
+            }
+
+            if (-not $users -or $users.Count -eq 0) {
+                break
+            }
+
+            # Process this batch of users
+            foreach ($user in $users) {
+                $processedCount++
+
+                # Update progress more frequently (every 25 users)
+                if ($processedCount % 25 -eq 0) {
+                    if ($userCount -gt 0) {
+                        $percentComplete = [Math]::Min(100, [Math]::Floor(($processedCount / $userCount) * 100))
+                        Write-Progress -Activity "Processing user licenses" `
+                                      -Status "$processedCount of ~$userCount users processed" `
+                                      -PercentComplete $percentComplete
+                    } else {
+                        Write-Progress -Activity "Processing user licenses" `
+                                      -Status "$processedCount users processed"
+                    }
+                }
+
+                # Process user licenses
+                $licenses = @()
+                if ($user.AssignedLicenses -and $user.AssignedLicenses.Count -gt 0) {
+                    foreach ($assignedLicense in $user.AssignedLicenses) {
+                        $skuId = $assignedLicense.SkuId
+                        if ($skuMapping -and $skuMapping.ContainsKey($skuId)) {
+                            $licenses += $skuMapping[$skuId].FriendlyName
+                        } else {
+                            $licenses += "Unknown SKU: $skuId"
+                        }
+                    }
+                }
+
+                $licenseStatus = if ($licenses.Count -gt 0) { 'Licensed' } else { 'Unlicensed' }
+                $licenseNames = if ($licenses.Count -gt 0) { ($licenses -join '; ') } else { 'None' }
+
+                # Use ArrayList.Add for better performance
+                $report.Add([PSCustomObject]@{
+                    UserPrincipalName = $user.UserPrincipalName
+                    DisplayName = $user.DisplayName
+                    AccountEnabled = $user.AccountEnabled
+                    LicenseStatus = $licenseStatus
+                    LicenseCount = $licenses.Count
+                    Licenses = $licenseNames
+                }) | Out-Null
+            }
+
+            $currentPage++
+
+            # Check if we got a full page (if not, we're done)
+            if ($users.Count -lt $PageSize) {
+                break
+            }
+
+        } while ($true)
+
         Write-Progress -Activity "Processing user licenses" -Completed
+        Write-Host "Processed $processedCount users total" -ForegroundColor Cyan
+
         return $report
     } catch {
+        Write-Progress -Activity "Processing user licenses" -Completed
         Write-Error "Failed to generate user license report: $($_.Exception.Message)"
+        Write-Verbose "Error details: $($_.Exception.ToString())"
         return @()
     }
 }
