@@ -141,7 +141,7 @@ Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
 
 3. **Run the Script**
    ```powershell
-   .\365analyzerv8.ps1
+   .\ExchangeOnlineAnalyzer.ps1
    ```
 
 ## 💻 Usage
