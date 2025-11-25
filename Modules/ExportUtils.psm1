@@ -323,6 +323,14 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeAuditLogs = $true,
         [Parameter(Mandatory=$false)]
+        [bool]$IncludeConditionalAccessPolicies = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeAppRegistrations = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeSignInLogs = $false,
+        [Parameter(Mandatory=$false)]
+        [int]$SignInLogsDaysBack = 7,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
 
@@ -455,17 +463,45 @@ function New-SecurityInvestigationReport {
         }
     }
 
-    # Collect data from Microsoft Graph (audit logs only)
+    # Collect data from Microsoft Graph (audit logs and sign-in logs)
     if ($graphConnected) {
         try {
             if ($IncludeAuditLogs) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
                 $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
             }
+
+            if ($IncludeSignInLogs) {
+                try {
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This requires Azure AD Premium license." }
+                    $report.SignInLogs = Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers
+                    if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
+                        Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
+                    }
+                } catch {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                        Write-Warning "Insufficient permissions to read sign-in logs. Requires 'AuditLog.Read.All' permission."
+                        $report.SignInLogs = @()
+                        $report.SignInLogsError = "Permission denied - requires AuditLog.Read.All"
+                    } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*premium*") {
+                        Write-Warning "Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants can only access last 7 days."
+                        $report.SignInLogs = @()
+                        $report.SignInLogsError = "License required - Azure AD Premium P1/P2 (free tenants limited to 7 days)"
+                    } else {
+                        Write-Warning "Failed to collect sign-in logs: $($_.Exception.Message)"
+                        $report.SignInLogs = @()
+                        $report.SignInLogsError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.SignInLogs = @()
+            }
         } catch {
             Write-Warning "Failed to collect Microsoft Graph data: $($_.Exception.Message)"
             $report.GraphDataError = $_.Exception.Message
         }
+    } else {
+        $report.SignInLogs = @()
     }
 
     # MFA Coverage and User Security Groups
@@ -479,6 +515,75 @@ function New-SecurityInvestigationReport {
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
+    }
+
+    # Conditional Access Policies and App Registrations
+    if ($graphConnected -and ($IncludeConditionalAccessPolicies -or $IncludeAppRegistrations)) {
+        try {
+            # Import SecurityAnalysis module if available
+            $securityAnalysisModule = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
+            if (Test-Path $securityAnalysisModule) {
+                Import-Module $securityAnalysisModule -Force -ErrorAction SilentlyContinue
+                
+                # Collect Conditional Access Policies
+                if ($IncludeConditionalAccessPolicies) {
+                    try {
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting Conditional Access policies..." }
+                        $report.ConditionalAccessPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop
+                        Write-Host "Collected $($report.ConditionalAccessPolicies.Count) Conditional Access policies" -ForegroundColor Green
+                    } catch {
+                        if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                            Write-Warning "Insufficient permissions to read Conditional Access policies. Requires 'Policy.Read.All' permission."
+                            $report.ConditionalAccessPolicies = @()
+                            $report.CAPoliciesError = "Permission denied - requires Policy.Read.All"
+                        } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*") {
+                            Write-Warning "Conditional Access requires Azure AD Premium P1 license."
+                            $report.ConditionalAccessPolicies = @()
+                            $report.CAPoliciesError = "License required - Azure AD Premium P1"
+                        } else {
+                            Write-Warning "Failed to collect Conditional Access policies: $($_.Exception.Message)"
+                            $report.ConditionalAccessPolicies = @()
+                            $report.CAPoliciesError = $_.Exception.Message
+                        }
+                    }
+                } else {
+                    $report.ConditionalAccessPolicies = @()
+                }
+                
+                # Collect App Registrations
+                if ($IncludeAppRegistrations) {
+                    try {
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting app registrations..." }
+                        $report.AppRegistrations = Get-AppRegistrations -ErrorAction Stop
+                        Write-Host "Collected $($report.AppRegistrations.Count) app registrations" -ForegroundColor Green
+                    } catch {
+                        if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                            Write-Warning "Insufficient permissions to read app registrations. Requires 'Application.Read.All' permission."
+                            $report.AppRegistrations = @()
+                            $report.AppRegistrationsError = "Permission denied - requires Application.Read.All"
+                        } else {
+                            Write-Warning "Failed to collect app registrations: $($_.Exception.Message)"
+                            $report.AppRegistrations = @()
+                            $report.AppRegistrationsError = $_.Exception.Message
+                        }
+                    }
+                } else {
+                    $report.AppRegistrations = @()
+                }
+            } else {
+                Write-Warning "SecurityAnalysis module not found. CA Policies and App Registrations will not be collected."
+                if ($IncludeConditionalAccessPolicies) { $report.ConditionalAccessPolicies = @() }
+                if ($IncludeAppRegistrations) { $report.AppRegistrations = @() }
+            }
+        } catch {
+            Write-Warning "Failed to collect CA Policies or App Registrations: $($_.Exception.Message)"
+            if ($IncludeConditionalAccessPolicies -and -not $report.ConditionalAccessPolicies) { $report.ConditionalAccessPolicies = @() }
+            if ($IncludeAppRegistrations -and -not $report.AppRegistrations) { $report.AppRegistrations = @() }
+        }
+    } else {
+        # Both are disabled or not connected, set empty arrays
+        $report.ConditionalAccessPolicies = @()
+        $report.AppRegistrations = @()
     }
 
     # Generate AI Investigation Prompt
@@ -535,6 +640,117 @@ function New-SecurityInvestigationReport {
             if ($report.AuditLogs -and $report.AuditLogs.Count -gt 0) {
                 try { $report.AuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.AuditLogsCsv = $csv }
                 catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
+            }
+
+            # Sign-in Logs export
+            $csv = Join-Path $report.OutputFolder "SignInLogs.csv"
+            $json = Join-Path $report.OutputFolder "SignInLogs.json"
+            if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
+                try { 
+                    $report.SignInLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.SignInLogsCsv = $csv
+                    Write-Host "Exported $($report.SignInLogs.Count) sign-in log entries to SignInLogs.csv" -ForegroundColor Green
+                }
+                catch { 
+                    $report.SignInLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.SignInLogsJson = $json
+                    Write-Warning "Failed to export sign-in logs to CSV, exported to JSON instead"
+                }
+            } elseif ($report.SignInLogsError) {
+                # Write error to a text file
+                $errorFile = Join-Path $report.OutputFolder "SignInLogs_Error.txt"
+                "Error collecting Sign-in Logs:`n$($report.SignInLogsError)`n`nNote: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days of data." | Out-File -FilePath $errorFile -Encoding utf8
+                $report.FilePaths.SignInLogsError = $errorFile
+            }
+
+            # Conditional Access Policies export
+            $csv = Join-Path $report.OutputFolder "ConditionalAccessPolicies.csv"
+            $json = Join-Path $report.OutputFolder "ConditionalAccessPolicies.json"
+            if ($report.ConditionalAccessPolicies -and $report.ConditionalAccessPolicies.Count -gt 0) {
+                try {
+                    # Flatten CA policies for CSV export
+                    $caPoliciesFlat = $report.ConditionalAccessPolicies | ForEach-Object {
+                        [PSCustomObject]@{
+                            PolicyId = $_.Id
+                            DisplayName = $_.DisplayName
+                            State = $_.State
+                            CreatedDateTime = $_.CreatedDateTime
+                            ModifiedDateTime = $_.ModifiedDateTime
+                            RiskLevel = $_.RiskLevel
+                            RiskScore = $_.Analysis.RiskScore
+                            IsEnabled = $_.Analysis.IsEnabled
+                            HasSuspiciousConditions = $_.Analysis.HasSuspiciousConditions
+                            HasSuspiciousControls = $_.Analysis.HasSuspiciousControls
+                            SuspiciousIndicators = ($_.Analysis.SuspiciousIndicators -join "; ")
+                            UserIncludeAll = if ($_.Conditions.Users.IncludeUsers) { $_.Conditions.Users.IncludeUsers -contains "All" } else { $false }
+                            UserExcludeCount = if ($_.Conditions.Users.ExcludeUsers) { $_.Conditions.Users.ExcludeUsers.Count } else { 0 }
+                            LocationIncludeAll = if ($_.Conditions.Locations.IncludeLocations) { $_.Conditions.Locations.IncludeLocations -contains "All" } else { $false }
+                            RequiresMfa = if ($_.GrantControls.BuiltInControls) { $_.GrantControls.BuiltInControls -contains "mfa" } else { $false }
+                            RequiresCompliantDevice = if ($_.GrantControls.BuiltInControls) { $_.GrantControls.BuiltInControls -contains "compliantDevice" } else { $false }
+                            RequiresHybridDevice = if ($_.GrantControls.BuiltInControls) { $_.GrantControls.BuiltInControls -contains "domainJoinedDevice" } else { $false }
+                            SignInFrequencyHours = if ($_.SessionControls.SignInFrequency) { $_.SessionControls.SignInFrequency.Value } else { $null }
+                        }
+                    }
+                    $caPoliciesFlat | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.ConditionalAccessPoliciesCsv = $csv
+                } catch {
+                    Write-Warning "Failed to export CA Policies to CSV: $($_.Exception.Message)"
+                    try {
+                        $report.ConditionalAccessPolicies | ConvertTo-Json -Depth 10 | Out-File -FilePath $json -Encoding utf8
+                        $report.FilePaths.ConditionalAccessPoliciesJson = $json
+                    } catch {
+                        Write-Warning "Failed to export CA Policies to JSON: $($_.Exception.Message)"
+                    }
+                }
+            } elseif ($report.CAPoliciesError) {
+                # Write error to a text file
+                $errorFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies_Error.txt"
+                "Error collecting Conditional Access Policies:`n$($report.CAPoliciesError)" | Out-File -FilePath $errorFile -Encoding utf8
+                $report.FilePaths.ConditionalAccessPoliciesError = $errorFile
+            }
+
+            # App Registrations export
+            $csv = Join-Path $report.OutputFolder "AppRegistrations.csv"
+            $json = Join-Path $report.OutputFolder "AppRegistrations.json"
+            if ($report.AppRegistrations -and $report.AppRegistrations.Count -gt 0) {
+                try {
+                    # Flatten app registrations for CSV export
+                    $appRegsFlat = $report.AppRegistrations | ForEach-Object {
+                        [PSCustomObject]@{
+                            AppId = $_.AppId
+                            DisplayName = $_.DisplayName
+                            PublisherDomain = $_.PublisherDomain
+                            CreatedDateTime = $_.CreatedDateTime
+                            RiskLevel = $_.RiskLevel
+                            RiskScore = $_.Analysis.RiskScore
+                            HasHighPrivilegePermissions = $_.Analysis.HasHighPrivilegePermissions
+                            HasSuspiciousPermissions = $_.Analysis.HasSuspiciousPermissions
+                            HasUserConsent = $_.Analysis.HasUserConsent
+                            SuspiciousIndicators = ($_.Analysis.SuspiciousIndicators -join "; ")
+                            RequiredPermissions = ($_.RequiredPermissions -join "; ")
+                            HasCertificates = $_.HasCertificates
+                            HasPasswordCredentials = $_.HasPasswordCredentials
+                            WebRedirectUris = ($_.WebRedirectUris -join "; ")
+                            ServicePrincipalId = if ($_.ServicePrincipal) { $_.ServicePrincipal.Id } else { $null }
+                            ServicePrincipalType = if ($_.ServicePrincipal) { $_.ServicePrincipal.ServicePrincipalType } else { $null }
+                        }
+                    }
+                    $appRegsFlat | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.AppRegistrationsCsv = $csv
+                } catch {
+                    Write-Warning "Failed to export App Registrations to CSV: $($_.Exception.Message)"
+                    try {
+                        $report.AppRegistrations | ConvertTo-Json -Depth 10 | Out-File -FilePath $json -Encoding utf8
+                        $report.FilePaths.AppRegistrationsJson = $json
+                    } catch {
+                        Write-Warning "Failed to export App Registrations to JSON: $($_.Exception.Message)"
+                    }
+                }
+            } elseif ($report.AppRegistrationsError) {
+                # Write error to a text file
+                $errorFile = Join-Path $report.OutputFolder "AppRegistrations_Error.txt"
+                "Error collecting App Registrations:`n$($report.AppRegistrationsError)" | Out-File -FilePath $errorFile -Encoding utf8
+                $report.FilePaths.AppRegistrationsError = $errorFile
             }
 
             # User Security Posture export (combined MFA + Groups + Mailbox Forwarding/Delegation)
@@ -1208,7 +1424,142 @@ function Get-GraphAuditLogs {
     }
 }
 
-function Get-GraphSignInLogs { param([int]$DaysBack = 10,[switch]$MaxAvailable) return @() }
+function Get-GraphSignInLogs {
+    param(
+        [Parameter(Mandatory=$false)]
+        [int]$DaysBack = 7,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting sign-in logs (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect sign-in logs."
+            return @()
+        }
+        
+        # Free tenants are limited to 7 days, Premium tenants can go up to 30 days
+        if ($DaysBack -gt 7) {
+            Write-Host "  Note: Retrieving more than 7 days requires Azure AD Premium license." -ForegroundColor Cyan
+        }
+        
+        $allLogs = New-Object System.Collections.ArrayList
+        $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
+        $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        
+        # Build filter for date range
+        $filter = "createdDateTime ge $startIso"
+        
+        # If specific users are selected, filter by user IDs
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            Write-Host "  Filtering sign-in logs for $($SelectedUsers.Count) selected user(s)..." -ForegroundColor Cyan
+            
+            $userIds = @()
+            foreach ($upn in $SelectedUsers) {
+                try {
+                    $user = Get-MgUser -UserId $upn -Property Id -ErrorAction Stop
+                    if ($user -and $user.Id) {
+                        $userIds += $user.Id
+                    }
+                } catch {
+                    Write-Warning "  Could not resolve user ID for $upn : $($_.Exception.Message)"
+                }
+            }
+            
+            if ($userIds.Count -gt 0) {
+                # Build filter with user IDs (OR condition)
+                $userIdFilters = $userIds | ForEach-Object { "userId eq '$_'" }
+                $userFilter = "(" + ($userIdFilters -join " or ") + ")"
+                $filter = "$filter and $userFilter"
+            } else {
+                Write-Warning "  No valid user IDs found for selected users. Collecting all sign-in logs."
+            }
+        }
+        
+        Write-Host "  Querying Microsoft Graph API for sign-in logs..." -ForegroundColor Cyan
+        
+        try {
+            # Attempt to retrieve sign-in logs
+            $signIns = Get-MgAuditLogSignIn -Filter $filter -All -ErrorAction Stop
+            
+            if ($signIns) {
+                Write-Host "  Retrieved $($signIns.Count) sign-in log entries" -ForegroundColor Green
+                
+                # Flatten sign-in logs for easier export
+                foreach ($signIn in $signIns) {
+                    try {
+                        $logEntry = [PSCustomObject]@{
+                            CreatedDateTime = $signIn.CreatedDateTime
+                            UserPrincipalName = if ($signIn.UserId) { 
+                                try {
+                                    $user = Get-MgUser -UserId $signIn.UserId -Property UserPrincipalName -ErrorAction SilentlyContinue
+                                    if ($user) { $user.UserPrincipalName } else { $signIn.UserId }
+                                } catch {
+                                    $signIn.UserId
+                                }
+                            } else { "Unknown" }
+                            UserId = $signIn.UserId
+                            AppDisplayName = $signIn.AppDisplayName
+                            ClientAppUsed = $signIn.ClientAppUsed
+                            IPAddress = $signIn.IpAddress
+                            Location = if ($signIn.Location) {
+                                $locParts = @()
+                                if ($signIn.Location.City) { $locParts += $signIn.Location.City }
+                                if ($signIn.Location.State) { $locParts += $signIn.Location.State }
+                                if ($signIn.Location.CountryOrRegion) { $locParts += $signIn.Location.CountryOrRegion }
+                                if ($locParts.Count -gt 0) { $locParts -join ", " } else { "Unknown" }
+                            } else { "Unknown" }
+                            Status = if ($signIn.Status) {
+                                if ($signIn.Status.AdditionalDetails) { $signIn.Status.AdditionalDetails } else { $signIn.Status.ErrorCode }
+                            } else { "Unknown" }
+                            RiskLevelAggregated = $signIn.RiskLevelAggregated
+                            RiskLevelDuringSignIn = $signIn.RiskLevelDuringSignIn
+                            RiskState = $signIn.RiskState
+                            ConditionalAccessStatus = if ($signIn.ConditionalAccessStatus) { $signIn.ConditionalAccessStatus } else { "Not Applied" }
+                            DeviceDetail = if ($signIn.DeviceDetail) {
+                                $deviceParts = @()
+                                if ($signIn.DeviceDetail.Browser) { $deviceParts += $signIn.DeviceDetail.Browser }
+                                if ($signIn.DeviceDetail.OperatingSystem) { $deviceParts += $signIn.DeviceDetail.OperatingSystem }
+                                if ($deviceParts.Count -gt 0) { $deviceParts -join " / " } else { "Unknown" }
+                            } else { "Unknown" }
+                            ResourceDisplayName = $signIn.ResourceDisplayName
+                            ResourceId = $signIn.ResourceId
+                        }
+                        [void]$allLogs.Add($logEntry)
+                    } catch {
+                        Write-Warning "  Error processing sign-in log entry: $($_.Exception.Message)"
+                    }
+                }
+            } else {
+                Write-Host "  No sign-in logs found for the specified time range" -ForegroundColor Yellow
+            }
+        } catch {
+            # Check for licensing/permission errors
+            $errorMsg = $_.Exception.Message
+            if ($errorMsg -like "*insufficient privileges*" -or $errorMsg -like "*permission*" -or $errorMsg -like "*access denied*" -or $errorMsg -like "*Forbidden*") {
+                Write-Warning "Permission denied: Sign-in logs require 'AuditLog.Read.All' permission."
+                throw "Permission denied - requires AuditLog.Read.All permission"
+            } elseif ($errorMsg -like "*license*" -or $errorMsg -like "*subscription*" -or $errorMsg -like "*premium*" -or $errorMsg -like "*not available*") {
+                Write-Warning "License required: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days."
+                throw "License required - Azure AD Premium P1/P2 (free tenants limited to 7 days)"
+            } else {
+                Write-Error "Failed to retrieve sign-in logs: $errorMsg"
+                throw
+            }
+        }
+        
+        Write-Host "  Total sign-in log entries collected: $($allLogs.Count)" -ForegroundColor Gray
+        
+        return [System.Collections.ArrayList]$allLogs
+    } catch {
+        Write-Error "Failed to collect sign-in logs: $($_.Exception.Message)"
+        return @()
+    }
+}
 
 function Get-MailboxForwardingAndDelegation {
     param(
@@ -1430,6 +1781,8 @@ function New-AISecurityInvestigationPrompt {
     $outboundConnCount = if($Report.OutboundConnectors){$Report.OutboundConnectors.Count}else{0}
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
+    $caPoliciesCount = if($Report.ConditionalAccessPolicies){$Report.ConditionalAccessPolicies.Count}else{0}
+    $appRegistrationsCount = if($Report.AppRegistrations){$Report.AppRegistrations.Count}else{0}
 
     $prompt = @"
 # SECURITY INVESTIGATION AI PROMPT
@@ -1447,6 +1800,8 @@ function New-AISecurityInvestigationPrompt {
 - **Connectors:** $inboundConnCount inbound, $outboundConnCount outbound
 - **Audit Logs:** $auditLogsCount directory audit events
 - **MFA Coverage:** tenant-wide defaults/CA and per-user states
+- **Conditional Access Policies:** $caPoliciesCount policies
+- **App Registrations:** $appRegistrationsCount registered applications
 
 ## INVESTIGATION OBJECTIVES
 
@@ -1633,6 +1988,8 @@ Location: $($Report.OutputFolder)
 - TransportRules.csv: Review for risky conditions/actions (auto-forwarding, allow lists, spoof bypass).
 - InboundConnectors.csv / OutboundConnectors.csv: Validate trusted partners, smart hosts, TLS settings, and domain scopes.
 - AuditLogs.csv: Examine administrative actions and policy changes.
+- ConditionalAccessPolicies.csv: Review for malicious CA policies that bypass MFA, apply to all users/locations, or have suspicious exclusions. Focus on high-risk policies.
+- AppRegistrations.csv: Review for malicious apps with high-privilege permissions, suspicious redirect URIs, unverified publishers, or user consent enabled. Focus on high-risk applications.
 - MFAStatus.csv: Identify users not covered by any MFA control; prioritize remediation.
 - UserSecurityGroups.csv: Validate privileged group/role membership (e.g., Global Administrator).
 
@@ -1717,6 +2074,10 @@ function New-SecurityInvestigationSummary {
     $auditLogsCount = if($Report.AuditLogs){$Report.AuditLogs.Count}else{0}
     $signinLogsCount = 0
     $usersWithActivity = 0
+    $caPoliciesCount = if($Report.ConditionalAccessPolicies){$Report.ConditionalAccessPolicies.Count}else{0}
+    $appRegistrationsCount = if($Report.AppRegistrations){$Report.AppRegistrations.Count}else{0}
+    $highRiskCAPolicies = if($Report.ConditionalAccessPolicies){($Report.ConditionalAccessPolicies | Where-Object { $_.RiskLevel -eq "High" }).Count}else{0}
+    $highRiskApps = if($Report.AppRegistrations){($Report.AppRegistrations | Where-Object { $_.RiskLevel -eq "High" }).Count}else{0}
 
     $summary = @"
 # COMPREHENSIVE SECURITY INVESTIGATION REPORT
@@ -1739,6 +2100,8 @@ function New-SecurityInvestigationSummary {
 
 ### Microsoft Graph Data
 - **Audit Log Events:** $auditLogsCount
+- **Conditional Access Policies:** $caPoliciesCount policies ($highRiskCAPolicies high-risk)
+- **App Registrations:** $appRegistrationsCount applications ($highRiskApps high-risk)
 - **Connection Status:** $($Report.GraphConnection)
 
 ## Investigation Tools and Methods
@@ -1751,6 +2114,8 @@ function New-SecurityInvestigationSummary {
 
 ### Authentication Analysis
 - Replaced sign-in log analysis with MFA coverage and security posture review
+- **Conditional Access Policy Review:** Analyzed CA policies for malicious configurations, MFA bypasses, and security gaps
+- **App Registration Security:** Reviewed app registrations for high-privilege permissions, suspicious configurations, and potential threats
 
 ### Administrative Activity Review
 - **Privilege Changes:** Monitored role assignments and permission modifications
@@ -1762,9 +2127,11 @@ function New-SecurityInvestigationSummary {
 
 ### Immediate Actions Required
 1. **MFA Coverage Gaps:** Remediate users not covered by per-user MFA, Security Defaults, or Conditional Access
-2. **Audit Email Forwarding Rules:** Verify all external forwarding is authorized
-3. **Examine Privilege Changes:** Confirm recent role assignments are legitimate
-4. **Monitor External Communications:** Review patterns to unusual external domains
+2. **High-Risk CA Policies:** Review and remediate $highRiskCAPolicies high-risk Conditional Access policies that may bypass security controls
+3. **High-Risk App Registrations:** Investigate and remediate $highRiskApps high-risk app registrations with suspicious permissions or configurations
+4. **Audit Email Forwarding Rules:** Verify all external forwarding is authorized
+5. **Examine Privilege Changes:** Confirm recent role assignments are legitimate
+6. **Monitor External Communications:** Review patterns to unusual external domains
 
 ### Security Improvements Recommended
 1. **Enhanced MFA Enforcement:** Implement MFA for all external access
@@ -1778,7 +2145,8 @@ function New-SecurityInvestigationSummary {
 - **Message Trace:** CSV format with timestamp, sender, recipient, and metadata
 - **Inbox Rules:** CSV format with rule details, conditions, and actions
 - **Audit Logs:** CSV format with activity details and user information
-- **Sign-in Logs:** CSV format with authentication details and risk assessments
+- **Conditional Access Policies:** CSV format with policy details, risk analysis, and suspicious indicators
+- **App Registrations:** CSV format with app details, permissions, risk analysis, and security indicators
 
 ### Investigation Timeline
 - **Data Collection:** Automated collection from multiple sources

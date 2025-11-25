@@ -71,9 +71,9 @@ Safe-ImportModule "$PSScriptRoot\Modules\TransportRules.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\Connectors.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SessionRevocation.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SignInManagement.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\RestrictedSender.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\EntraInvestigator.psm1"
+Safe-ImportModule "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
 
 # Function to show/hide progress bar
 function Show-Progress {
@@ -82,8 +82,11 @@ function Show-Progress {
     if ($progress -ge 0) {
         $progressBar.Visible = $true
         $progressBar.Value = $progress
+        $entraProgressBar.Visible = $true
+        $entraProgressBar.Value = $progress
     } else {
         $progressBar.Visible = $false
+        $entraProgressBar.Visible = $false
     }
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -1725,7 +1728,7 @@ $highlightColorIndexLightRed = 38 # Excel ColorIndex for Light Red (Rose)
 # Script-level variables
 $script:lastExportedXlsxPath = $null 
 $script:currentExchangeConnection = $null
-$script:allLoadedMailboxUPNs = @() 
+$script:allLoadedMailboxUPNs = @()
 
 # MS Graph related script-level variables
 $script:graphConnection = $null
@@ -1749,7 +1752,11 @@ $script:graphScopes = @(
     "ThreatIntelligence.Read.All",
     "ThreatIntelligence.ReadWrite.All",
     "AuditLog.Read.All",
-    "Directory.Read.All"
+    "Directory.Read.All",
+    "IdentityRiskEvent.Read.All",
+    "IdentityRiskyUser.Read.All",
+    "Policy.Read.All",
+    "Application.Read.All"
 )
 
 # --- GUI Setup ---
@@ -2090,12 +2097,16 @@ try {
 $connectButton = New-Object System.Windows.Forms.Button
 $connectButton.Text = "Connect"
 $connectButton.Width = 85
+$connectButton.BackColor = [System.Drawing.Color]::FromArgb(76, 175, 80)  # Green
+$connectButton.ForeColor = [System.Drawing.Color]::White
 $connectButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $connectButtonTooltip.SetToolTip($connectButton, "Connect to Exchange Online (Ctrl+O)")
 
 $disconnectButton = New-Object System.Windows.Forms.Button
 $disconnectButton.Text = "Disconnect"
 $disconnectButton.Width = 95
+$disconnectButton.BackColor = [System.Drawing.Color]::FromArgb(244, 67, 54)  # Red
+$disconnectButton.ForeColor = [System.Drawing.Color]::White
 $disconnectButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $disconnectButtonTooltip.SetToolTip($disconnectButton, "Disconnect from Exchange Online (Ctrl+D)")
 
@@ -2209,8 +2220,6 @@ $manageTransportRulesButton.Text = "Manage Transport Rules"
 $manageTransportRulesButton.Width = 185
 $manageTransportRulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $manageTransportRulesButtonTooltip.SetToolTip($manageTransportRulesButton, "View and manage Exchange Online transport rules")
-
-
 
 # Add analyze selected button for Exchange Online tab
 $analyzeSelectedButton = New-Object System.Windows.Forms.Button
@@ -2564,6 +2573,10 @@ function Show-MultilineInputDialog {
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Width = 200
 
+# Progress bar for Entra tab
+$entraProgressBar = New-Object System.Windows.Forms.ProgressBar
+$entraProgressBar.Width = 200
+
 $exchangeGrid = New-Object System.Windows.Forms.DataGridView
 $exchangeGrid.ReadOnly = $true
 $exchangeGrid.AllowUserToAddRows = $false
@@ -2577,6 +2590,8 @@ $exchangeGrid.EnableHeadersVisualStyles = $true
 $entraConnectGraphButton = New-Object System.Windows.Forms.Button
 $entraConnectGraphButton.Text = "Connect Entra"
 $entraConnectGraphButton.Width = 120
+$entraConnectGraphButton.BackColor = [System.Drawing.Color]::FromArgb(76, 175, 80)  # Green
+$entraConnectGraphButton.ForeColor = [System.Drawing.Color]::White
 $entraConnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraConnectGraphButtonTooltip.SetToolTip($entraConnectGraphButton, "Connect to Microsoft Graph to load users and enable Entra ID features")
 
@@ -2598,6 +2613,8 @@ $searchUsersButtonTooltip.SetToolTip($searchUsersButton, "Search for specific us
 $entraDisconnectGraphButton = New-Object System.Windows.Forms.Button
 $entraDisconnectGraphButton.Text = "Disconnect Entra"
 $entraDisconnectGraphButton.Width = 135
+$entraDisconnectGraphButton.BackColor = [System.Drawing.Color]::FromArgb(244, 67, 54)  # Red
+$entraDisconnectGraphButton.ForeColor = [System.Drawing.Color]::White
 $entraDisconnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDisconnectGraphButtonTooltip.SetToolTip($entraDisconnectGraphButton, "Disconnect from Microsoft Graph")
 
@@ -2744,6 +2761,30 @@ $entraRequirePwdChangeButton.Enabled = $false
 $entraRequirePwdChangeButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraRequirePwdChangeButtonTooltip.SetToolTip($entraRequirePwdChangeButton, "Require selected user(s) to change password at next sign-in (no password change)")
 
+# Add Risky Users button
+$entraRiskyUsersButton = New-Object System.Windows.Forms.Button
+$entraRiskyUsersButton.Text = "View Risky Users"
+$entraRiskyUsersButton.Width = 130
+$entraRiskyUsersButton.Enabled = $false
+$entraRiskyUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$entraRiskyUsersButtonTooltip.SetToolTip($entraRiskyUsersButton, "View users with risk detections (requires Azure AD Premium P2)")
+
+# Add CA Policies button
+$entraCAPoliciesButton = New-Object System.Windows.Forms.Button
+$entraCAPoliciesButton.Text = "View CA Policies"
+$entraCAPoliciesButton.Width = 120
+$entraCAPoliciesButton.Enabled = $false
+$entraCAPoliciesButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$entraCAPoliciesButtonTooltip.SetToolTip($entraCAPoliciesButton, "View and analyze Conditional Access policies (requires Azure AD Premium P1)")
+
+# Add App Registrations button
+$entraAppRegistrationsButton = New-Object System.Windows.Forms.Button
+$entraAppRegistrationsButton.Text = "View App Registrations"
+$entraAppRegistrationsButton.Width = 150
+$entraAppRegistrationsButton.Enabled = $false
+$entraAppRegistrationsButtonTooltip = New-Object System.Windows.Forms.ToolTip
+$entraAppRegistrationsButtonTooltip.SetToolTip($entraAppRegistrationsButton, "View and analyze app registrations for security risks")
+
 $entraSignInGrid              = New-Object System.Windows.Forms.DataGridView
 $entraSignInGrid.ReadOnly     = $true
 $entraSignInGrid.AllowUserToAddRows = $false
@@ -2857,7 +2898,7 @@ $row1.WrapContents = $false
 $row1.AutoSize = $true
 $row1.Controls.AddRange(@($outputFolderLabel, $outputFolderTextBox, $browseFolderButton, $getRulesButton, $openFileButton))
 
-# Row 2: Org Domains, Keywords, Manage Restricted Senders, ProgressBar
+# Row 2: Org Domains, Keywords, ProgressBar
 $row2 = New-Object System.Windows.Forms.FlowLayoutPanel
 $row2.Dock = 'Top'
 $row2.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
@@ -2885,7 +2926,7 @@ $entraTab = New-Object System.Windows.Forms.TabPage; $entraTab.Text = "Entra"
 # Top action panel with three rows for better organization
 $entraTopPanel = New-Object System.Windows.Forms.Panel
 $entraTopPanel.Dock = 'Top'
-$entraTopPanel.Height = 105
+$entraTopPanel.Height = 115
 $entraTopPanel.AutoSize = $true
 
 # First row - Connection, loading, selection, and viewing functions (approximately 1160px total width)
@@ -2908,10 +2949,10 @@ $entraTopRow2.WrapContents = $false
 $entraTopRow2.AutoSize = $false
 $entraTopRow2.Controls.AddRange(@($entraMfaFetchButton, $entraCheckLicensesButton, $entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton))
 
-# Third row - Search controls
+# Third row - Search controls and security analysis buttons
 $entraTopRow3 = New-Object System.Windows.Forms.FlowLayoutPanel
 $entraTopRow3.Location = New-Object System.Drawing.Point(5, 75)
-$entraTopRow3.Size = New-Object System.Drawing.Size(1200, 25)
+$entraTopRow3.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow3.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow3.WrapContents = $false
 $entraTopRow3.AutoSize = $false
@@ -2928,9 +2969,12 @@ $entraSearchTextBox.Width = 200
 $entraSearchTextBox.Height = 20
 $entraSearchTextBox.PlaceholderText = "Type to filter users..."
 
-# Add search controls to the third row
+# Add search controls and security analysis buttons to the third row
 $entraTopRow3.Controls.Add($entraSearchLabel)
 $entraTopRow3.Controls.Add($entraSearchTextBox)
+$entraTopRow3.Controls.Add($entraRiskyUsersButton)
+$entraTopRow3.Controls.Add($entraCAPoliciesButton)
+$entraTopRow3.Controls.Add($entraAppRegistrationsButton)
 
 # Add all three rows to the top panel
 $entraTopPanel.Controls.Add($entraTopRow1)
@@ -2940,7 +2984,7 @@ $entraTopPanel.Controls.Add($entraTopRow3)
 # Panel for user grid
 $entraGridPanel = New-Object System.Windows.Forms.Panel
 $entraGridPanel.Dock = 'Fill'
-$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 110, 5, 15)
+$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 120, 5, 15)
 $entraGridPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # User grid
@@ -3023,7 +3067,11 @@ $entraOutputFolderTextBox.Location = New-Object System.Drawing.Point(680, 15)
 $entraOutputFolderTextBox.Width = 200
 $entraOutputFolderTextBox.Height = 25
 
-$entraBottomPanel.Controls.AddRange(@($entraBrowseFolderButton, $entraExportSignInLogsButton, $entraExportAuditLogsButton, $entraOpenLastExportButton, $entraOutputFolderLabel, $entraOutputFolderTextBox))
+# Add progress bar to Entra bottom panel
+$entraProgressBar.Location = New-Object System.Drawing.Point(890, 15)
+$entraProgressBar.Height = 25
+
+$entraBottomPanel.Controls.AddRange(@($entraBrowseFolderButton, $entraExportSignInLogsButton, $entraExportAuditLogsButton, $entraOpenLastExportButton, $entraOutputFolderLabel, $entraOutputFolderTextBox, $entraProgressBar))
 
 # Add panels to tab in order
 $entraTab.Controls.Add($entraTopPanel)
@@ -3073,7 +3121,7 @@ $entraConnectGraphButton.add_Click({
     # Show user-friendly message about authentication
     $statusLabel.Text = "Authentication window should appear. If not visible, check your taskbar or Alt+Tab to find it."
     Show-Progress -message "Authentication window should appear. If not visible, check your taskbar or Alt+Tab to find it." -progress 10
-
+    
     try {
         if (Connect-EntraGraph) {
             $script:graphConnection = $true
@@ -3083,6 +3131,9 @@ $entraConnectGraphButton.add_Click({
             $searchUsersButton.Enabled = $true
             $entraDisconnectGraphButton.Enabled = $true
             $entraConnectGraphButton.Enabled = $false
+            $entraRiskyUsersButton.Enabled = $true
+            $entraCAPoliciesButton.Enabled = $true
+            $entraAppRegistrationsButton.Enabled = $true
             
             Write-Host "Microsoft Graph connected. Load buttons enabled: LoadAll=$($loadAllUsersButton.Enabled), Search=$($searchUsersButton.Enabled)"
             
@@ -4319,6 +4370,7 @@ $manageTransportRulesButton.add_Click({
 
 
 
+
 $userMailboxGrid.add_CellContentClick({
     $mainForm.BeginInvoke([System.Action]{
         $manageRulesButton.Enabled = $true
@@ -4751,7 +4803,7 @@ $securityInvestigationButton.add_Click({
         $reportsGroupBox = New-Object System.Windows.Forms.GroupBox
         $reportsGroupBox.Text = "Select Reports to Export"
         $reportsGroupBox.Location = New-Object System.Drawing.Point(15, 310)
-        $reportsGroupBox.Size = New-Object System.Drawing.Size(400, 220)
+        $reportsGroupBox.Size = New-Object System.Drawing.Size(400, 320)
 
         # Select All / Deselect All buttons
         $selectAllReportsBtn = New-Object System.Windows.Forms.Button
@@ -4801,6 +4853,43 @@ $securityInvestigationButton.add_Click({
         $auditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $auditLogsCheckBox.Checked = $true
 
+        $caPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
+        $caPoliciesCheckBox.Text = "Conditional Access Policies"
+        $caPoliciesCheckBox.Location = New-Object System.Drawing.Point(20, 210)
+        $caPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $caPoliciesCheckBox.Checked = $true
+
+        $appRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $appRegistrationsCheckBox.Text = "App Registrations"
+        $appRegistrationsCheckBox.Location = New-Object System.Drawing.Point(20, 235)
+        $appRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $appRegistrationsCheckBox.Checked = $true
+
+        $signInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $signInLogsCheckBox.Text = "Sign-in Logs (requires Azure AD Premium)"
+        $signInLogsCheckBox.Location = New-Object System.Drawing.Point(20, 260)
+        $signInLogsCheckBox.Size = New-Object System.Drawing.Size(200, 20)
+        $signInLogsCheckBox.Checked = $false
+
+        $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
+        $signInLogsDaysLabel.Text = "Time Range:"
+        $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(230, 262)
+        $signInLogsDaysLabel.Size = New-Object System.Drawing.Size(70, 20)
+        $signInLogsDaysLabel.Enabled = $false
+
+        $signInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
+        $signInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
+        $signInLogsDaysComboBox.SelectedItem = "7 days"
+        $signInLogsDaysComboBox.Location = New-Object System.Drawing.Point(300, 260)
+        $signInLogsDaysComboBox.Size = New-Object System.Drawing.Size(80, 20)
+        $signInLogsDaysComboBox.Enabled = $false
+
+        # Enable/disable time range selector based on checkbox
+        $signInLogsCheckBox.add_CheckedChanged({
+            $signInLogsDaysLabel.Enabled = $signInLogsCheckBox.Checked
+            $signInLogsDaysComboBox.Enabled = $signInLogsCheckBox.Checked
+        })
+
         # Select All button click handler
         $selectAllReportsBtn.add_Click({
             $messageTraceCheckBox.Checked = $true
@@ -4809,6 +4898,9 @@ $securityInvestigationButton.add_Click({
             $mailFlowCheckBox.Checked = $true
             $mailboxForwardingCheckBox.Checked = $true
             $auditLogsCheckBox.Checked = $true
+            $caPoliciesCheckBox.Checked = $true
+            $appRegistrationsCheckBox.Checked = $true
+            $signInLogsCheckBox.Checked = $true
         })
 
         # Deselect All button click handler
@@ -4819,12 +4911,17 @@ $securityInvestigationButton.add_Click({
             $mailFlowCheckBox.Checked = $false
             $mailboxForwardingCheckBox.Checked = $false
             $auditLogsCheckBox.Checked = $false
+            $caPoliciesCheckBox.Checked = $false
+            $appRegistrationsCheckBox.Checked = $false
+            $signInLogsCheckBox.Checked = $false
         })
 
         $reportsGroupBox.Controls.AddRange(@(
             $selectAllReportsBtn, $deselectAllReportsBtn,
             $messageTraceCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
-            $mailFlowCheckBox, $mailboxForwardingCheckBox, $auditLogsCheckBox
+            $mailFlowCheckBox, $mailboxForwardingCheckBox, $auditLogsCheckBox,
+            $caPoliciesCheckBox, $appRegistrationsCheckBox,
+            $signInLogsCheckBox, $signInLogsDaysLabel, $signInLogsDaysComboBox
         ))
 
         # Generate Button
@@ -4898,6 +4995,13 @@ $securityInvestigationButton.add_Click({
                 if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
                 $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
 
+                # Parse sign-in logs time range
+                $signInLogsDays = 7
+                $selectedRange = $signInLogsDaysComboBox.SelectedItem
+                if ($selectedRange -eq "1 day") { $signInLogsDays = 1 }
+                elseif ($selectedRange -eq "7 days") { $signInLogsDays = 7 }
+                elseif ($selectedRange -eq "30 days") { $signInLogsDays = 30 }
+
                 # Get report selections from checkboxes
                 $reportSelections = @{
                     IncludeMessageTrace = $messageTraceCheckBox.Checked
@@ -4906,6 +5010,10 @@ $securityInvestigationButton.add_Click({
                     IncludeMailFlowConnectors = $mailFlowCheckBox.Checked
                     IncludeMailboxForwarding = $mailboxForwardingCheckBox.Checked
                     IncludeAuditLogs = $auditLogsCheckBox.Checked
+                    IncludeConditionalAccessPolicies = $caPoliciesCheckBox.Checked
+                    IncludeAppRegistrations = $appRegistrationsCheckBox.Checked
+                    IncludeSignInLogs = $signInLogsCheckBox.Checked
+                    SignInLogsDaysBack = $signInLogsDays
                 }
 
                 # Validate at least one report is selected
@@ -4938,7 +5046,7 @@ $securityInvestigationButton.add_Click({
                 }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -SelectedUsers $selectedUsers
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -5080,11 +5188,11 @@ $securityInvestigationButton.add_Click({
             }
         })
 
-        # Close button
+        # Close button - positioned at bottom right (standard Windows pattern)
         $closeButton = New-Object System.Windows.Forms.Button
         $closeButton.Text = "Close"
-        $closeButton.Location = New-Object System.Drawing.Point(730, 140)
-        $closeButton.Size = New-Object System.Drawing.Size(100, 50)
+        $closeButton.Location = New-Object System.Drawing.Point(790, 640)
+        $closeButton.Size = New-Object System.Drawing.Size(100, 35)
         $closeButton.add_Click({ $securityForm.Close() })
 
         # Add all controls to main panel
@@ -5239,17 +5347,12 @@ $openSignInsBtn.Text = "Open Sign-in Logs"
 $openSignInsBtn.Location = New-Object System.Drawing.Point(15, 50)
 $openSignInsBtn.Size = New-Object System.Drawing.Size(130, 25)
 
-$openRestrictedBtn = New-Object System.Windows.Forms.Button
-$openRestrictedBtn.Text = "Restricted Entities"
-$openRestrictedBtn.Location = New-Object System.Drawing.Point(290, 50)
-$openRestrictedBtn.Size = New-Object System.Drawing.Size(130, 25)
-
 $openCABtn = New-Object System.Windows.Forms.Button
 $openCABtn.Text = "Conditional Access"
 $openCABtn.Location = New-Object System.Drawing.Point(150, 50)
 $openCABtn.Size = New-Object System.Drawing.Size(130, 25)
 
-$entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabel,$containerCombo,$openSignInsBtn,$openRestrictedBtn,$openCABtn))
+$entraPortalGroup.Controls.AddRange(@($profileLabel,$profileCombo,$containerLabel,$containerCombo,$openSignInsBtn,$openCABtn))
 $profileCombo.BringToFront()
 $containerCombo.BringToFront()
 
@@ -5462,7 +5565,6 @@ $profileCombo.add_SelectedIndexChanged({
 })
 
 $openSignInsBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'SignIns' } catch {} })
-$openRestrictedBtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'RestrictedEntities' } catch {} })
 $openCABtn.add_Click({ try { Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force; Open-EntraDeepLink -ProfileName $profileCombo.SelectedItem -ContainerName $containerCombo.SelectedItem -Target 'ConditionalAccess' } catch {} })
 
 # Export User Licenses Report button event handler
@@ -5800,7 +5902,7 @@ WHAT'S NEW
 - Entra Portal Shortcuts (Report Generator tab):
   - Select Firefox Profile and Container; auto-matches best container to signed-in tenant
   - Refresh and Reload Disk buttons to repopulate containers
-  - Opens Entra deep links (Sign-ins, Conditional Access, Restricted Entities)
+  - Opens Entra deep links (Sign-ins, Conditional Access)
   - Requires Firefox add-on: "Open external links in a container"; protocol: ext+container:name=<Container>&url=<Url>
 
 - AI Analysis tab:
@@ -6473,6 +6575,415 @@ $entraViewAdminsButton.add_Click({
     }
 })
 
+# --- Risky Users button event handler ---
+$entraRiskyUsersButton.add_Click({
+    try {
+        $statusLabel.Text = "Loading risky users..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $mainForm.Refresh()
+        
+        # Check if connected to Microsoft Graph
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            [System.Windows.Forms.MessageBox]::Show("Please connect to Microsoft Graph first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "Not connected to Microsoft Graph"
+            return
+        }
+        
+        # Import SecurityAnalysis module
+        $securityAnalysisModule = Join-Path $PSScriptRoot "Modules\SecurityAnalysis.psm1"
+        if (-not (Test-Path $securityAnalysisModule)) {
+            [System.Windows.Forms.MessageBox]::Show("SecurityAnalysis module not found.", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            return
+        }
+        Import-Module $securityAnalysisModule -Force -ErrorAction Stop
+        
+        # Get risky users
+        $riskyUsers = Get-RiskyUsers -ErrorAction Stop
+        
+        if ($riskyUsers.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No risky users found. This may require Azure AD Premium P2 license.", "No Risky Users", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "No risky users found"
+            return
+        }
+        
+        # Create dialog with DataGridView
+        $dialog = New-Object System.Windows.Forms.Form
+        $dialog.Text = "Risky Users ($($riskyUsers.Count) found)"
+        $dialog.Size = New-Object System.Drawing.Size(1200, 600)
+        $dialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        
+        $grid = New-Object System.Windows.Forms.DataGridView
+        $grid.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $grid.ReadOnly = $true
+        $grid.AllowUserToAddRows = $false
+        $grid.AutoGenerateColumns = $true
+        $grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
+        $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+        $grid.MultiSelect = $false
+        
+        # Flatten risky users data for display
+        $displayData = $riskyUsers | ForEach-Object {
+            $riskDets = if ($_.RiskDetections) { ($_.RiskDetections | ForEach-Object { "$($_.RiskType) ($($_.ActivityDateTime))" }) -join "; " } else { "None" }
+            [PSCustomObject]@{
+                UserPrincipalName = $_.UserPrincipalName
+                DisplayName = $_.DisplayName
+                RiskLevel = $_.RiskLevel
+                RiskState = $_.RiskState
+                RiskDetail = $_.RiskDetail
+                LastUpdated = $_.LastUpdatedDateTime
+                RiskDetections = $riskDets
+                Department = $_.Department
+                JobTitle = $_.JobTitle
+            }
+        }
+        
+        # Convert to DataTable for proper DataGridView binding
+        $dt = New-Object System.Data.DataTable
+        if ($displayData.Count -gt 0) {
+            # Add columns
+            $displayData[0].PSObject.Properties.Name | ForEach-Object {
+                $col = New-Object System.Data.DataColumn
+                $col.ColumnName = $_
+                $col.DataType = [System.Object]
+                [void]$dt.Columns.Add($col)
+            }
+            
+            # Add rows
+            foreach ($row in $displayData) {
+                $dr = $dt.NewRow()
+                foreach ($prop in $row.PSObject.Properties) {
+                    $dr[$prop.Name] = $prop.Value
+                }
+                $dt.Rows.Add($dr)
+            }
+        }
+        
+        $grid.DataSource = $dt
+        $dialog.Controls.Add($grid)
+        
+        # Force refresh
+        $grid.Refresh()
+        $dialog.Refresh()
+        
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Displaying $($riskyUsers.Count) risky users"
+        $dialog.ShowDialog($mainForm) | Out-Null
+    } catch {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Error loading risky users: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error loading risky users: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
+# --- CA Policies button event handler ---
+$entraCAPoliciesButton.add_Click({
+    try {
+        $statusLabel.Text = "Loading Conditional Access policies..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $mainForm.Refresh()
+        
+        # Check if connected to Microsoft Graph
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            [System.Windows.Forms.MessageBox]::Show("Please connect to Microsoft Graph first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "Not connected to Microsoft Graph"
+            return
+        }
+        
+        # Import SecurityAnalysis module
+        $securityAnalysisModule = Join-Path $PSScriptRoot "Modules\SecurityAnalysis.psm1"
+        if (-not (Test-Path $securityAnalysisModule)) {
+            [System.Windows.Forms.MessageBox]::Show("SecurityAnalysis module not found.", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            return
+        }
+        Import-Module $securityAnalysisModule -Force -ErrorAction Stop
+        
+        # Get CA policies
+        Write-Host "Fetching Conditional Access policies..." -ForegroundColor Cyan
+        $caPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop
+        Write-Host "Retrieved $($caPolicies.Count) CA policies" -ForegroundColor Green
+        
+        if ($caPolicies.Count -eq 0) {
+            $msg = "No Conditional Access policies found.`n`nThis may be due to:`n- No policies configured`n- Insufficient permissions (requires Policy.Read.All)`n- Missing Azure AD Premium P1 license"
+            [System.Windows.Forms.MessageBox]::Show($msg, "No CA Policies", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "No CA policies found"
+            return
+        }
+        
+        # Create dialog with DataGridView
+        $dialog = New-Object System.Windows.Forms.Form
+        $dialog.Text = "Conditional Access Policies ($($caPolicies.Count) found)"
+        $dialog.Size = New-Object System.Drawing.Size(1400, 600)
+        $dialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        
+        $grid = New-Object System.Windows.Forms.DataGridView
+        $grid.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $grid.ReadOnly = $true
+        $grid.AllowUserToAddRows = $false
+        $grid.AutoGenerateColumns = $true
+        $grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
+        $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+        $grid.MultiSelect = $false
+        
+        # Flatten CA policies data for display
+        Write-Host "Processing CA policies for display..." -ForegroundColor Cyan
+        $displayData = @()
+        foreach ($policy in $caPolicies) {
+            try {
+                $builtInControls = if ($policy.GrantControls -and $policy.GrantControls.BuiltInControls) { $policy.GrantControls.BuiltInControls } else { @() }
+                $suspiciousIndicators = if ($policy.Analysis -and $policy.Analysis.SuspiciousIndicators) { ($policy.Analysis.SuspiciousIndicators -join "; ") } else { "" }
+                $riskScore = if ($policy.Analysis -and $policy.Analysis.RiskScore) { $policy.Analysis.RiskScore } else { 0 }
+                
+                $displayData += [PSCustomObject]@{
+                    DisplayName = if ($policy.DisplayName) { $policy.DisplayName } else { "Unknown" }
+                    State = if ($policy.State) { $policy.State } else { "Unknown" }
+                    RiskLevel = if ($policy.RiskLevel) { $policy.RiskLevel } else { "Low" }
+                    RiskScore = $riskScore
+                    RequiresMfa = $builtInControls -contains "mfa"
+                    RequiresCompliantDevice = $builtInControls -contains "compliantDevice"
+                    SuspiciousIndicators = $suspiciousIndicators
+                    CreatedDateTime = if ($policy.CreatedDateTime) { $policy.CreatedDateTime } else { $null }
+                    ModifiedDateTime = if ($policy.ModifiedDateTime) { $policy.ModifiedDateTime } else { $null }
+                }
+            } catch {
+                Write-Warning "Error processing policy: $($_.Exception.Message)"
+                Write-Host "Policy object type: $($policy.GetType().FullName)" -ForegroundColor Yellow
+                Write-Host "Policy properties: $($policy | Get-Member -MemberType Property | Select-Object -ExpandProperty Name | Out-String)" -ForegroundColor Yellow
+            }
+        }
+        
+        Write-Host "Displaying $($displayData.Count) policies in grid" -ForegroundColor Green
+        
+        if ($displayData.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No CA policies data to display. Check console for errors.", "No Data", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "No CA policies data to display"
+            return
+        }
+        
+        # Debug: Show first item structure
+        if ($displayData.Count -gt 0) {
+            Write-Host "First policy sample:" -ForegroundColor Cyan
+            $displayData[0] | Format-List | Out-String | Write-Host
+        }
+        
+        # Convert to DataTable for proper DataGridView binding
+        $dt = New-Object System.Data.DataTable
+        if ($displayData.Count -gt 0) {
+            # Add columns
+            $displayData[0].PSObject.Properties.Name | ForEach-Object {
+                $col = New-Object System.Data.DataColumn
+                $col.ColumnName = $_
+                $col.DataType = [System.Object]
+                [void]$dt.Columns.Add($col)
+            }
+            
+            # Add rows
+            foreach ($row in $displayData) {
+                $dr = $dt.NewRow()
+                foreach ($prop in $row.PSObject.Properties) {
+                    $dr[$prop.Name] = $prop.Value
+                }
+                $dt.Rows.Add($dr)
+            }
+        }
+        
+        $grid.DataSource = $dt
+        $dialog.Controls.Add($grid)
+        
+        # Force refresh
+        $grid.Refresh()
+        $dialog.Refresh()
+        
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Displaying $($displayData.Count) CA policies"
+        $dialog.ShowDialog($mainForm) | Out-Null
+    } catch {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Error loading CA policies: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error loading CA policies: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
+# --- App Registrations button event handler ---
+$entraAppRegistrationsButton.add_Click({
+    try {
+        $statusLabel.Text = "Loading app registrations..."
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $mainForm.Refresh()
+        
+        # Check if connected to Microsoft Graph
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            [System.Windows.Forms.MessageBox]::Show("Please connect to Microsoft Graph first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "Not connected to Microsoft Graph"
+            return
+        }
+        
+        # Import SecurityAnalysis module
+        $securityAnalysisModule = Join-Path $PSScriptRoot "Modules\SecurityAnalysis.psm1"
+        if (-not (Test-Path $securityAnalysisModule)) {
+            [System.Windows.Forms.MessageBox]::Show("SecurityAnalysis module not found.", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            return
+        }
+        Import-Module $securityAnalysisModule -Force -ErrorAction Stop
+        
+        # Get app registrations
+        Write-Host "Fetching app registrations (this may take a moment for large tenants)..." -ForegroundColor Cyan
+        $statusLabel.Text = "Loading app registrations... This may take a moment for large tenants."
+        $mainForm.Refresh()
+        $appRegs = Get-AppRegistrations -ErrorAction Stop
+        Write-Host "Retrieved $($appRegs.Count) app registrations" -ForegroundColor Green
+        
+        if ($appRegs.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No app registrations found.", "No Apps", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "No app registrations found"
+            return
+        }
+        
+        # Create dialog with DataGridView
+        $dialog = New-Object System.Windows.Forms.Form
+        $dialog.Text = "App Registrations ($($appRegs.Count) found)"
+        $dialog.Size = New-Object System.Drawing.Size(1400, 600)
+        $dialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        
+        $grid = New-Object System.Windows.Forms.DataGridView
+        $grid.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $grid.ReadOnly = $true
+        $grid.AllowUserToAddRows = $false
+        $grid.AutoGenerateColumns = $true
+        $grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
+        $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+        $grid.MultiSelect = $false
+        
+        # Flatten app registrations data for display
+        Write-Host "Processing app registrations for display..." -ForegroundColor Cyan
+        $displayData = @()
+        foreach ($app in $appRegs) {
+            try {
+                $suspiciousIndicators = if ($app.Analysis -and $app.Analysis.SuspiciousIndicators) { ($app.Analysis.SuspiciousIndicators -join "; ") } else { "" }
+                $requiredPermissions = if ($app.RequiredPermissions) { ($app.RequiredPermissions -join "; ") } else { "" }
+                $riskScore = if ($app.Analysis -and $app.Analysis.RiskScore) { $app.Analysis.RiskScore } else { 0 }
+                
+                $displayData += [PSCustomObject]@{
+                    DisplayName = if ($app.DisplayName) { $app.DisplayName } else { "Unknown" }
+                    AppId = if ($app.AppId) { $app.AppId } else { "Unknown" }
+                    PublisherDomain = if ($app.PublisherDomain) { $app.PublisherDomain } else { "None" }
+                    RiskLevel = if ($app.RiskLevel) { $app.RiskLevel } else { "Low" }
+                    RiskScore = $riskScore
+                    HasHighPrivilegePermissions = if ($app.Analysis) { $app.Analysis.HasHighPrivilegePermissions } else { $false }
+                    HasUserConsent = if ($app.Analysis) { $app.Analysis.HasUserConsent } else { $false }
+                    SuspiciousIndicators = $suspiciousIndicators
+                    RequiredPermissions = $requiredPermissions
+                    HasCertificates = if ($app.HasCertificates) { $app.HasCertificates } else { $false }
+                    HasPasswordCredentials = if ($app.HasPasswordCredentials) { $app.HasPasswordCredentials } else { $false }
+                    CreatedDateTime = if ($app.CreatedDateTime) { $app.CreatedDateTime } else { $null }
+                }
+            } catch {
+                Write-Warning "Error processing app: $($_.Exception.Message)"
+            }
+        }
+        
+        Write-Host "Displaying $($displayData.Count) apps in grid" -ForegroundColor Green
+        
+        if ($displayData.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No app registrations data to display. Check console for errors.", "No Data", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $statusLabel.Text = "No app registrations data to display"
+            return
+        }
+        
+        # Convert to DataTable for proper DataGridView binding
+        $dt = New-Object System.Data.DataTable
+        if ($displayData.Count -gt 0) {
+            # Define column order - CreatedDateTime should be second
+            $columnOrder = @('DisplayName', 'CreatedDateTime', 'AppId', 'PublisherDomain', 'RiskLevel', 'RiskScore', 
+                            'HasHighPrivilegePermissions', 'HasUserConsent', 'SuspiciousIndicators', 
+                            'RequiredPermissions', 'HasCertificates', 'HasPasswordCredentials')
+            
+            # Add columns in desired order
+            foreach ($colName in $columnOrder) {
+                if ($displayData[0].PSObject.Properties.Name -contains $colName) {
+                    $col = New-Object System.Data.DataColumn
+                    $col.ColumnName = $colName
+                    $col.DataType = [System.Object]
+                    [void]$dt.Columns.Add($col)
+                }
+            }
+            
+            # Add any remaining columns that weren't in the order list
+            foreach ($propName in $displayData[0].PSObject.Properties.Name) {
+                if ($columnOrder -notcontains $propName) {
+                    $col = New-Object System.Data.DataColumn
+                    $col.ColumnName = $propName
+                    $col.DataType = [System.Object]
+                    [void]$dt.Columns.Add($col)
+                }
+            }
+            
+            # Add rows
+            foreach ($row in $displayData) {
+                $dr = $dt.NewRow()
+                foreach ($prop in $row.PSObject.Properties) {
+                    if ($dt.Columns.Contains($prop.Name)) {
+                        $dr[$prop.Name] = $prop.Value
+                    }
+                }
+                $dt.Rows.Add($dr)
+            }
+        }
+        
+        $grid.DataSource = $dt
+        
+        # Reorder columns in DataGridView to match desired order
+        if ($dt.Columns.Count -gt 0) {
+            $columnOrder = @('DisplayName', 'CreatedDateTime', 'AppId', 'PublisherDomain', 'RiskLevel', 'RiskScore', 
+                            'HasHighPrivilegePermissions', 'HasUserConsent', 'SuspiciousIndicators', 
+                            'RequiredPermissions', 'HasCertificates', 'HasPasswordCredentials')
+            
+            $displayIndex = 0
+            foreach ($colName in $columnOrder) {
+                if ($grid.Columns.Contains($colName)) {
+                    $grid.Columns[$colName].DisplayIndex = $displayIndex
+                    $displayIndex++
+                }
+            }
+            
+            # Set display index for any remaining columns
+            foreach ($col in $grid.Columns) {
+                if ($columnOrder -notcontains $col.Name) {
+                    $col.DisplayIndex = $displayIndex
+                    $displayIndex++
+                }
+            }
+        }
+        
+        $dialog.Controls.Add($grid)
+        
+        # Force refresh
+        $grid.Refresh()
+        $dialog.Refresh()
+        
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Displaying $($displayData.Count) app registrations"
+        $dialog.ShowDialog($mainForm) | Out-Null
+    } catch {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Error loading app registrations: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error loading app registrations: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
 # --- Keyboard Shortcuts ---
 $mainForm.add_KeyDown({
     param($sender, $e)
@@ -6576,6 +7087,9 @@ $entraDisconnectGraphButton.add_Click({
         $searchUsersButton.Enabled = $false
         $entraConnectGraphButton.Enabled = $true
         $entraDisconnectGraphButton.Enabled = $false
+        $entraRiskyUsersButton.Enabled = $false
+        $entraCAPoliciesButton.Enabled = $false
+        $entraAppRegistrationsButton.Enabled = $false
         $statusLabel.Text = "Disconnected from Microsoft Graph."
     } catch {
         $statusLabel.Text = "Error disconnecting from Microsoft Graph: $($_.Exception.Message)"
