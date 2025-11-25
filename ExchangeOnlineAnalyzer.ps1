@@ -5343,11 +5343,32 @@ $exportUserLicensesButton.add_Click({
         if ($folderDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $outputFolder = $folderDialog.SelectedPath
 
+            # Get selected users from unified account grid if available
+            $selectedUsers = @()
+            try {
+                if ($unifiedAccountGrid -and $unifiedAccountGrid.Rows.Count -gt 0) {
+                    for ($i = 0; $i -lt $unifiedAccountGrid.Rows.Count; $i++) {
+                        if ($unifiedAccountGrid.Rows[$i].Cells["Select"].Value -eq $true) {
+                            $upn = $unifiedAccountGrid.Rows[$i].Cells["UserPrincipalName"].Value
+                            if ($upn -and -not [string]::IsNullOrWhiteSpace($upn)) {
+                                $selectedUsers += $upn
+                            }
+                        }
+                    }
+                }
+            } catch {
+                # If unified account grid is not available or error occurs, continue with empty selection (all users)
+            }
+
             # Export the report
-            $statusLabel.Text = "Generating user licenses report (this may take a few minutes)..."
+            if ($selectedUsers.Count -gt 0) {
+                $statusLabel.Text = "Generating user licenses report for $($selectedUsers.Count) selected user(s)..."
+            } else {
+                $statusLabel.Text = "Generating user licenses report for all users (this may take a few minutes)..."
+            }
             [System.Windows.Forms.Application]::DoEvents()
 
-            $resultPath = Export-UserLicenseReport -OutputFolder $outputFolder
+            $resultPath = Export-UserLicenseReport -OutputFolder $outputFolder -SelectedUsers $selectedUsers
 
             if ($resultPath) {
                 $statusLabel.Text = "User licenses report exported successfully"

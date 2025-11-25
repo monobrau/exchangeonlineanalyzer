@@ -1975,13 +1975,38 @@ function Get-UserLicenseDetails {
 
 # Get all users with their license information
 function Get-AllUsersLicenseReport {
-    try {
-        $users = Get-MgUser -All -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -ErrorAction Stop
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
 
+    try {
         # Get SKU mapping once
         $skuMapping = Get-TenantLicenseSkus
 
         $report = @()
+        $users = @()
+
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            # Server-side filtering: Get only selected users
+            Write-Host "Processing licenses for $($SelectedUsers.Count) selected user(s)..." -ForegroundColor Cyan
+            foreach ($userIdentifier in $SelectedUsers) {
+                $upn = if ($userIdentifier -is [string]) { $userIdentifier } elseif ($userIdentifier.UserPrincipalName) { $userIdentifier.UserPrincipalName } else { continue }
+                try {
+                    $user = Get-MgUser -UserId $upn -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -ErrorAction Stop
+                    if ($user) {
+                        $users += $user
+                    }
+                } catch {
+                    Write-Warning "Failed to get license information for ${upn}: $($_.Exception.Message)"
+                }
+            }
+        } else {
+            # Get all users if no selection
+            Write-Host "Processing licenses for all users (this may take a few minutes)..." -ForegroundColor Cyan
+            $users = Get-MgUser -All -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -ErrorAction Stop
+        }
+
         $totalUsers = $users.Count
         $processedCount = 0
 
@@ -2019,6 +2044,7 @@ function Get-AllUsersLicenseReport {
         }
 
         Write-Progress -Activity "Processing user licenses" -Completed
+        Write-Host "Processed $($report.Count) user(s)" -ForegroundColor Green
         return $report
     } catch {
         Write-Error "Failed to generate user license report: $($_.Exception.Message)"
@@ -2030,7 +2056,9 @@ function Get-AllUsersLicenseReport {
 function Export-UserLicenseReport {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$OutputFolder
+        [string]$OutputFolder,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
     )
 
     try {
@@ -2046,7 +2074,7 @@ function Export-UserLicenseReport {
 
         # Get license report
         Write-Host "Gathering user license information..." -ForegroundColor Cyan
-        $report = Get-AllUsersLicenseReport
+        $report = Get-AllUsersLicenseReport -SelectedUsers $SelectedUsers
 
         if ($report.Count -eq 0) {
             Write-Warning "No user data found to export."
