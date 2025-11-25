@@ -2095,12 +2095,12 @@ try {
 
 # --- Exchange Online Controls Instantiation ---
 $connectButton = New-Object System.Windows.Forms.Button
-$connectButton.Text = "Connect"
-$connectButton.Width = 85
-$connectButton.BackColor = [System.Drawing.Color]::FromArgb(76, 175, 80)  # Green
+$connectButton.Text = "Connect (Connect Entra First!)"
+$connectButton.Width = 220
+$connectButton.BackColor = [System.Drawing.Color]::FromArgb(255, 152, 0)  # Orange - warning color
 $connectButton.ForeColor = [System.Drawing.Color]::White
 $connectButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$connectButtonTooltip.SetToolTip($connectButton, "Connect to Exchange Online (Ctrl+O)")
+$connectButtonTooltip.SetToolTip($connectButton, "⚠️ IMPORTANT: Connect to Entra/Graph FIRST (go to Entra tab), then return here to connect to Exchange Online. Wrong order causes authentication errors!")
 
 $disconnectButton = New-Object System.Windows.Forms.Button
 $disconnectButton.Text = "Disconnect"
@@ -2593,7 +2593,7 @@ $entraConnectGraphButton.Width = 120
 $entraConnectGraphButton.BackColor = [System.Drawing.Color]::FromArgb(76, 175, 80)  # Green
 $entraConnectGraphButton.ForeColor = [System.Drawing.Color]::White
 $entraConnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$entraConnectGraphButtonTooltip.SetToolTip($entraConnectGraphButton, "Connect to Microsoft Graph to load users and enable Entra ID features")
+$entraConnectGraphButtonTooltip.SetToolTip($entraConnectGraphButton, "Connect to Microsoft Graph to load users and enable Entra ID features. Connect here FIRST before connecting to Exchange Online.")
 
 # Add load options for Entra ID
 $loadAllUsersButton = New-Object System.Windows.Forms.Button
@@ -2835,6 +2835,8 @@ $topActionPanel = New-Object System.Windows.Forms.Panel
 $topActionPanel.Dock = 'Top'
 $topActionPanel.Height = 80
 $topActionPanel.AutoSize = $true
+$topActionPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
+$topActionPanel.Padding = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # First row - Connection, Loading, and Selection
 $exchangeTopRow1 = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -2862,14 +2864,26 @@ $exchangeTopRow1.Controls.Add($exchangeSearchTextBox)
 $topActionPanel.Controls.Add($exchangeTopRow1)
 $topActionPanel.Controls.Add($exchangeTopRow2)
 
+# Warning label at top of Exchange Online tab
+$exchangeWarningLabel = New-Object System.Windows.Forms.Label
+$exchangeWarningLabel.Text = "⚠️ IMPORTANT: Connect to Entra/Graph FIRST (go to Entra tab), then return here to connect to Exchange Online. Wrong order causes authentication errors!"
+$exchangeWarningLabel.Dock = 'Top'
+$exchangeWarningLabel.Height = 25
+$exchangeWarningLabel.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7)  # Amber/Yellow warning color
+$exchangeWarningLabel.ForeColor = [System.Drawing.Color]::Black
+$exchangeWarningLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$exchangeWarningLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$exchangeWarningLabel.Padding = New-Object System.Windows.Forms.Padding(5, 0, 5, 0)
+
 # No-op: removed verbose layout debug logging
 
+$exchangeTab.Controls.Add($exchangeWarningLabel)
 $exchangeTab.Controls.Add($topActionPanel)
 
 # Panel for mailbox label and grid (fills remaining space)
 $mailboxPanel = New-Object System.Windows.Forms.Panel
 $mailboxPanel.Dock = 'Fill'
-$mailboxPanel.Padding = New-Object System.Windows.Forms.Padding(5, 85, 5, 5)
+$mailboxPanel.Padding = New-Object System.Windows.Forms.Padding(5, 110, 5, 5)  # Increased top padding to account for warning label
 $mailboxPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # Add label and grid to mailbox panel
@@ -2924,10 +2938,23 @@ $exchangeTab.Controls.Add($exchangeGrid)
 $entraTab = New-Object System.Windows.Forms.TabPage; $entraTab.Text = "Entra"
 
 # Top action panel with three rows for better organization
+# Info label at top of Entra tab
+$entraWarningLabel = New-Object System.Windows.Forms.Label
+$entraWarningLabel.Text = "ℹ️ Connect to Entra/Graph FIRST, then you can connect to Exchange Online. This prevents authentication conflicts."
+$entraWarningLabel.Dock = 'Top'
+$entraWarningLabel.Height = 25
+$entraWarningLabel.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)  # Blue info color
+$entraWarningLabel.ForeColor = [System.Drawing.Color]::White
+$entraWarningLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$entraWarningLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$entraWarningLabel.Padding = New-Object System.Windows.Forms.Padding(5, 0, 5, 0)
+
 $entraTopPanel = New-Object System.Windows.Forms.Panel
 $entraTopPanel.Dock = 'Top'
 $entraTopPanel.Height = 115
 $entraTopPanel.AutoSize = $true
+$entraTopPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
+$entraTopPanel.Padding = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # First row - Connection, loading, selection, and viewing functions (approximately 1160px total width)
 $entraTopRow1 = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -2984,7 +3011,7 @@ $entraTopPanel.Controls.Add($entraTopRow3)
 # Panel for user grid
 $entraGridPanel = New-Object System.Windows.Forms.Panel
 $entraGridPanel.Dock = 'Fill'
-$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 120, 5, 15)
+$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 145, 5, 15)  # Increased top padding to account for warning label + top panel
 $entraGridPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # User grid
@@ -3074,6 +3101,7 @@ $entraProgressBar.Height = 25
 $entraBottomPanel.Controls.AddRange(@($entraBrowseFolderButton, $entraExportSignInLogsButton, $entraExportAuditLogsButton, $entraOpenLastExportButton, $entraOutputFolderLabel, $entraOutputFolderTextBox, $entraProgressBar))
 
 # Add panels to tab in order
+$entraTab.Controls.Add($entraWarningLabel)
 $entraTab.Controls.Add($entraTopPanel)
 $entraTab.Controls.Add($entraGridPanel)
 $entraTab.Controls.Add($entraBottomPanel)
@@ -4518,9 +4546,11 @@ $entraViewAuditLogsButton.add_Click({
 
 # Bottom panel controls are already set during layout creation
 
-# Add tabs to the tab control
-$tabControl.TabPages.Add($exchangeTab)
+# Add tabs to the tab control - Entra tab first (default)
 $tabControl.TabPages.Add($entraTab)
+$tabControl.TabPages.Add($exchangeTab)
+# Set Entra tab as the default selected tab
+$tabControl.SelectedTab = $entraTab
 
 # --- Report Generator Tab ---
 $reportGeneratorTab = New-Object System.Windows.Forms.TabPage

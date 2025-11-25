@@ -2228,6 +2228,18 @@ function New-SecurityInvestigationZip {
 # Get M365/O365 license SKU mapping from tenant
 function Get-TenantLicenseSkus {
     try {
+        # Ensure Microsoft.Graph.Identity.DirectoryManagement module is imported
+        if (-not (Get-Command Get-MgSubscribedSku -ErrorAction SilentlyContinue)) {
+            Write-Host "Importing Microsoft.Graph.Identity.DirectoryManagement module..." -ForegroundColor Cyan
+            try {
+                Import-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction Stop
+            } catch {
+                Write-Warning "Could not import Microsoft.Graph.Identity.DirectoryManagement module: $_"
+                Write-Warning "License SKU information will not be available. Install with: Install-Module Microsoft.Graph.Identity.DirectoryManagement -Scope CurrentUser"
+                return @{}
+            }
+        }
+        
         $skus = @{}
         $tenantSkus = Get-MgSubscribedSku -All -ErrorAction Stop
 

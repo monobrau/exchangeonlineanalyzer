@@ -34,9 +34,54 @@ function Install-EntraModules {
 function Connect-EntraGraph {
     [CmdletBinding()]
     param()
+    
+    # Check if ExchangeOnlineManagement module is loaded (causes version conflicts)
+    $exoModuleLoaded = $false
+    try {
+        $exoModule = Get-Module -Name ExchangeOnlineManagement -ErrorAction SilentlyContinue
+        if ($exoModule) {
+            $exoModuleLoaded = $true
+            Write-Warning "ExchangeOnlineManagement module is already loaded. This may cause authentication conflicts."
+            Write-Warning "Attempting to unload ExchangeOnlineManagement module..."
+            try {
+                Remove-Module -Name ExchangeOnlineManagement -Force -ErrorAction SilentlyContinue
+                Write-Host "Unloaded ExchangeOnlineManagement module." -ForegroundColor Yellow
+                Start-Sleep -Milliseconds 500  # Give time for assemblies to release
+            } catch {
+                Write-Warning "Could not unload ExchangeOnlineManagement module: $_"
+                Write-Warning "You may need to restart PowerShell and connect to Entra FIRST before Exchange Online."
+            }
+        }
+    } catch {}
+    
     try {
         Disconnect-MgGraph -ErrorAction SilentlyContinue
+        
+        # If Exchange Online was connected, disconnect it
+        try {
+            if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
+                Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+                Write-Host "Disconnected from Exchange Online to prevent conflicts." -ForegroundColor Yellow
+            }
+        } catch {}
+        
         Connect-MgGraph -Scopes $script:requiredScopes -ErrorAction Stop
+        
+        # Import required Microsoft Graph modules after connection
+        Write-Host "Importing required Microsoft Graph modules..." -ForegroundColor Cyan
+        foreach ($moduleName in $script:requiredModules) {
+            try {
+                if (Get-Module -ListAvailable -Name $moduleName -ErrorAction SilentlyContinue) {
+                    Import-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
+                    Write-Host "  Imported: $moduleName" -ForegroundColor Gray
+                } else {
+                    Write-Warning "Module $moduleName not available. Some features may not work."
+                }
+            } catch {
+                Write-Warning "Could not import module $moduleName : $_"
+            }
+        }
+        
         return $true
     } catch {
         # Check if this is a user cancellation
@@ -49,9 +94,41 @@ function Connect-EntraGraph {
             # User cancelled - return false without writing error
             return $false
         } else {
-            # Real error - write error message
-            Write-Error "Failed to connect to Microsoft Graph: $_"
-            return $false
+            # Check for Microsoft.Identity.Client version conflict
+            if ($errorMessage -match "Method not found.*WithLogging|BaseAbstractApplicationBuilder.*WithLogging|Microsoft.Identity.Client|InteractiveBrowserCredential") {
+                $errorMsg = @"
+CRITICAL: Microsoft.Identity.Client Version Conflict
+
+ExchangeOnlineManagement module has loaded an incompatible version of Microsoft.Identity.Client that conflicts with Microsoft Graph modules.
+
+SOLUTION:
+1. Close this PowerShell window completely
+2. Open a NEW PowerShell window
+3. Connect to Entra/Graph FIRST (before Exchange Online)
+4. Then connect to Exchange Online if needed
+
+Original error: $($_.Exception.Message)
+"@
+                Write-Error $errorMsg
+                
+                # Show MessageBox if running in GUI context
+                try {
+                    if ([System.Windows.Forms.MessageBox] -as [type]) {
+                        [System.Windows.Forms.MessageBox]::Show(
+                            $errorMsg,
+                            "Microsoft Graph Connection Failed",
+                            [System.Windows.Forms.MessageBoxButtons]::OK,
+                            [System.Windows.Forms.MessageBoxIcon]::Error
+                        ) | Out-Null
+                    }
+                } catch {}
+                
+                return $false
+            } else {
+                # Real error - write error message
+                Write-Error "Failed to connect to Microsoft Graph: $_"
+                return $false
+            }
         }
     }
 }
