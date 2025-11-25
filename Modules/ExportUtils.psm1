@@ -1454,9 +1454,10 @@ function Get-GraphSignInLogs {
         # Build filter for date range
         $filter = "createdDateTime ge $startIso"
         
-        # If specific users are selected, filter by user IDs
+        # If specific users are selected, filter by user IDs (per-user mode)
+        # If no users selected, collect all sign-in logs (all-users mode)
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-            Write-Host "  Filtering sign-in logs for $($SelectedUsers.Count) selected user(s)..." -ForegroundColor Cyan
+            Write-Host "  Per-user mode: Filtering sign-in logs for $($SelectedUsers.Count) selected user(s)..." -ForegroundColor Cyan
             
             $userIds = @()
             foreach ($upn in $SelectedUsers) {
@@ -1471,13 +1472,16 @@ function Get-GraphSignInLogs {
             }
             
             if ($userIds.Count -gt 0) {
-                # Build filter with user IDs (OR condition)
+                # Build filter with user IDs (OR condition) for server-side filtering
                 $userIdFilters = $userIds | ForEach-Object { "userId eq '$_'" }
                 $userFilter = "(" + ($userIdFilters -join " or ") + ")"
                 $filter = "$filter and $userFilter"
+                Write-Host "  Server-side filtering: Querying sign-in logs for $($userIds.Count) user ID(s)..." -ForegroundColor Cyan
             } else {
-                Write-Warning "  No valid user IDs found for selected users. Collecting all sign-in logs."
+                Write-Warning "  No valid user IDs found for selected users. Falling back to all-users mode."
             }
+        } else {
+            Write-Host "  All-users mode: Collecting sign-in logs for ALL users in the organization..." -ForegroundColor Cyan
         }
         
         Write-Host "  Querying Microsoft Graph API for sign-in logs..." -ForegroundColor Cyan
