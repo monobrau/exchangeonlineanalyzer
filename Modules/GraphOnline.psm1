@@ -165,6 +165,8 @@ function Connect-GraphService {
         }
 
         # Connect to Graph with improved error handling
+        # Note: The device sign-in prompt cannot be bypassed with interactive authentication
+        # Users should select "No, this app only" to avoid device registration
         try {
             $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
         } catch {
