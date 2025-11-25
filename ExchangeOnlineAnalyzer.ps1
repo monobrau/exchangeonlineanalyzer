@@ -4514,10 +4514,22 @@ $securityInvestigationButton.add_Click({
         $securityDescLabel.MaximumSize = New-Object System.Drawing.Size(600, 0)
         $securityDescLabel.AutoSize = $true
 
+        # User Selection Info Label
+        $userSelectionInfoLabel = New-Object System.Windows.Forms.Label
+        $userSelectionInfoLabel.Text = "ℹ️ USER SELECTION: Select specific users in the Report Generator tab to export data for those users only (faster, targeted analysis).`n   If no users are selected, the report will include ALL users in your organization (comprehensive but more time-consuming)."
+        $userSelectionInfoLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Regular)
+        $userSelectionInfoLabel.Location = New-Object System.Drawing.Point(15, 100)
+        $userSelectionInfoLabel.Size = New-Object System.Drawing.Size(850, 50)
+        $userSelectionInfoLabel.MaximumSize = New-Object System.Drawing.Size(850, 0)
+        $userSelectionInfoLabel.AutoSize = $true
+        $userSelectionInfoLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204) # Blue color for info
+        $userSelectionInfoLabel.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255) # Light blue background
+        $userSelectionInfoLabel.Padding = New-Object System.Windows.Forms.Padding(8, 5, 8, 5)
+
         # Configuration section
         $configGroupBox = New-Object System.Windows.Forms.GroupBox
         $configGroupBox.Text = "Investigation Configuration"
-        $configGroupBox.Location = New-Object System.Drawing.Point(15, 110)
+        $configGroupBox.Location = New-Object System.Drawing.Point(15, 160)
         $configGroupBox.Size = New-Object System.Drawing.Size(400, 140)
 
         # Investigator Name
@@ -4576,7 +4588,7 @@ $securityInvestigationButton.add_Click({
         # Report Selection section
         $reportsGroupBox = New-Object System.Windows.Forms.GroupBox
         $reportsGroupBox.Text = "Select Reports to Export"
-        $reportsGroupBox.Location = New-Object System.Drawing.Point(15, 260)
+        $reportsGroupBox.Location = New-Object System.Drawing.Point(15, 310)
         $reportsGroupBox.Size = New-Object System.Drawing.Size(400, 220)
 
         # Select All / Deselect All buttons
@@ -4657,7 +4669,7 @@ $securityInvestigationButton.add_Click({
         $generateButton = New-Object System.Windows.Forms.Button
         $generateButton.Text = "🚀 Generate Security Investigation"
         $generateButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
-        $generateButton.Location = New-Object System.Drawing.Point(430, 140)
+        $generateButton.Location = New-Object System.Drawing.Point(430, 190)
         $generateButton.Size = New-Object System.Drawing.Size(280, 50)
         $generateButton.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
         $generateButton.ForeColor = [System.Drawing.Color]::White
@@ -4666,7 +4678,7 @@ $securityInvestigationButton.add_Click({
         $progressLabel = New-Object System.Windows.Forms.Label
         $progressLabel.Text = "Ready to generate security investigation report."
         $progressLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Italic)
-        $progressLabel.Location = New-Object System.Drawing.Point(430, 200)
+        $progressLabel.Location = New-Object System.Drawing.Point(430, 250)
         $progressLabel.Size = New-Object System.Drawing.Size(400, 20)
         $progressLabel.ForeColor = [System.Drawing.Color]::Green
 
@@ -4914,7 +4926,7 @@ $securityInvestigationButton.add_Click({
         $closeButton.add_Click({ $securityForm.Close() })
 
         # Add all controls to main panel
-        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $configGroupBox, $reportsGroupBox, $generateButton, $progressLabel, $closeButton))
+        $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $userSelectionInfoLabel, $configGroupBox, $reportsGroupBox, $generateButton, $progressLabel, $closeButton))
 
         $securityForm.Controls.Add($securityMainPanel)
 
