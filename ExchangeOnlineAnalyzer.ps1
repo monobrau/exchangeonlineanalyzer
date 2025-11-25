@@ -2501,6 +2501,63 @@ function Show-InputDialog {
     }
 }
 
+# Multiline input dialog for multiple search terms
+function Show-MultilineInputDialog {
+    param(
+        [string]$Title = "Input",
+        [string]$Prompt = "Enter values (one per line):",
+        [string]$DefaultValue = ""
+    )
+    
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = $Title
+    $form.Size = New-Object System.Drawing.Size(500, 350)
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    
+    $label = New-Object System.Windows.Forms.Label
+    $label.Location = New-Object System.Drawing.Point(10, 10)
+    $label.Size = New-Object System.Drawing.Size(460, 20)
+    $label.Text = $Prompt
+    $form.Controls.Add($label)
+    
+    $textBox = New-Object System.Windows.Forms.TextBox
+    $textBox.Location = New-Object System.Drawing.Point(10, 35)
+    $textBox.Size = New-Object System.Drawing.Size(460, 240)
+    $textBox.Multiline = $true
+    $textBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $textBox.AcceptsReturn = $true
+    $textBox.Text = $DefaultValue
+    $form.Controls.Add($textBox)
+    
+    $okButton = New-Object System.Windows.Forms.Button
+    $okButton.Location = New-Object System.Drawing.Point(320, 285)
+    $okButton.Size = New-Object System.Drawing.Size(75, 23)
+    $okButton.Text = "OK"
+    $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $form.AcceptButton = $okButton
+    $form.Controls.Add($okButton)
+    
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(405, 285)
+    $cancelButton.Size = New-Object System.Drawing.Size(75, 23)
+    $cancelButton.Text = "Cancel"
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.CancelButton = $cancelButton
+    $form.Controls.Add($cancelButton)
+    
+    $textBox.Select()
+    $result = $form.ShowDialog($mainForm)
+    
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $textBox.Text
+    } else {
+        return $null
+    }
+}
+
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Width = 200
 
@@ -3134,57 +3191,83 @@ $searchUsersButton.add_Click({
         return
     }
     
-    $searchTerm = Show-InputDialog -Title "Search Users" -Prompt "Enter search term (name or email):"
-    if ([string]::IsNullOrWhiteSpace($searchTerm)) { return }
+    $searchInput = Show-MultilineInputDialog -Title "Search Users" -Prompt "Enter search terms (one per line - name or email):"
+    if ([string]::IsNullOrWhiteSpace($searchInput)) { return }
     
-    Write-Host "Search term entered: '$searchTerm'"
+    # Parse multiple search terms (split by newline, trim, filter empty)
+    $searchTerms = $searchInput -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    
+    if ($searchTerms.Count -eq 0) { return }
+    
+    Write-Host "Search terms entered: $($searchTerms.Count) term(s)"
+    foreach ($term in $searchTerms) {
+        Write-Host "  - '$term'"
+    }
     
     try {
         $statusLabel.Text = "Searching for users..."
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         
-        # Search for users using the search term (Microsoft Graph supports startsWith and eq)
-        Write-Host "Searching for users with filter: startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')"
-        $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
+        $allFoundUsers = @()
         
-        Write-Host "Found $($users.Count) users"
-        
-        if ($users.Count -eq 0) {
-            Write-Host "No users found with the current filter. Trying alternative search methods..."
+        # Search for each term individually and combine results
+        foreach ($searchTerm in $searchTerms) {
+            Write-Host "Searching for users matching: '$searchTerm'"
             
-            # Try alternative search methods using supported operators
+            # Search for users using the search term (Microsoft Graph supports startsWith and eq)
+            $users = @()
             try {
-                # Try exact match first
-                $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
-                Write-Host "Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
-                
-                $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
-                Write-Host "Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
-                
-                # Try case-insensitive search by getting all users and filtering client-side
-                $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
-                $usersAlt3 = $allUsers | Where-Object { 
-                    $_.DisplayName -like "*$searchTerm*" -or $_.UserPrincipalName -like "*$searchTerm*" 
-                }
-                Write-Host "Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users"
-                
-                # Combine all results
-                $users = @($usersAlt1) + @($usersAlt2) + @($usersAlt3) | Sort-Object UserPrincipalName -Unique
-                Write-Host "Combined alternative searches: Found $($users.Count) users"
+                $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
+                Write-Host "  Found $($users.Count) users with startsWith filter"
             } catch {
-                Write-Host "Alternative searches also failed: $($_.Exception.Message)"
+                Write-Host "  startsWith filter failed, trying alternatives..."
             }
             
             if ($users.Count -eq 0) {
-                [System.Windows.Forms.MessageBox]::Show("No users found matching '$searchTerm'.", "No Results", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-                return
+                # Try alternative search methods using supported operators
+                try {
+                    # Try exact match first
+                    $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                    Write-Host "  Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
+                    
+                    $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                    Write-Host "  Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
+                    
+                    # Try case-insensitive search by getting all users and filtering client-side
+                    $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                    $usersAlt3 = $allUsers | Where-Object { 
+                        $_.DisplayName -like "*$searchTerm*" -or $_.UserPrincipalName -like "*$searchTerm*" 
+                    }
+                    Write-Host "  Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users"
+                    
+                    # Combine all results
+                    $users = @($usersAlt1) + @($usersAlt2) + @($usersAlt3) | Sort-Object UserPrincipalName -Unique
+                    Write-Host "  Combined alternative searches: Found $($users.Count) users"
+                } catch {
+                    Write-Host "  Alternative searches also failed: $($_.Exception.Message)"
+                }
             }
+            
+            # Add found users to the collection (will deduplicate later)
+            if ($users.Count -gt 0) {
+                $allFoundUsers += $users
+            }
+        }
+        
+        # Remove duplicates based on UserPrincipalName
+        $uniqueUsers = $allFoundUsers | Sort-Object UserPrincipalName -Unique
+        
+        Write-Host "Total unique users found: $($uniqueUsers.Count)"
+        
+        if ($uniqueUsers.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No users found matching any of the search terms.", "No Results", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
         }
         
         $entraUserGrid.Rows.Clear()
         $processedCount = 0
         
-        foreach ($u in $users) {
+        foreach ($u in $uniqueUsers) {
             try {
                 # Check licensing
                 $isLicensed = $u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0
@@ -3223,8 +3306,9 @@ $searchUsersButton.add_Click({
         }
         
         UpdateEntraButtonStates
-        $statusLabel.Text = "Loaded $processedCount users matching '$searchTerm'"
-        [System.Windows.Forms.MessageBox]::Show("Found and loaded $processedCount users matching '$searchTerm'.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $searchTermsText = if ($searchTerms.Count -eq 1) { "'$($searchTerms[0])'" } else { "$($searchTerms.Count) search terms" }
+        $statusLabel.Text = "Loaded $processedCount users matching $searchTermsText"
+        [System.Windows.Forms.MessageBox]::Show("Found and loaded $processedCount users matching $searchTermsText.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         
     } catch {
         $statusLabel.Text = "Error searching users: $($_.Exception.Message)"
@@ -3667,33 +3751,60 @@ $searchMailboxesButton.add_Click({
         return
     }
     
-    $searchTerm = Show-InputDialog -Title "Search Mailboxes" -Prompt "Enter search term (name or email):"
-    if ([string]::IsNullOrWhiteSpace($searchTerm)) { return }
+    $searchInput = Show-MultilineInputDialog -Title "Search Mailboxes" -Prompt "Enter search terms (one per line - name or email):"
+    if ([string]::IsNullOrWhiteSpace($searchInput)) { return }
     
-    Write-Host "Search term entered: '$searchTerm'"
+    # Parse multiple search terms (split by newline, trim, filter empty)
+    $searchTerms = $searchInput -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    
+    if ($searchTerms.Count -eq 0) { return }
+    
+    Write-Host "Search terms entered: $($searchTerms.Count) term(s)"
+    foreach ($term in $searchTerms) {
+        Write-Host "  - '$term'"
+    }
     
     try {
         $statusLabel.Text = "Searching for mailboxes..."
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         
-        # Search for mailboxes using the search term
-        Write-Host "Searching for mailboxes with filter: DisplayName -like '*$searchTerm*' -or UserPrincipalName -like '*$searchTerm*'"
-        $mailboxes = Get-Mailbox -Filter "DisplayName -like '*$searchTerm*' -or UserPrincipalName -like '*$searchTerm*'" -ResultSize 100
+        $allFoundMailboxes = @()
         
-        Write-Host "Found $($mailboxes.Count) mailboxes"
+        # Search for each term individually and combine results
+        foreach ($searchTerm in $searchTerms) {
+            Write-Host "Searching for mailboxes matching: '$searchTerm'"
+            
+            # Search for mailboxes using the search term
+            try {
+                $mailboxes = Get-Mailbox -Filter "DisplayName -like '*$searchTerm*' -or UserPrincipalName -like '*$searchTerm*'" -ResultSize 100 -ErrorAction Stop
+                Write-Host "  Found $($mailboxes.Count) mailboxes"
+                
+                if ($mailboxes.Count -gt 0) {
+                    $allFoundMailboxes += $mailboxes
+                }
+            } catch {
+                Write-Host "  Search failed for '$searchTerm': $($_.Exception.Message)"
+            }
+        }
         
-        if ($mailboxes.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("No mailboxes found matching '$searchTerm'.", "No Results", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        # Remove duplicates based on UserPrincipalName
+        $uniqueMailboxes = $allFoundMailboxes | Sort-Object UserPrincipalName -Unique
+        
+        Write-Host "Total unique mailboxes found: $($uniqueMailboxes.Count)"
+        
+        if ($uniqueMailboxes.Count -eq 0) {
+            $searchTermsText = if ($searchTerms.Count -eq 1) { "'$($searchTerms[0])'" } else { "any of the search terms" }
+            [System.Windows.Forms.MessageBox]::Show("No mailboxes found matching $searchTermsText.", "No Results", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             return
         }
         
         # Load the found mailboxes by updating the script variables and grid
         $userMailboxGrid.Rows.Clear()
         $script:allLoadedMailboxUPNs = @()
-        $script:allLoadedMailboxes = $mailboxes
+        $script:allLoadedMailboxes = $uniqueMailboxes
         
         $mailboxCount = 0
-        foreach ($mbx in $mailboxes) {
+        foreach ($mbx in $uniqueMailboxes) {
             $script:allLoadedMailboxUPNs += $mbx.UserPrincipalName
             
             # Get user details for sign-in status
@@ -3766,8 +3877,9 @@ $searchMailboxesButton.add_Click({
             $mailboxCount++
         }
         
-        $statusLabel.Text = "Loaded $mailboxCount mailboxes matching '$searchTerm'"
-        [System.Windows.Forms.MessageBox]::Show("Found and loaded $mailboxCount mailboxes matching '$searchTerm'.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $searchTermsText = if ($searchTerms.Count -eq 1) { "'$($searchTerms[0])'" } else { "$($searchTerms.Count) search terms" }
+        $statusLabel.Text = "Loaded $mailboxCount mailboxes matching $searchTermsText"
+        [System.Windows.Forms.MessageBox]::Show("Found and loaded $mailboxCount mailboxes matching $searchTermsText.", "Search Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         
         # Populate Org Domains and Keywords based on the loaded subset (any >1)
         try {
