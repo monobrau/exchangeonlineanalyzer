@@ -1,6 +1,11 @@
 # Returns:
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
 function Get-MfaCoverageReport {
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
     try {
         # 1) Security Defaults status (authoritative)
         $secDefaultsEnabled = $false
@@ -30,15 +35,32 @@ function Get-MfaCoverageReport {
             if ($requiresMfa) { $mfaPolicies += $p }
         }
 
-        # 3) Users and per-user evaluation
+        # 3) Users and per-user evaluation - filter server-side if SelectedUsers provided
         $users = @()
         try {
-            $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
-
-            # Directory roles map (for policy role assignment evaluation)
+            # Directory roles map (for policy role assignment evaluation) - needed for CA policy evaluation
             $roles = @(); $roleIdToName = @{}
             try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
             foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
+
+            # If SelectedUsers provided, only query those users (server-side filtering)
+            if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                $userPage = @()
+                foreach ($user in $SelectedUsers) {
+                    $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                    try {
+                        $u = Get-MgUser -UserId $upn -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+                        if ($u) {
+                            $userPage += $u
+                        }
+                    } catch {
+                        Write-Warning "User not found for MFA coverage: ${upn}: $($_.Exception.Message)"
+                    }
+                }
+            } else {
+                # No selection - get all users
+                $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+            }
 
             foreach ($u in $userPage) {
                 $directMfa = $false
@@ -116,6 +138,11 @@ function Get-MfaCoverageReport {
 
 # Flattens user membership in directory roles and security groups
 function Get-UserSecurityGroupsReport {
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
     try {
         $results = New-Object System.Collections.Generic.List[object]
 
@@ -125,9 +152,22 @@ function Get-UserSecurityGroupsReport {
         $roleIdToName = @{}
         foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
-        # Users
+        # Users - filter server-side if SelectedUsers provided
         $users = @()
-        try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                try {
+                    $u = Get-MgUser -UserId $upn -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+                    if ($u) { $users += $u }
+                } catch {
+                    Write-Warning "User not found: ${upn}: $($_.Exception.Message)"
+                }
+            }
+        } else {
+            # No selection - get all users
+            try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
+        }
 
         foreach ($u in $users) {
             $groups = @()
@@ -281,7 +321,9 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeMailboxForwarding = $true,
         [Parameter(Mandatory=$false)]
-        [bool]$IncludeAuditLogs = $true
+        [bool]$IncludeAuditLogs = $true,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
     )
 
     try {
@@ -385,12 +427,12 @@ function New-SecurityInvestigationReport {
         try {
             if ($IncludeMessageTrace) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last $DaysBack days)..." }
-                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 # always 10 days per requirement
+                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 -SelectedUsers $SelectedUsers # always 10 days per requirement
             }
 
             if ($IncludeInboxRules) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting all inbox rules for tenant..." }
-                $report.InboxRules = Get-ExchangeInboxRules
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting inbox rules..." }
+                $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers
             }
 
             if ($IncludeTransportRules) {
@@ -405,7 +447,7 @@ function New-SecurityInvestigationReport {
 
             if ($IncludeMailboxForwarding) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mailbox forwarding and delegation..." }
-                $report.MailboxForwarding = Get-MailboxForwardingAndDelegation
+                $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers
             }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
@@ -418,7 +460,7 @@ function New-SecurityInvestigationReport {
         try {
             if ($IncludeAuditLogs) {
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
-                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack
+                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
             }
         } catch {
             Write-Warning "Failed to collect Microsoft Graph data: $($_.Exception.Message)"
@@ -430,10 +472,10 @@ function New-SecurityInvestigationReport {
     if ($graphConnected) {
         try {
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
-            $report.MfaCoverage = Get-MfaCoverageReport
+            $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
 
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
-            $report.UserSecurityGroups = Get-UserSecurityGroupsReport
+            $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
@@ -454,6 +496,7 @@ function New-SecurityInvestigationReport {
     if ($MainForm -and $MainForm.GetType().Name -eq "Form") { $MainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
 
     # Export datasets to CSV (and JSON fallback) if we have an output folder
+    # Note: Data is already filtered server-side by the collection functions
     if ($report.OutputFolder) {
         $exportError = $null
         try {
@@ -514,34 +557,110 @@ function New-SecurityInvestigationReport {
                     }
                 }
 
-                # Start with MFA users as the base (most complete user list)
-                if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
-                    foreach ($mfaUser in $report.MfaCoverage.Users) {
-                        $upn = $mfaUser.UserPrincipalName
-                        $mbxData = $mbxLookup[$upn]
-                        $groupsData = $groupsLookup[$upn]
-
-                        $userPosture.Add([pscustomobject]@{
-                            UserPrincipalName           = $upn
-                            DisplayName                 = $mfaUser.DisplayName
-                            RecipientType               = if ($mbxData) { $mbxData.RecipientType } else { $null }
-                            # MFA columns
-                            PerUserMfaEnabled           = $mfaUser.PerUserMfaEnabled
-                            SecurityDefaults            = $mfaUser.SecurityDefaults
-                            CARequiresMfa               = $mfaUser.CARequiresMfa
-                            MfaCovered                  = $mfaUser.MfaCovered
-                            # Groups/Roles
-                            GroupsAndRoles              = $groupsData
-                            # Mailbox Forwarding
-                            ForwardingAddress           = if ($mbxData) { $mbxData.ForwardingAddress } else { $null }
-                            ForwardingSmtpAddress       = if ($mbxData) { $mbxData.ForwardingSmtpAddress } else { $null }
-                            DeliverToMailboxAndForward  = if ($mbxData) { $mbxData.DeliverToMailboxAndForward } else { $null }
-                            # Delegation
-                            FullAccessUsers             = if ($mbxData) { $mbxData.FullAccessUsers } else { $null }
-                            SendAsUsers                 = if ($mbxData) { $mbxData.SendAsUsers } else { $null }
-                            SendOnBehalfUsers           = if ($mbxData) { $mbxData.SendOnBehalfUsers } else { $null }
-                        }) | Out-Null
+                # Determine which users to include in the export
+                $usersToExport = @()
+                if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                    # Filter to selected users only
+                    $selectedUserSet = @{}
+                    foreach ($user in $SelectedUsers) {
+                        if ($user -is [string]) {
+                            $selectedUserSet[$user.ToLower()] = $user
+                        } elseif ($user.UserPrincipalName) {
+                            $selectedUserSet[$user.UserPrincipalName.ToLower()] = $user.UserPrincipalName
+                        }
                     }
+                    
+                    # Build list from selected users
+                    foreach ($userKey in $selectedUserSet.Keys) {
+                        $upn = $selectedUserSet[$userKey]
+                        # Try to find user in MFA coverage, groups, or mailbox forwarding
+                        $found = $false
+                        if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
+                            $mfaUser = $report.MfaCoverage.Users | Where-Object { $_.UserPrincipalName -eq $upn -or $_.UserPrincipalName.ToLower() -eq $upn.ToLower() } | Select-Object -First 1
+                            if ($mfaUser) {
+                                $usersToExport += $mfaUser
+                                $found = $true
+                            }
+                        }
+                        if (-not $found) {
+                            # Create a basic user object if not found in MFA coverage
+                            $usersToExport += [pscustomobject]@{
+                                UserPrincipalName = $upn
+                                DisplayName = $upn
+                                PerUserMfaEnabled = $false
+                                SecurityDefaults = $false
+                                CARequiresMfa = $false
+                                MfaCovered = $false
+                            }
+                        }
+                    }
+                } else {
+                    # No selection - use all MFA coverage users
+                    if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
+                        $usersToExport = $report.MfaCoverage.Users
+                    }
+                }
+
+                # Import EntraInvestigator module for per-user MFA status
+                $entraModuleLoaded = $false
+                try {
+                    $entraModulePath = Join-Path $PSScriptRoot 'EntraInvestigator.psm1'
+                    if (Test-Path $entraModulePath) {
+                        Import-Module $entraModulePath -Force -ErrorAction SilentlyContinue
+                        $entraModuleLoaded = $true
+                    }
+                } catch {}
+
+                # Build user posture for each user
+                foreach ($mfaUser in $usersToExport) {
+                    $upn = $mfaUser.UserPrincipalName
+                    $mbxData = $mbxLookup[$upn]
+                    $groupsData = $groupsLookup[$upn]
+
+                    # Get detailed per-user MFA status if module is available
+                    $perUserMfaStatus = $null
+                    $perUserMfaDetails = $null
+                    $perUserMfaOverallStatus = $null
+                    $perUserMfaSummary = $null
+                    if ($entraModuleLoaded -and $graphConnected) {
+                        try {
+                            $mfaStatus = Get-EntraUserMfaStatus -UserPrincipalName $upn -ErrorAction SilentlyContinue
+                            if ($mfaStatus) {
+                                $perUserMfaStatus = $mfaStatus.PerUserMfa.Enabled
+                                $perUserMfaDetails = $mfaStatus.PerUserMfa.Details
+                                $perUserMfaOverallStatus = $mfaStatus.OverallStatus
+                                $perUserMfaSummary = $mfaStatus.Summary
+                            }
+                        } catch {
+                            # Ignore errors getting per-user MFA status
+                        }
+                    }
+
+                    $userPosture.Add([pscustomobject]@{
+                        UserPrincipalName           = $upn
+                        DisplayName                 = $mfaUser.DisplayName
+                        RecipientType               = if ($mbxData) { $mbxData.RecipientType } else { $null }
+                        # MFA columns (from organization-wide MFA coverage)
+                        PerUserMfaEnabled           = $mfaUser.PerUserMfaEnabled
+                        SecurityDefaults            = $mfaUser.SecurityDefaults
+                        CARequiresMfa               = $mfaUser.CARequiresMfa
+                        MfaCovered                  = $mfaUser.MfaCovered
+                        # Per-user detailed MFA status
+                        PerUserMfaStatus            = $perUserMfaStatus
+                        PerUserMfaDetails           = $perUserMfaDetails
+                        PerUserMfaOverallStatus     = $perUserMfaOverallStatus
+                        PerUserMfaSummary           = $perUserMfaSummary
+                        # Groups/Roles
+                        GroupsAndRoles              = $groupsData
+                        # Mailbox Forwarding
+                        ForwardingAddress           = if ($mbxData) { $mbxData.ForwardingAddress } else { $null }
+                        ForwardingSmtpAddress       = if ($mbxData) { $mbxData.ForwardingSmtpAddress } else { $null }
+                        DeliverToMailboxAndForward  = if ($mbxData) { $mbxData.DeliverToMailboxAndForward } else { $null }
+                        # Delegation
+                        FullAccessUsers             = if ($mbxData) { $mbxData.FullAccessUsers } else { $null }
+                        SendAsUsers                 = if ($mbxData) { $mbxData.SendAsUsers } else { $null }
+                        SendOnBehalfUsers           = if ($mbxData) { $mbxData.SendOnBehalfUsers } else { $null }
+                    }) | Out-Null
                 }
 
                 # Export combined user security posture
@@ -581,7 +700,11 @@ function New-SecurityInvestigationReport {
 }
 
 function Get-ExchangeMessageTrace {
-    param([int]$DaysBack = 10)
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
 
     try {
         Write-Host "Collecting message trace data..." -ForegroundColor Yellow
@@ -592,44 +715,150 @@ function Get-ExchangeMessageTrace {
 
         $hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
 
-        # Chunk by day to avoid server-side caps; try paged in each window
-        for ($d = 0; $d -lt 10; $d++) {
-            $winStart = $start.AddDays($d)
-            $winEnd   = $winStart.AddDays(1)
+        # If SelectedUsers provided, filter server-side by querying per user
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            $selectedUserList = @()
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                $selectedUserList += $upn
+            }
+            
+            # Query message trace for each selected user (server-side filtering)
+            foreach ($upn in $selectedUserList) {
+                # Chunk by day to avoid server-side caps
+                for ($d = 0; $d -lt 10; $d++) {
+                    $winStart = $start.AddDays($d)
+                    $winEnd   = $winStart.AddDays(1)
 
-            try {
-                if ($hasV2) {
-                    # Seek-based pagination using StartingRecipientAddress and ResultSize
-                    $startRecipient = $null
-                    $iterations = 0
-                    do {
-                        $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
-                        $params.ResultSize = 1000
-                        if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                        $chunk = Get-MessageTraceV2 @params
-                        if ($chunk) {
-                            # Avoid duplicate loops when StartingRecipientAddress is inclusive
-                            if ($startRecipient) {
-                                $filtered = $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient }
-                            } else {
-                                $filtered = $chunk
+                    try {
+                        if ($hasV2) {
+                            # Query by sender - handle pagination
+                            try {
+                                $params = @{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn; ErrorAction = 'Stop' }
+                                $params.ResultSize = 5000  # Use ResultSize for pagination
+                                $chunk = Get-MessageTraceV2 @params
+                                if ($chunk) {
+                                    # Handle both single objects and collections
+                                    $chunkArray = @($chunk)
+                                    foreach ($item in $chunkArray) {
+                                        if ($item) { [void]$results.Add($item) }
+                                    }
+                                }
+                            } catch {
+                                Write-Warning "Failed to get message trace by sender for ${upn}: $($_.Exception.Message)"
                             }
-                            if ($filtered) { [void]$results.AddRange($filtered) }
-
-                            $prev = $startRecipient
-                            $last = $chunk[-1]
-                            $startRecipient = $last.RecipientAddress
-                            if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
+                            
+                            # Query by recipient - handle pagination
+                            try {
+                                $params = @{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn; ErrorAction = 'Stop' }
+                                $params.ResultSize = 5000  # Use ResultSize for pagination
+                                $chunk = Get-MessageTraceV2 @params
+                                if ($chunk) {
+                                    # Handle both single objects and collections
+                                    $chunkArray = @($chunk)
+                                    foreach ($item in $chunkArray) {
+                                        if ($item) { [void]$results.Add($item) }
+                                    }
+                                }
+                            } catch {
+                                Write-Warning "Failed to get message trace by recipient for ${upn}: $($_.Exception.Message)"
+                            }
                         } else {
-                            $startRecipient = $null
+                            # Legacy Get-MessageTrace - filter by sender
+                            try {
+                                $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ErrorAction Stop
+                                if ($batch) {
+                                    $batchArray = @($batch)
+                                    foreach ($item in $batchArray) {
+                                        if ($item) { [void]$results.Add($item) }
+                                    }
+                                }
+                            } catch {
+                                Write-Warning "Failed to get message trace by sender for ${upn}: $($_.Exception.Message)"
+                            }
+                            
+                            # Filter by recipient
+                            try {
+                                $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ErrorAction Stop
+                                if ($batch) {
+                                    $batchArray = @($batch)
+                                    foreach ($item in $batchArray) {
+                                        if ($item) { [void]$results.Add($item) }
+                                    }
+                                }
+                            } catch {
+                                Write-Warning "Failed to get message trace by recipient for ${upn}: $($_.Exception.Message)"
+                            }
                         }
-                        $iterations++
-                    } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
-                } else {
-                    $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
-                    if ($batch) { [void]$results.AddRange($batch) }
+                    } catch {
+                        Write-Warning "Failed to get message trace for ${upn}: $($_.Exception.Message)"
+                    }
                 }
-            } catch {}
+            }
+            
+            # Remove duplicates (same message might appear as both sender and recipient)
+            # Use MessageId if available, otherwise use a combination of properties
+            $uniqueResults = @()
+            $seenIds = @{}
+            foreach ($item in $results) {
+                $uniqueKey = $null
+                if ($item.MessageId) {
+                    $uniqueKey = $item.MessageId
+                } elseif ($item.MessageID) {
+                    $uniqueKey = $item.MessageID
+                } else {
+                    # Fallback: use combination of properties
+                    $uniqueKey = "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.Subject)_$($item.MessageTraceId)"
+                }
+                
+                if ($uniqueKey -and -not $seenIds.ContainsKey($uniqueKey)) {
+                    $seenIds[$uniqueKey] = $true
+                    $uniqueResults += $item
+                }
+            }
+            
+            return [System.Collections.ArrayList]$uniqueResults
+        } else {
+            # No selection - get all message traces
+            # Chunk by day to avoid server-side caps; try paged in each window
+            for ($d = 0; $d -lt 10; $d++) {
+                $winStart = $start.AddDays($d)
+                $winEnd   = $winStart.AddDays(1)
+
+                try {
+                    if ($hasV2) {
+                        # Seek-based pagination using StartingRecipientAddress and ResultSize
+                        $startRecipient = $null
+                        $iterations = 0
+                        do {
+                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
+                            $params.ResultSize = 1000
+                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
+                            $chunk = Get-MessageTraceV2 @params
+                            if ($chunk) {
+                                # Avoid duplicate loops when StartingRecipientAddress is inclusive
+                                if ($startRecipient) {
+                                    $filtered = $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient }
+                                } else {
+                                    $filtered = $chunk
+                                }
+                                if ($filtered) { [void]$results.AddRange($filtered) }
+
+                                $prev = $startRecipient
+                                $last = $chunk[-1]
+                                $startRecipient = $last.RecipientAddress
+                                if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
+                            } else {
+                                $startRecipient = $null
+                            }
+                            $iterations++
+                        } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
+                    } else {
+                        $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+                        if ($batch) { [void]$results.AddRange($batch) }
+                    }
+                } catch {}
+            }
         }
 
         return [System.Collections.ArrayList]$results
@@ -640,15 +869,35 @@ function Get-ExchangeMessageTrace {
 }
 
 function Get-ExchangeInboxRules {
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
     try {
         Write-Host "Exporting inbox rules..." -ForegroundColor Yellow
 
         $mailboxes = @()
-        try {
-            $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
-        } catch {
-            # Fallback narrower call if needed
-            $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
+        
+        # If SelectedUsers provided, only query those mailboxes (server-side filtering)
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                try {
+                    $mbx = Get-Mailbox -Identity $upn -ErrorAction Stop
+                    if ($mbx) { $mailboxes += $mbx }
+                } catch {
+                    Write-Warning "Mailbox not found for ${upn}: $($_.Exception.Message)"
+                }
+            }
+        } else {
+            # No selection - get all mailboxes
+            try {
+                $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
+            } catch {
+                # Fallback narrower call if needed
+                $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
+            }
         }
 
         $allRules = New-Object System.Collections.Generic.List[object]
@@ -790,7 +1039,11 @@ function Get-ExchangeOutboundConnectors {
 }
 
 function Get-GraphAuditLogs {
-    param([int]$DaysBack = 10)
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
 
     try {
         Write-Host "Collecting audit logs..." -ForegroundColor Yellow
@@ -804,8 +1057,79 @@ function Get-GraphAuditLogs {
         $startIso = $startUtc.ToString("s") + "Z"
 
         $raw = New-Object System.Collections.Generic.List[object]
-        $page = Get-MgAuditLogDirectoryAudit -All -Filter "activityDateTime ge $startIso" -ErrorAction Stop
-        if ($page) { [void]$raw.AddRange($page) }
+        
+        # If SelectedUsers provided, filter server-side by target user IDs
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            # Get user IDs for selected users (server-side filtering)
+            $userIds = @()
+            $userIdToUpn = @{}  # Map user IDs back to UPNs for better error messages
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                try {
+                    Write-Host "  Looking up user ID for: $upn" -ForegroundColor Gray
+                    $mgUser = Get-MgUser -UserId $upn -Property Id -ErrorAction Stop
+                    if ($mgUser -and $mgUser.Id) {
+                        $userIds += $mgUser.Id
+                        $userIdToUpn[$mgUser.Id] = $upn
+                        Write-Host "  ✓ Found user ID $($mgUser.Id) for $upn" -ForegroundColor Gray
+                    } else {
+                        Write-Warning "User ID lookup returned null for ${upn}"
+                    }
+                } catch {
+                    Write-Warning "Failed to get user ID for ${upn}: $($_.Exception.Message)"
+                }
+            }
+            
+            Write-Host "  Successfully resolved $($userIds.Count) of $($SelectedUsers.Count) user IDs" -ForegroundColor Gray
+            
+            # Query audit logs filtered by target user IDs (server-side filtering)
+            if ($userIds.Count -gt 0) {
+                foreach ($userId in $userIds) {
+                    $upn = $userIdToUpn[$userId]
+                    try {
+                        Write-Host "  Querying audit logs for: $upn (ID: $userId)" -ForegroundColor Gray
+                        # Filter by target resource ID (server-side)
+                        $filter = "activityDateTime ge $startIso and targetResources/any(t:t/id eq '$userId')"
+                        $page = Get-MgAuditLogDirectoryAudit -All -Filter $filter -ErrorAction Stop
+                        if ($page) {
+                            # Handle both single objects and collections
+                            $pageArray = @($page)
+                            $count = 0
+                            foreach ($item in $pageArray) {
+                                if ($item) {
+                                    [void]$raw.Add($item)
+                                    $count++
+                                }
+                            }
+                            Write-Host "  ✓ Found $count audit log entries for $upn" -ForegroundColor Gray
+                        } else {
+                            Write-Host "  ℹ No audit log entries found for $upn (this is normal if no activity)" -ForegroundColor Gray
+                        }
+                    } catch {
+                        Write-Warning "Failed to get audit logs for $upn (ID: ${userId}): $($_.Exception.Message)"
+                        # Don't silently fail - log the error details
+                        Write-Host "  Error details: $($_.Exception.GetType().FullName)" -ForegroundColor Yellow
+                        if ($_.Exception.InnerException) {
+                            Write-Host "  Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Yellow
+                        }
+                    }
+                }
+            } else {
+                Write-Warning "No user IDs were successfully resolved. Cannot query audit logs."
+            }
+        } else {
+            # No selection - get all audit logs
+            $page = Get-MgAuditLogDirectoryAudit -All -Filter "activityDateTime ge $startIso" -ErrorAction Stop
+            if ($page) {
+                # Handle both single objects and collections
+                $pageArray = @($page)
+                foreach ($item in $pageArray) {
+                    if ($item) {
+                        [void]$raw.Add($item)
+                    }
+                }
+            }
+        }
 
         # Flatten for CSV detail richness
         $flattened = New-Object System.Collections.Generic.List[object]
@@ -875,6 +1199,8 @@ function Get-GraphAuditLogs {
             }
         }
 
+        Write-Host "  Total audit log entries collected: $($flattened.Count)" -ForegroundColor Gray
+        
         return [System.Collections.ArrayList]$flattened
     } catch {
         Write-Error "Failed to collect audit logs: $($_.Exception.Message)"
@@ -885,15 +1211,35 @@ function Get-GraphAuditLogs {
 function Get-GraphSignInLogs { param([int]$DaysBack = 10,[switch]$MaxAvailable) return @() }
 
 function Get-MailboxForwardingAndDelegation {
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
     try {
         Write-Host "Collecting mailbox forwarding and delegation settings..." -ForegroundColor Yellow
 
         $mailboxes = @()
-        try {
-            $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
-        } catch {
-            # Fallback narrower call if needed
-            $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
+        
+        # If SelectedUsers provided, only query those mailboxes (server-side filtering)
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                try {
+                    $mbx = Get-Mailbox -Identity $upn -ErrorAction Stop
+                    if ($mbx) { $mailboxes += $mbx }
+                } catch {
+                    Write-Warning "Mailbox not found for ${upn}: $($_.Exception.Message)"
+                }
+            }
+        } else {
+            # No selection - get all mailboxes
+            try {
+                $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
+            } catch {
+                # Fallback narrower call if needed
+                $mailboxes = Get-Mailbox -ResultSize 2000 -ErrorAction Stop
+            }
         }
 
         $results = New-Object System.Collections.Generic.List[object]

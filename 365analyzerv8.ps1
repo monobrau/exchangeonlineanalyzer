@@ -4746,8 +4746,25 @@ $securityInvestigationButton.add_Click({
                     return
                 }
 
+                # Get selected users from unified account grid if available
+                $selectedUsers = @()
+                try {
+                    if ($unifiedAccountGrid -and $unifiedAccountGrid.Rows.Count -gt 0) {
+                        for ($i = 0; $i -lt $unifiedAccountGrid.Rows.Count; $i++) {
+                            if ($unifiedAccountGrid.Rows[$i].Cells["Select"].Value -eq $true) {
+                                $upn = $unifiedAccountGrid.Rows[$i].Cells["UserPrincipalName"].Value
+                                if ($upn -and -not [string]::IsNullOrWhiteSpace($upn)) {
+                                    $selectedUsers += $upn
+                                }
+                            }
+                        }
+                    }
+                } catch {
+                    # If unified account grid is not available or error occurs, continue with empty selection (all users)
+                }
+
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
