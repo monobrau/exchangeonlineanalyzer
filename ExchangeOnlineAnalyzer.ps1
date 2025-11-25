@@ -978,7 +978,7 @@ function Generate-UnifiedProfessionalReport {
         foreach ($account in $selectedAccounts) {
             if ($account.EntraStatus -eq "Available") {
                 $selectedCount++ 
-                if ($account.Licensed -eq "Yes") {
+                if ($account.Licensed -and $account.Licensed -ne "None" -and $account.Licensed -ne "Unlicensed") {
                     $licensedUsers++
                 } else {
                     $unlicensedUsers++
@@ -1176,7 +1176,7 @@ function Generate-UnifiedProfessionalReport {
         foreach ($account in $selectedAccounts) {
             if ($account.EntraStatus -eq "Available") {
                 $selectedCount++ 
-                if ($account.Licensed -ne "Yes") {
+                if (-not $account.Licensed -or $account.Licensed -eq "None" -or $account.Licensed -eq "Unlicensed") {
                     $unlicensedUsers++
                 }
             }
@@ -1372,7 +1372,8 @@ function Generate-UnifiedObsidianNote {
         for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
             if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) { 
                 $selectedCount++ 
-                if ($entraUserGrid.Rows[$i].Cells["Licensed"].Value -eq "Yes") {
+                $licensedValue = $entraUserGrid.Rows[$i].Cells["Licensed"].Value
+                if ($licensedValue -and $licensedValue -ne "None" -and $licensedValue -ne "Unlicensed") {
                     $licensedUsers++
                 } else {
                     $unlicensedUsers++
@@ -1557,7 +1558,8 @@ function Generate-UnifiedObsidianNote {
         for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
             if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) { 
                 $selectedCount++ 
-                if ($entraUserGrid.Rows[$i].Cells["Licensed"].Value -ne "Yes") {
+                $licensedValue = $entraUserGrid.Rows[$i].Cells["Licensed"].Value
+                if (-not $licensedValue -or $licensedValue -eq "None" -or $licensedValue -eq "Unlicensed") {
                     $unlicensedUsers++
                 }
             }
@@ -1637,7 +1639,8 @@ function Generate-IncidentRemediationChecklist {
     
     # Checklist items with enhanced data analysis
     $checklist += "☐ Reset the Users Password in Active Directory or Office 365 if the account is a cloud-only account.`n"
-    $checklist += "   Current Status: $(if ($firstSelectedUser.Licensed -eq "Yes") { "Licensed cloud account - Password reset required" } else { "Unlicensed account - Verify account status" })`n"
+    $isLicensed = $firstSelectedUser.Licensed -and $firstSelectedUser.Licensed -ne "None" -and $firstSelectedUser.Licensed -ne "Unlicensed"
+    $checklist += "   Current Status: $(if ($isLicensed) { "Licensed cloud account ($($firstSelectedUser.Licensed)) - Password reset required" } else { "Unlicensed account - Verify account status" })`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
     $checklist += "☐ Recommend Multi-Factor Authentication (MFA) to the client`n"
@@ -2086,13 +2089,13 @@ try {
 # --- Exchange Online Controls Instantiation ---
 $connectButton = New-Object System.Windows.Forms.Button
 $connectButton.Text = "Connect"
-$connectButton.Width = 100
+$connectButton.Width = 85
 $connectButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $connectButtonTooltip.SetToolTip($connectButton, "Connect to Exchange Online (Ctrl+O)")
 
 $disconnectButton = New-Object System.Windows.Forms.Button
 $disconnectButton.Text = "Disconnect"
-$disconnectButton.Width = 100
+$disconnectButton.Width = 95
 $disconnectButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $disconnectButtonTooltip.SetToolTip($disconnectButton, "Disconnect from Exchange Online (Ctrl+D)")
 
@@ -2101,13 +2104,13 @@ $userMailboxListLabel.Text = "Mailboxes:"
 
 $selectAllButton = New-Object System.Windows.Forms.Button
 $selectAllButton.Text = "Select All"
-$selectAllButton.Width = 100
+$selectAllButton.Width = 85
 $selectAllButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $selectAllButtonTooltip.SetToolTip($selectAllButton, "Select all mailboxes (Ctrl+A)")
 
 $deselectAllButton = New-Object System.Windows.Forms.Button
 $deselectAllButton.Text = "Deselect All"
-$deselectAllButton.Width = 100
+$deselectAllButton.Width = 95
 $deselectAllButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $deselectAllButtonTooltip.SetToolTip($deselectAllButton, "Deselect all mailboxes")
 
@@ -2137,73 +2140,73 @@ $outputFolderTextBoxTooltip.SetToolTip($outputFolderTextBox, "Select folder wher
 
 $browseFolderButton = New-Object System.Windows.Forms.Button
 $browseFolderButton.Text = "Browse..."
-$browseFolderButton.Width = 100
+$browseFolderButton.Width = 75
 $browseFolderButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $browseFolderButtonTooltip.SetToolTip($browseFolderButton, "Select folder for exporting XLSX reports")
 
 $getRulesButton = New-Object System.Windows.Forms.Button
 $getRulesButton.Text = "Export Rules"
-$getRulesButton.Width = 120
+$getRulesButton.Width = 110
 $getRulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $getRulesButtonTooltip.SetToolTip($getRulesButton, "Export inbox rules for selected mailboxes (Ctrl+S)")
 
 $manageRulesButton = New-Object System.Windows.Forms.Button
 $manageRulesButton.Text = "Manage Rules"
-$manageRulesButton.Width = 120
+$manageRulesButton.Width = 110
 $manageRulesButton.Enabled = $true
 $manageRulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $manageRulesButtonTooltip.SetToolTip($manageRulesButton, "View and manage inbox rules for selected mailbox")
 
 $openFileButton = New-Object System.Windows.Forms.Button
 $openFileButton.Text = "Open Last File"
-$openFileButton.Width = 120
+$openFileButton.Width = 115
 $openFileButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $openFileButtonTooltip.SetToolTip($openFileButton, "Open the last exported XLSX file")
 
 $blockUserButton = New-Object System.Windows.Forms.Button
 $blockUserButton.Text = "Block User"
-$blockUserButton.Width = 100
+$blockUserButton.Width = 85
 $blockUserButton.Enabled = $true
 $blockUserButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $blockUserButtonTooltip.SetToolTip($blockUserButton, "Block selected user from signing in (requires Graph connection)")
 
 $unblockUserButton = New-Object System.Windows.Forms.Button
 $unblockUserButton.Text = "Unblock User"
-$unblockUserButton.Width = 100
+$unblockUserButton.Width = 95
 $unblockUserButton.Enabled = $true
 $unblockUserButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $unblockUserButtonTooltip.SetToolTip($unblockUserButton, "Unblock selected user from signing in (requires Graph connection)")
 
 $revokeSessionsButton = New-Object System.Windows.Forms.Button
 $revokeSessionsButton.Text = "Revoke Sessions"
-$revokeSessionsButton.Width = 120
+$revokeSessionsButton.Width = 130
 $revokeSessionsButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $revokeSessionsButtonTooltip.SetToolTip($revokeSessionsButton, "Revoke all active sessions for selected user (requires Graph connection)")
 
 # Add load options for Exchange Online
 $loadAllMailboxesButton = New-Object System.Windows.Forms.Button
 $loadAllMailboxesButton.Text = "Load All Mailboxes"
-$loadAllMailboxesButton.Width = 150
+$loadAllMailboxesButton.Width = 145
 $loadAllMailboxesButton.Enabled = $false
 $loadAllMailboxesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $loadAllMailboxesButtonTooltip.SetToolTip($loadAllMailboxesButton, "Load all mailboxes (may take time for large tenants)")
 
 $searchMailboxesButton = New-Object System.Windows.Forms.Button
 $searchMailboxesButton.Text = "Search Mailboxes"
-$searchMailboxesButton.Width = 150
+$searchMailboxesButton.Width = 140
 $searchMailboxesButton.Enabled = $false
 $searchMailboxesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $searchMailboxesButtonTooltip.SetToolTip($searchMailboxesButton, "Search for specific mailboxes by name or email")
 
 $manageConnectorsButton = New-Object System.Windows.Forms.Button
 $manageConnectorsButton.Text = "Manage Connectors"
-$manageConnectorsButton.Width = 140
+$manageConnectorsButton.Width = 150
 $manageConnectorsButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $manageConnectorsButtonTooltip.SetToolTip($manageConnectorsButton, "View and manage Exchange Online connectors")
 
 $manageTransportRulesButton = New-Object System.Windows.Forms.Button
 $manageTransportRulesButton.Text = "Manage Transport Rules"
-$manageTransportRulesButton.Width = 160
+$manageTransportRulesButton.Width = 185
 $manageTransportRulesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $manageTransportRulesButtonTooltip.SetToolTip($manageTransportRulesButton, "View and manage Exchange Online transport rules")
 
@@ -2212,7 +2215,7 @@ $manageTransportRulesButtonTooltip.SetToolTip($manageTransportRulesButton, "View
 # Add analyze selected button for Exchange Online tab
 $analyzeSelectedButton = New-Object System.Windows.Forms.Button
 $analyzeSelectedButton.Text = "Analyze Selected"
-$analyzeSelectedButton.Width = 120
+$analyzeSelectedButton.Width = 135
 $analyzeSelectedButton.Enabled = $false
 $analyzeSelectedButton.Visible = $true
 $analyzeSelectedButtonTooltip = New-Object System.Windows.Forms.ToolTip
@@ -2573,28 +2576,28 @@ $exchangeGrid.EnableHeadersVisualStyles = $true
 # --- Entra ID Investigator Controls Instantiation ---
 $entraConnectGraphButton = New-Object System.Windows.Forms.Button
 $entraConnectGraphButton.Text = "Connect Entra"
-$entraConnectGraphButton.Width = 140
+$entraConnectGraphButton.Width = 120
 $entraConnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraConnectGraphButtonTooltip.SetToolTip($entraConnectGraphButton, "Connect to Microsoft Graph to load users and enable Entra ID features")
 
 # Add load options for Entra ID
 $loadAllUsersButton = New-Object System.Windows.Forms.Button
 $loadAllUsersButton.Text = "Load All Users"
-$loadAllUsersButton.Width = 150
+$loadAllUsersButton.Width = 130
 $loadAllUsersButton.Enabled = $false
 $loadAllUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $loadAllUsersButtonTooltip.SetToolTip($loadAllUsersButton, "Load all users (may take time for large tenants)")
 
 $searchUsersButton = New-Object System.Windows.Forms.Button
 $searchUsersButton.Text = "Search Users"
-$searchUsersButton.Width = 150
+$searchUsersButton.Width = 115
 $searchUsersButton.Enabled = $false
 $searchUsersButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $searchUsersButtonTooltip.SetToolTip($searchUsersButton, "Search for specific users by name or email")
 
 $entraDisconnectGraphButton = New-Object System.Windows.Forms.Button
 $entraDisconnectGraphButton.Text = "Disconnect Entra"
-$entraDisconnectGraphButton.Width = 140
+$entraDisconnectGraphButton.Width = 135
 $entraDisconnectGraphButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDisconnectGraphButtonTooltip.SetToolTip($entraDisconnectGraphButton, "Disconnect from Microsoft Graph")
 
@@ -2606,7 +2609,7 @@ $entraOutputFolderTextBox = New-Object System.Windows.Forms.TextBox
 $entraOutputFolderTextBox.Width = 300
 $entraBrowseFolderButton = New-Object System.Windows.Forms.Button
 $entraBrowseFolderButton.Text = "Browse..."
-$entraBrowseFolderButton.Width = 100
+$entraBrowseFolderButton.Width = 75
 $entraBrowseFolderButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraBrowseFolderButtonTooltip.SetToolTip($entraBrowseFolderButton, "Select folder for exporting logs and reports")
 
@@ -2627,45 +2630,45 @@ $entraSignInDaysUpDown.Value   = 7
 
 $entraSignInExportButton      = New-Object System.Windows.Forms.Button
 $entraSignInExportButton.Text = "Fetch Sign-in Logs"
-$entraSignInExportButton.Width = 140
+$entraSignInExportButton.Width = 150
 $entraSignInExportButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraSignInExportButtonTooltip.SetToolTip($entraSignInExportButton, "Fetch sign-in logs for selected users (requires Graph connection)")
 
 $entraSignInExportXlsxButton  = New-Object System.Windows.Forms.Button
 $entraSignInExportXlsxButton.Text = "Export Sign-in XLSX"
-$entraSignInExportXlsxButton.Width = 140
+$entraSignInExportXlsxButton.Width = 160
 $entraSignInExportXlsxButton.Enabled = $false
 $entraSignInExportXlsxButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraSignInExportXlsxButtonTooltip.SetToolTip($entraSignInExportXlsxButton, "Export sign-in logs to XLSX format")
 
 $entraDetailsFetchButton      = New-Object System.Windows.Forms.Button
 $entraDetailsFetchButton.Text = "User Details && Roles"
-$entraDetailsFetchButton.Width = 140
+$entraDetailsFetchButton.Width = 170
 $entraDetailsFetchButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDetailsFetchButtonTooltip.SetToolTip($entraDetailsFetchButton, "View user details, roles, and group memberships (select one user)")
 
 $entraAuditFetchButton        = New-Object System.Windows.Forms.Button
 $entraAuditFetchButton.Text   = "Fetch Audit Logs"
-$entraAuditFetchButton.Width = 140
+$entraAuditFetchButton.Width = 135
 $entraAuditFetchButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraAuditFetchButtonTooltip.SetToolTip($entraAuditFetchButton, "Fetch audit logs for selected user (select one user)")
 
 $entraAuditExportXlsxButton   = New-Object System.Windows.Forms.Button
 $entraAuditExportXlsxButton.Text = "Export Audit XLSX"
-$entraAuditExportXlsxButton.Width = 140
+$entraAuditExportXlsxButton.Width = 160
 $entraAuditExportXlsxButton.Enabled = $false
 $entraAuditExportXlsxButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraAuditExportXlsxButtonTooltip.SetToolTip($entraAuditExportXlsxButton, "Export audit logs to XLSX format")
 
 $entraMfaFetchButton          = New-Object System.Windows.Forms.Button
 $entraMfaFetchButton.Text     = "Analyze MFA"
-$entraMfaFetchButton.Width = 120
+$entraMfaFetchButton.Width = 100
 $entraMfaFetchButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraMfaFetchButtonTooltip.SetToolTip($entraMfaFetchButton, "Analyze MFA status for selected user (select one user)")
 
 $entraCheckLicensesButton = New-Object System.Windows.Forms.Button
 $entraCheckLicensesButton.Text = "Check Licenses"
-$entraCheckLicensesButton.Width = 120
+$entraCheckLicensesButton.Width = 115
 $entraCheckLicensesButton.Enabled = $false
 $entraCheckLicensesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraCheckLicensesButtonTooltip.SetToolTip($entraCheckLicensesButton, "View detailed M365/O365 license information for selected user(s)")
@@ -2673,21 +2676,21 @@ $entraCheckLicensesButtonTooltip.SetToolTip($entraCheckLicensesButton, "View det
 # Add user management buttons for Entra ID tab
 $entraBlockUserButton = New-Object System.Windows.Forms.Button
 $entraBlockUserButton.Text = "Block User"
-$entraBlockUserButton.Width = 100
+$entraBlockUserButton.Width = 85
 $entraBlockUserButton.Enabled = $false
 $entraBlockUserButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraBlockUserButtonTooltip.SetToolTip($entraBlockUserButton, "Block selected user from signing in (requires Graph connection)")
 
 $entraUnblockUserButton = New-Object System.Windows.Forms.Button
 $entraUnblockUserButton.Text = "Unblock User"
-$entraUnblockUserButton.Width = 100
+$entraUnblockUserButton.Width = 95
 $entraUnblockUserButton.Enabled = $false
 $entraUnblockUserButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraUnblockUserButtonTooltip.SetToolTip($entraUnblockUserButton, "Unblock selected user from signing in (requires Graph connection)")
 
 $entraRevokeSessionsButton = New-Object System.Windows.Forms.Button
 $entraRevokeSessionsButton.Text = "Revoke Sessions"
-$entraRevokeSessionsButton.Width = 120
+$entraRevokeSessionsButton.Width = 130
 $entraRevokeSessionsButton.Enabled = $false
 $entraRevokeSessionsButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraRevokeSessionsButtonTooltip.SetToolTip($entraRevokeSessionsButton, "Revoke all active sessions for selected user (requires Graph connection)")
@@ -2695,7 +2698,7 @@ $entraRevokeSessionsButtonTooltip.SetToolTip($entraRevokeSessionsButton, "Revoke
 # Add password reset button for Entra ID tab
 $entraResetPasswordButton = New-Object System.Windows.Forms.Button
 $entraResetPasswordButton.Text = "Reset Password"
-$entraResetPasswordButton.Width = 120
+$entraResetPasswordButton.Width = 125
 $entraResetPasswordButton.Enabled = $false
 $entraResetPasswordButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraResetPasswordButtonTooltip.SetToolTip($entraResetPasswordButton, "Reset user password with memorable strong password (select one user)")
@@ -2705,14 +2708,14 @@ $entraResetPasswordButtonTooltip.SetToolTip($entraResetPasswordButton, "Reset us
 # Add Select All/Deselect All buttons for Entra ID tab
 $entraSelectAllButton = New-Object System.Windows.Forms.Button
 $entraSelectAllButton.Text = "Select All"
-$entraSelectAllButton.Width = 80
+$entraSelectAllButton.Width = 85
 $entraSelectAllButton.Enabled = $false
 $entraSelectAllButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraSelectAllButtonTooltip.SetToolTip($entraSelectAllButton, "Select all users in the grid")
 
 $entraDeselectAllButton = New-Object System.Windows.Forms.Button
 $entraDeselectAllButton.Text = "Deselect All"
-$entraDeselectAllButton.Width = 80
+$entraDeselectAllButton.Width = 95
 $entraDeselectAllButton.Enabled = $false
 $entraDeselectAllButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraDeselectAllButtonTooltip.SetToolTip($entraDeselectAllButton, "Deselect all users in the grid")
@@ -2720,7 +2723,7 @@ $entraDeselectAllButtonTooltip.SetToolTip($entraDeselectAllButton, "Deselect all
 # Add refresh roles button for Entra ID tab
 $entraRefreshRolesButton = New-Object System.Windows.Forms.Button
 $entraRefreshRolesButton.Text = "Refresh Roles"
-$entraRefreshRolesButton.Width = 100
+$entraRefreshRolesButton.Width = 110
 $entraRefreshRolesButton.Enabled = $false
 $entraRefreshRolesButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraRefreshRolesButtonTooltip.SetToolTip($entraRefreshRolesButton, "Refresh role information for selected users")
@@ -2728,7 +2731,7 @@ $entraRefreshRolesButtonTooltip.SetToolTip($entraRefreshRolesButton, "Refresh ro
 # Add view admins button for Entra ID tab
 $entraViewAdminsButton = New-Object System.Windows.Forms.Button
 $entraViewAdminsButton.Text = "View Admins"
-$entraViewAdminsButton.Width = 100
+$entraViewAdminsButton.Width = 105
 $entraViewAdminsButton.Enabled = $false
 $entraViewAdminsButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraViewAdminsButtonTooltip.SetToolTip($entraViewAdminsButton, "Generate a report of all users with elevated roles")
@@ -2736,7 +2739,7 @@ $entraViewAdminsButtonTooltip.SetToolTip($entraViewAdminsButton, "Generate a rep
 # Add require password change button for Entra ID tab
 $entraRequirePwdChangeButton = New-Object System.Windows.Forms.Button
 $entraRequirePwdChangeButton.Text = "Require Password Change"
-$entraRequirePwdChangeButton.Width = 170
+$entraRequirePwdChangeButton.Width = 180
 $entraRequirePwdChangeButton.Enabled = $false
 $entraRequirePwdChangeButtonTooltip = New-Object System.Windows.Forms.ToolTip
 $entraRequirePwdChangeButtonTooltip.SetToolTip($entraRequirePwdChangeButton, "Require selected user(s) to change password at next sign-in (no password change)")
@@ -2762,25 +2765,25 @@ $entraAuditGrid.EnableHeadersVisualStyles = $true
 # Instantiate Entra ID Investigator tab buttons before layout
 $entraViewSignInLogsButton = New-Object System.Windows.Forms.Button
 $entraViewSignInLogsButton.Text = "View Sign-in Logs"
-$entraViewSignInLogsButton.Width = 140
+$entraViewSignInLogsButton.Width = 135
 
 $entraViewAuditLogsButton = New-Object System.Windows.Forms.Button
 $entraViewAuditLogsButton.Text = "View Audit Logs"
-$entraViewAuditLogsButton.Width = 140
+$entraViewAuditLogsButton.Width = 130
 
 $entraExportSignInLogsButton = New-Object System.Windows.Forms.Button
 $entraExportSignInLogsButton.Text = "Export Sign-in Logs"
-$entraExportSignInLogsButton.Width = 160
+$entraExportSignInLogsButton.Width = 150
 $entraExportSignInLogsButton.Enabled = $false
 
 $entraExportAuditLogsButton = New-Object System.Windows.Forms.Button
 $entraExportAuditLogsButton.Text = "Export Audit Logs"
-$entraExportAuditLogsButton.Width = 160
+$entraExportAuditLogsButton.Width = 145
 $entraExportAuditLogsButton.Enabled = $false
 
 $entraOpenLastExportButton = New-Object System.Windows.Forms.Button
 $entraOpenLastExportButton.Text = "Open Last Export"
-$entraOpenLastExportButton.Width = 140
+$entraOpenLastExportButton.Width = 135
 $entraOpenLastExportButton.Enabled = $true
 
 # --- Exchange Online Tab Layout ---
@@ -2877,31 +2880,41 @@ $exchangeTab.Controls.Add($exchangeGrid)
 
 
 # --- Entra ID Investigator Tab Layout ---
-$entraTab = New-Object System.Windows.Forms.TabPage; $entraTab.Text = "Entra ID Investigator"
+$entraTab = New-Object System.Windows.Forms.TabPage; $entraTab.Text = "Entra"
 
-# Top action panel with two rows for better organization
+# Top action panel with three rows for better organization
 $entraTopPanel = New-Object System.Windows.Forms.Panel
 $entraTopPanel.Dock = 'Top'
-$entraTopPanel.Height = 100
+$entraTopPanel.Height = 105
 $entraTopPanel.AutoSize = $true
 
-# First row - Connection and basic functions
+# First row - Connection, loading, selection, and viewing functions (approximately 1160px total width)
 $entraTopRow1 = New-Object System.Windows.Forms.FlowLayoutPanel
 $entraTopRow1.Location = New-Object System.Drawing.Point(5, 5)
 $entraTopRow1.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow1.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow1.WrapContents = $true
 $entraTopRow1.AutoSize = $true
-$entraTopRow1.Controls.AddRange(@($entraConnectGraphButton, $entraDisconnectGraphButton, $entraFixModulesButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton, $entraMfaFetchButton, $entraCheckLicensesButton))
+$entraTopRow1Controls = @($entraConnectGraphButton, $entraDisconnectGraphButton, $loadAllUsersButton, $searchUsersButton, $entraSelectAllButton, $entraDeselectAllButton, $entraViewSignInLogsButton, $entraViewAuditLogsButton, $entraDetailsFetchButton)
+if ($null -ne $entraFixModulesButton) { $entraTopRow1Controls += $entraFixModulesButton }
+$entraTopRow1.Controls.AddRange($entraTopRow1Controls)
 
-# Second row - User management functions
+# Second row - User management, analysis, and administrative functions (approximately 1070px total width)
 $entraTopRow2 = New-Object System.Windows.Forms.FlowLayoutPanel
 $entraTopRow2.Location = New-Object System.Drawing.Point(5, 40)
 $entraTopRow2.Size = New-Object System.Drawing.Size(1200, 35)
 $entraTopRow2.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $entraTopRow2.WrapContents = $false
 $entraTopRow2.AutoSize = $false
-$entraTopRow2.Controls.AddRange(@($entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton))
+$entraTopRow2.Controls.AddRange(@($entraMfaFetchButton, $entraCheckLicensesButton, $entraBlockUserButton, $entraUnblockUserButton, $entraRevokeSessionsButton, $entraResetPasswordButton, $entraRequirePwdChangeButton, $entraRefreshRolesButton, $entraViewAdminsButton))
+
+# Third row - Search controls
+$entraTopRow3 = New-Object System.Windows.Forms.FlowLayoutPanel
+$entraTopRow3.Location = New-Object System.Drawing.Point(5, 75)
+$entraTopRow3.Size = New-Object System.Drawing.Size(1200, 25)
+$entraTopRow3.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+$entraTopRow3.WrapContents = $false
+$entraTopRow3.AutoSize = $false
 
 # Add search controls to the top panel
 $entraSearchLabel = New-Object System.Windows.Forms.Label
@@ -2915,18 +2928,19 @@ $entraSearchTextBox.Width = 200
 $entraSearchTextBox.Height = 20
 $entraSearchTextBox.PlaceholderText = "Type to filter users..."
 
-# Add search controls to the second row
-$entraTopRow2.Controls.Add($entraSearchLabel)
-$entraTopRow2.Controls.Add($entraSearchTextBox)
+# Add search controls to the third row
+$entraTopRow3.Controls.Add($entraSearchLabel)
+$entraTopRow3.Controls.Add($entraSearchTextBox)
 
-# Add both rows to the top panel
+# Add all three rows to the top panel
 $entraTopPanel.Controls.Add($entraTopRow1)
 $entraTopPanel.Controls.Add($entraTopRow2)
+$entraTopPanel.Controls.Add($entraTopRow3)
 
 # Panel for user grid
 $entraGridPanel = New-Object System.Windows.Forms.Panel
 $entraGridPanel.Dock = 'Fill'
-$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 105, 5, 15)
+$entraGridPanel.Padding = New-Object System.Windows.Forms.Padding(5, 110, 5, 15)
 $entraGridPanel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 
 # User grid
@@ -2972,8 +2986,8 @@ $entraUserGrid.Columns.Add($colEntraDisplayName)
 
 $colEntraLicensed = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colEntraLicensed.HeaderText = "Licensed"
-$colEntraLicensed.Width = 80
-$colEntraLicensed.MinimumWidth = 70
+$colEntraLicensed.Width = 200
+$colEntraLicensed.MinimumWidth = 150
 $colEntraLicensed.Name = "Licensed"
 $colEntraLicensed.ReadOnly = $true
 $entraUserGrid.Columns.Add($colEntraLicensed)
@@ -3121,6 +3135,14 @@ $loadAllUsersButton.add_Click({
         $statusLabel.Text = "Loading all users..."
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         
+        # Get SKU mapping once for license name resolution
+        $skuMapping = @{}
+        try {
+            $skuMapping = Get-TenantLicenseSkus
+        } catch {
+            Write-Warning "Failed to get license SKU mapping: $($_.Exception.Message)"
+        }
+        
         # Get all users with full details
         $users = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
         $entraUserGrid.Rows.Clear()
@@ -3130,9 +3152,19 @@ $loadAllUsersButton.add_Click({
         
         foreach ($u in $users) {
             try {
-                # Check licensing
-                $isLicensed = $u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0
-                $licensedText = if ($isLicensed) { "Licensed" } else { "Unlicensed" }
+                # Get license names
+                $licenseNames = @()
+                if ($u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0) {
+                    foreach ($assignedLicense in $u.AssignedLicenses) {
+                        $skuId = $assignedLicense.SkuId
+                        if ($skuMapping.ContainsKey($skuId)) {
+                            $licenseNames += $skuMapping[$skuId].FriendlyName
+                        } else {
+                            $licenseNames += "Unknown SKU: $skuId"
+                        }
+                    }
+                }
+                $licensedText = if ($licenseNames.Count -gt 0) { ($licenseNames -join '; ') } else { "None" }
                 
                 # Get user roles
                 $userRoles = @()
@@ -3267,11 +3299,29 @@ $searchUsersButton.add_Click({
         $entraUserGrid.Rows.Clear()
         $processedCount = 0
         
+        # Get SKU mapping once for license name resolution
+        $skuMapping = @{}
+        try {
+            $skuMapping = Get-TenantLicenseSkus
+        } catch {
+            Write-Warning "Failed to get license SKU mapping: $($_.Exception.Message)"
+        }
+        
         foreach ($u in $uniqueUsers) {
             try {
-                # Check licensing
-                $isLicensed = $u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0
-                $licensedText = if ($isLicensed) { "Licensed" } else { "Unlicensed" }
+                # Get license names
+                $licenseNames = @()
+                if ($u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0) {
+                    foreach ($assignedLicense in $u.AssignedLicenses) {
+                        $skuId = $assignedLicense.SkuId
+                        if ($skuMapping.ContainsKey($skuId)) {
+                            $licenseNames += $skuMapping[$skuId].FriendlyName
+                        } else {
+                            $licenseNames += "Unknown SKU: $skuId"
+                        }
+                    }
+                }
+                $licensedText = if ($licenseNames.Count -gt 0) { ($licenseNames -join '; ') } else { "None" }
                 
                 # Get user roles
                 $userRoles = @()
@@ -4567,7 +4617,7 @@ function Update-ConnectionStatus {
 
 # Export User Licenses Button
 $exportUserLicensesButton = New-Object System.Windows.Forms.Button
-$exportUserLicensesButton.Text = "📋 Export User Licenses Report"
+$exportUserLicensesButton.Text = "Export User Licenses Report"
 $exportUserLicensesButton.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
 $exportUserLicensesButton.Location = New-Object System.Drawing.Point(10, 620)
 $exportUserLicensesButton.Size = New-Object System.Drawing.Size(250, 40)
@@ -4586,7 +4636,7 @@ $reportGeneratorPanel.Controls.Add($incidentChecklistButton)
 
 # Security Investigation Button
 $securityInvestigationButton = New-Object System.Windows.Forms.Button
-$securityInvestigationButton.Text = "🔍 Security Investigation Report"
+$securityInvestigationButton.Text = "Security Investigation Report"
 $securityInvestigationButton.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
 $securityInvestigationButton.Location = New-Object System.Drawing.Point(530, 620)
 $securityInvestigationButton.Size = New-Object System.Drawing.Size(250, 40)
@@ -5725,15 +5775,27 @@ $helpRichTextBox.WordWrap = $true
 # Create clean, formatted help content
 $helpText = @"
 
-MICROSOFT 365 MANAGEMENT TOOL – QUICK HELP (v8.1-beta)
+MICROSOFT 365 MANAGEMENT TOOL – QUICK HELP
 
 WHAT'S NEW
 - Security Investigation Report (Reports → Security Investigation):
-  - Exchange: Message Trace (last 10 days), Inbox Rules (all mailboxes)
+  - Exchange: Message Trace (last 10 days), Inbox Rules, Mailbox Forwarding/Delegation
   - Microsoft Graph: Directory Audit Logs (max detail)
   - Posture: MFA Coverage (Security Defaults/CA/Per-user), User Security Groups/Roles
+  - User Selection: Select specific users in Report Generator tab for targeted export (faster)
+    OR leave unselected for comprehensive organization-wide report (all users)
+  - Server-side filtering: Only selected users' data is retrieved (optimized performance)
   - Exports to Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\yyyyMMdd_HHmmss
   - _AI_Readme.txt generated for AI analysis. Sign-in logs are not included (license); export from Entra portal manually and attach when using AI.
+
+- User Licenses Report (Reports → Export User Licenses Report):
+  - User Selection: Select specific users for targeted license export OR leave unselected for all users
+  - Exports to CSV and XLSX formats with formatted Excel output
+
+- Multiline Search Support:
+  - Exchange Online and Entra ID tabs now support multiple search terms
+  - Enter one search term per line in the search dialog
+  - Searches all terms and combines results (duplicates removed)
 
 - Entra Portal Shortcuts (Report Generator tab):
   - Select Firefox Profile and Container; auto-matches best container to signed-in tenant
@@ -5757,11 +5819,19 @@ WHAT'S NEW
 CORE TABS
 - Exchange Online:
   - Connect/Disconnect (modern auth), export Inbox Rules, manage Transport Rules & Connectors
-  - Bulk mailbox operations; search/filter; export CSV
+  - Bulk mailbox operations; multiline search/filter; export CSV
+  - Search supports multiple terms (one per line) for efficient bulk searching
 
-- Entra ID Investigator:
+- Entra:
   - Connect to Microsoft Graph; block/unblock sign-in; revoke sessions
   - MFA posture, user roles/groups, and elevated-role highlights
+  - Multiline search supports multiple users/emails (one per line)
+  - Three-row button layout: Connection/Viewing, Management/Analysis, Search
+
+- Report Generator:
+  - Unified account grid for selecting users across Exchange and Entra ID
+  - User selection affects Security Investigation and User Licenses reports
+  - Select specific users for targeted reports OR leave unselected for all users
 
 KEYBOARD SHORTCUTS (where applicable)
 - Ctrl+O: Connect   • Ctrl+D: Disconnect   • Ctrl+S: Export   • F5: Refresh
@@ -5773,6 +5843,8 @@ FOLDER LAYOUT
     GraphAuditLogs.csv, UserSecurityPosture.csv, _AI_Readme.txt
   - UserSecurityPosture.csv = MFA + Groups + Mailbox Forwarding/Delegation (consolidated)
   - MailFlowConnectors.csv = Inbound + Outbound Connectors (consolidated)
+  - When users are selected: Only selected users' data is exported
+  - When no users selected: All users' data is exported (comprehensive report)
 
 KNOWN REQUIREMENTS
 - PowerShell 7+ recommended
@@ -5788,6 +5860,13 @@ TROUBLESHOOTING
   Not included by design (license). Download from Entra portal and add via AI Analysis Extra Files.
 - AI send fails:
   See Gemini_Error.txt or Claude_Error.txt in the report folder; request JSON is saved alongside.
+- Report shows unexpected users:
+  Check if users are selected in Report Generator tab. Clear selection for all users, or select specific users for targeted export.
+
+PERFORMANCE TIPS
+- Use user selection for faster reports when investigating specific users
+- Multiline search allows bulk user lookups efficiently
+- Server-side filtering reduces data transfer and processing time
 
 Links:
 - Gemini models & quotas: https://ai.google.dev
@@ -6215,6 +6294,14 @@ $entraViewAdminsButton.add_Click({
         $mainForm.Refresh()
         $directoryRoles = Get-MgDirectoryRole -ErrorAction Stop
         
+        # Get SKU mapping once for license name resolution
+        $skuMapping = @{}
+        try {
+            $skuMapping = Get-TenantLicenseSkus
+        } catch {
+            Write-Warning "Failed to get license SKU mapping: $($_.Exception.Message)"
+        }
+        
         # Get all users with their roles
         $statusLabel.Text = "Querying users with elevated roles..."
         $mainForm.Refresh()
@@ -6254,7 +6341,19 @@ $entraViewAdminsButton.add_Click({
             }
             
             if ($hasElevatedRole) {
-                $licensed = if ($user.AssignedLicenses -and $user.AssignedLicenses.Count -gt 0) { "Licensed" } else { "Unlicensed" }
+                # Get license names
+                $licenseNames = @()
+                if ($user.AssignedLicenses -and $user.AssignedLicenses.Count -gt 0) {
+                    foreach ($assignedLicense in $user.AssignedLicenses) {
+                        $skuId = $assignedLicense.SkuId
+                        if ($skuMapping.ContainsKey($skuId)) {
+                            $licenseNames += $skuMapping[$skuId].FriendlyName
+                        } else {
+                            $licenseNames += "Unknown SKU: $skuId"
+                        }
+                    }
+                }
+                $licensed = if ($licenseNames.Count -gt 0) { ($licenseNames -join '; ') } else { "None" }
                 $adminUsers += [PSCustomObject]@{
                     UserPrincipalName = $user.UserPrincipalName
                     DisplayName = $user.DisplayName
