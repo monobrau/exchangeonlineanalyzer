@@ -2,11 +2,11 @@
 
 A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox rules, managing user accounts, monitoring security configurations, and investigating Entra ID (Azure AD) accounts. This tool provides administrators with powerful capabilities to detect suspicious inbox rules, manage user access, export detailed reports, and perform comprehensive Entra ID investigations.
 
-## 🔧 **Version 8.1 - Now Available!**
-**✅ Fixed MS Graph Integration** - User blocking and session revocation in Entra ID now working properly
-**✅ Enhanced Module Management** - Automatic import and installation of Microsoft Graph PowerShell modules
-**✅ Improved Error Handling** - Better diagnostics and error messages for Graph operations
-**✅ Enhanced Security** - Comprehensive function validation and permission checks
+## 🔧 **Version 8.2 - Now Available!**
+**✅ Sign-in Logs Collection** - Added sign-in logs export to Security Investigation Report with time range selector (1/7/30 days)
+**✅ Security Analysis Module** - New module for risky user detection, Conditional Access policy analysis, and app registration audit
+**✅ Enhanced Security Investigation** - User selection filtering for targeted reports, improved grid displays, and better UI organization
+**✅ Graceful Licensing Handling** - Sign-in logs and security features handle licensing requirements with clear error messages
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
 ![Exchange Online](https://img.shields.io/badge/Exchange-Online-orange)
