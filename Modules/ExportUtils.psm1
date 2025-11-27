@@ -505,13 +505,20 @@ function New-SecurityInvestigationReport {
     }
 
     # MFA Coverage and User Security Groups
+    # MFA: Filter by SelectedUsers when provided (per-user report, faster for targeted investigations)
+    #      Full pull when no users selected (comprehensive investigation)
+    #      Note: MFA is combined in UserSecurityPosture.csv, so no separate MFAStatus.csv needed
+    # Groups: Always full pull (fast to collect, not user-specific)
     if ($graphConnected) {
         try {
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
+            # Filter by SelectedUsers when provided (per-user report for speed)
+            # Empty array when no selection = full pull (comprehensive investigation)
             $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
 
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
-            $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
+            # Always pass empty array to get full pull of all users (fast, not user-specific)
+            $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers @()
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
@@ -774,46 +781,33 @@ function New-SecurityInvestigationReport {
                 }
 
                 # Determine which users to include in the export
+                # Strategy: When users are selected = targeted investigation (faster, focused)
+                #          When no users selected = general security investigation (comprehensive)
+                # 
+                # MFA: Filtered by SelectedUsers when provided (per-user report for speed)
+                #      Full pull when no selection (comprehensive investigation)
+                # Groups: Always full pull (fast to collect, not user-specific)
+                # MailboxForwarding: Filtered by SelectedUsers when provided (slower, so filter for speed)
+                #                   Full pull when no selection (comprehensive investigation)
                 $usersToExport = @()
+                if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
+                    # Use MFA coverage users (filtered if SelectedUsers provided, full if not)
+                    # Groups data is always full pull, so it will be available for all users in groupsLookup
+                    $usersToExport = $report.MfaCoverage.Users
+                }
+                
+                # Build set of selected users for MailboxForwarding filtering
+                # Note: Get-MailboxForwardingAndDelegation already filters by SelectedUsers,
+                # so mbxLookup will only contain selected users when users are selected,
+                # and all users when no users are selected
+                $selectedUserSet = @{}
                 if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                    # Filter to selected users only
-                    $selectedUserSet = @{}
                     foreach ($user in $SelectedUsers) {
                         if ($user -is [string]) {
                             $selectedUserSet[$user.ToLower()] = $user
                         } elseif ($user.UserPrincipalName) {
                             $selectedUserSet[$user.UserPrincipalName.ToLower()] = $user.UserPrincipalName
                         }
-                    }
-                    
-                    # Build list from selected users
-                    foreach ($userKey in $selectedUserSet.Keys) {
-                        $upn = $selectedUserSet[$userKey]
-                        # Try to find user in MFA coverage, groups, or mailbox forwarding
-                        $found = $false
-                        if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
-                            $mfaUser = $report.MfaCoverage.Users | Where-Object { $_.UserPrincipalName -eq $upn -or $_.UserPrincipalName.ToLower() -eq $upn.ToLower() } | Select-Object -First 1
-                            if ($mfaUser) {
-                                $usersToExport += $mfaUser
-                                $found = $true
-                            }
-                        }
-                        if (-not $found) {
-                            # Create a basic user object if not found in MFA coverage
-                            $usersToExport += [pscustomobject]@{
-                                UserPrincipalName = $upn
-                                DisplayName = $upn
-                                PerUserMfaEnabled = $false
-                                SecurityDefaults = $false
-                                CARequiresMfa = $false
-                                MfaCovered = $false
-                            }
-                        }
-                    }
-                } else {
-                    # No selection - use all MFA coverage users
-                    if ($report.MfaCoverage -and $report.MfaCoverage.Users) {
-                        $usersToExport = $report.MfaCoverage.Users
                     }
                 }
 
@@ -828,9 +822,16 @@ function New-SecurityInvestigationReport {
                 } catch {}
 
                 # Build user posture for each user
+                # MFA data: Filtered by SelectedUsers when provided (per-user report)
+                # Groups data: Always full pull, so available for all users
+                # MailboxForwarding data: Filtered by SelectedUsers when provided, full pull when not
                 foreach ($mfaUser in $usersToExport) {
                     $upn = $mfaUser.UserPrincipalName
+                    # MailboxForwarding data is already filtered at collection time:
+                    # - If users selected: mbxLookup only contains selected users
+                    # - If no users selected: mbxLookup contains all users
                     $mbxData = $mbxLookup[$upn]
+                    # Groups data is always full pull, so available for all users
                     $groupsData = $groupsLookup[$upn]
 
                     # Get detailed per-user MFA status if module is available
