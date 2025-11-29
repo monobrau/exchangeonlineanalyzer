@@ -69,17 +69,39 @@ function Connect-EntraGraph {
         
         # Import required Microsoft Graph modules after connection
         Write-Host "Importing required Microsoft Graph modules..." -ForegroundColor Cyan
+        
+        # Define which modules are core vs optional
+        $coreModules = @('Microsoft.Graph.Users', 'Microsoft.Graph.Reports', 'Microsoft.Graph.Identity.SignIns')
+        $optionalModules = @('Microsoft.Graph.Identity.DirectoryManagement', 'Microsoft.Graph.Security')
+        
+        $missingOptional = @()
         foreach ($moduleName in $script:requiredModules) {
             try {
                 if (Get-Module -ListAvailable -Name $moduleName -ErrorAction SilentlyContinue) {
                     Import-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
                     Write-Host "  Imported: $moduleName" -ForegroundColor Gray
                 } else {
-                    Write-Warning "Module $moduleName not available. Some features may not work."
+                    if ($optionalModules -contains $moduleName) {
+                        $missingOptional += $moduleName
+                        # Don't show anything for optional modules - they're truly optional
+                    } else {
+                        Write-Warning "Core module $moduleName not available. Some features may not work."
+                    }
                 }
             } catch {
-                Write-Warning "Could not import module $moduleName : $_"
+                if ($optionalModules -contains $moduleName) {
+                    $missingOptional += $moduleName
+                    # Don't show anything for optional modules
+                } else {
+                    Write-Warning "Could not import core module $moduleName : $_"
+                }
             }
+        }
+        
+        # Only show a brief note if optional modules are missing (and only once, not every time)
+        if ($missingOptional.Count -gt 0 -and -not $script:optionalModulesNoted) {
+            Write-Host "  Note: Optional modules not installed (license info, security features). Core features work fine." -ForegroundColor DarkGray
+            $script:optionalModulesNoted = $true
         }
         
         return $true

@@ -2100,7 +2100,7 @@ $connectButton.Width = 220
 $connectButton.BackColor = [System.Drawing.Color]::FromArgb(255, 152, 0)  # Orange - warning color
 $connectButton.ForeColor = [System.Drawing.Color]::White
 $connectButtonTooltip = New-Object System.Windows.Forms.ToolTip
-$connectButtonTooltip.SetToolTip($connectButton, "⚠️ IMPORTANT: Connect to Entra/Graph FIRST (go to Entra tab), then return here to connect to Exchange Online. Wrong order causes authentication errors!")
+$connectButtonTooltip.SetToolTip($connectButton, "IMPORTANT: Connect to Entra/Graph FIRST (go to Entra tab), then return here to connect to Exchange Online. Wrong order causes authentication errors!")
 
 $disconnectButton = New-Object System.Windows.Forms.Button
 $disconnectButton.Text = "Disconnect"
@@ -2866,7 +2866,7 @@ $topActionPanel.Controls.Add($exchangeTopRow2)
 
 # Warning label at top of Exchange Online tab
 $exchangeWarningLabel = New-Object System.Windows.Forms.Label
-$exchangeWarningLabel.Text = "⚠️ IMPORTANT: Connect to Entra/Graph FIRST (go to Entra tab), then return here to connect to Exchange Online. Wrong order causes authentication errors!"
+$exchangeWarningLabel.Text = "IMPORTANT: Connect to Entra/Graph FIRST (go to Entra tab), then return here to connect to Exchange Online. Wrong order causes authentication errors!"
 $exchangeWarningLabel.Dock = 'Top'
 $exchangeWarningLabel.Height = 25
 $exchangeWarningLabel.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7)  # Amber/Yellow warning color
@@ -2940,7 +2940,7 @@ $entraTab = New-Object System.Windows.Forms.TabPage; $entraTab.Text = "Entra"
 # Top action panel with three rows for better organization
 # Info label at top of Entra tab
 $entraWarningLabel = New-Object System.Windows.Forms.Label
-$entraWarningLabel.Text = "ℹ️ Connect to Entra/Graph FIRST, then you can connect to Exchange Online. This prevents authentication conflicts."
+$entraWarningLabel.Text = "Connect to Entra/Graph FIRST, then you can connect to Exchange Online. This prevents authentication conflicts."
 $entraWarningLabel.Dock = 'Top'
 $entraWarningLabel.Height = 25
 $entraWarningLabel.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)  # Blue info color
@@ -3447,6 +3447,16 @@ $searchUsersButton.add_Click({
     }
 })
 $entraSignInExportButton.add_Click({
+    # Ensure EntraInvestigator module is loaded
+    if (-not (Get-Command Get-EntraSignInLogs -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -Global -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to load EntraInvestigator module: $($_.Exception.Message)", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+    }
+    
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
@@ -3503,6 +3513,16 @@ $entraSignInExportXlsxButton.add_Click({
     }
 })
 $entraDetailsFetchButton.add_Click({
+    # Ensure EntraInvestigator module is loaded
+    if (-not (Get-Command Get-EntraUserDetailsAndRoles -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -Global -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to load EntraInvestigator module: $($_.Exception.Message)", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+    }
+    
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
@@ -3553,6 +3573,16 @@ $entraDetailsFetchButton.add_Click({
     } finally { $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
 })
 $entraAuditFetchButton.add_Click({
+    # Ensure EntraInvestigator module is loaded
+    if (-not (Get-Command Get-EntraUserAuditLogs -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -Global -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to load EntraInvestigator module: $($_.Exception.Message)", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+    }
+    
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
@@ -3606,6 +3636,16 @@ $entraAuditExportXlsxButton.add_Click({
     }
 })
 $entraMfaFetchButton.add_Click({
+    # Ensure EntraInvestigator module is loaded
+    if (-not (Get-Command Get-EntraUserMfaStatus -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -Global -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to load EntraInvestigator module: $($_.Exception.Message)", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+    }
+    
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
@@ -4417,6 +4457,16 @@ $userMailboxGrid.add_CellContentClick({
 
 # Activate View Sign-in Logs button
 $entraViewSignInLogsButton.add_Click({
+    # Ensure EntraInvestigator module is loaded
+    if (-not (Get-Command Get-EntraSignInLogs -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -Global -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to load EntraInvestigator module: $($_.Exception.Message)", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+    }
+    
     $entraUserGrid.EndEdit()
     $selectedUpns = @()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
@@ -4480,6 +4530,16 @@ $entraViewSignInLogsButton.add_Click({
 
 # Activate View Audit Logs button
 $entraViewAuditLogsButton.add_Click({
+    # Ensure EntraInvestigator module is loaded
+    if (-not (Get-Command Get-EntraUserAuditLogs -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -Global -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to load EntraInvestigator module: $($_.Exception.Message)", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+    }
+    
     $entraUserGrid.EndEdit()
     $selectedUpns = @()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
@@ -5242,6 +5302,949 @@ $securityInvestigationButton.add_Click({
     }
 })
 $reportGeneratorPanel.Controls.Add($securityInvestigationButton)
+
+# Bulk Tenant Exporter Button
+$bulkTenantExporterButton = New-Object System.Windows.Forms.Button
+$bulkTenantExporterButton.Text = "Bulk Tenant Report Exporter"
+$bulkTenantExporterButton.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$bulkTenantExporterButton.Location = New-Object System.Drawing.Point(530, 670)
+$bulkTenantExporterButton.Size = New-Object System.Drawing.Size(250, 40)
+$bulkTenantExporterButton.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50) # Green color
+$bulkTenantExporterButton.ForeColor = [System.Drawing.Color]::White
+$bulkTenantExporterButton.add_Click({
+    $statusLabel.Text = "🔄 Opening Bulk Tenant Report Exporter..."
+    $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+
+    try {
+        # Create Bulk Tenant Exporter form
+        $bulkForm = New-Object System.Windows.Forms.Form
+        $bulkForm.Text = "Bulk Tenant Report Exporter"
+        $bulkForm.Size = New-Object System.Drawing.Size(900, 750)
+        $bulkForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $bulkForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+        $bulkForm.MaximizeBox = $true
+
+        # Create main panel
+        $bulkMainPanel = New-Object System.Windows.Forms.Panel
+        $bulkMainPanel.Dock = 'Fill'
+        $bulkMainPanel.Padding = New-Object System.Windows.Forms.Padding(15)
+
+        # Title
+        $bulkTitleLabel = New-Object System.Windows.Forms.Label
+        $bulkTitleLabel.Text = "Bulk Tenant Report Exporter"
+        $bulkTitleLabel.Font = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
+        $bulkTitleLabel.Location = New-Object System.Drawing.Point(15, 15)
+        $bulkTitleLabel.Size = New-Object System.Drawing.Size(500, 35)
+
+        # Description
+        $bulkDescLabel = New-Object System.Windows.Forms.Label
+        $bulkDescLabel.Text = "Export security investigation reports for multiple tenants. You will be prompted to authenticate to each tenant sequentially.`nReports will be saved in separate folders for each tenant."
+        $bulkDescLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+        $bulkDescLabel.Location = New-Object System.Drawing.Point(15, 55)
+        $bulkDescLabel.Size = New-Object System.Drawing.Size(600, 40)
+        $bulkDescLabel.MaximumSize = New-Object System.Drawing.Size(600, 0)
+        $bulkDescLabel.AutoSize = $true
+
+        # Configuration GroupBox
+        $bulkConfigGroupBox = New-Object System.Windows.Forms.GroupBox
+        $bulkConfigGroupBox.Text = "Configuration"
+        $bulkConfigGroupBox.Location = New-Object System.Drawing.Point(15, 110)
+        $bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 180)
+
+        # Number of Tenants
+        $tenantsCountLabel = New-Object System.Windows.Forms.Label
+        $tenantsCountLabel.Text = "Number of Tenants:"
+        $tenantsCountLabel.Location = New-Object System.Drawing.Point(20, 25)
+        $tenantsCountLabel.Size = New-Object System.Drawing.Size(150, 20)
+
+        $tenantsCountNumeric = New-Object System.Windows.Forms.NumericUpDown
+        $tenantsCountNumeric.Location = New-Object System.Drawing.Point(180, 23)
+        $tenantsCountNumeric.Size = New-Object System.Drawing.Size(100, 20)
+        $tenantsCountNumeric.Minimum = 1
+        $tenantsCountNumeric.Maximum = 50
+        $tenantsCountNumeric.Value = 1
+
+        # Investigator Name
+        $bulkInvestigatorLabel = New-Object System.Windows.Forms.Label
+        $bulkInvestigatorLabel.Text = "Investigator Name:"
+        $bulkInvestigatorLabel.Location = New-Object System.Drawing.Point(20, 55)
+        $bulkInvestigatorLabel.Size = New-Object System.Drawing.Size(150, 20)
+
+        $bulkInvestigatorTextBox = New-Object System.Windows.Forms.TextBox
+        $bulkInvestigatorTextBox.Location = New-Object System.Drawing.Point(180, 53)
+        $bulkInvestigatorTextBox.Size = New-Object System.Drawing.Size(200, 20)
+        try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
+        $settings = $null; try { $settings = Get-AppSettings } catch {}
+        if ($settings -and $settings.InvestigatorName) { $bulkInvestigatorTextBox.Text = $settings.InvestigatorName } else { $bulkInvestigatorTextBox.Text = "Security Administrator" }
+
+        # Company Name
+        $bulkCompanyLabel = New-Object System.Windows.Forms.Label
+        $bulkCompanyLabel.Text = "Company Name:"
+        $bulkCompanyLabel.Location = New-Object System.Drawing.Point(20, 85)
+        $bulkCompanyLabel.Size = New-Object System.Drawing.Size(150, 20)
+
+        $bulkCompanyTextBox = New-Object System.Windows.Forms.TextBox
+        $bulkCompanyTextBox.Location = New-Object System.Drawing.Point(180, 83)
+        $bulkCompanyTextBox.Size = New-Object System.Drawing.Size(200, 20)
+        if ($settings -and $settings.CompanyName) { $bulkCompanyTextBox.Text = $settings.CompanyName } else { $bulkCompanyTextBox.Text = "Organization" }
+
+        # Days Back
+        $bulkDaysLabel = New-Object System.Windows.Forms.Label
+        $bulkDaysLabel.Text = "Days Back (Message Trace):"
+        $bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 115)
+        $bulkDaysLabel.Size = New-Object System.Drawing.Size(150, 20)
+
+        $bulkDaysComboBox = New-Object System.Windows.Forms.ComboBox
+        $bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 113)
+        $bulkDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
+        $bulkDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+        $bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30"))
+        $bulkDaysComboBox.SelectedIndex = 4  # Default to 10 days
+
+        $bulkConfigGroupBox.Controls.AddRange(@($tenantsCountLabel, $tenantsCountNumeric, $bulkInvestigatorLabel, $bulkInvestigatorTextBox, $bulkCompanyLabel, $bulkCompanyTextBox, $bulkDaysLabel, $bulkDaysComboBox))
+
+        # Report Selection section
+        $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
+        $bulkReportsGroupBox.Text = "Select Reports to Export"
+        $bulkReportsGroupBox.Location = New-Object System.Drawing.Point(15, 300)
+        $bulkReportsGroupBox.Size = New-Object System.Drawing.Size(400, 320)
+
+        # Select All / Deselect All buttons
+        $bulkSelectAllBtn = New-Object System.Windows.Forms.Button
+        $bulkSelectAllBtn.Text = "Select All"
+        $bulkSelectAllBtn.Location = New-Object System.Drawing.Point(20, 25)
+        $bulkSelectAllBtn.Size = New-Object System.Drawing.Size(80, 25)
+
+        $bulkDeselectAllBtn = New-Object System.Windows.Forms.Button
+        $bulkDeselectAllBtn.Text = "Deselect All"
+        $bulkDeselectAllBtn.Location = New-Object System.Drawing.Point(110, 25)
+        $bulkDeselectAllBtn.Size = New-Object System.Drawing.Size(90, 25)
+
+        # Checkboxes for each report type
+        $bulkMessageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkMessageTraceCheckBox.Text = "Message Trace (last 10 days)"
+        $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(20, 60)
+        $bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkMessageTraceCheckBox.Checked = $true
+
+        $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkInboxRulesCheckBox.Text = "Inbox Rules"
+        $bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(20, 85)
+        $bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkInboxRulesCheckBox.Checked = $true
+
+        $bulkTransportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkTransportRulesCheckBox.Text = "Transport Rules"
+        $bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(20, 110)
+        $bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkTransportRulesCheckBox.Checked = $true
+
+        $bulkMailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkMailFlowCheckBox.Text = "Mail Flow Connectors"
+        $bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(20, 135)
+        $bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkMailFlowCheckBox.Checked = $true
+
+        $bulkMailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkMailboxForwardingCheckBox.Text = "Mailbox Forwarding & Delegation"
+        $bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(20, 160)
+        $bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkMailboxForwardingCheckBox.Checked = $true
+
+        $bulkAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkAuditLogsCheckBox.Text = "Audit Logs"
+        $bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(20, 185)
+        $bulkAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkAuditLogsCheckBox.Checked = $true
+
+        $bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
+        $bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(20, 210)
+        $bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkCaPoliciesCheckBox.Checked = $true
+
+        $bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkAppRegistrationsCheckBox.Text = "App Registrations"
+        $bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(20, 235)
+        $bulkAppRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkAppRegistrationsCheckBox.Checked = $true
+
+        $bulkSignInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkSignInLogsCheckBox.Text = "Sign-In Logs"
+        $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(20, 260)
+        $bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkSignInLogsCheckBox.Checked = $false
+
+        $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
+        $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
+        $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(40, 285)
+        $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
+
+        $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
+        $bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(170, 283)
+        $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
+        $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+        $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
+        $bulkSignInLogsDaysComboBox.SelectedIndex = 1  # Default to 7 days
+        $bulkSignInLogsDaysComboBox.Enabled = $bulkSignInLogsCheckBox.Checked
+
+        $bulkSignInLogsCheckBox.add_CheckedChanged({
+            $bulkSignInLogsDaysComboBox.Enabled = $bulkSignInLogsCheckBox.Checked
+        })
+
+        # Select All button click handler
+        $bulkSelectAllBtn.add_Click({
+            $bulkMessageTraceCheckBox.Checked = $true
+            $bulkInboxRulesCheckBox.Checked = $true
+            $bulkTransportRulesCheckBox.Checked = $true
+            $bulkMailFlowCheckBox.Checked = $true
+            $bulkMailboxForwardingCheckBox.Checked = $true
+            $bulkAuditLogsCheckBox.Checked = $true
+            $bulkCaPoliciesCheckBox.Checked = $true
+            $bulkAppRegistrationsCheckBox.Checked = $true
+            $bulkSignInLogsCheckBox.Checked = $true
+        })
+
+        # Deselect All button click handler
+        $bulkDeselectAllBtn.add_Click({
+            $bulkMessageTraceCheckBox.Checked = $false
+            $bulkInboxRulesCheckBox.Checked = $false
+            $bulkTransportRulesCheckBox.Checked = $false
+            $bulkMailFlowCheckBox.Checked = $false
+            $bulkMailboxForwardingCheckBox.Checked = $false
+            $bulkAuditLogsCheckBox.Checked = $false
+            $bulkCaPoliciesCheckBox.Checked = $false
+            $bulkAppRegistrationsCheckBox.Checked = $false
+            $bulkSignInLogsCheckBox.Checked = $false
+        })
+
+        $bulkReportsGroupBox.Controls.AddRange(@(
+            $bulkSelectAllBtn, $bulkDeselectAllBtn,
+            $bulkMessageTraceCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
+            $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox, $bulkAuditLogsCheckBox,
+            $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
+            $bulkSignInLogsCheckBox, $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
+        ))
+
+        # Progress Label
+        $bulkProgressLabel = New-Object System.Windows.Forms.Label
+        $bulkProgressLabel.Text = "Ready to start bulk export..."
+        $bulkProgressLabel.Location = New-Object System.Drawing.Point(430, 190)
+        $bulkProgressLabel.Size = New-Object System.Drawing.Size(400, 20)
+        $bulkProgressLabel.ForeColor = [System.Drawing.Color]::Blue
+
+        # Status TextBox (for detailed progress)
+        $bulkStatusTextBox = New-Object System.Windows.Forms.TextBox
+        $bulkStatusTextBox.Multiline = $true
+        $bulkStatusTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+        $bulkStatusTextBox.ReadOnly = $true
+        $bulkStatusTextBox.Location = New-Object System.Drawing.Point(430, 220)
+        $bulkStatusTextBox.Size = New-Object System.Drawing.Size(400, 400)
+        $bulkStatusTextBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+
+        # Start Export Button
+        $bulkStartButton = New-Object System.Windows.Forms.Button
+        $bulkStartButton.Text = "Start Bulk Export"
+        $bulkStartButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+        $bulkStartButton.Location = New-Object System.Drawing.Point(430, 110)
+        $bulkStartButton.Size = New-Object System.Drawing.Size(280, 50)
+        $bulkStartButton.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
+        $bulkStartButton.ForeColor = [System.Drawing.Color]::White
+
+        # Close Button
+        $bulkCloseButton = New-Object System.Windows.Forms.Button
+        $bulkCloseButton.Text = "Close"
+        $bulkCloseButton.Location = New-Object System.Drawing.Point(430, 640)
+        $bulkCloseButton.Size = New-Object System.Drawing.Size(100, 30)
+        $bulkCloseButton.add_Click({
+            $bulkForm.Close()
+        })
+
+        # Start Export button click handler
+        $bulkStartButton.add_Click({
+            $tenantCount = [int]$tenantsCountNumeric.Value
+            $investigator = if ($bulkInvestigatorTextBox.Text -and $bulkInvestigatorTextBox.Text.Trim().Length -gt 0) { $bulkInvestigatorTextBox.Text } else { 'Security Administrator' }
+            $company = if ($bulkCompanyTextBox.Text -and $bulkCompanyTextBox.Text.Trim().Length -gt 0) { $bulkCompanyTextBox.Text } else { 'Organization' }
+            $days = [int]$bulkDaysComboBox.SelectedItem
+
+            # Parse sign-in logs time range
+            $signInLogsDays = 7
+            $selectedRange = $bulkSignInLogsDaysComboBox.SelectedItem
+            if ($selectedRange -eq "1 day") { $signInLogsDays = 1 }
+            elseif ($selectedRange -eq "7 days") { $signInLogsDays = 7 }
+            elseif ($selectedRange -eq "30 days") { $signInLogsDays = 30 }
+
+            # Get report selections from checkboxes
+            $reportSelections = @{
+                IncludeMessageTrace = $bulkMessageTraceCheckBox.Checked
+                IncludeInboxRules = $bulkInboxRulesCheckBox.Checked
+                IncludeTransportRules = $bulkTransportRulesCheckBox.Checked
+                IncludeMailFlowConnectors = $bulkMailFlowCheckBox.Checked
+                IncludeMailboxForwarding = $bulkMailboxForwardingCheckBox.Checked
+                IncludeAuditLogs = $bulkAuditLogsCheckBox.Checked
+                IncludeConditionalAccessPolicies = $bulkCaPoliciesCheckBox.Checked
+                IncludeAppRegistrations = $bulkAppRegistrationsCheckBox.Checked
+                IncludeSignInLogs = $bulkSignInLogsCheckBox.Checked
+                SignInLogsDaysBack = $signInLogsDays
+            }
+
+            # Validate at least one report is selected
+            $anySelected = $false
+            foreach ($key in $reportSelections.Keys) {
+                if ($key -ne 'SignInLogsDaysBack' -and $reportSelections[$key]) { $anySelected = $true; break }
+            }
+            if (-not $anySelected) {
+                [System.Windows.Forms.MessageBox]::Show("Please select at least one report to export.", "No Reports Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+
+            $bulkStartButton.Enabled = $false
+            $bulkForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+            $bulkProgressLabel.Text = "Starting bulk export for $tenantCount tenant(s)..."
+            $bulkStatusTextBox.Clear()
+            $bulkStatusTextBox.AppendText("=== Bulk Tenant Report Export Started ===" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Tenants to process: $tenantCount" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Days back: $days" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText([Environment]::NewLine)
+
+            # Import required modules
+            try {
+                Import-Module "$PSScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
+                Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
+            } catch {
+                $bulkStatusTextBox.AppendText("ERROR: Failed to import required modules: $($_.Exception.Message)" + [Environment]::NewLine)
+                $bulkStartButton.Enabled = $true
+                $bulkForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                return
+            }
+
+            $successCount = 0
+            $failCount = 0
+            $tenantResults = @()
+            $tenantProcesses = @()
+
+            # Create a temporary directory for status files
+            $tempDir = Join-Path $env:TEMP "ExchangeOnlineAnalyzer_BulkExport_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+            $bulkStatusTextBox.AppendText("=== Bulk Export: One Session Per Tenant ===" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Each tenant will open in its own PowerShell window." + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Each window will handle authentication and report generation." + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Status files location: $tempDir" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText([Environment]::NewLine)
+            
+            # Create a single combined script per tenant that does both auth and reports
+            $combinedScript = @"
+param(
+    [int]`$TenantNumber,
+    [string]`$ScriptRoot,
+    [string]`$TempDir,
+    [string]`$InvestigatorName,
+    [string]`$CompanyName,
+    [int]`$DaysBack,
+    [string]`$ReportSelectionsFile,
+    [string]`$CacheDir
+)
+
+`$statusFile = Join-Path `$TempDir "Tenant`$TenantNumber_Status.txt"
+`$resultFile = Join-Path `$TempDir "Tenant`$TenantNumber_Result.txt"
+
+# Initialize status file immediately
+try {
+    "Starting tenant `$TenantNumber processing..." | Out-File -FilePath `$statusFile -Encoding UTF8
+    "STARTING" | Out-File -FilePath `$resultFile -Encoding UTF8
+} catch {
+    Write-Host "FATAL: Cannot write to temp directory: `$(`$_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+
+function Write-Status {
+    param([string]`$Message)
+    `$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "[`$timestamp] `$Message" | Out-File -FilePath `$statusFile -Append -Encoding UTF8
+    Write-Host "[Tenant `$TenantNumber] `$Message"
+}
+
+# Load report selections from JSON file
+`$ReportSelections = @{}
+if (Test-Path `$ReportSelectionsFile) {
+    try {
+        `$jsonObj = Get-Content `$ReportSelectionsFile -Raw | ConvertFrom-Json
+        `$ReportSelections = @{
+            IncludeMessageTrace = `$jsonObj.IncludeMessageTrace
+            IncludeInboxRules = `$jsonObj.IncludeInboxRules
+            IncludeTransportRules = `$jsonObj.IncludeTransportRules
+            IncludeMailFlowConnectors = `$jsonObj.IncludeMailFlowConnectors
+            IncludeMailboxForwarding = `$jsonObj.IncludeMailboxForwarding
+            IncludeAuditLogs = `$jsonObj.IncludeAuditLogs
+            IncludeConditionalAccessPolicies = `$jsonObj.IncludeConditionalAccessPolicies
+            IncludeAppRegistrations = `$jsonObj.IncludeAppRegistrations
+            IncludeSignInLogs = `$jsonObj.IncludeSignInLogs
+            SignInLogsDaysBack = `$jsonObj.SignInLogsDaysBack
+        }
+    } catch {
+        Write-Status "ERROR: Failed to load report selections: `$(`$_.Exception.Message)"
+        "ERROR: Failed to load report selections" | Out-File -FilePath `$resultFile -Encoding UTF8
+        exit 1
+    }
+} else {
+    Write-Status "ERROR: Report selections file not found: `$ReportSelectionsFile"
+    "ERROR: Report selections file not found" | Out-File -FilePath `$resultFile -Encoding UTF8
+    exit 1
+}
+
+try {
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "TENANT `$TenantNumber - Complete Process" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    Write-Status "Starting complete process for tenant `$TenantNumber..."
+    
+    # Set unique cache location for this tenant process
+    if (`$CacheDir) {
+        `$env:IDENTITY_SERVICE_CACHE_DIR = `$CacheDir
+        `$env:MSAL_CACHE_DIR = `$CacheDir
+        Write-Status "Using isolated cache directory: `$CacheDir"
+    }
+    
+    # Import required modules
+    Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
+    Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
+    
+    # Clear any existing authentication sessions
+    Write-Status "Clearing any existing authentication sessions..."
+    try {
+        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+    try {
+        if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
+            Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue | Out-Null
+        }
+    } catch {}
+    
+    # Clear MSAL token cache
+    Write-Status "Clearing authentication cache..."
+    try {
+        `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+        if (`$graphSession -and `$graphSession.AuthContext) {
+            `$graphSession.AuthContext.ClearTokenCache()
+        }
+    } catch {}
+    
+    try {
+        if ([Microsoft.Identity.Client.TokenCacheHelper] -as [type]) {
+            `$msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+            if (`$msalCache -and (Test-Path `$msalCache)) {
+                Remove-Item `$msalCache -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+    
+    Start-Sleep -Seconds 2
+    
+    # ============================================
+    # PHASE 1: AUTHENTICATION
+    # ============================================
+    Write-Status ""
+    Write-Status "=== PHASE 1: AUTHENTICATION ==="
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Yellow
+    Write-Host "TENANT `$TenantNumber - Microsoft Graph" -ForegroundColor Yellow
+    Write-Host "Please select the correct tenant account" -ForegroundColor Yellow
+    Write-Host "========================================" -ForegroundColor Yellow
+    Write-Host ""
+    
+    `$scopes = @(
+        "AuditLog.Read.All",
+        "User.Read.All",
+        "Directory.Read.All",
+        "Policy.Read.All",
+        "Application.Read.All",
+        "Reports.Read.All"
+    )
+    
+    `$graphConnected = `$false
+    try {
+        `$null = Connect-MgGraph -Scopes `$scopes -ContextScope Process -ErrorAction Stop
+        `$graphConnected = `$true
+        
+        `$mgContext = Get-MgContext -ErrorAction Stop
+        if (`$mgContext -and `$mgContext.TenantId) {
+            Write-Status "Connected to tenant: `$(`$mgContext.TenantId)"
+            if (`$mgContext.Account) {
+                Write-Status "Connected as: `$(`$mgContext.Account)"
+            }
+        }
+        
+        Write-Status "SUCCESS: Connected to Microsoft Graph"
+        Write-Host "Graph authentication successful!" -ForegroundColor Green
+        Write-Host ""
+    } catch {
+        `$errorMsg = `$_.Exception.Message
+        Write-Status "ERROR: Failed to connect to Microsoft Graph: `$errorMsg"
+        Write-Host "Graph authentication failed: `$errorMsg" -ForegroundColor Red
+        "ERROR: Graph authentication failed - `$errorMsg" | Out-File -FilePath `$resultFile -Encoding UTF8
+        Write-Host ""
+        Write-Host "Press any key to close this window..." -ForegroundColor Yellow
+        try {
+            `$null = `$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        } catch {
+            Start-Sleep -Seconds 60
+        }
+        exit 1
+    }
+    
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "TENANT `$TenantNumber - Exchange Online" -ForegroundColor Cyan
+    Write-Host "Please select the correct tenant account" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    `$exchangeConnected = `$false
+    try {
+        Connect-ExchangeOnline -ShowBanner:`$false -ErrorAction Stop
+        `$exchangeConnected = `$true
+        Write-Status "SUCCESS: Connected to Exchange Online"
+        Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
+        Write-Host ""
+    } catch {
+        `$errorMsg = `$_.Exception.Message
+        Write-Status "ERROR: Failed to connect to Exchange Online: `$errorMsg"
+        Write-Host "Exchange Online authentication failed: `$errorMsg" -ForegroundColor Red
+        if (`$graphConnected) {
+            try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch {}
+        }
+        "ERROR: Exchange Online authentication failed - `$errorMsg" | Out-File -FilePath `$resultFile -Encoding UTF8
+        Write-Host ""
+        Write-Host "Press any key to close this window..." -ForegroundColor Yellow
+        try {
+            `$null = `$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        } catch {
+            Start-Sleep -Seconds 60
+        }
+        exit 1
+    }
+    
+    if (-not `$graphConnected -or -not `$exchangeConnected) {
+        Write-Status "ERROR: Not all services connected"
+        "ERROR: Not all services connected" | Out-File -FilePath `$resultFile -Encoding UTF8
+        Write-Host ""
+        Write-Host "Press any key to close this window..." -ForegroundColor Yellow
+        try {
+            `$null = `$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        } catch {
+            Start-Sleep -Seconds 60
+        }
+        exit 1
+    }
+    
+    Write-Status "Authentication complete!"
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "Authentication successful!" -ForegroundColor Green
+    Write-Host "Proceeding to report generation..." -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host ""
+    
+    # ============================================
+    # PHASE 2: REPORT GENERATION
+    # ============================================
+    Write-Status ""
+    Write-Status "=== PHASE 2: REPORT GENERATION ==="
+    
+    # Get tenant name
+    `$tenantName = "Tenant`$TenantNumber"
+    try {
+        Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+        `$ti = `$null
+        try { `$ti = Get-TenantIdentity } catch {}
+        if (`$ti) {
+            if (`$ti.TenantDisplayName) { `$tenantName = `$ti.TenantDisplayName }
+            elseif (`$ti.PrimaryDomain) { `$tenantName = `$ti.PrimaryDomain }
+        }
+        if (-not `$tenantName -or `$tenantName -eq "Tenant`$TenantNumber") {
+            try {
+                `$org = Get-OrganizationConfig -ErrorAction Stop
+                if (`$org.DisplayName) { `$tenantName = `$org.DisplayName }
+                elseif (`$org.Name) { `$tenantName = `$org.Name }
+            } catch {}
+        }
+    } catch {}
+    
+    # Sanitize tenant name
+    `$invalid = [System.IO.Path]::GetInvalidFileNameChars()
+    `$safeName = (`$tenantName.ToCharArray() | ForEach-Object { if (`$invalid -contains `$_) { '-' } else { `$_ } }) -join ''
+    `$safeName = (`$safeName -replace '\s+', ' ').Trim()
+    if (`$safeName.Length -gt 80) { `$safeName = `$safeName.Substring(0, 80) }
+    
+    Write-Status "Tenant identified: `$tenantName"
+    
+    # Create output folder
+    `$defaultRoot = Join-Path `$env:USERPROFILE "Documents\ExchangeOnlineAnalyzer\SecurityInvestigation"
+    `$tenantRoot = Join-Path `$defaultRoot `$safeName
+    if (-not (Test-Path `$tenantRoot)) { New-Item -ItemType Directory -Path `$tenantRoot -Force | Out-Null }
+    `$outputFolder = Join-Path `$tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
+    Write-Status "Output folder: `$outputFolder"
+    
+    # Generate the security investigation report
+    Write-Status "Generating security investigation report..."
+    `$securityReport = New-SecurityInvestigationReport `
+        -InvestigatorName `$InvestigatorName `
+        -CompanyName `$CompanyName `
+        -DaysBack `$DaysBack `
+        -OutputFolder `$outputFolder `
+        -IncludeMessageTrace `$ReportSelections.IncludeMessageTrace `
+        -IncludeInboxRules `$ReportSelections.IncludeInboxRules `
+        -IncludeTransportRules `$ReportSelections.IncludeTransportRules `
+        -IncludeMailFlowConnectors `$ReportSelections.IncludeMailFlowConnectors `
+        -IncludeMailboxForwarding `$ReportSelections.IncludeMailboxForwarding `
+        -IncludeAuditLogs `$ReportSelections.IncludeAuditLogs `
+        -IncludeConditionalAccessPolicies `$ReportSelections.IncludeConditionalAccessPolicies `
+        -IncludeAppRegistrations `$ReportSelections.IncludeAppRegistrations `
+        -IncludeSignInLogs `$ReportSelections.IncludeSignInLogs `
+        -SignInLogsDaysBack `$ReportSelections.SignInLogsDaysBack `
+        -SelectedUsers @()
+    
+    if (`$securityReport) {
+        Write-Status "Report generated successfully"
+        "SUCCESS: `$outputFolder" | Out-File -FilePath `$resultFile -Encoding UTF8
+        # Ensure file is flushed to disk
+        Start-Sleep -Milliseconds 500
+    } else {
+        Write-Status "Warning: Report generation returned no data"
+        "NO_DATA: `$outputFolder" | Out-File -FilePath `$resultFile -Encoding UTF8
+        # Ensure file is flushed to disk
+        Start-Sleep -Milliseconds 500
+    }
+    
+    # Disconnect
+    Write-Status "Disconnecting..."
+    try {
+        if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
+            Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue | Out-Null
+        }
+    } catch {}
+    try {
+        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+    
+    Write-Status "Completed successfully"
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "Complete process finished for Tenant `$TenantNumber!" -ForegroundColor Green
+    Write-Host "Output folder: `$outputFolder" -ForegroundColor Green
+    Write-Host "This window will close automatically in 5 seconds..." -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host ""
+    # Wait 5 seconds to show success message, then auto-close
+    Start-Sleep -Seconds 5
+    
+} catch {
+    `$errorMsg = `$_.Exception.Message
+    Write-Status "ERROR: `$errorMsg"
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Red
+    Write-Host "Process FAILED for Tenant `$TenantNumber!" -ForegroundColor Red
+    Write-Host "Error: `$errorMsg" -ForegroundColor Red
+    Write-Host "This window will stay open so you can see the error." -ForegroundColor Red
+    Write-Host "You can close it manually when ready." -ForegroundColor Red
+    Write-Host "========================================" -ForegroundColor Red
+    Write-Host ""
+    "ERROR: `$errorMsg" | Out-File -FilePath `$resultFile -Encoding UTF8
+    Write-Host "Press any key to close this window..." -ForegroundColor Yellow
+    try {
+        `$null = `$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    } catch {
+        Start-Sleep -Seconds 60
+    }
+    exit 1
+}
+"@
+
+            # Save the combined script to temporary file
+            $combinedScriptFile = Join-Path $tempDir "BulkTenantCombined.ps1"
+            try {
+                $combinedScript | Out-File -FilePath $combinedScriptFile -Encoding UTF8
+                if (-not (Test-Path $combinedScriptFile)) {
+                    throw "Failed to create combined script file"
+                }
+            } catch {
+                $bulkStatusTextBox.AppendText("ERROR: Failed to create combined script: $($_.Exception.Message)" + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText("Cannot proceed with bulk export." + [Environment]::NewLine)
+                return
+            }
+
+            # Launch one PowerShell session per tenant
+            $bulkStatusTextBox.AppendText("=== Launching Tenant Sessions ===" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Each tenant will open in its own PowerShell window." + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Complete authentication and report generation in each window." + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText([Environment]::NewLine)
+
+            for ($i = 1; $i -le $tenantCount; $i++) {
+                $bulkProgressLabel.Text = "Launching tenant $i of $tenantCount..."
+                $bulkStatusTextBox.AppendText("--- Launching Tenant ${i} of $tenantCount ---" + [Environment]::NewLine)
+                
+                # Set unique cache location for this tenant
+                $tenantCacheDir = Join-Path $tempDir "Tenant${i}_Cache"
+                New-Item -ItemType Directory -Path $tenantCacheDir -Force | Out-Null
+                
+                # Save report selections to a JSON file
+                $reportSelectionsFile = Join-Path $tempDir "Tenant${i}_ReportSelections.json"
+                $reportSelections | ConvertTo-Json | Out-File -FilePath $reportSelectionsFile -Encoding UTF8
+                
+                # Launch combined process
+                # Build argument list as a single string to ensure proper parameter passing
+                $processArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$combinedScriptFile`" -TenantNumber $i -ScriptRoot `"$PSScriptRoot`" -TempDir `"$tempDir`" -InvestigatorName `"$investigator`" -CompanyName `"$company`" -DaysBack $days -ReportSelectionsFile `"$reportSelectionsFile`" -CacheDir `"$tenantCacheDir`""
+
+                try {
+                    # Try PowerShell 7 (pwsh.exe) first, fall back to Windows PowerShell (powershell.exe)
+                    $psExe = "pwsh.exe"
+                    if (-not (Get-Command $psExe -ErrorAction SilentlyContinue)) {
+                        $psExe = "powershell.exe"
+                    }
+
+                    $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Normal
+                    
+                    # Wait a moment to ensure process starts
+                    Start-Sleep -Seconds 2
+                    
+                    # Verify process is still running
+                    try {
+                        $procCheck = Get-Process -Id $process.Id -ErrorAction Stop
+                        if ($procCheck.HasExited) {
+                            $bulkStatusTextBox.AppendText("  ERROR: Process exited immediately after launch" + [Environment]::NewLine)
+                            $failCount++
+                            $tenantResults += "Tenant ${i}: Process exited immediately"
+                            continue
+                        }
+                    } catch {
+                        $bulkStatusTextBox.AppendText("  ERROR: Could not verify process status: $($_.Exception.Message)" + [Environment]::NewLine)
+                        $failCount++
+                        $tenantResults += "Tenant ${i}: Could not verify process"
+                        continue
+                    }
+                    
+                    $tenantProcesses += @{
+                        TenantNumber = $i
+                        Process = $process
+                        StatusFile = Join-Path $tempDir "Tenant${i}_Status.txt"
+                        ResultFile = Join-Path $tempDir "Tenant${i}_Result.txt"
+                    }
+                    $bulkStatusTextBox.AppendText("  Process ID: $($process.Id) - Launched successfully" + [Environment]::NewLine)
+                } catch {
+                    $bulkStatusTextBox.AppendText("  ERROR launching process: $($_.Exception.Message)" + [Environment]::NewLine)
+                    $failCount++
+                    $tenantResults += "Tenant ${i}: Failed to launch - $($_.Exception.Message)"
+                }
+
+                $bulkStatusTextBox.AppendText([Environment]::NewLine)
+                $bulkStatusTextBox.ScrollToCaret()
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+
+            # Monitor progress of all processes
+            if ($tenantProcesses.Count -gt 0) {
+                $bulkStatusTextBox.AppendText("=== Monitoring Progress ===" + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText("Monitoring $($tenantProcesses.Count) tenant process(es)..." + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText("Each tenant is running in its own PowerShell window." + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText("You can monitor each window individually." + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText([Environment]::NewLine)
+
+                $completedTenants = @()
+                $lastUpdateTime = Get-Date
+                $timeoutMinutes = 120  # 2 hour timeout per tenant
+                $maxWaitTime = (Get-Date).AddMinutes($timeoutMinutes * $tenantProcesses.Count)
+
+                $bulkStatusTextBox.AppendText("Waiting for processes to complete..." + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText("Started monitoring at $(Get-Date -Format 'HH:mm:ss')" + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText("Timeout set to: $($maxWaitTime.ToString('HH:mm:ss'))" + [Environment]::NewLine)
+                $bulkStatusTextBox.AppendText([Environment]::NewLine)
+
+                while ($completedTenants.Count -lt $tenantProcesses.Count -and (Get-Date) -lt $maxWaitTime) {
+                    $bulkProgressLabel.Text = "Monitoring: $($completedTenants.Count) of $($tenantProcesses.Count) completed..."
+                    
+                    foreach ($tenantProc in $tenantProcesses) {
+                        $i = $tenantProc.TenantNumber
+                        
+                        if ($completedTenants -contains $i) { continue }
+
+                        # Check if process has exited
+                        try {
+                            $proc = Get-Process -Id $tenantProc.Process.Id -ErrorAction SilentlyContinue
+                            if (-not $proc -or $proc.HasExited) {
+                                # Process completed - wait a moment for file to be written/flushed
+                                Start-Sleep -Seconds 2
+                                
+                                # Process completed
+                                if (-not ($completedTenants -contains $i)) {
+                                    $completedTenants += $i
+                                    
+                                    # Read result file - try multiple times if not found immediately
+                                    $resultFileFound = $false
+                                    $maxRetries = 5
+                                    $retryCount = 0
+                                    $result = $null
+                                    
+                                    while (-not $resultFileFound -and $retryCount -lt $maxRetries) {
+                                        if (Test-Path $tenantProc.ResultFile) {
+                                            $resultFileFound = $true
+                                            Start-Sleep -Milliseconds 500
+                                            $result = Get-Content $tenantProc.ResultFile -Raw -ErrorAction SilentlyContinue
+                                        } else {
+                                            $retryCount++
+                                            if ($retryCount -lt $maxRetries) {
+                                                Start-Sleep -Milliseconds 500
+                                            }
+                                        }
+                                    }
+                                    
+                                    # Process the result if found
+                                    if ($resultFileFound -and $result) {
+                                        if ($result -match "SUCCESS: (.+)") {
+                                            $outputPath = $matches[1]
+                                            $bulkStatusTextBox.AppendText("Tenant ${i}: SUCCESS - $outputPath" + [Environment]::NewLine)
+                                            $successCount++
+                                            $tenantResults += "Tenant ${i}: SUCCESS - $outputPath"
+                                        } elseif ($result -match "NO_DATA: (.+)") {
+                                            $outputPath = $matches[1]
+                                            $bulkStatusTextBox.AppendText("Tenant ${i}: No data returned - $outputPath" + [Environment]::NewLine)
+                                            $failCount++
+                                            $tenantResults += "Tenant ${i}: No data returned"
+                                        } elseif ($result -match "ERROR: (.+)") {
+                                            $errorMsg = $matches[1]
+                                            $bulkStatusTextBox.AppendText("Tenant ${i}: ERROR - $errorMsg" + [Environment]::NewLine)
+                                            $failCount++
+                                            $tenantResults += "Tenant ${i}: ERROR - $errorMsg"
+                                        } elseif ($result -match "STARTING") {
+                                            $bulkStatusTextBox.AppendText("Tenant ${i}: Process started but did not complete" + [Environment]::NewLine)
+                                            $failCount++
+                                            $tenantResults += "Tenant ${i}: Process did not complete"
+                                        }
+                                    } else {
+                                        $bulkStatusTextBox.AppendText("Tenant ${i}: Process exited but no result file found (checked $maxRetries times)" + [Environment]::NewLine)
+                                        $failCount++
+                                        $tenantResults += "Tenant ${i}: Process exited without result"
+                                    }
+                                    
+                                    # Read and display last few status lines
+                                    if (Test-Path $tenantProc.StatusFile) {
+                                        $statusLines = Get-Content $tenantProc.StatusFile -Tail 5 -ErrorAction SilentlyContinue
+                                        foreach ($line in $statusLines) {
+                                            $bulkStatusTextBox.AppendText("  $line" + [Environment]::NewLine)
+                                        }
+                                    }
+                                    
+                                    $bulkStatusTextBox.AppendText([Environment]::NewLine)
+                                    $bulkStatusTextBox.ScrollToCaret()
+                                }
+                            } else {
+                                # Process still running - update status if status file has new content
+                                if (Test-Path $tenantProc.StatusFile) {
+                                    $statusLines = Get-Content $tenantProc.StatusFile -Tail 1 -ErrorAction SilentlyContinue
+                                    if ($statusLines) {
+                                        $lastLine = $statusLines[-1]
+                                        # Only update UI every few seconds to avoid flooding
+                                        if (((Get-Date) - $lastUpdateTime).TotalSeconds -gt 5) {
+                                            $bulkStatusTextBox.AppendText("Tenant ${i}: $lastLine" + [Environment]::NewLine)
+                                            $bulkStatusTextBox.ScrollToCaret()
+                                            $lastUpdateTime = Get-Date
+                                        }
+                                    }
+                                }
+                            }
+                        } catch {
+                            # Process might have exited
+                            if (-not ($completedTenants -contains $i)) {
+                                $completedTenants += $i
+                                $bulkStatusTextBox.AppendText("Tenant ${i}: Process ended unexpectedly" + [Environment]::NewLine)
+                                $failCount++
+                                $tenantResults += "Tenant ${i}: Process ended unexpectedly"
+                            }
+                        }
+                    }
+
+                    [System.Windows.Forms.Application]::DoEvents()
+                    
+                    # Check for timeout
+                    if ((Get-Date) -ge $maxWaitTime) {
+                        $bulkStatusTextBox.AppendText("Timeout reached. Some processes may still be running." + [Environment]::NewLine)
+                        $bulkStatusTextBox.AppendText("Completed: $($completedTenants.Count) of $($tenantProcesses.Count)" + [Environment]::NewLine)
+                        break
+                    }
+                    
+                    Start-Sleep -Seconds 2
+                }
+                
+                # Check for any processes that didn't complete
+                foreach ($tenantProc in $tenantProcesses) {
+                    $i = $tenantProc.TenantNumber
+                    if (-not ($completedTenants -contains $i)) {
+                        try {
+                            $proc = Get-Process -Id $tenantProc.Process.Id -ErrorAction SilentlyContinue
+                            if ($proc -and -not $proc.HasExited) {
+                                $bulkStatusTextBox.AppendText("Tenant ${i}: Process still running (may have timed out)" + [Environment]::NewLine)
+                            } else {
+                                $bulkStatusTextBox.AppendText("Tenant ${i}: Process ended without completion status" + [Environment]::NewLine)
+                                $failCount++
+                                $tenantResults += "Tenant ${i}: Could not verify completion"
+                            }
+                        } catch {
+                            $bulkStatusTextBox.AppendText("Tenant ${i}: Could not check process status" + [Environment]::NewLine)
+                            $failCount++
+                            $tenantResults += "Tenant ${i}: Could not verify completion"
+                        }
+                    }
+                }
+            } else {
+                $bulkStatusTextBox.AppendText("No tenant processes were launched." + [Environment]::NewLine)
+            }
+
+            # Summary
+            $bulkStatusTextBox.AppendText("=== Bulk Export Complete ===" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Successful: $successCount" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Failed: $failCount" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText([Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Status files location: $tempDir" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("(Status files will be kept for reference)" + [Environment]::NewLine)
+            $bulkStatusTextBox.AppendText([Environment]::NewLine)
+            $bulkStatusTextBox.AppendText("Results:" + [Environment]::NewLine)
+            foreach ($result in $tenantResults) {
+                $bulkStatusTextBox.AppendText("  $result" + [Environment]::NewLine)
+            }
+            $bulkStatusTextBox.ScrollToCaret()
+
+            $bulkProgressLabel.Text = "Bulk export complete: $successCount successful, $failCount failed"
+            $bulkStartButton.Enabled = $true
+            $bulkForm.Cursor = [System.Windows.Forms.Cursors]::Default
+
+            [System.Windows.Forms.MessageBox]::Show(
+                "Bulk export completed!`n`nSuccessful: $successCount`nFailed: $failCount`n`nEach tenant ran in its own PowerShell window with isolated sessions.`n`nStatus files: $tempDir`n`nCheck the status window for details.",
+                "Bulk Export Complete",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+        })
+
+        # Add all controls to main panel
+        $bulkMainPanel.Controls.AddRange(@(
+            $bulkTitleLabel, $bulkDescLabel, $bulkConfigGroupBox, $bulkReportsGroupBox,
+            $bulkStartButton, $bulkProgressLabel, $bulkStatusTextBox, $bulkCloseButton
+        ))
+
+        $bulkForm.Controls.Add($bulkMainPanel)
+        $bulkForm.ShowDialog()
+
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "Bulk tenant exporter closed"
+
+    } catch {
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        $statusLabel.Text = "❌ Error opening bulk tenant exporter: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error opening bulk tenant exporter: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$reportGeneratorPanel.Controls.Add($bulkTenantExporterButton)
 
 # Add account selector group to panel
 $reportGeneratorPanel.Controls.Add($accountSelectorGroup)
@@ -6403,6 +7406,52 @@ $entraRequirePwdChangeButton.add_Click({
 
 # Add click handler for view admins
 $entraViewAdminsButton.add_Click({
+    # Check if Microsoft.Graph.Identity.DirectoryManagement module is available
+    if (-not (Get-Command Get-MgDirectoryRole -ErrorAction SilentlyContinue)) {
+        # Check if module is installed but not loaded
+        if (Get-Module -ListAvailable -Name Microsoft.Graph.Identity.DirectoryManagement -ErrorAction SilentlyContinue) {
+            try {
+                Import-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction Stop
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show("Failed to load Microsoft.Graph.Identity.DirectoryManagement module: $($_.Exception.Message)`n`nPlease try restarting the application.", "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                return
+            }
+        } else {
+            # Module is not installed - offer to install it
+            $install = [System.Windows.Forms.MessageBox]::Show(
+                "The Microsoft.Graph.Identity.DirectoryManagement module is required for viewing admin users.`n`nWould you like to install it now?`n`nThis will run: Install-Module Microsoft.Graph.Identity.DirectoryManagement -Scope CurrentUser",
+                "Module Required",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+            
+            if ($install -eq [System.Windows.Forms.DialogResult]::Yes) {
+                try {
+                    $statusLabel.Text = "Installing Microsoft.Graph.Identity.DirectoryManagement module..."
+                    $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+                    $mainForm.Refresh()
+                    
+                    Install-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+                    
+                    # Try to import it now
+                    Import-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction Stop
+                    
+                    $statusLabel.Text = "Module installed successfully. Please try again."
+                    [System.Windows.Forms.MessageBox]::Show("Module installed successfully! Please click 'View Admins' again.", "Installation Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                    return
+                } catch {
+                    $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                    [System.Windows.Forms.MessageBox]::Show("Failed to install module: $($_.Exception.Message)`n`nYou can install it manually by running:`nInstall-Module Microsoft.Graph.Identity.DirectoryManagement -Scope CurrentUser", "Installation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    $statusLabel.Text = "Module installation failed"
+                    return
+                }
+            } else {
+                return
+            }
+        }
+    }
+    
     try {
         $statusLabel.Text = "Querying server for admin users..."
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
