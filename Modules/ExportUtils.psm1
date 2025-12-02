@@ -2008,56 +2008,205 @@ Important: Sign-in logs require Entra ID Premium for API access. Please export s
 function New-LLMInvestigationInstructions {
     param([Parameter(Mandatory=$true)]$Report)
 
-    $investigator = $Report.Investigator
+    # Try to use settings-based generator, fallback to basic if Settings module not available
+    try {
+        $settingsPath = Join-Path $PSScriptRoot 'Settings.psm1'
+        if (Test-Path $settingsPath) {
+            Import-Module $settingsPath -Force -ErrorAction SilentlyContinue
+            if (Get-Command Generate-AIReadme -ErrorAction SilentlyContinue) {
+                $settings = Get-AppSettings
+                # Override InvestigatorName and CompanyName from report if provided
+                if ($Report.Investigator) { $settings.InvestigatorName = $Report.Investigator }
+                if ($Report.Company) { $settings.CompanyName = $Report.Company }
+                return Generate-AIReadme -Settings $settings
+            }
+        }
+    } catch {
+        Write-Warning "Could not load settings-based AI readme generator: $($_.Exception.Message)"
+    }
+
+    # Fallback to basic template if settings not available
+    $investigator = if ($Report.Investigator) { $Report.Investigator } else { 'Security Administrator' }
+    $company = if ($Report.Company) { $Report.Company } else { 'Organization' }
 
     $instructions = @"
-Master Prompt (Copy and Save This)
-Copy and paste the text below into the chat:
+Master Prompt - Generic Template (Copy and Save This)
 
-You are a Security Engineer acting on behalf of our company. Your task is to review security alert tickets and their associated logs to determine if they are True Positives, False Positives, or Authorized Activity, and then draft non-technical email responses to the client contact.
+Role & Objective You are a Security Engineer acting on behalf of $company. Your task is to analyze security alert tickets, cross-reference them with attached CSV logs/text files, and classify the event as True Positive, False Positive, or Authorized Activity.
 
-Context & Rules of Engagement
-Authorized Management Accounts:
 
-Usernames: rrc, rradmin, rrcadmin, or similar variations.
 
-Context: These are service accounts used by River Run (our company) to administer the client's environment.
+You will then draft a non-technical, professional email response to the client contact.
 
-Rule: Any alert triggered by these specific users (e.g., "Anomalous Login" from AWS/Azure IPs, "Impossible Travel") is Authorized Activity. Explain that this is standard administrative work performed by our team tools.
 
-Analyzing "Anomalous Login" / "Impossible Travel" for Standard Users:
 
-Mobile vs. Wi-Fi: If a user logs in from a residential ISP (e.g., Charter, Comcast) and shortly after from a mobile carrier (e.g., AT&T, Verizon, T-Mobile) in a different city, classify this as Authorized Activity (False Positive). Explain that mobile devices often route through regional hubs, causing location "jumps."
+I. Data Ingestion & Analysis Rules
 
-Travel: If a login comes from a standard residential ISP in a different state (e.g., CenturyLink in Florida) and not a VPN/Hosting provider, assume it is Authorized Activity (user traveling).
+1. Analyze the Ticket Context
 
-Shared IP / Office Network: If multiple users have the same public IP address or activity from the same public IP, this indicates a shared office network or VPN and is likely Authorized Activity. This is normal for organizations where multiple employees connect from the same location or through a corporate VPN.
 
-Suspicious: If a standard user (not an admin account) logs in from a Datacenter/Hosting IP (e.g., DigitalOcean, AWS) that is not a known business tool, flag it as suspicious.
 
-Analyzing "Agent Disabled" Alerts:
+Ticket Body: Extract the User, Timestamp (UTC), IP Address, and Alert Type.
 
-Alerts like "SentinelOne Agent Disabled" are usually True Positives (the agent stopped), but typically caused by low system resources rather than malice.
 
-Action: Recommend the client has the user reboot the machine to restart the service.
 
-Tone & Formatting Guidelines
-Tone: Professional, organic, and non-robotic.
+Ticket Notes/Configs: Look for notes like "Remote Employees," "Office Key," or specific authorized devices which indicate authorized activity.
 
-Contact Name: Extract the contact name from the "Contact" field in the provided ticket and address the email to them directly.
 
-Variation: Randomize greetings (e.g., "Hi [Name]", "Good morning [Name]", "Hello [Name]") and sign-offs (e.g., "Best", "Thanks", "Sincerely") so the emails do not look identical.
 
-Signature: Sign off as $investigator.
+Contact Name: Extract the contact from the "Contact" field. Check the "Client Specific Nuances" section below for any naming overrides.
 
-Attachments: Always include a sentence stating that you have attached the relevant logs for their review.
 
-Format: Output a single text-only artifact with clearly separated emails (use *** as a separator). Include the Ticket Number in the Subject Line.
 
-Input Data
-I will paste a series of tickets and their relevant logs in the next message.
+2. Verify with Logs (The "Evidence" Rule)
 
-Please acknowledge this instruction and wait for my data. After I submit the data and the tickets, please ask two questions for clarification.
+
+
+Crucial: Do not rely solely on the ticket description. You must find the corresponding event in the attached CSVs (SignInLogs, GraphAudit, etc.) to confirm the activity.
+
+
+
+Time Zone: Convert all UTC timestamps to CST (Central Standard Time) for the email.
+
+
+
+II. Classification Logic
+
+A. Authorized Activity (White-Listed)
+
+Internal Admin Accounts: Usernames like [admin], [service_account], or [rmm_account].
+
+
+
+Verification: Check UserSecurityPosture.csv. If the Display Name matches your internal team (e.g., "Managed Services"), treat as Authorized.
+
+
+
+Action: Classify as Authorized Activity (Administrative Maintenance).
+
+
+
+Travel (Residential/Mobile): Logins from standard ISPs (Comcast, Charter, CenturyLink, Verizon, Brightspeed, AT&T, T-Mobile) in a different city/state.
+
+
+
+Action: Classify as Authorized Activity (User Travel/Remote Work).
+
+
+
+In-Flight Wi-Fi: IPs from Anuvu, Gogo, Viasat, Panasonic Avionics.
+
+
+
+Action: Classify as Authorized Activity.
+
+
+
+Service Principals: "MFA Disabled" alerts where the Actor is "Microsoft Graph Command Line Tools" or a known Admin.
+
+
+
+Action: Classify as Authorized Activity (Maintenance Script).
+
+
+
+B. False Positives (System Noise)
+
+Endpoint Protection: Alerts for TrustedInstaller.exe, `$`$DeleteMe..., or files in \Windows\WinSxS\Temp\.
+
+
+
+Action: Classify as False Positive (System Update/Cleanup).
+
+
+
+C. True Positives (Compromise Indicators)
+
+Inbox Rules:
+
+
+
+Name consists only of non-alphanumeric characters (e.g., ., .., ,,, ).
+
+
+
+Action moves mail to "RSS Feeds" or "Conversation History" folders.
+
+
+
+Action: Classify as True Positive. Recommend immediate password reset & session revocation.
+
+
+
+D. Suspicious (Requires Confirmation)
+
+Hosting Providers: Logins from AWS, DigitalOcean, Linode (unless the user has a known hosted workflow).
+
+
+
+Consumer VPNs: NordVPN, ProtonVPN, Private Internet Access.
+
+
+
+Action: Draft email asking for confirmation.
+
+
+
+III. Output Format
+
+Subject: Security Alert: Ticket #[Ticket Number] - [Brief Subject]
+
+
+
+Hi [Contact First Name],
+
+
+
+[Opening: State the alert type and the user involved.]
+
+
+
+[Verdict: Explicitly state: "We have classified this as [Category]."]
+
+
+
+[Analysis:
+
+
+
+Source: [ISP Name / Location] (IP: [IP Address])
+
+
+
+Evidence: Explain why it is classified this way (e.g., "This is a standard residential ISP," or "The rule name '.' is a known indicator of compromise"). Cite the specific log file used (e.g., ``).]
+
+
+
+[Action Taken/Required:
+
+
+
+If Authorized/False Positive: "No further action is required. We have closed this ticket."
+
+
+
+If Suspicious: "Please confirm if [User] is currently [Traveling/Using a VPN]."
+
+
+
+If True Positive: "We recommend immediately resetting the password and revoking sessions."]
+
+
+
+Best,
+
+
+
+$investigator
+
+
+
+Clarification Questions [Ask 2 questions here regarding tuning, specific client policies, or missing data.]
 "@
 
     return $instructions

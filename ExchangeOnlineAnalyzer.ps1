@@ -2036,61 +2036,179 @@ $settingsPanel = New-Object System.Windows.Forms.Panel
 $settingsPanel.Dock = 'Fill'
 $settingsPanel.Padding = New-Object System.Windows.Forms.Padding(10)
 
+# Create scrollable panel
+$settingsScrollPanel = New-Object System.Windows.Forms.Panel
+$settingsScrollPanel.Dock = 'Fill'
+$settingsScrollPanel.AutoScroll = $true
+
 $sTitle = New-Object System.Windows.Forms.Label
 $sTitle.Text = "Application Settings"
 $sTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
 $sTitle.Location = New-Object System.Drawing.Point(10,10)
 $sTitle.AutoSize = $true
 
+# Basic Settings
 $lblInv = New-Object System.Windows.Forms.Label
 $lblInv.Text = "Investigator Name:"
 $lblInv.Location = New-Object System.Drawing.Point(10,45)
 $lblInv.AutoSize = $true
 
 $txtInv = New-Object System.Windows.Forms.TextBox
-$txtInv.Location = New-Object System.Drawing.Point(150, 42)
-$txtInv.Width = 300
+$txtInv.Location = New-Object System.Drawing.Point(200, 42)
+$txtInv.Width = 400
+
+$lblInvTitle = New-Object System.Windows.Forms.Label
+$lblInvTitle.Text = "Investigator Title:"
+$lblInvTitle.Location = New-Object System.Drawing.Point(10,75)
+$lblInvTitle.AutoSize = $true
+
+$txtInvTitle = New-Object System.Windows.Forms.TextBox
+$txtInvTitle.Location = New-Object System.Drawing.Point(200, 72)
+$txtInvTitle.Width = 400
 
 $lblCo = New-Object System.Windows.Forms.Label
 $lblCo.Text = "Company Name:"
-$lblCo.Location = New-Object System.Drawing.Point(10,75)
+$lblCo.Location = New-Object System.Drawing.Point(10,105)
 $lblCo.AutoSize = $true
 
 $txtCo = New-Object System.Windows.Forms.TextBox
-$txtCo.Location = New-Object System.Drawing.Point(150, 72)
-$txtCo.Width = 300
+$txtCo.Location = New-Object System.Drawing.Point(200, 102)
+$txtCo.Width = 400
 
+$lblTZ = New-Object System.Windows.Forms.Label
+$lblTZ.Text = "Time Zone:"
+$lblTZ.Location = New-Object System.Drawing.Point(10,135)
+$lblTZ.AutoSize = $true
+
+$txtTZ = New-Object System.Windows.Forms.TextBox
+$txtTZ.Location = New-Object System.Drawing.Point(200, 132)
+$txtTZ.Width = 400
+
+# API Keys
 $lblGem = New-Object System.Windows.Forms.Label
 $lblGem.Text = "Gemini API Key:"
-$lblGem.Location = New-Object System.Drawing.Point(10,105)
+$lblGem.Location = New-Object System.Drawing.Point(10,165)
 $lblGem.AutoSize = $true
 
 $txtGem = New-Object System.Windows.Forms.TextBox
-$txtGem.Location = New-Object System.Drawing.Point(150, 102)
-$txtGem.Width = 300
+$txtGem.Location = New-Object System.Drawing.Point(200, 162)
+$txtGem.Width = 400
 $txtGem.UseSystemPasswordChar = $true
 
 $lblClaude = New-Object System.Windows.Forms.Label
 $lblClaude.Text = "Claude API Key:"
-$lblClaude.Location = New-Object System.Drawing.Point(10,135)
+$lblClaude.Location = New-Object System.Drawing.Point(10,195)
 $lblClaude.AutoSize = $true
 
 $txtClaude = New-Object System.Windows.Forms.TextBox
-$txtClaude.Location = New-Object System.Drawing.Point(150, 132)
-$txtClaude.Width = 300
+$txtClaude.Location = New-Object System.Drawing.Point(200, 192)
+$txtClaude.Width = 400
 $txtClaude.UseSystemPasswordChar = $true
 
+# AI Readme Settings Section
+$aiSectionTitle = New-Object System.Windows.Forms.Label
+$aiSectionTitle.Text = "AI Readme Configuration"
+$aiSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$aiSectionTitle.Location = New-Object System.Drawing.Point(10,235)
+$aiSectionTitle.AutoSize = $true
+
+$lblAdminUsers = New-Object System.Windows.Forms.Label
+$lblAdminUsers.Text = "Admin Usernames (comma-separated):"
+$lblAdminUsers.Location = New-Object System.Drawing.Point(10,265)
+$lblAdminUsers.AutoSize = $true
+
+$txtAdminUsers = New-Object System.Windows.Forms.TextBox
+$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 262)
+$txtAdminUsers.Width = 400
+$txtAdminUsers.Multiline = $false
+
+$lblInternalTeams = New-Object System.Windows.Forms.Label
+$lblInternalTeams.Text = "Internal Team Display Names (comma-separated):"
+$lblInternalTeams.Location = New-Object System.Drawing.Point(10,295)
+$lblInternalTeams.AutoSize = $true
+
+$txtInternalTeams = New-Object System.Windows.Forms.TextBox
+$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 292)
+$txtInternalTeams.Width = 400
+$txtInternalTeams.Multiline = $false
+
+$lblAuthorizedISPs = New-Object System.Windows.Forms.Label
+$lblAuthorizedISPs.Text = "Authorized ISPs (comma-separated):"
+$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,325)
+$lblAuthorizedISPs.AutoSize = $true
+
+$txtAuthorizedISPs = New-Object System.Windows.Forms.TextBox
+$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 322)
+$txtAuthorizedISPs.Width = 400
+$txtAuthorizedISPs.Multiline = $false
+
+$lblInFlightWiFi = New-Object System.Windows.Forms.Label
+$lblInFlightWiFi.Text = "In-Flight Wi-Fi Providers (comma-separated):"
+$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,355)
+$lblInFlightWiFi.AutoSize = $true
+
+$txtInFlightWiFi = New-Object System.Windows.Forms.TextBox
+$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 352)
+$txtInFlightWiFi.Width = 400
+$txtInFlightWiFi.Multiline = $false
+
+$lblServicePrincipals = New-Object System.Windows.Forms.Label
+$lblServicePrincipals.Text = "Service Principal Names (comma-separated):"
+$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,385)
+$lblServicePrincipals.AutoSize = $true
+
+$txtServicePrincipals = New-Object System.Windows.Forms.TextBox
+$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 382)
+$txtServicePrincipals.Width = 400
+$txtServicePrincipals.Multiline = $false
+
+$lblKnownAdmins = New-Object System.Windows.Forms.Label
+$lblKnownAdmins.Text = "Known Admins (comma-separated):"
+$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,415)
+$lblKnownAdmins.AutoSize = $true
+
+$txtKnownAdmins = New-Object System.Windows.Forms.TextBox
+$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 412)
+$txtKnownAdmins.Width = 400
+$txtKnownAdmins.Multiline = $false
+
+$lblContactOverrides = New-Object System.Windows.Forms.Label
+$lblContactOverrides.Text = "Client Contact Overrides (JSON):"
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,445)
+$lblContactOverrides.AutoSize = $true
+
+$txtContactOverrides = New-Object System.Windows.Forms.TextBox
+$txtContactOverrides.Location = New-Object System.Drawing.Point(200, 442)
+$txtContactOverrides.Width = 400
+$txtContactOverrides.Height = 60
+$txtContactOverrides.Multiline = $true
+$txtContactOverrides.ScrollBars = 'Vertical'
+
+# Buttons
 $btnSave = New-Object System.Windows.Forms.Button
-$btnSave.Text = "Save"
-$btnSave.Location = New-Object System.Drawing.Point(150, 165)
-$btnSave.Width = 100
+$btnSave.Text = "Save Settings"
+$btnSave.Location = New-Object System.Drawing.Point(200, 520)
+$btnSave.Width = 120
+
+$btnGenerateReadme = New-Object System.Windows.Forms.Button
+$btnGenerateReadme.Text = "Generate AI Readme"
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 520)
+$btnGenerateReadme.Width = 150
+$btnGenerateReadme.ToolTipText = "Generate _AI_Readme.txt file in the latest Security Investigation folder"
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,200)
+$lblStatus.Location = New-Object System.Drawing.Point(10,560)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
-$settingsPanel.Controls.AddRange(@($sTitle,$lblInv,$txtInv,$lblCo,$txtCo,$lblGem,$txtGem,$lblClaude,$txtClaude,$btnSave,$lblStatus))
+# Add all controls to scroll panel
+$allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
+    $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
+    $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
+    $lblContactOverrides,$txtContactOverrides,$btnSave,$btnGenerateReadme,$lblStatus)
+$settingsScrollPanel.Controls.AddRange($allControls)
+$settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(0, 20)
+$settingsPanel.Controls.Add($settingsScrollPanel)
 $settingsTab.Controls.Add($settingsPanel)
 $tabControl.TabPages.Add($settingsTab)
 
@@ -2098,7 +2216,21 @@ $settingsTab.add_Enter({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
         $s = Get-AppSettings
-        if ($s) { $txtInv.Text = $s.InvestigatorName; $txtCo.Text = $s.CompanyName; $txtGem.Text = $s.GeminiApiKey; $txtClaude.Text = $s.ClaudeApiKey }
+        if ($s) {
+            $txtInv.Text = $s.InvestigatorName
+            $txtInvTitle.Text = $s.InvestigatorTitle
+            $txtCo.Text = $s.CompanyName
+            $txtTZ.Text = $s.TimeZone
+            $txtGem.Text = $s.GeminiApiKey
+            $txtClaude.Text = $s.ClaudeApiKey
+            $txtAdminUsers.Text = $s.AdminUsernames
+            $txtInternalTeams.Text = $s.InternalTeamDisplayNames
+            $txtAuthorizedISPs.Text = $s.AuthorizedISPs
+            $txtInFlightWiFi.Text = $s.InFlightWiFiProviders
+            $txtServicePrincipals.Text = $s.ServicePrincipalNames
+            $txtKnownAdmins.Text = $s.KnownAdmins
+            $txtContactOverrides.Text = $s.ClientContactOverrides
+        }
         $lblStatus.Text = ""
     } catch {}
 })
@@ -2106,9 +2238,67 @@ $settingsTab.add_Enter({
 $btnSave.add_Click({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
-        $s = [pscustomobject]@{ InvestigatorName=$txtInv.Text; CompanyName=$txtCo.Text; GeminiApiKey=$txtGem.Text; ClaudeApiKey=$txtClaude.Text }
-        if (Save-AppSettings -Settings $s) { $lblStatus.Text = "Saved."; $lblStatus.ForeColor = [System.Drawing.Color]::Green } else { $lblStatus.Text = "Failed to save."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
-    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+        $s = [pscustomobject]@{
+            InvestigatorName = $txtInv.Text
+            InvestigatorTitle = $txtInvTitle.Text
+            CompanyName = $txtCo.Text
+            TimeZone = $txtTZ.Text
+            GeminiApiKey = $txtGem.Text
+            ClaudeApiKey = $txtClaude.Text
+            AdminUsernames = $txtAdminUsers.Text
+            InternalTeamDisplayNames = $txtInternalTeams.Text
+            AuthorizedISPs = $txtAuthorizedISPs.Text
+            InFlightWiFiProviders = $txtInFlightWiFi.Text
+            ServicePrincipalNames = $txtServicePrincipals.Text
+            KnownAdmins = $txtKnownAdmins.Text
+            ClientContactOverrides = $txtContactOverrides.Text
+        }
+        if (Save-AppSettings -Settings $s) {
+            $lblStatus.Text = "Settings saved successfully."
+            $lblStatus.ForeColor = [System.Drawing.Color]::Green
+        } else {
+            $lblStatus.Text = "Failed to save settings."
+            $lblStatus.ForeColor = [System.Drawing.Color]::Red
+        }
+    } catch {
+        $lblStatus.Text = $_.Exception.Message
+        $lblStatus.ForeColor = [System.Drawing.Color]::Red
+    }
+})
+
+$btnGenerateReadme.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        $s = Get-AppSettings
+        $readmeContent = Generate-AIReadme -Settings $s
+        
+        # Find latest Security Investigation folder
+        $base = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
+        $outputPath = $null
+        if (Test-Path $base) {
+            $tenants = Get-ChildItem -Path $base -Directory | Sort-Object LastWriteTime -Descending
+            foreach ($t in $tenants) {
+                $runs = Get-ChildItem -Path $t.FullName -Directory | Sort-Object LastWriteTime -Descending
+                if ($runs -and $runs.Count -gt 0) {
+                    $outputPath = Join-Path $runs[0].FullName '_AI_Readme.txt'
+                    break
+                }
+            }
+        }
+        
+        if (-not $outputPath) {
+            $lblStatus.Text = "No Security Investigation folder found. Generate a report first."
+            $lblStatus.ForeColor = [System.Drawing.Color]::Orange
+            return
+        }
+        
+        $readmeContent | Out-File -FilePath $outputPath -Encoding utf8
+        $lblStatus.Text = "AI Readme generated: $outputPath"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Green
+    } catch {
+        $lblStatus.Text = "Error generating readme: $($_.Exception.Message)"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Red
+    }
 })
 
 # Add Fix Module Conflicts button to Settings tab
