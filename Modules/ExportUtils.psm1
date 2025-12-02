@@ -2013,12 +2013,12 @@ function New-LLMInvestigationInstructions {
         $settingsPath = Join-Path $PSScriptRoot 'Settings.psm1'
         if (Test-Path $settingsPath) {
             Import-Module $settingsPath -Force -ErrorAction SilentlyContinue
-            if (Get-Command Generate-AIReadme -ErrorAction SilentlyContinue) {
+            if (Get-Command New-AIReadme -ErrorAction SilentlyContinue) {
                 $settings = Get-AppSettings
                 # Override InvestigatorName and CompanyName from report if provided
                 if ($Report.Investigator) { $settings.InvestigatorName = $Report.Investigator }
                 if ($Report.Company) { $settings.CompanyName = $Report.Company }
-                return Generate-AIReadme -Settings $settings
+                return New-AIReadme -Settings $settings
             }
         }
     } catch {

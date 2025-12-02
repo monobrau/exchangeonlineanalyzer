@@ -2040,6 +2040,7 @@ $settingsPanel.Padding = New-Object System.Windows.Forms.Padding(10)
 $settingsScrollPanel = New-Object System.Windows.Forms.Panel
 $settingsScrollPanel.Dock = 'Fill'
 $settingsScrollPanel.AutoScroll = $true
+$settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
 
 $sTitle = New-Object System.Windows.Forms.Label
 $sTitle.Text = "Application Settings"
@@ -2052,152 +2053,211 @@ $lblInv = New-Object System.Windows.Forms.Label
 $lblInv.Text = "Investigator Name:"
 $lblInv.Location = New-Object System.Drawing.Point(10,45)
 $lblInv.AutoSize = $true
+$lblInv.Width = 180
 
 $txtInv = New-Object System.Windows.Forms.TextBox
 $txtInv.Location = New-Object System.Drawing.Point(200, 42)
-$txtInv.Width = 400
+$txtInv.Width = 500
 
 $lblInvTitle = New-Object System.Windows.Forms.Label
 $lblInvTitle.Text = "Investigator Title:"
 $lblInvTitle.Location = New-Object System.Drawing.Point(10,75)
 $lblInvTitle.AutoSize = $true
+$lblInvTitle.Width = 180
 
 $txtInvTitle = New-Object System.Windows.Forms.TextBox
 $txtInvTitle.Location = New-Object System.Drawing.Point(200, 72)
-$txtInvTitle.Width = 400
+$txtInvTitle.Width = 500
 
 $lblCo = New-Object System.Windows.Forms.Label
 $lblCo.Text = "Company Name:"
 $lblCo.Location = New-Object System.Drawing.Point(10,105)
 $lblCo.AutoSize = $true
+$lblCo.Width = 180
 
 $txtCo = New-Object System.Windows.Forms.TextBox
 $txtCo.Location = New-Object System.Drawing.Point(200, 102)
-$txtCo.Width = 400
+$txtCo.Width = 500
 
 $lblTZ = New-Object System.Windows.Forms.Label
 $lblTZ.Text = "Time Zone:"
 $lblTZ.Location = New-Object System.Drawing.Point(10,135)
 $lblTZ.AutoSize = $true
+$lblTZ.Width = 180
 
 $txtTZ = New-Object System.Windows.Forms.TextBox
 $txtTZ.Location = New-Object System.Drawing.Point(200, 132)
-$txtTZ.Width = 400
+$txtTZ.Width = 500
 
 # API Keys
 $lblGem = New-Object System.Windows.Forms.Label
 $lblGem.Text = "Gemini API Key:"
 $lblGem.Location = New-Object System.Drawing.Point(10,165)
 $lblGem.AutoSize = $true
+$lblGem.Width = 180
 
 $txtGem = New-Object System.Windows.Forms.TextBox
 $txtGem.Location = New-Object System.Drawing.Point(200, 162)
-$txtGem.Width = 400
+$txtGem.Width = 500
 $txtGem.UseSystemPasswordChar = $true
 
 $lblClaude = New-Object System.Windows.Forms.Label
 $lblClaude.Text = "Claude API Key:"
 $lblClaude.Location = New-Object System.Drawing.Point(10,195)
 $lblClaude.AutoSize = $true
+$lblClaude.Width = 180
 
 $txtClaude = New-Object System.Windows.Forms.TextBox
 $txtClaude.Location = New-Object System.Drawing.Point(200, 192)
-$txtClaude.Width = 400
+$txtClaude.Width = 500
 $txtClaude.UseSystemPasswordChar = $true
 
 # AI Readme Settings Section
 $aiSectionTitle = New-Object System.Windows.Forms.Label
-$aiSectionTitle.Text = "AI Readme Configuration"
+$aiSectionTitle.Text = "AI Readme Configuration (comma-separated unless otherwise noted)"
 $aiSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
 $aiSectionTitle.Location = New-Object System.Drawing.Point(10,235)
 $aiSectionTitle.AutoSize = $true
 
 $lblAdminUsers = New-Object System.Windows.Forms.Label
-$lblAdminUsers.Text = "Admin Usernames (comma-separated):"
+$lblAdminUsers.Text = "Admin Usernames:"
 $lblAdminUsers.Location = New-Object System.Drawing.Point(10,265)
 $lblAdminUsers.AutoSize = $true
+$lblAdminUsers.Width = 180
 
 $txtAdminUsers = New-Object System.Windows.Forms.TextBox
 $txtAdminUsers.Location = New-Object System.Drawing.Point(200, 262)
-$txtAdminUsers.Width = 400
+$txtAdminUsers.Width = 500
 $txtAdminUsers.Multiline = $false
 
 $lblInternalTeams = New-Object System.Windows.Forms.Label
-$lblInternalTeams.Text = "Internal Team Display Names (comma-separated):"
+$lblInternalTeams.Text = "Internal Team Display Names:"
 $lblInternalTeams.Location = New-Object System.Drawing.Point(10,295)
 $lblInternalTeams.AutoSize = $true
+$lblInternalTeams.Width = 180
 
 $txtInternalTeams = New-Object System.Windows.Forms.TextBox
 $txtInternalTeams.Location = New-Object System.Drawing.Point(200, 292)
-$txtInternalTeams.Width = 400
+$txtInternalTeams.Width = 500
 $txtInternalTeams.Multiline = $false
 
 $lblAuthorizedISPs = New-Object System.Windows.Forms.Label
-$lblAuthorizedISPs.Text = "Authorized ISPs (comma-separated):"
+$lblAuthorizedISPs.Text = "Authorized ISPs:"
 $lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,325)
 $lblAuthorizedISPs.AutoSize = $true
+$lblAuthorizedISPs.Width = 180
 
 $txtAuthorizedISPs = New-Object System.Windows.Forms.TextBox
 $txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 322)
-$txtAuthorizedISPs.Width = 400
+$txtAuthorizedISPs.Width = 500
 $txtAuthorizedISPs.Multiline = $false
 
 $lblInFlightWiFi = New-Object System.Windows.Forms.Label
-$lblInFlightWiFi.Text = "In-Flight Wi-Fi Providers (comma-separated):"
+$lblInFlightWiFi.Text = "In-Flight Wi-Fi Providers:"
 $lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,355)
 $lblInFlightWiFi.AutoSize = $true
+$lblInFlightWiFi.Width = 180
 
 $txtInFlightWiFi = New-Object System.Windows.Forms.TextBox
 $txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 352)
-$txtInFlightWiFi.Width = 400
+$txtInFlightWiFi.Width = 500
 $txtInFlightWiFi.Multiline = $false
 
 $lblServicePrincipals = New-Object System.Windows.Forms.Label
-$lblServicePrincipals.Text = "Service Principal Names (comma-separated):"
+$lblServicePrincipals.Text = "Service Principal Names:"
 $lblServicePrincipals.Location = New-Object System.Drawing.Point(10,385)
 $lblServicePrincipals.AutoSize = $true
+$lblServicePrincipals.Width = 180
 
 $txtServicePrincipals = New-Object System.Windows.Forms.TextBox
 $txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 382)
-$txtServicePrincipals.Width = 400
+$txtServicePrincipals.Width = 500
 $txtServicePrincipals.Multiline = $false
 
 $lblKnownAdmins = New-Object System.Windows.Forms.Label
-$lblKnownAdmins.Text = "Known Admins (comma-separated):"
+$lblKnownAdmins.Text = "Known Admins:"
 $lblKnownAdmins.Location = New-Object System.Drawing.Point(10,415)
 $lblKnownAdmins.AutoSize = $true
+$lblKnownAdmins.Width = 180
 
 $txtKnownAdmins = New-Object System.Windows.Forms.TextBox
 $txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 412)
-$txtKnownAdmins.Width = 400
+$txtKnownAdmins.Width = 500
 $txtKnownAdmins.Multiline = $false
 
 $lblContactOverrides = New-Object System.Windows.Forms.Label
-$lblContactOverrides.Text = "Client Contact Overrides (JSON):"
+$lblContactOverrides.Text = "Client Contact Overrides:"
 $lblContactOverrides.Location = New-Object System.Drawing.Point(10,445)
 $lblContactOverrides.AutoSize = $true
+$lblContactOverrides.Width = 180
 
-$txtContactOverrides = New-Object System.Windows.Forms.TextBox
-$txtContactOverrides.Location = New-Object System.Drawing.Point(200, 442)
-$txtContactOverrides.Width = 400
-$txtContactOverrides.Height = 60
-$txtContactOverrides.Multiline = $true
-$txtContactOverrides.ScrollBars = 'Vertical'
+# DataGridView for client contact overrides
+$dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 442)
+$dgvContactOverrides.Width = 500
+$dgvContactOverrides.Height = 120
+$dgvContactOverrides.AllowUserToAddRows = $true
+$dgvContactOverrides.AllowUserToDeleteRows = $true
+$dgvContactOverrides.ReadOnly = $false
+$dgvContactOverrides.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+$dgvContactOverrides.MultiSelect = $false
+$dgvContactOverrides.AutoGenerateColumns = $false
+$dgvContactOverrides.RowHeadersVisible = $true
+$dgvContactOverrides.ColumnHeadersVisible = $true
+$dgvContactOverrides.EnableHeadersVisualStyles = $true
+$dgvContactOverrides.ColumnHeadersHeight = 25
+$dgvContactOverrides.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
+
+# Add columns
+$colClientName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colClientName.HeaderText = "Client Name"
+$colClientName.Name = "ClientName"
+$colClientName.Width = 150
+$colClientName.ReadOnly = $false
+$dgvContactOverrides.Columns.Add($colClientName)
+
+$colContactName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colContactName.HeaderText = "Contact Name"
+$colContactName.Name = "ContactName"
+$colContactName.Width = 175
+$colContactName.ReadOnly = $false
+$dgvContactOverrides.Columns.Add($colContactName)
+
+$colGreeting = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colGreeting.HeaderText = "Greeting"
+$colGreeting.Name = "Greeting"
+$colGreeting.Width = 175
+$colGreeting.ReadOnly = $false
+$dgvContactOverrides.Columns.Add($colGreeting)
+
+# Buttons for managing overrides
+$btnAddOverride = New-Object System.Windows.Forms.Button
+$btnAddOverride.Text = "Add"
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 570)
+$btnAddOverride.Width = 80
+$btnAddOverride.Height = 25
+
+$btnRemoveOverride = New-Object System.Windows.Forms.Button
+$btnRemoveOverride.Text = "Remove"
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 570)
+$btnRemoveOverride.Width = 80
+$btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 520)
+$btnSave.Location = New-Object System.Drawing.Point(200, 610)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 520)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 610)
 $btnGenerateReadme.Width = 150
-$btnGenerateReadme.ToolTipText = "Generate _AI_Readme.txt file in the latest Security Investigation folder"
+$btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
+$btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,560)
+$lblStatus.Location = New-Object System.Drawing.Point(10,650)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
@@ -2205,9 +2265,11 @@ $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 $allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
-    $lblContactOverrides,$txtContactOverrides,$btnSave,$btnGenerateReadme,$lblStatus)
+    $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
-$settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(0, 20)
+$settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
+# Ensure minimum width for content (200 label + 500 textbox + 20 margin = 720)
+$settingsScrollPanel.MinimumSize = New-Object System.Drawing.Size(720, 0)
 $settingsPanel.Controls.Add($settingsScrollPanel)
 $settingsTab.Controls.Add($settingsPanel)
 $tabControl.TabPages.Add($settingsTab)
@@ -2229,7 +2291,21 @@ $settingsTab.add_Enter({
             $txtInFlightWiFi.Text = $s.InFlightWiFiProviders
             $txtServicePrincipals.Text = $s.ServicePrincipalNames
             $txtKnownAdmins.Text = $s.KnownAdmins
-            $txtContactOverrides.Text = $s.ClientContactOverrides
+            
+            # Load client contact overrides into DataGridView
+            $dgvContactOverrides.Rows.Clear()
+            if ($s.ClientContactOverrides -and $s.ClientContactOverrides -ne '{}') {
+                try {
+                    $overrides = $s.ClientContactOverrides | ConvertFrom-Json
+                    foreach ($client in $overrides.PSObject.Properties.Name) {
+                        $contact = $overrides.$client.Contact
+                        $greeting = $overrides.$client.Greeting
+                        [void]$dgvContactOverrides.Rows.Add($client, $contact, $greeting)
+                    }
+                } catch {
+                    # If JSON parsing fails, leave grid empty
+                }
+            }
         }
         $lblStatus.Text = ""
     } catch {}
@@ -2238,6 +2314,28 @@ $settingsTab.add_Enter({
 $btnSave.add_Click({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        
+        # Convert DataGridView data to JSON
+        $overridesJson = '{}'
+        if ($dgvContactOverrides.Rows.Count -gt 0) {
+            $overrides = @{}
+            foreach ($row in $dgvContactOverrides.Rows) {
+                if ($row.IsNewRow) { continue }
+                $clientName = $row.Cells['ClientName'].Value
+                $contactName = $row.Cells['ContactName'].Value
+                $greeting = $row.Cells['Greeting'].Value
+                if ($clientName -and $contactName -and $greeting) {
+                    $overrides[$clientName] = @{
+                        Contact = $contactName
+                        Greeting = $greeting
+                    }
+                }
+            }
+            if ($overrides.Count -gt 0) {
+                $overridesJson = ($overrides | ConvertTo-Json -Depth 3)
+            }
+        }
+        
         $s = [pscustomobject]@{
             InvestigatorName = $txtInv.Text
             InvestigatorTitle = $txtInvTitle.Text
@@ -2251,7 +2349,7 @@ $btnSave.add_Click({
             InFlightWiFiProviders = $txtInFlightWiFi.Text
             ServicePrincipalNames = $txtServicePrincipals.Text
             KnownAdmins = $txtKnownAdmins.Text
-            ClientContactOverrides = $txtContactOverrides.Text
+            ClientContactOverrides = $overridesJson
         }
         if (Save-AppSettings -Settings $s) {
             $lblStatus.Text = "Settings saved successfully."
@@ -2266,11 +2364,35 @@ $btnSave.add_Click({
     }
 })
 
+# Add button event handlers
+$btnAddOverride.add_Click({
+    [void]$dgvContactOverrides.Rows.Add()
+    $dgvContactOverrides.CurrentCell = $dgvContactOverrides.Rows[$dgvContactOverrides.Rows.Count - 1].Cells[0]
+    $dgvContactOverrides.BeginEdit($true)
+})
+
+$btnRemoveOverride.add_Click({
+    if ($dgvContactOverrides.SelectedRows.Count -gt 0) {
+        foreach ($row in $dgvContactOverrides.SelectedRows) {
+            if (-not $row.IsNewRow) {
+                $dgvContactOverrides.Rows.Remove($row)
+            }
+        }
+    } elseif ($dgvContactOverrides.CurrentRow -and -not $dgvContactOverrides.CurrentRow.IsNewRow) {
+        $dgvContactOverrides.Rows.Remove($dgvContactOverrides.CurrentRow)
+    }
+})
+
 $btnGenerateReadme.add_Click({
     try {
-        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
+        if (-not (Get-Command New-AIReadme -ErrorAction SilentlyContinue)) {
+            $lblStatus.Text = "Error: New-AIReadme function not found. Please check Settings module."
+            $lblStatus.ForeColor = [System.Drawing.Color]::Red
+            return
+        }
         $s = Get-AppSettings
-        $readmeContent = Generate-AIReadme -Settings $s
+        $readmeContent = New-AIReadme -Settings $s
         
         # Find latest Security Investigation folder
         $base = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
