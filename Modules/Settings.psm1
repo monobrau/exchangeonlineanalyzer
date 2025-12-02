@@ -57,7 +57,7 @@ function Save-AppSettings {
     }
 }
 
-function Generate-AIReadme {
+function New-AIReadme {
     param(
         [Parameter(Mandatory=$false)]
         [object]$Settings
@@ -277,6 +277,6 @@ Clarification Questions [Ask 2 questions here regarding tuning, specific client 
     return $readme
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Generate-AIReadme
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,New-AIReadme
 
 
