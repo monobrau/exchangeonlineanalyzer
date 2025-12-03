@@ -2185,15 +2185,26 @@ $txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 412)
 $txtKnownAdmins.Width = 500
 $txtKnownAdmins.Multiline = $false
 
+$lblThirdPartyMFA = New-Object System.Windows.Forms.Label
+$lblThirdPartyMFA.Text = "3rd Party MFA:"
+$lblThirdPartyMFA.Location = New-Object System.Drawing.Point(10,445)
+$lblThirdPartyMFA.AutoSize = $true
+$lblThirdPartyMFA.Width = 180
+
+$txtThirdPartyMFA = New-Object System.Windows.Forms.TextBox
+$txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 442)
+$txtThirdPartyMFA.Width = 500
+$txtThirdPartyMFA.Multiline = $false
+
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,445)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,475)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 442)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 472)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2233,31 +2244,31 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 570)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 600)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 570)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 600)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 610)
+$btnSave.Location = New-Object System.Drawing.Point(200, 640)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 610)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 640)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,650)
+$lblStatus.Location = New-Object System.Drawing.Point(10,680)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
@@ -2265,7 +2276,7 @@ $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 $allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
-    $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
+    $lblThirdPartyMFA,$txtThirdPartyMFA,$lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
 # Ensure minimum width for content (200 label + 500 textbox + 20 margin = 720)
@@ -2291,6 +2302,7 @@ $settingsTab.add_Enter({
             $txtInFlightWiFi.Text = $s.InFlightWiFiProviders
             $txtServicePrincipals.Text = $s.ServicePrincipalNames
             $txtKnownAdmins.Text = $s.KnownAdmins
+            $txtThirdPartyMFA.Text = $s.ThirdPartyMFA
             
             # Load client contact overrides into DataGridView
             $dgvContactOverrides.Rows.Clear()
@@ -2349,6 +2361,7 @@ $btnSave.add_Click({
             InFlightWiFiProviders = $txtInFlightWiFi.Text
             ServicePrincipalNames = $txtServicePrincipals.Text
             KnownAdmins = $txtKnownAdmins.Text
+            ThirdPartyMFA = $txtThirdPartyMFA.Text
             ClientContactOverrides = $overridesJson
         }
         if (Save-AppSettings -Settings $s) {
