@@ -5253,82 +5253,89 @@ $securityInvestigationButton.add_Click({
         $reportsGroupBox.Location = New-Object System.Drawing.Point(15, 310)
         $reportsGroupBox.Size = New-Object System.Drawing.Size(400, 320)
 
+        # Create scrollable panel inside GroupBox
+        $reportsScrollPanel = New-Object System.Windows.Forms.Panel
+        $reportsScrollPanel.Location = New-Object System.Drawing.Point(10, 20)
+        $reportsScrollPanel.Size = New-Object System.Drawing.Size(380, 290)
+        $reportsScrollPanel.AutoScroll = $true
+        $reportsScrollPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+
         # Select All / Deselect All buttons
         $selectAllReportsBtn = New-Object System.Windows.Forms.Button
         $selectAllReportsBtn.Text = "Select All"
-        $selectAllReportsBtn.Location = New-Object System.Drawing.Point(20, 25)
+        $selectAllReportsBtn.Location = New-Object System.Drawing.Point(10, 5)
         $selectAllReportsBtn.Size = New-Object System.Drawing.Size(80, 25)
 
         $deselectAllReportsBtn = New-Object System.Windows.Forms.Button
         $deselectAllReportsBtn.Text = "Deselect All"
-        $deselectAllReportsBtn.Location = New-Object System.Drawing.Point(110, 25)
+        $deselectAllReportsBtn.Location = New-Object System.Drawing.Point(100, 5)
         $deselectAllReportsBtn.Size = New-Object System.Drawing.Size(90, 25)
 
         # Checkboxes for each report type
         $messageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
         $messageTraceCheckBox.Text = "Message Trace (last 10 days)"
-        $messageTraceCheckBox.Location = New-Object System.Drawing.Point(20, 60)
+        $messageTraceCheckBox.Location = New-Object System.Drawing.Point(10, 40)
         $messageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $messageTraceCheckBox.Checked = $true
 
         $inboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
         $inboxRulesCheckBox.Text = "Inbox Rules"
-        $inboxRulesCheckBox.Location = New-Object System.Drawing.Point(20, 85)
+        $inboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 65)
         $inboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $inboxRulesCheckBox.Checked = $true
 
         $transportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
         $transportRulesCheckBox.Text = "Transport Rules"
-        $transportRulesCheckBox.Location = New-Object System.Drawing.Point(20, 110)
+        $transportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
         $transportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $transportRulesCheckBox.Checked = $true
 
         $mailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
         $mailFlowCheckBox.Text = "Mail Flow Connectors"
-        $mailFlowCheckBox.Location = New-Object System.Drawing.Point(20, 135)
+        $mailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 115)
         $mailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $mailFlowCheckBox.Checked = $true
 
         $mailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
         $mailboxForwardingCheckBox.Text = "Mailbox Forwarding && Delegation"
-        $mailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(20, 160)
+        $mailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 140)
         $mailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $mailboxForwardingCheckBox.Checked = $true
 
         $auditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
         $auditLogsCheckBox.Text = "Audit Logs (Graph)"
-        $auditLogsCheckBox.Location = New-Object System.Drawing.Point(20, 185)
+        $auditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 165)
         $auditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $auditLogsCheckBox.Checked = $true
 
         $caPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
         $caPoliciesCheckBox.Text = "Conditional Access Policies"
-        $caPoliciesCheckBox.Location = New-Object System.Drawing.Point(20, 210)
+        $caPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 190)
         $caPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $caPoliciesCheckBox.Checked = $true
 
         $appRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
         $appRegistrationsCheckBox.Text = "App Registrations"
-        $appRegistrationsCheckBox.Location = New-Object System.Drawing.Point(20, 235)
+        $appRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
         $appRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $appRegistrationsCheckBox.Checked = $true
 
         $signInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
         $signInLogsCheckBox.Text = "Sign-in Logs (requires Azure AD Premium)"
-        $signInLogsCheckBox.Location = New-Object System.Drawing.Point(20, 260)
+        $signInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 240)
         $signInLogsCheckBox.Size = New-Object System.Drawing.Size(200, 20)
         $signInLogsCheckBox.Checked = $false
 
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
-        $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(230, 262)
+        $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 242)
         $signInLogsDaysLabel.Size = New-Object System.Drawing.Size(70, 20)
         $signInLogsDaysLabel.Enabled = $false
 
         $signInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
         $signInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
         $signInLogsDaysComboBox.SelectedItem = "7 days"
-        $signInLogsDaysComboBox.Location = New-Object System.Drawing.Point(300, 260)
+        $signInLogsDaysComboBox.Location = New-Object System.Drawing.Point(290, 240)
         $signInLogsDaysComboBox.Size = New-Object System.Drawing.Size(80, 20)
         $signInLogsDaysComboBox.Enabled = $false
 
@@ -5364,13 +5371,17 @@ $securityInvestigationButton.add_Click({
             $signInLogsCheckBox.Checked = $false
         })
 
-        $reportsGroupBox.Controls.AddRange(@(
+        # Add all controls to scrollable panel
+        $reportsScrollPanel.Controls.AddRange(@(
             $selectAllReportsBtn, $deselectAllReportsBtn,
             $messageTraceCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
             $mailFlowCheckBox, $mailboxForwardingCheckBox, $auditLogsCheckBox,
             $caPoliciesCheckBox, $appRegistrationsCheckBox,
             $signInLogsCheckBox, $signInLogsDaysLabel, $signInLogsDaysComboBox
         ))
+        
+        # Add scrollable panel to GroupBox
+        $reportsGroupBox.Controls.Add($reportsScrollPanel)
 
         # Generate Button
         $generateButton = New-Object System.Windows.Forms.Button
@@ -5540,10 +5551,112 @@ $securityInvestigationButton.add_Click({
                     $ticketTextBox.Text = $securityReport.TicketMessage
                     $ticketTab.Controls.Add($ticketTextBox)
 
+                    # Exported Files tab
+                    $filesTab = New-Object System.Windows.Forms.TabPage
+                    $filesTab.Text = "📁 Exported Files"
+                    $filesPanel = New-Object System.Windows.Forms.Panel
+                    $filesPanel.Dock = 'Fill'
+                    $filesPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+                    
+                    $filesLabel = New-Object System.Windows.Forms.Label
+                    $filesLabel.Text = "All exported files:"
+                    $filesLabel.AutoSize = $true
+                    $filesLabel.Location = New-Object System.Drawing.Point(10, 10)
+                    $filesLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+                    
+                    $filesListBox = New-Object System.Windows.Forms.ListBox
+                    $filesListBox.Location = New-Object System.Drawing.Point(10, 40)
+                    $filesListBox.Size = New-Object System.Drawing.Size(950, 600)
+                    $filesListBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+                    $filesListBox.HorizontalScrollbar = $true
+                    
+                    # Build list of exported files
+                    $exportedFiles = @()
+                    if ($securityReport.FilePaths) {
+                        $filePaths = $securityReport.FilePaths
+                        if ($filePaths.MessageTraceCsv) { $exportedFiles += "MessageTrace.csv" }
+                        if ($filePaths.MessageTraceJson) { $exportedFiles += "MessageTrace.json" }
+                        if ($filePaths.InboxRulesCsv) { $exportedFiles += "InboxRules.csv" }
+                        if ($filePaths.InboxRulesJson) { $exportedFiles += "InboxRules.json" }
+                        if ($filePaths.TransportRulesCsv) { $exportedFiles += "TransportRules.csv" }
+                        if ($filePaths.TransportRulesJson) { $exportedFiles += "TransportRules.json" }
+                        if ($filePaths.MailFlowConnectorsCsv) { $exportedFiles += "MailFlowConnectors.csv" }
+                        if ($filePaths.MailFlowConnectorsJson) { $exportedFiles += "MailFlowConnectors.json" }
+                        if ($filePaths.AuditLogsCsv) { $exportedFiles += "GraphAuditLogs.csv" }
+                        if ($filePaths.AuditLogsJson) { $exportedFiles += "GraphAuditLogs.json" }
+                        if ($filePaths.SignInLogsCsv) { $exportedFiles += "SignInLogs.csv" }
+                        if ($filePaths.SignInLogsJson) { $exportedFiles += "SignInLogs.json" }
+                        if ($filePaths.SignInLogsError) { $exportedFiles += "SignInLogs_Error.txt" }
+                        if ($filePaths.ConditionalAccessPoliciesCsv) { $exportedFiles += "ConditionalAccessPolicies.csv" }
+                        if ($filePaths.ConditionalAccessPoliciesJson) { $exportedFiles += "ConditionalAccessPolicies.json" }
+                        if ($filePaths.ConditionalAccessPoliciesError) { $exportedFiles += "ConditionalAccessPolicies_Error.txt" }
+                        if ($filePaths.AppRegistrationsCsv) { $exportedFiles += "AppRegistrations.csv" }
+                        if ($filePaths.AppRegistrationsJson) { $exportedFiles += "AppRegistrations.json" }
+                        if ($filePaths.AppRegistrationsError) { $exportedFiles += "AppRegistrations_Error.txt" }
+                        if ($filePaths.UserSecurityPostureCsv) { $exportedFiles += "UserSecurityPosture.csv" }
+                        if ($filePaths.LLMInstructionsTxt) { $exportedFiles += "_AI_Readme.txt" }
+                        if ($filePaths.ZipFile) { $exportedFiles += "SecurityInvestigation_*.zip (Zip Archive)" }
+                    }
+                    
+                    if ($exportedFiles.Count -gt 0) {
+                        $filesListBox.Items.AddRange($exportedFiles)
+                    } else {
+                        $filesListBox.Items.Add("No files were exported.")
+                    }
+                    
+                    # Double-click to open file
+                    $filesListBox.add_DoubleClick({
+                        $selectedFile = $filesListBox.SelectedItem
+                        if ($selectedFile -and $selectedFile -ne "No files were exported.") {
+                            $filePath = $null
+                            if ($selectedFile -like "*.zip*") {
+                                $filePath = $securityReport.FilePaths.ZipFile
+                            } else {
+                                # Find the matching file path
+                                $fileName = $selectedFile
+                                if ($securityReport.FilePaths) {
+                                    $filePaths = $securityReport.FilePaths
+                                    switch ($fileName) {
+                                        "MessageTrace.csv" { $filePath = $filePaths.MessageTraceCsv }
+                                        "MessageTrace.json" { $filePath = $filePaths.MessageTraceJson }
+                                        "InboxRules.csv" { $filePath = $filePaths.InboxRulesCsv }
+                                        "InboxRules.json" { $filePath = $filePaths.InboxRulesJson }
+                                        "TransportRules.csv" { $filePath = $filePaths.TransportRulesCsv }
+                                        "TransportRules.json" { $filePath = $filePaths.TransportRulesJson }
+                                        "MailFlowConnectors.csv" { $filePath = $filePaths.MailFlowConnectorsCsv }
+                                        "MailFlowConnectors.json" { $filePath = $filePaths.MailFlowConnectorsJson }
+                                        "GraphAuditLogs.csv" { $filePath = $filePaths.AuditLogsCsv }
+                                        "GraphAuditLogs.json" { $filePath = $filePaths.AuditLogsJson }
+                                        "SignInLogs.csv" { $filePath = $filePaths.SignInLogsCsv }
+                                        "SignInLogs.json" { $filePath = $filePaths.SignInLogsJson }
+                                        "SignInLogs_Error.txt" { $filePath = $filePaths.SignInLogsError }
+                                        "ConditionalAccessPolicies.csv" { $filePath = $filePaths.ConditionalAccessPoliciesCsv }
+                                        "ConditionalAccessPolicies.json" { $filePath = $filePaths.ConditionalAccessPoliciesJson }
+                                        "ConditionalAccessPolicies_Error.txt" { $filePath = $filePaths.ConditionalAccessPoliciesError }
+                                        "AppRegistrations.csv" { $filePath = $filePaths.AppRegistrationsCsv }
+                                        "AppRegistrations.json" { $filePath = $filePaths.AppRegistrationsJson }
+                                        "AppRegistrations_Error.txt" { $filePath = $filePaths.AppRegistrationsError }
+                                        "UserSecurityPosture.csv" { $filePath = $filePaths.UserSecurityPostureCsv }
+                                        "_AI_Readme.txt" { $filePath = $filePaths.LLMInstructionsTxt }
+                                    }
+                                }
+                            }
+                            if ($filePath -and (Test-Path $filePath)) {
+                                Start-Process $filePath
+                            } elseif ($filePath) {
+                                [System.Windows.Forms.MessageBox]::Show("File not found: $filePath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                            }
+                        }
+                    })
+                    
+                    $filesPanel.Controls.AddRange(@($filesLabel, $filesListBox))
+                    $filesTab.Controls.Add($filesPanel)
+
                     # Add tabs
                     $resultsTabControl.TabPages.Add($summaryTab)
                     $resultsTabControl.TabPages.Add($aiPromptTab)
                     $resultsTabControl.TabPages.Add($ticketTab)
+                    $resultsTabControl.TabPages.Add($filesTab)
 
                     # Copy buttons and instructions panel
                     $copyPanel = New-Object System.Windows.Forms.Panel
@@ -5767,79 +5880,86 @@ $bulkTenantExporterButton.add_Click({
         $bulkReportsGroupBox.Location = New-Object System.Drawing.Point(15, 300)
         $bulkReportsGroupBox.Size = New-Object System.Drawing.Size(400, 320)
 
+        # Create scrollable panel inside GroupBox
+        $bulkReportsScrollPanel = New-Object System.Windows.Forms.Panel
+        $bulkReportsScrollPanel.Location = New-Object System.Drawing.Point(10, 20)
+        $bulkReportsScrollPanel.Size = New-Object System.Drawing.Size(380, 290)
+        $bulkReportsScrollPanel.AutoScroll = $true
+        $bulkReportsScrollPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+
         # Select All / Deselect All buttons
         $bulkSelectAllBtn = New-Object System.Windows.Forms.Button
         $bulkSelectAllBtn.Text = "Select All"
-        $bulkSelectAllBtn.Location = New-Object System.Drawing.Point(20, 25)
+        $bulkSelectAllBtn.Location = New-Object System.Drawing.Point(10, 5)
         $bulkSelectAllBtn.Size = New-Object System.Drawing.Size(80, 25)
 
         $bulkDeselectAllBtn = New-Object System.Windows.Forms.Button
         $bulkDeselectAllBtn.Text = "Deselect All"
-        $bulkDeselectAllBtn.Location = New-Object System.Drawing.Point(110, 25)
+        $bulkDeselectAllBtn.Location = New-Object System.Drawing.Point(100, 5)
         $bulkDeselectAllBtn.Size = New-Object System.Drawing.Size(90, 25)
 
         # Checkboxes for each report type
         $bulkMessageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkMessageTraceCheckBox.Text = "Message Trace (last 10 days)"
-        $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(20, 60)
+        $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(10, 40)
         $bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMessageTraceCheckBox.Checked = $true
 
         $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkInboxRulesCheckBox.Text = "Inbox Rules"
-        $bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(20, 85)
+        $bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 65)
         $bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkInboxRulesCheckBox.Checked = $true
 
         $bulkTransportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkTransportRulesCheckBox.Text = "Transport Rules"
-        $bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(20, 110)
+        $bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
         $bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkTransportRulesCheckBox.Checked = $true
 
         $bulkMailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkMailFlowCheckBox.Text = "Mail Flow Connectors"
-        $bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(20, 135)
+        $bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 115)
         $bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMailFlowCheckBox.Checked = $true
 
         $bulkMailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkMailboxForwardingCheckBox.Text = "Mailbox Forwarding & Delegation"
-        $bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(20, 160)
+        $bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 140)
         $bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMailboxForwardingCheckBox.Checked = $true
 
         $bulkAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkAuditLogsCheckBox.Text = "Audit Logs"
-        $bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(20, 185)
+        $bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 165)
         $bulkAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkAuditLogsCheckBox.Checked = $true
 
         $bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
-        $bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(20, 210)
+        $bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 190)
         $bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkCaPoliciesCheckBox.Checked = $true
 
         $bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkAppRegistrationsCheckBox.Text = "App Registrations"
-        $bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(20, 235)
+        $bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
         $bulkAppRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkAppRegistrationsCheckBox.Checked = $true
 
         $bulkSignInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkSignInLogsCheckBox.Text = "Sign-In Logs"
-        $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(20, 260)
+        $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 240)
         $bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkSignInLogsCheckBox.Checked = $true
 
         $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
-        $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(40, 285)
+        $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 265)
         $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
         $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
-        $bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(170, 283)
+        $bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 263)
         $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
         $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
         $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
@@ -5876,13 +5996,17 @@ $bulkTenantExporterButton.add_Click({
             $bulkSignInLogsCheckBox.Checked = $false
         })
 
-        $bulkReportsGroupBox.Controls.AddRange(@(
+        # Add all controls to scrollable panel
+        $bulkReportsScrollPanel.Controls.AddRange(@(
             $bulkSelectAllBtn, $bulkDeselectAllBtn,
             $bulkMessageTraceCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
             $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox, $bulkAuditLogsCheckBox,
             $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
             $bulkSignInLogsCheckBox, $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
         ))
+        
+        # Add scrollable panel to GroupBox
+        $bulkReportsGroupBox.Controls.Add($bulkReportsScrollPanel)
 
         # Progress Label
         $bulkProgressLabel = New-Object System.Windows.Forms.Label
