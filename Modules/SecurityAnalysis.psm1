@@ -1,11 +1,16 @@
 # SecurityAnalysis.psm1
 # Risky Users, Conditional Access Policies, and App Registration Analysis
 
+# Required cmdlets and their source modules:
+# - Get-MgRiskyUser: Available through Microsoft.Graph.Identity.SignIns (requires Azure AD Premium P2 license)
+# - Get-MgIdentityConditionalAccessPolicy: Available through Microsoft.Graph.Identity.SignIns
+# - Get-MgServicePrincipal: Available through Microsoft.Graph.Applications
+# - Get-MgApplication: Available through Microsoft.Graph.Applications
+# Note: Identity.Protection, Identity.ConditionalAccess, and ServicePrincipals don't exist as separate installable modules
+# The cmdlets are available through Microsoft.Graph.Identity.SignIns and Microsoft.Graph.Applications which we install
 $script:requiredModules = @(
-    "Microsoft.Graph.Identity.Protection",
-    "Microsoft.Graph.Identity.ConditionalAccess",
-    "Microsoft.Graph.Applications",
-    "Microsoft.Graph.ServicePrincipals"
+    "Microsoft.Graph.Applications"  # Provides Get-MgApplication and Get-MgServicePrincipal
+    # Microsoft.Graph.Identity.SignIns is installed separately and provides Get-MgIdentityConditionalAccessPolicy and Get-MgRiskyUser
 )
 $script:requiredScopes = @(
     "IdentityRiskEvent.Read.All",
@@ -25,6 +30,27 @@ function Test-SecurityAnalysisModules {
             $missing += $m 
         }
     }
+    
+    # Check if required cmdlets are available (they might be through other modules)
+    $cmdletsNeeded = @{
+        "Get-MgRiskyUser" = "Microsoft.Graph.Identity.SignIns"
+        "Get-MgIdentityConditionalAccessPolicy" = "Microsoft.Graph.Identity.SignIns"
+        "Get-MgServicePrincipal" = "Microsoft.Graph.Applications"
+        "Get-MgApplication" = "Microsoft.Graph.Applications"
+    }
+    
+    $missingCmdlets = @()
+    foreach ($cmdlet in $cmdletsNeeded.Keys) {
+        if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
+            $missingCmdlets += "$cmdlet (from $($cmdletsNeeded[$cmdlet]))"
+        }
+    }
+    
+    # If cmdlets are missing, we still need the modules
+    if ($missingCmdlets.Count -gt 0) {
+        Write-Host "Note: Some cmdlets may not be available: $($missingCmdlets -join ', ')" -ForegroundColor Yellow
+    }
+    
     return $missing
 }
 
@@ -33,13 +59,50 @@ function Install-SecurityAnalysisModules {
     param()
     $missing = Test-SecurityAnalysisModules
     if ($missing.Count -gt 0) {
-        Write-Host "Installing missing modules: $($missing -join ', ')" -ForegroundColor Yellow
+        # Filter out modules that don't exist in the gallery
+        $modulesToInstall = @()
+        $nonExistentModules = @()
         foreach ($m in $missing) {
             try {
-                Install-Module -Name $m -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
-                Write-Host "✓ Installed $m" -ForegroundColor Green
+                $moduleExists = Find-Module -Name $m -Repository PSGallery -ErrorAction Stop
+                if ($moduleExists) {
+                    $modulesToInstall += $m
+                } else {
+                    $nonExistentModules += $m
+                }
             } catch {
-                Write-Warning "Failed to install $m`: $($_.Exception.Message)"
+                # Module doesn't exist in gallery
+                $nonExistentModules += $m
+            }
+        }
+        
+        if ($modulesToInstall.Count -gt 0) {
+            Write-Host "Installing missing modules: $($modulesToInstall -join ', ')" -ForegroundColor Yellow
+            foreach ($m in $modulesToInstall) {
+                try {
+                    Install-Module -Name $m -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
+                    Write-Host "✓ Installed $m" -ForegroundColor Green
+                } catch {
+                    Write-Warning "Failed to install $m`: $($_.Exception.Message)"
+                }
+            }
+        }
+        
+        # Inform about non-existent modules - the cmdlets are available through other modules
+        if ($nonExistentModules.Count -gt 0) {
+            Write-Host "Note: These modules don't exist as separate packages, but the required cmdlets are available through:" -ForegroundColor Yellow
+            foreach ($m in $nonExistentModules) {
+                switch ($m) {
+                    "Microsoft.Graph.Identity.Protection" {
+                        Write-Host "  - Get-MgRiskyUser is available through Microsoft.Graph.Identity.SignIns (already installed)" -ForegroundColor DarkGray
+                    }
+                    "Microsoft.Graph.Identity.ConditionalAccess" {
+                        Write-Host "  - Get-MgIdentityConditionalAccessPolicy is available through Microsoft.Graph.Identity.SignIns (already installed)" -ForegroundColor DarkGray
+                    }
+                    "Microsoft.Graph.ServicePrincipals" {
+                        Write-Host "  - Get-MgServicePrincipal is available through Microsoft.Graph.Applications (already installed)" -ForegroundColor DarkGray
+                    }
+                }
             }
         }
     }
@@ -54,7 +117,7 @@ function Import-SecurityAnalysisModules {
             $cmdletAvailable = $false
             switch ($m) {
                 "Microsoft.Graph.Identity.Protection" {
-                    $cmdletAvailable = (Get-Command Get-MgIdentityRiskyUser -ErrorAction SilentlyContinue) -ne $null
+                    $cmdletAvailable = (Get-Command Get-MgRiskyUser -ErrorAction SilentlyContinue) -ne $null
                 }
                 "Microsoft.Graph.Identity.ConditionalAccess" {
                     $cmdletAvailable = (Get-Command Get-MgIdentityConditionalAccessPolicy -ErrorAction SilentlyContinue) -ne $null
@@ -92,7 +155,7 @@ function Import-SecurityAnalysisModules {
             $cmdletAvailable = $false
             switch ($m) {
                 "Microsoft.Graph.Identity.Protection" {
-                    $cmdletAvailable = (Get-Command Get-MgIdentityRiskyUser -ErrorAction SilentlyContinue) -ne $null
+                    $cmdletAvailable = (Get-Command Get-MgRiskyUser -ErrorAction SilentlyContinue) -ne $null
                 }
                 "Microsoft.Graph.Identity.ConditionalAccess" {
                     $cmdletAvailable = (Get-Command Get-MgIdentityConditionalAccessPolicy -ErrorAction SilentlyContinue) -ne $null
@@ -126,7 +189,7 @@ function Get-RiskyUsers {
         
         # Get risky users
         try {
-            $allRiskyUsers = Get-MgIdentityRiskyUser -ErrorAction Stop
+            $allRiskyUsers = Get-MgRiskyUser -ErrorAction Stop
             Write-Host "Found $($allRiskyUsers.Count) risky users" -ForegroundColor Cyan
             
             foreach ($user in $allRiskyUsers) {
