@@ -178,6 +178,12 @@ Service Principals: "MFA Disabled" alerts where the Actor is "$servicePrincipals
 Action: Classify as Authorized Activity (Maintenance Script).
 
 
+MFA Disabled Alerts: When reviewing tickets like "MFA Disabled" types, always check the logs to see if MFA was re-enabled after being disabled. Review the audit logs (GraphAudit.csv) for subsequent "MFA Enabled" or "MFA Registration" events for the same user. If MFA was re-enabled shortly after being disabled, this may indicate a temporary administrative action or user self-service re-enrollment rather than a security incident.
+
+
+Action: Verify in logs whether MFA was re-enabled. If re-enabled, classify appropriately based on the context and timing.
+
+
 3rd Party MFA:$(if ($thirdPartyMFA) { " The following clients use 3rd party MFA solutions (e.g., Duo Security) that won't show up in Entra exports: $thirdPartyMFA. When analyzing MFA status for these clients, note that they are covered by MFA even if the Entra exports show MFA as disabled." } else { " Note: Some clients may use 3rd party MFA solutions (e.g., Duo Security) that won't show up in Entra exports. When analyzing MFA status, verify if the client uses 3rd party MFA before classifying as a security issue." })
 
 
