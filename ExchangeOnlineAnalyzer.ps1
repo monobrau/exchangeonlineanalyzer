@@ -2048,67 +2048,80 @@ $sTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.Fo
 $sTitle.Location = New-Object System.Drawing.Point(10,10)
 $sTitle.AutoSize = $true
 
+$lblSettingsPath = New-Object System.Windows.Forms.Label
+$lblSettingsPath.Text = "Settings are saved in your user profile and persist across reinstalls/git operations"
+$lblSettingsPath.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Italic)
+$lblSettingsPath.Location = New-Object System.Drawing.Point(10,32)
+$lblSettingsPath.AutoSize = $true
+$lblSettingsPath.ForeColor = [System.Drawing.Color]::FromArgb(100,100,100)
+
+$lblSettingsFile = New-Object System.Windows.Forms.Label
+$lblSettingsFile.Location = New-Object System.Drawing.Point(10,47)
+$lblSettingsFile.AutoSize = $true
+$lblSettingsFile.Font = New-Object System.Drawing.Font('Segoe UI', 7)
+$lblSettingsFile.ForeColor = [System.Drawing.Color]::FromArgb(120,120,120)
+
 # Basic Settings
 $lblInv = New-Object System.Windows.Forms.Label
 $lblInv.Text = "Investigator Name:"
-$lblInv.Location = New-Object System.Drawing.Point(10,45)
+$lblInv.Location = New-Object System.Drawing.Point(10,70)
 $lblInv.AutoSize = $true
 $lblInv.Width = 180
 
 $txtInv = New-Object System.Windows.Forms.TextBox
-$txtInv.Location = New-Object System.Drawing.Point(200, 42)
+$txtInv.Location = New-Object System.Drawing.Point(200, 67)
 $txtInv.Width = 500
 
 $lblInvTitle = New-Object System.Windows.Forms.Label
 $lblInvTitle.Text = "Investigator Title:"
-$lblInvTitle.Location = New-Object System.Drawing.Point(10,75)
+$lblInvTitle.Location = New-Object System.Drawing.Point(10,100)
 $lblInvTitle.AutoSize = $true
 $lblInvTitle.Width = 180
 
 $txtInvTitle = New-Object System.Windows.Forms.TextBox
-$txtInvTitle.Location = New-Object System.Drawing.Point(200, 72)
+$txtInvTitle.Location = New-Object System.Drawing.Point(200, 97)
 $txtInvTitle.Width = 500
 
 $lblCo = New-Object System.Windows.Forms.Label
 $lblCo.Text = "Company Name:"
-$lblCo.Location = New-Object System.Drawing.Point(10,105)
+$lblCo.Location = New-Object System.Drawing.Point(10,130)
 $lblCo.AutoSize = $true
 $lblCo.Width = 180
 
 $txtCo = New-Object System.Windows.Forms.TextBox
-$txtCo.Location = New-Object System.Drawing.Point(200, 102)
+$txtCo.Location = New-Object System.Drawing.Point(200, 127)
 $txtCo.Width = 500
 
 $lblTZ = New-Object System.Windows.Forms.Label
 $lblTZ.Text = "Time Zone:"
-$lblTZ.Location = New-Object System.Drawing.Point(10,135)
+$lblTZ.Location = New-Object System.Drawing.Point(10,160)
 $lblTZ.AutoSize = $true
 $lblTZ.Width = 180
 
 $txtTZ = New-Object System.Windows.Forms.TextBox
-$txtTZ.Location = New-Object System.Drawing.Point(200, 132)
+$txtTZ.Location = New-Object System.Drawing.Point(200, 157)
 $txtTZ.Width = 500
 
 # API Keys
 $lblGem = New-Object System.Windows.Forms.Label
 $lblGem.Text = "Gemini API Key:"
-$lblGem.Location = New-Object System.Drawing.Point(10,165)
+$lblGem.Location = New-Object System.Drawing.Point(10,190)
 $lblGem.AutoSize = $true
 $lblGem.Width = 180
 
 $txtGem = New-Object System.Windows.Forms.TextBox
-$txtGem.Location = New-Object System.Drawing.Point(200, 162)
+$txtGem.Location = New-Object System.Drawing.Point(200, 187)
 $txtGem.Width = 500
 $txtGem.UseSystemPasswordChar = $true
 
 $lblClaude = New-Object System.Windows.Forms.Label
 $lblClaude.Text = "Claude API Key:"
-$lblClaude.Location = New-Object System.Drawing.Point(10,195)
+$lblClaude.Location = New-Object System.Drawing.Point(10,220)
 $lblClaude.AutoSize = $true
 $lblClaude.Width = 180
 
 $txtClaude = New-Object System.Windows.Forms.TextBox
-$txtClaude.Location = New-Object System.Drawing.Point(200, 192)
+$txtClaude.Location = New-Object System.Drawing.Point(200, 217)
 $txtClaude.Width = 500
 $txtClaude.UseSystemPasswordChar = $true
 
@@ -2116,84 +2129,84 @@ $txtClaude.UseSystemPasswordChar = $true
 $aiSectionTitle = New-Object System.Windows.Forms.Label
 $aiSectionTitle.Text = "AI Readme Configuration (comma-separated unless otherwise noted)"
 $aiSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiSectionTitle.Location = New-Object System.Drawing.Point(10,235)
+$aiSectionTitle.Location = New-Object System.Drawing.Point(10,260)
 $aiSectionTitle.AutoSize = $true
 
 $lblAdminUsers = New-Object System.Windows.Forms.Label
 $lblAdminUsers.Text = "Admin Usernames:"
-$lblAdminUsers.Location = New-Object System.Drawing.Point(10,265)
+$lblAdminUsers.Location = New-Object System.Drawing.Point(10,290)
 $lblAdminUsers.AutoSize = $true
 $lblAdminUsers.Width = 180
 
 $txtAdminUsers = New-Object System.Windows.Forms.TextBox
-$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 262)
+$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 287)
 $txtAdminUsers.Width = 500
 $txtAdminUsers.Multiline = $false
 
 $lblInternalTeams = New-Object System.Windows.Forms.Label
 $lblInternalTeams.Text = "Internal Team Display Names:"
-$lblInternalTeams.Location = New-Object System.Drawing.Point(10,295)
+$lblInternalTeams.Location = New-Object System.Drawing.Point(10,320)
 $lblInternalTeams.AutoSize = $true
 $lblInternalTeams.Width = 180
 
 $txtInternalTeams = New-Object System.Windows.Forms.TextBox
-$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 292)
+$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 317)
 $txtInternalTeams.Width = 500
 $txtInternalTeams.Multiline = $false
 
 $lblAuthorizedISPs = New-Object System.Windows.Forms.Label
 $lblAuthorizedISPs.Text = "Authorized ISPs:"
-$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,325)
+$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,350)
 $lblAuthorizedISPs.AutoSize = $true
 $lblAuthorizedISPs.Width = 180
 
 $txtAuthorizedISPs = New-Object System.Windows.Forms.TextBox
-$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 322)
+$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 347)
 $txtAuthorizedISPs.Width = 500
 $txtAuthorizedISPs.Multiline = $false
 
 $lblInFlightWiFi = New-Object System.Windows.Forms.Label
 $lblInFlightWiFi.Text = "In-Flight Wi-Fi Providers:"
-$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,355)
+$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,380)
 $lblInFlightWiFi.AutoSize = $true
 $lblInFlightWiFi.Width = 180
 
 $txtInFlightWiFi = New-Object System.Windows.Forms.TextBox
-$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 352)
+$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 377)
 $txtInFlightWiFi.Width = 500
 $txtInFlightWiFi.Multiline = $false
 
 $lblServicePrincipals = New-Object System.Windows.Forms.Label
 $lblServicePrincipals.Text = "Service Principal Names:"
-$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,385)
+$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,410)
 $lblServicePrincipals.AutoSize = $true
 $lblServicePrincipals.Width = 180
 
 $txtServicePrincipals = New-Object System.Windows.Forms.TextBox
-$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 382)
+$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 407)
 $txtServicePrincipals.Width = 500
 $txtServicePrincipals.Multiline = $false
 
 $lblKnownAdmins = New-Object System.Windows.Forms.Label
 $lblKnownAdmins.Text = "Known Admins:"
-$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,415)
+$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,440)
 $lblKnownAdmins.AutoSize = $true
 $lblKnownAdmins.Width = 180
 
 $txtKnownAdmins = New-Object System.Windows.Forms.TextBox
-$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 412)
+$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 437)
 $txtKnownAdmins.Width = 500
 $txtKnownAdmins.Multiline = $false
 
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,445)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,470)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 442)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 467)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2233,39 +2246,49 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 570)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 595)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 570)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 595)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 610)
+$btnSave.Location = New-Object System.Drawing.Point(200, 635)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 610)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 635)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
+$btnExportSettings = New-Object System.Windows.Forms.Button
+$btnExportSettings.Text = "Export Settings"
+$btnExportSettings.Location = New-Object System.Drawing.Point(490, 635)
+$btnExportSettings.Width = 105
+
+$btnImportSettings = New-Object System.Windows.Forms.Button
+$btnImportSettings.Text = "Import Settings"
+$btnImportSettings.Location = New-Object System.Drawing.Point(605, 635)
+$btnImportSettings.Width = 105
+
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,650)
+$lblStatus.Location = New-Object System.Drawing.Point(10,675)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
 # Add all controls to scroll panel
-$allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
+$allControls = @($sTitle,$lblSettingsPath,$lblSettingsFile,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
-    $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
+    $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$btnExportSettings,$btnImportSettings,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
 # Ensure minimum width for content (200 label + 500 textbox + 20 margin = 720)
@@ -2277,6 +2300,15 @@ $tabControl.TabPages.Add($settingsTab)
 $settingsTab.add_Enter({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+
+        # Show settings file path
+        try {
+            $settingsPath = Get-SettingsPath
+            $lblSettingsFile.Text = "Location: $settingsPath"
+        } catch {
+            $lblSettingsFile.Text = "Location: %APPDATA%\ExchangeOnlineAnalyzer\settings.json"
+        }
+
         $s = Get-AppSettings
         if ($s) {
             $txtInv.Text = $s.InvestigatorName
@@ -2291,7 +2323,7 @@ $settingsTab.add_Enter({
             $txtInFlightWiFi.Text = $s.InFlightWiFiProviders
             $txtServicePrincipals.Text = $s.ServicePrincipalNames
             $txtKnownAdmins.Text = $s.KnownAdmins
-            
+
             # Load client contact overrides into DataGridView
             $dgvContactOverrides.Rows.Clear()
             if ($s.ClientContactOverrides -and $s.ClientContactOverrides -ne '{}') {
@@ -2419,6 +2451,65 @@ $btnGenerateReadme.add_Click({
         $lblStatus.ForeColor = [System.Drawing.Color]::Green
     } catch {
         $lblStatus.Text = "Error generating readme: $($_.Exception.Message)"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Red
+    }
+})
+
+$btnExportSettings.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+
+        $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+        $saveDialog.Filter = "JSON Files (*.json)|*.json|All Files (*.*)|*.*"
+        $saveDialog.Title = "Export Settings"
+        $saveDialog.FileName = "ExchangeOnlineAnalyzer_Settings.json"
+
+        if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            if (Export-AppSettings -ExportPath $saveDialog.FileName) {
+                $lblStatus.Text = "Settings exported successfully to: $($saveDialog.FileName)"
+                $lblStatus.ForeColor = [System.Drawing.Color]::Green
+            } else {
+                $lblStatus.Text = "Failed to export settings."
+                $lblStatus.ForeColor = [System.Drawing.Color]::Red
+            }
+        }
+    } catch {
+        $lblStatus.Text = "Export error: $($_.Exception.Message)"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Red
+    }
+})
+
+$btnImportSettings.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+
+        $openDialog = New-Object System.Windows.Forms.OpenFileDialog
+        $openDialog.Filter = "JSON Files (*.json)|*.json|All Files (*.*)|*.*"
+        $openDialog.Title = "Import Settings"
+
+        if ($openDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $confirm = [System.Windows.Forms.MessageBox]::Show(
+                "This will overwrite your current settings. Continue?",
+                "Confirm Import",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+
+            if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+                if (Import-AppSettings -ImportPath $openDialog.FileName) {
+                    $lblStatus.Text = "Settings imported successfully. Reloading..."
+                    $lblStatus.ForeColor = [System.Drawing.Color]::Green
+                    # Trigger tab refresh to reload settings
+                    Start-Sleep -Milliseconds 500
+                    $settingsTab.add_Enter.Invoke()
+                } else {
+                    $lblStatus.Text = "Failed to import settings."
+                    $lblStatus.ForeColor = [System.Drawing.Color]::Red
+                }
+            }
+        }
+    } catch {
+        $lblStatus.Text = "Import error: $($_.Exception.Message)"
         $lblStatus.ForeColor = [System.Drawing.Color]::Red
     }
 })

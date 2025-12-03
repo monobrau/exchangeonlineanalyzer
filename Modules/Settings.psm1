@@ -1,6 +1,13 @@
 function Get-SettingsPath {
     $dir = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'ExchangeOnlineAnalyzer'
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    if (-not (Test-Path $dir)) {
+        try {
+            New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Error "Failed to create settings directory: $($_.Exception.Message)"
+            throw
+        }
+    }
     return (Join-Path $dir 'settings.json')
 }
 
@@ -48,12 +55,25 @@ function Get-DefaultSettings {
 function Save-AppSettings {
     param([Parameter(Mandatory=$true)][object]$Settings)
     try {
-        $json = $Settings | ConvertTo-Json -Depth 4
         $path = Get-SettingsPath
-        $json | Out-File -FilePath $path -Encoding utf8
+        $json = $Settings | ConvertTo-Json -Depth 4
+
+        # Ensure the directory exists before writing
+        $dir = Split-Path -Parent $path
+        if (-not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
+        }
+
+        # Write to a temp file first, then move (atomic operation)
+        $tempPath = "$path.tmp"
+        $json | Out-File -FilePath $tempPath -Encoding utf8 -ErrorAction Stop
+        Move-Item -Path $tempPath -Destination $path -Force -ErrorAction Stop
+
+        Write-Verbose "Settings saved successfully to: $path"
         return $true
     } catch {
-        Write-Error "Failed to save settings: $($_.Exception.Message)"; return $false
+        Write-Error "Failed to save settings to $path : $($_.Exception.Message)"
+        return $false
     }
 }
 
@@ -277,6 +297,41 @@ Clarification Questions [Ask 2 questions here regarding tuning, specific client 
     return $readme
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,New-AIReadme
+function Export-AppSettings {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ExportPath
+    )
+    try {
+        $settings = Get-AppSettings
+        $json = $settings | ConvertTo-Json -Depth 4
+        $json | Out-File -FilePath $ExportPath -Encoding utf8 -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Error "Failed to export settings: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Import-AppSettings {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ImportPath
+    )
+    try {
+        if (-not (Test-Path $ImportPath)) {
+            Write-Error "Import file not found: $ImportPath"
+            return $false
+        }
+        $raw = Get-Content -Path $ImportPath -Raw -ErrorAction Stop
+        $imported = $raw | ConvertFrom-Json
+        return Save-AppSettings -Settings $imported
+    } catch {
+        Write-Error "Failed to import settings: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,New-AIReadme,Export-AppSettings,Import-AppSettings
 
 
