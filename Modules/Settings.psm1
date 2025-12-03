@@ -42,6 +42,7 @@ function Get-DefaultSettings {
         ServicePrincipalNames = 'Microsoft Graph Command Line Tools'
         KnownAdmins = 'Jeff Beyer'
         ClientContactOverrides = '{}'
+        ThirdPartyMFA = ''
     }
 }
 
@@ -74,6 +75,9 @@ function New-AIReadme {
     $inFlightWiFi = if ($Settings.InFlightWiFiProviders) { ($Settings.InFlightWiFiProviders -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { 'Anuvu, Gogo, Viasat, Panasonic Avionics' }
     $servicePrincipals = if ($Settings.ServicePrincipalNames) { ($Settings.ServicePrincipalNames -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { 'Microsoft Graph Command Line Tools' }
     $knownAdmins = if ($Settings.KnownAdmins) { ($Settings.KnownAdmins -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { '' }
+    
+    # Parse 3rd Party MFA clients (comma-separated list)
+    $thirdPartyMFA = if ($Settings.ThirdPartyMFA) { ($Settings.ThirdPartyMFA -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { '' }
     
     # Parse client contact overrides (JSON format: {"ClientName": {"Contact": "Full Name", "Greeting": "First Name"}})
     $contactOverrides = ''
@@ -172,6 +176,12 @@ Service Principals: "MFA Disabled" alerts where the Actor is "$servicePrincipals
 
 
 Action: Classify as Authorized Activity (Maintenance Script).
+
+
+3rd Party MFA:$(if ($thirdPartyMFA) { " The following clients use 3rd party MFA solutions (e.g., Duo Security) that won't show up in Entra exports: $thirdPartyMFA. When analyzing MFA status for these clients, note that they are covered by MFA even if the Entra exports show MFA as disabled." } else { " Note: Some clients may use 3rd party MFA solutions (e.g., Duo Security) that won't show up in Entra exports. When analyzing MFA status, verify if the client uses 3rd party MFA before classifying as a security issue." })
+
+
+Action: When reviewing MFA status for these clients, treat them as having MFA enabled even if Entra exports indicate otherwise.
 
 
 
