@@ -2112,93 +2112,300 @@ $txtClaude.Location = New-Object System.Drawing.Point(200, 192)
 $txtClaude.Width = 500
 $txtClaude.UseSystemPasswordChar = $true
 
+# Add Fix Module Conflicts button to Settings tab
+$fixModsBtn = New-Object System.Windows.Forms.Button
+$fixModsBtn.Text = "Fix Graph Module Conflicts"
+$fixModsBtn.Location = New-Object System.Drawing.Point(200, 225)
+$fixModsBtn.Width = 200
+$fixModsBtn.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
+        $lblStatus.Text = "Fixing Graph modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        $ok = Fix-GraphModuleConflicts -statusLabel $null
+        if ($ok) { $lblStatus.Text = "Graph modules repaired. Restart PowerShell."; $lblStatus.ForeColor = [System.Drawing.Color]::Green }
+        else { $lblStatus.Text = "Repair failed. See console."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+})
+
+# Add Install All Modules button to Settings tab
+$installAllModsBtn = New-Object System.Windows.Forms.Button
+$installAllModsBtn.Text = "Install All PowerShell Modules"
+$installAllModsBtn.Location = New-Object System.Drawing.Point(410, 225)
+$installAllModsBtn.Width = 200
+$installAllModsBtn.add_Click({
+    try {
+        $lblStatus.Text = "Installing all required PowerShell modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        [System.Windows.Forms.Application]::DoEvents()
+        
+        # Define all required modules (install Authentication first as it's a dependency)
+        # Note: Some modules like Identity.Protection, Identity.ConditionalAccess, and ServicePrincipals
+        # are not available as separate modules - they're part of other Graph modules
+        $allModules = @(
+            "ExchangeOnlineManagement",
+            "Microsoft.Graph.Authentication",  # Install first - required dependency
+            "Microsoft.Graph.Users",
+            "Microsoft.Graph.Users.Actions",
+            "Microsoft.Graph.Identity.SignIns",
+            "Microsoft.Graph.Reports",
+            "Microsoft.Graph.Identity.DirectoryManagement",
+            "Microsoft.Graph.Applications",  # Required for SecurityAnalysis (includes ServicePrincipals functionality)
+            "Microsoft.Graph.Security"  # Required for EntraInvestigator
+        )
+        
+        $installed = @()
+        $failed = @()
+        $skipped = @()
+        
+        # First, disconnect from any active Graph/Exchange sessions and remove all Graph modules
+        $lblStatus.Text = "Unloading modules from current session..."; [System.Windows.Forms.Application]::DoEvents()
+        try {
+            Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+            Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+        } catch {}
+        
+        # Remove all Microsoft.Graph.* modules from current session (try multiple times to handle dependencies)
+        for ($retry = 0; $retry -lt 3; $retry++) {
+            $loadedGraphModules = Get-Module -Name "Microsoft.Graph*" -All -ErrorAction SilentlyContinue
+            if ($loadedGraphModules) {
+                foreach ($loadedModule in $loadedGraphModules) {
+                    try {
+                        $null = Remove-Module -Name $loadedModule.Name -Force -ErrorAction SilentlyContinue
+                    } catch {}
+                }
+                Start-Sleep -Milliseconds 300
+            } else {
+                break
+            }
+        }
+        
+        # Remove ExchangeOnlineManagement if loaded (try multiple times)
+        for ($retry = 0; $retry -lt 3; $retry++) {
+            $loadedExoModule = Get-Module -Name "ExchangeOnlineManagement" -All -ErrorAction SilentlyContinue
+            if ($loadedExoModule) {
+                try {
+                    $null = Remove-Module -Name "ExchangeOnlineManagement" -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 300
+                } catch {}
+            } else {
+                break
+            }
+        }
+        
+        # Additional cleanup: Remove modules from Global scope if they exist there
+        try {
+            Get-Module -Name "Microsoft.Graph*" -ListAvailable -ErrorAction SilentlyContinue | ForEach-Object {
+                try {
+                    Remove-Module -Name $_.Name -Force -ErrorAction SilentlyContinue | Out-Null
+                } catch {}
+            }
+        } catch {}
+        
+        # Install Authentication first as it's a dependency for other Graph modules
+        $authModule = "Microsoft.Graph.Authentication"
+        if ($allModules -contains $authModule) {
+            try {
+                $lblStatus.Text = "Installing $authModule (required dependency)..."; [System.Windows.Forms.Application]::DoEvents()
+                # Suppress the "module in use" warning by redirecting warnings
+                $null = Install-Module -Name $authModule -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -WarningAction SilentlyContinue -ErrorAction Stop
+                $installed += $authModule
+                Write-Host "✓ Installed $authModule" -ForegroundColor Green
+            } catch {
+                $failed += "$authModule`: $($_.Exception.Message)"
+                Write-Host "✗ Failed to install $authModule`: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        # Install remaining modules
+        foreach ($module in $allModules) {
+            if ($module -eq $authModule) { continue }  # Skip, already installed
+            
+            try {
+                $lblStatus.Text = "Installing $module..."; [System.Windows.Forms.Application]::DoEvents()
+                
+                # Double-check module is not loaded (remove any that might have been loaded as dependencies)
+                $loaded = Get-Module -Name $module -All -ErrorAction SilentlyContinue
+                if ($loaded) {
+                    for ($retry = 0; $retry -lt 3; $retry++) {
+                        try {
+                            Remove-Module -Name $module -Force -ErrorAction Stop | Out-Null
+                            break
+                        } catch {
+                            Start-Sleep -Milliseconds 200
+                        }
+                    }
+                    Start-Sleep -Milliseconds 300  # Brief pause to ensure module is fully unloaded
+                }
+                
+                # Check if module is already installed
+                $existingModule = Get-Module -ListAvailable -Name $module -ErrorAction SilentlyContinue
+                if ($existingModule) {
+                    # Update existing module - suppress "module in use" warnings
+                    $null = Install-Module -Name $module -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -WarningAction SilentlyContinue -ErrorAction Stop
+                    $installed += "$module (updated)"
+                    Write-Host "✓ Updated $module" -ForegroundColor Green
+                } else {
+                    # Install new module - suppress "module in use" warnings
+                    $null = Install-Module -Name $module -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -WarningAction SilentlyContinue -ErrorAction Stop
+                    $installed += $module
+                    Write-Host "✓ Installed $module" -ForegroundColor Green
+                }
+            } catch {
+                $failed += "$module`: $($_.Exception.Message)"
+                Write-Host "✗ Failed to install $module`: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        # Also try using the existing install functions from modules (suppress warnings for non-existent modules)
+        try {
+            $lblStatus.Text = "Verifying SecurityAnalysis modules..."; [System.Windows.Forms.Application]::DoEvents()
+            Import-Module "$PSScriptRoot\Modules\SecurityAnalysis.psm1" -Force -ErrorAction SilentlyContinue
+            if (Get-Command Install-SecurityAnalysisModules -ErrorAction SilentlyContinue) {
+                # Suppress warnings from Install-SecurityAnalysisModules about non-existent modules
+                $null = Install-SecurityAnalysisModules -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 2>&1 | Where-Object { $_ -notmatch "No match was found" }
+                Write-Host "✓ Verified SecurityAnalysis modules" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "Note: Could not verify SecurityAnalysis modules: $_" -ForegroundColor Yellow
+        }
+        
+        try {
+            $lblStatus.Text = "Verifying EntraInvestigator modules..."; [System.Windows.Forms.Application]::DoEvents()
+            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -ErrorAction SilentlyContinue
+            if (Get-Command Install-EntraModules -ErrorAction SilentlyContinue) {
+                $missing = Test-EntraModules
+                if ($missing.Count -gt 0) {
+                    Install-EntraModules -Modules $missing
+                    Write-Host "✓ Verified EntraInvestigator modules" -ForegroundColor Green
+                }
+            }
+        } catch {
+            Write-Host "Note: Could not verify EntraInvestigator modules: $_" -ForegroundColor Yellow
+        }
+        
+        if ($failed.Count -eq 0) {
+            $lblStatus.Text = "✅ All modules installed successfully! ($($installed.Count) modules)"
+            $lblStatus.ForeColor = [System.Drawing.Color]::Green
+            [System.Windows.Forms.MessageBox]::Show(
+                "All PowerShell modules have been installed successfully!`n`n" +
+                "Installed/Updated: $($installed.Count) modules`n`n" +
+                "You may need to restart PowerShell for all modules to be available.",
+                "Installation Complete",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+        } else {
+            $lblStatus.Text = "⚠ Some modules failed to install. See details."
+            $lblStatus.ForeColor = [System.Drawing.Color]::Orange
+            [System.Windows.Forms.MessageBox]::Show(
+                "Module installation completed with some errors:`n`n" +
+                "✅ Installed: $($installed.Count) modules`n" +
+                "❌ Failed: $($failed.Count) modules`n`n" +
+                "Failed modules:`n" + ($failed -join "`n") + "`n`n" +
+                "You may need to run PowerShell as Administrator for some modules.",
+                "Installation Complete with Errors",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+        }
+    } catch {
+        $lblStatus.Text = "Error: $($_.Exception.Message)"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Red
+        [System.Windows.Forms.MessageBox]::Show(
+            "Error installing modules: $($_.Exception.Message)",
+            "Installation Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+    }
+})
+
 # AI Readme Settings Section
 $aiSectionTitle = New-Object System.Windows.Forms.Label
 $aiSectionTitle.Text = "AI Readme Configuration (comma-separated unless otherwise noted)"
 $aiSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiSectionTitle.Location = New-Object System.Drawing.Point(10,235)
+$aiSectionTitle.Location = New-Object System.Drawing.Point(10,260)
 $aiSectionTitle.AutoSize = $true
 
 $lblAdminUsers = New-Object System.Windows.Forms.Label
 $lblAdminUsers.Text = "Admin Usernames:"
-$lblAdminUsers.Location = New-Object System.Drawing.Point(10,265)
+$lblAdminUsers.Location = New-Object System.Drawing.Point(10,290)
 $lblAdminUsers.AutoSize = $true
 $lblAdminUsers.Width = 180
 
 $txtAdminUsers = New-Object System.Windows.Forms.TextBox
-$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 262)
+$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 287)
 $txtAdminUsers.Width = 500
 $txtAdminUsers.Multiline = $false
 
 $lblInternalTeams = New-Object System.Windows.Forms.Label
 $lblInternalTeams.Text = "Internal Team Display Names:"
-$lblInternalTeams.Location = New-Object System.Drawing.Point(10,295)
+$lblInternalTeams.Location = New-Object System.Drawing.Point(10,320)
 $lblInternalTeams.AutoSize = $true
 $lblInternalTeams.Width = 180
 
 $txtInternalTeams = New-Object System.Windows.Forms.TextBox
-$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 292)
+$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 317)
 $txtInternalTeams.Width = 500
 $txtInternalTeams.Multiline = $false
 
 $lblAuthorizedISPs = New-Object System.Windows.Forms.Label
 $lblAuthorizedISPs.Text = "Authorized ISPs:"
-$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,325)
+$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,350)
 $lblAuthorizedISPs.AutoSize = $true
 $lblAuthorizedISPs.Width = 180
 
 $txtAuthorizedISPs = New-Object System.Windows.Forms.TextBox
-$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 322)
+$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 347)
 $txtAuthorizedISPs.Width = 500
 $txtAuthorizedISPs.Multiline = $false
 
 $lblInFlightWiFi = New-Object System.Windows.Forms.Label
 $lblInFlightWiFi.Text = "In-Flight Wi-Fi Providers:"
-$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,355)
+$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,380)
 $lblInFlightWiFi.AutoSize = $true
 $lblInFlightWiFi.Width = 180
 
 $txtInFlightWiFi = New-Object System.Windows.Forms.TextBox
-$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 352)
+$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 377)
 $txtInFlightWiFi.Width = 500
 $txtInFlightWiFi.Multiline = $false
 
 $lblServicePrincipals = New-Object System.Windows.Forms.Label
 $lblServicePrincipals.Text = "Service Principal Names:"
-$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,385)
+$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,410)
 $lblServicePrincipals.AutoSize = $true
 $lblServicePrincipals.Width = 180
 
 $txtServicePrincipals = New-Object System.Windows.Forms.TextBox
-$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 382)
+$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 407)
 $txtServicePrincipals.Width = 500
 $txtServicePrincipals.Multiline = $false
 
 $lblKnownAdmins = New-Object System.Windows.Forms.Label
 $lblKnownAdmins.Text = "Known Admins:"
-$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,415)
+$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,440)
 $lblKnownAdmins.AutoSize = $true
 $lblKnownAdmins.Width = 180
 
 $txtKnownAdmins = New-Object System.Windows.Forms.TextBox
-$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 412)
+$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 437)
 $txtKnownAdmins.Width = 500
 $txtKnownAdmins.Multiline = $false
 
 $lblThirdPartyMFA = New-Object System.Windows.Forms.Label
 $lblThirdPartyMFA.Text = "3rd Party MFA:"
-$lblThirdPartyMFA.Location = New-Object System.Drawing.Point(10,445)
+$lblThirdPartyMFA.Location = New-Object System.Drawing.Point(10,470)
 $lblThirdPartyMFA.AutoSize = $true
 $lblThirdPartyMFA.Width = 180
 
 $txtThirdPartyMFA = New-Object System.Windows.Forms.TextBox
-$txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 442)
+$txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 467)
 $txtThirdPartyMFA.Width = 500
 $txtThirdPartyMFA.Multiline = $false
 
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,475)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,500)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
@@ -2274,6 +2481,7 @@ $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
 # Add all controls to scroll panel
 $allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
+    $fixModsBtn,$installAllModsBtn,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
     $lblThirdPartyMFA,$txtThirdPartyMFA,$lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
@@ -2434,22 +2642,6 @@ $btnGenerateReadme.add_Click({
         $lblStatus.Text = "Error generating readme: $($_.Exception.Message)"
         $lblStatus.ForeColor = [System.Drawing.Color]::Red
     }
-})
-
-# Add Fix Module Conflicts button to Settings tab
-$fixModsBtn = New-Object System.Windows.Forms.Button
-$fixModsBtn.Text = "Fix Graph Module Conflicts"
-$fixModsBtn.Location = New-Object System.Drawing.Point(270, 165)
-$fixModsBtn.Width = 180
-$settingsPanel.Controls.Add($fixModsBtn)
-$fixModsBtn.add_Click({
-    try {
-        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
-        $lblStatus.Text = "Fixing Graph modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
-        $ok = Fix-GraphModuleConflicts -statusLabel $null
-        if ($ok) { $lblStatus.Text = "Graph modules repaired. Restart PowerShell."; $lblStatus.ForeColor = [System.Drawing.Color]::Green }
-        else { $lblStatus.Text = "Repair failed. See console."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
-    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
 })
 
 # Ensure Settings tab is the rightmost tab (last position)
@@ -4462,8 +4654,8 @@ $disconnectButton.add_Click({
     $statusLabel.Text = "Disconnected."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
 })
-$selectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $true } })
-$deselectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $false } })
+$selectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $true }; $null })
+$deselectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $false }; $null })
 $browseFolderButton.add_Click({ 
     $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog; 
     if ($folderDialog.ShowDialog() -eq 'OK') { 
