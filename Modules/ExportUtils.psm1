@@ -2009,56 +2009,205 @@ Important: Sign-in logs require Entra ID Premium for API access. Please export s
 function New-LLMInvestigationInstructions {
     param([Parameter(Mandatory=$true)]$Report)
 
-    $investigator = $Report.Investigator
+    # Try to use settings-based generator, fallback to basic if Settings module not available
+    try {
+        $settingsPath = Join-Path $PSScriptRoot 'Settings.psm1'
+        if (Test-Path $settingsPath) {
+            Import-Module $settingsPath -Force -ErrorAction SilentlyContinue
+            if (Get-Command New-AIReadme -ErrorAction SilentlyContinue) {
+                $settings = Get-AppSettings
+                # Override InvestigatorName and CompanyName from report if provided
+                if ($Report.Investigator) { $settings.InvestigatorName = $Report.Investigator }
+                if ($Report.Company) { $settings.CompanyName = $Report.Company }
+                return New-AIReadme -Settings $settings
+            }
+        }
+    } catch {
+        Write-Warning "Could not load settings-based AI readme generator: $($_.Exception.Message)"
+    }
+
+    # Fallback to basic template if settings not available
+    $investigator = if ($Report.Investigator) { $Report.Investigator } else { 'Security Administrator' }
+    $company = if ($Report.Company) { $Report.Company } else { 'Organization' }
 
     $instructions = @"
-Master Prompt (Copy and Save This)
-Copy and paste the text below into the chat:
+Master Prompt - Generic Template (Copy and Save This)
 
-You are a Security Engineer acting on behalf of our company. Your task is to review security alert tickets and their associated logs to determine if they are True Positives, False Positives, or Authorized Activity, and then draft non-technical email responses to the client contact.
+Role & Objective You are a Security Engineer acting on behalf of $company. Your task is to analyze security alert tickets, cross-reference them with attached CSV logs/text files, and classify the event as True Positive, False Positive, or Authorized Activity.
 
-Context & Rules of Engagement
-Authorized Management Accounts:
 
-Usernames: rrc, rradmin, rrcadmin, or similar variations.
 
-Context: These are service accounts used by River Run (our company) to administer the client's environment.
+You will then draft a non-technical, professional email response to the client contact.
 
-Rule: Any alert triggered by these specific users (e.g., "Anomalous Login" from AWS/Azure IPs, "Impossible Travel") is Authorized Activity. Explain that this is standard administrative work performed by our team tools.
 
-Analyzing "Anomalous Login" / "Impossible Travel" for Standard Users:
 
-Mobile vs. Wi-Fi: If a user logs in from a residential ISP (e.g., Charter, Comcast) and shortly after from a mobile carrier (e.g., AT&T, Verizon, T-Mobile) in a different city, classify this as Authorized Activity (False Positive). Explain that mobile devices often route through regional hubs, causing location "jumps."
+I. Data Ingestion & Analysis Rules
 
-Travel: If a login comes from a standard residential ISP in a different state (e.g., CenturyLink in Florida) and not a VPN/Hosting provider, assume it is Authorized Activity (user traveling).
+1. Analyze the Ticket Context
 
-Shared IP / Office Network: If multiple users have the same public IP address or activity from the same public IP, this indicates a shared office network or VPN and is likely Authorized Activity. This is normal for organizations where multiple employees connect from the same location or through a corporate VPN.
 
-Suspicious: If a standard user (not an admin account) logs in from a Datacenter/Hosting IP (e.g., DigitalOcean, AWS) that is not a known business tool, flag it as suspicious.
 
-Analyzing "Agent Disabled" Alerts:
+Ticket Body: Extract the User, Timestamp (UTC), IP Address, and Alert Type.
 
-Alerts like "SentinelOne Agent Disabled" are usually True Positives (the agent stopped), but typically caused by low system resources rather than malice.
 
-Action: Recommend the client has the user reboot the machine to restart the service.
 
-Tone & Formatting Guidelines
-Tone: Professional, organic, and non-robotic.
+Ticket Notes/Configs: Look for notes like "Remote Employees," "Office Key," or specific authorized devices which indicate authorized activity.
 
-Contact Name: Extract the contact name from the "Contact" field in the provided ticket and address the email to them directly.
 
-Variation: Randomize greetings (e.g., "Hi [Name]", "Good morning [Name]", "Hello [Name]") and sign-offs (e.g., "Best", "Thanks", "Sincerely") so the emails do not look identical.
 
-Signature: Sign off as $investigator.
+Contact Name: Extract the contact from the "Contact" field. Check the "Client Specific Nuances" section below for any naming overrides.
 
-Attachments: Always include a sentence stating that you have attached the relevant logs for their review.
 
-Format: Output a single text-only artifact with clearly separated emails (use *** as a separator). Include the Ticket Number in the Subject Line.
 
-Input Data
-I will paste a series of tickets and their relevant logs in the next message.
+2. Verify with Logs (The "Evidence" Rule)
 
-Please acknowledge this instruction and wait for my data. After I submit the data and the tickets, please ask two questions for clarification.
+
+
+Crucial: Do not rely solely on the ticket description. You must find the corresponding event in the attached CSVs (SignInLogs, GraphAudit, etc.) to confirm the activity.
+
+
+
+Time Zone: Convert all UTC timestamps to CST (Central Standard Time) for the email.
+
+
+
+II. Classification Logic
+
+A. Authorized Activity (White-Listed)
+
+Internal Admin Accounts: Usernames like [admin], [service_account], or [rmm_account].
+
+
+
+Verification: Check UserSecurityPosture.csv. If the Display Name matches your internal team (e.g., "Managed Services"), treat as Authorized.
+
+
+
+Action: Classify as Authorized Activity (Administrative Maintenance).
+
+
+
+Travel (Residential/Mobile): Logins from standard ISPs (Comcast, Charter, CenturyLink, Verizon, Brightspeed, AT&T, T-Mobile) in a different city/state.
+
+
+
+Action: Classify as Authorized Activity (User Travel/Remote Work).
+
+
+
+In-Flight Wi-Fi: IPs from Anuvu, Gogo, Viasat, Panasonic Avionics.
+
+
+
+Action: Classify as Authorized Activity.
+
+
+
+Service Principals: "MFA Disabled" alerts where the Actor is "Microsoft Graph Command Line Tools" or a known Admin.
+
+
+
+Action: Classify as Authorized Activity (Maintenance Script).
+
+
+
+B. False Positives (System Noise)
+
+Endpoint Protection: Alerts for TrustedInstaller.exe, `$`$DeleteMe..., or files in \Windows\WinSxS\Temp\.
+
+
+
+Action: Classify as False Positive (System Update/Cleanup).
+
+
+
+C. True Positives (Compromise Indicators)
+
+Inbox Rules:
+
+
+
+Name consists only of non-alphanumeric characters (e.g., ., .., ,,, ).
+
+
+
+Action moves mail to "RSS Feeds" or "Conversation History" folders.
+
+
+
+Action: Classify as True Positive. Recommend immediate password reset & session revocation.
+
+
+
+D. Suspicious (Requires Confirmation)
+
+Hosting Providers: Logins from AWS, DigitalOcean, Linode (unless the user has a known hosted workflow).
+
+
+
+Consumer VPNs: NordVPN, ProtonVPN, Private Internet Access.
+
+
+
+Action: Draft email asking for confirmation.
+
+
+
+III. Output Format
+
+Subject: Security Alert: Ticket #[Ticket Number] - [Brief Subject]
+
+
+
+Hi [Contact First Name],
+
+
+
+[Opening: State the alert type and the user involved.]
+
+
+
+[Verdict: Explicitly state: "We have classified this as [Category]."]
+
+
+
+[Analysis:
+
+
+
+Source: [ISP Name / Location] (IP: [IP Address])
+
+
+
+Evidence: Explain why it is classified this way (e.g., "This is a standard residential ISP," or "The rule name '.' is a known indicator of compromise"). Cite the specific log file used (e.g., ``).]
+
+
+
+[Action Taken/Required:
+
+
+
+If Authorized/False Positive: "No further action is required. We have closed this ticket."
+
+
+
+If Suspicious: "Please confirm if [User] is currently [Traveling/Using a VPN]."
+
+
+
+If True Positive: "We recommend immediately resetting the password and revoking sessions."]
+
+
+
+Best,
+
+
+
+$investigator
+
+
+
+Clarification Questions [Ask 2 questions here regarding tuning, specific client policies, or missing data.]
 "@
 
     return $instructions
@@ -2229,86 +2378,166 @@ function New-SecurityInvestigationZip {
 # Get M365/O365 license SKU mapping from tenant
 function Get-TenantLicenseSkus {
     try {
-        # Ensure Microsoft.Graph.Identity.DirectoryManagement module is imported
-        if (-not (Get-Command Get-MgSubscribedSku -ErrorAction SilentlyContinue)) {
-            Write-Host "Importing Microsoft.Graph.Identity.DirectoryManagement module..." -ForegroundColor Cyan
-            try {
-                Import-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction Stop
-            } catch {
-                Write-Warning "Could not import Microsoft.Graph.Identity.DirectoryManagement module: $_"
-                Write-Warning "License SKU information will not be available. Install with: Install-Module Microsoft.Graph.Identity.DirectoryManagement -Scope CurrentUser"
-                return @{}
-            }
+        # Static mapping of common SKU GUIDs to friendly names (fallback for SKUs not in tenant subscriptions)
+        # Define this first so it's always available even if module import fails
+        $staticSkuMapping = @{
+            'cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46' = 'Microsoft 365 Business Premium'
+            'a403ebcc-fae0-4ca2-8c8c-7a907fd6c235' = 'Power BI (Free)'
+            'f30db892-07e9-47e9-837c-80727f46fd3d' = 'Microsoft Power Automate Free'
+            '06ebc4ee-1bb5-47dd-8120-11324b54e684' = 'Microsoft 365 E3'
+            'c7df2760-2c81-4ef7-b578-5b5392b571df' = 'Microsoft 365 E5'
+            'b17653a4-2443-4e8c-a550-18249dda78bb' = 'Office 365 E1'
+            '6634e0ce-1a9f-428c-a498-f84ec7b8aa2e' = 'Office 365 E2'
+            '4b585984-651b-448a-9e53-3b10f069cf7f' = 'Microsoft 365 F3'
+            '9aaf7827-d63c-4b61-89c3-182f06f82e5c' = 'Exchange Online (Plan 1)'
+            'efb87545-963c-4e0d-99df-69c6916d9eb0' = 'Exchange Online (Plan 2)'
+            '80b2d799-d2ba-4d2a-8842-fb0d0f3a4b82' = 'Exchange Online Kiosk'
+            '0d259279-6a13-4952-bb13-0afb3ae5f8ae' = 'Skype for Business Online (Plan 2)'
+            'f8a1db68-be16-40ed-86d5-cb42ce701560' = 'Power BI Pro'
+            'b21a6192-5159-478e-8ca0-47e3c25e3a33' = 'Project Plan 3'
+            '776df282-9c98-49a8-a7dc-9f4b4a88e260' = 'Project Plan 1'
+            'c5928f49-12ba-48f7-ada3-0d743a3601d5' = 'Visio Plan 2'
+            '4de31727-a228-4ec3-a5bf-8e705b5ea9c1' = 'Microsoft Defender for Office 365 (Plan 1)'
+            'e20c9ac9-9e62-4b5c-8b13-efd88a3b8c7a' = 'Microsoft Defender for Office 365 (Plan 2)'
+            'efccb6f7-5641-4e0e-bd10-b4976e1bf68e' = 'Enterprise Mobility + Security E3'
+            'b05e124f-c7cc-45a0-a6aa-8cf78c946968' = 'Enterprise Mobility + Security E5'
+            '41781fb2-bc02-4b7c-bd55-b576c07bb09d' = 'Azure Active Directory Premium P1'
+            'eec0eb4f-6444-4f95-aba0-50c24d67f998' = 'Azure Active Directory Premium P2'
+            'c52ea49f-fe5d-4e95-93da-0ef2c73fe964' = 'Azure Rights Management'
+            'b43305a7-bc43-4eb6-bc21-ee2199e86b14' = 'Power Apps Trial'
+            '710779e8-3d4a-4c58-ad3e-8ac173e5e5a5' = 'Microsoft Teams Exploratory'
+            '66b55226-6b4f-492c-910c-a9977c18ad61' = 'Microsoft 365 F1'
+            '3b555118-da6a-4418-894f-7df1e2096870' = 'Microsoft 365 Business Basic'
+            'ac5cefde-6b63-4b5e-8b0f-4b5e8b0f4b5e' = 'Microsoft 365 Business Standard'
+            '094e7854-93fc-4d55-b2c0-3ab5369ebdc1' = 'Microsoft 365 Apps for Business'
+            'cdd28e44-67e3-425e-be4c-737fab2899d3' = 'Microsoft 365 E5 Developer'
+            '1f2f344a-3d43-41d8-8fe6-0a43e9bb6637' = 'Microsoft Stream'
+            'e97c048c-37a4-45fb-ab50-922f1c7676cc' = 'Microsoft 365 A5 for Faculty'
+            '46c119d4-0379-4a9d-85e4-7557fab0a5d0' = 'Microsoft 365 A5 for Students'
+            '7cfd9a2b-e110-4c39-bf20-c6a3f36a3121' = 'Microsoft 365 A3 for Faculty'
+            '98b6e773-24d4-4c0d-a968-6e787a1f8204' = 'Microsoft 365 A3 for Students'
         }
         
         $skus = @{}
-        $tenantSkus = Get-MgSubscribedSku -All -ErrorAction Stop
-
-        foreach ($sku in $tenantSkus) {
-            $skuId = $sku.SkuId
-            $skuPartNumber = $sku.SkuPartNumber
-
-            # Create friendly name mapping
-            $friendlyName = switch ($skuPartNumber) {
-                'ENTERPRISEPACK' { 'Microsoft 365 E3' }
-                'ENTERPRISEPREMIUM' { 'Microsoft 365 E5' }
-                'ENTERPRISEPACK_B_PILOT' { 'Microsoft 365 E3' }
-                'ENTERPRISEPREMIUM_NOPSTNCONF' { 'Microsoft 365 E5 (No Audio Conferencing)' }
-                'SPE_E3' { 'Microsoft 365 E3' }
-                'SPE_E5' { 'Microsoft 365 E5' }
-                'STANDARDPACK' { 'Office 365 E1' }
-                'STANDARDWOFFPACK' { 'Office 365 E2' }
-                'DESKLESSPACK' { 'Microsoft 365 F3' }
-                'SPE_F1' { 'Microsoft 365 F3' }
-                'EXCHANGESTANDARD' { 'Exchange Online (Plan 1)' }
-                'EXCHANGEENTERPRISE' { 'Exchange Online (Plan 2)' }
-                'EXCHANGEDESKLESS' { 'Exchange Online Kiosk' }
-                'MCOSTANDARD' { 'Skype for Business Online (Plan 2)' }
-                'POWER_BI_PRO' { 'Power BI Pro' }
-                'POWER_BI_STANDARD' { 'Power BI (Free)' }
-                'PROJECTPROFESSIONAL' { 'Project Plan 3' }
-                'PROJECTONLINE_PLAN_1' { 'Project Plan 1' }
-                'VISIOCLIENT' { 'Visio Plan 2' }
-                'ATP_ENTERPRISE' { 'Microsoft Defender for Office 365 (Plan 1)' }
-                'THREAT_INTELLIGENCE' { 'Microsoft Defender for Office 365 (Plan 2)' }
-                'EMS' { 'Enterprise Mobility + Security E3' }
-                'EMSPREMIUM' { 'Enterprise Mobility + Security E5' }
-                'AAD_PREMIUM' { 'Azure Active Directory Premium P1' }
-                'AAD_PREMIUM_P2' { 'Azure Active Directory Premium P2' }
-                'RIGHTSMANAGEMENT' { 'Azure Rights Management' }
-                'FLOW_FREE' { 'Power Automate Free' }
-                'POWERAPPS_VIRAL' { 'Power Apps Trial' }
-                'TEAMS_EXPLORATORY' { 'Microsoft Teams Exploratory' }
-                'M365_F1_COMM' { 'Microsoft 365 F1' }
-                'SPB' { 'Microsoft 365 Business Premium' }
-                'SMB_BUSINESS' { 'Microsoft 365 Business Basic' }
-                'SMB_BUSINESS_ESSENTIALS' { 'Microsoft 365 Business Basic' }
-                'SMB_BUSINESS_PREMIUM' { 'Microsoft 365 Business Standard' }
-                'O365_BUSINESS' { 'Microsoft 365 Apps for Business' }
-                'O365_BUSINESS_ESSENTIALS' { 'Microsoft 365 Business Basic' }
-                'O365_BUSINESS_PREMIUM' { 'Microsoft 365 Business Standard' }
-                'DEVELOPERPACK_E5' { 'Microsoft 365 E5 Developer' }
-                'STREAM' { 'Microsoft Stream' }
-                'ENTERPRISEPREMIUM_FACULTY' { 'Microsoft 365 A5 for Faculty' }
-                'ENTERPRISEPREMIUM_STUDENT' { 'Microsoft 365 A5 for Students' }
-                'ENTERPRISEPACK_FACULTY' { 'Microsoft 365 A3 for Faculty' }
-                'ENTERPRISEPACK_STUDENT' { 'Microsoft 365 A3 for Students' }
-                default { $skuPartNumber }
+        
+        # Ensure Microsoft.Graph.Identity.DirectoryManagement module is imported (if available)
+        $canGetTenantSkus = $false
+        if (Get-Command Get-MgSubscribedSku -ErrorAction SilentlyContinue) {
+            $canGetTenantSkus = $true
+        } else {
+            try {
+                Import-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction SilentlyContinue
+                if (Get-Command Get-MgSubscribedSku -ErrorAction SilentlyContinue) {
+                    $canGetTenantSkus = $true
+                }
+            } catch {
+                # Module not available - will use static mapping only
             }
+        }
+        
+        # Try to get tenant SKUs, but continue even if it fails
+        if ($canGetTenantSkus) {
+            try {
+                $tenantSkus = Get-MgSubscribedSku -All -ErrorAction Stop
 
-            $skus[$skuId] = [PSCustomObject]@{
-                SkuId = $skuId
-                SkuPartNumber = $skuPartNumber
-                FriendlyName = $friendlyName
-                ConsumedUnits = $sku.ConsumedUnits
-                TotalUnits = if ($sku.PrepaidUnits) { $sku.PrepaidUnits.Enabled } else { 0 }
+                foreach ($sku in $tenantSkus) {
+                    $skuId = $sku.SkuId
+                    $skuPartNumber = $sku.SkuPartNumber
+
+                    # Create friendly name mapping
+                    $friendlyName = switch ($skuPartNumber) {
+                        'ENTERPRISEPACK' { 'Microsoft 365 E3' }
+                        'ENTERPRISEPREMIUM' { 'Microsoft 365 E5' }
+                        'ENTERPRISEPACK_B_PILOT' { 'Microsoft 365 E3' }
+                        'ENTERPRISEPREMIUM_NOPSTNCONF' { 'Microsoft 365 E5 (No Audio Conferencing)' }
+                        'SPE_E3' { 'Microsoft 365 E3' }
+                        'SPE_E5' { 'Microsoft 365 E5' }
+                        'STANDARDPACK' { 'Office 365 E1' }
+                        'STANDARDWOFFPACK' { 'Office 365 E2' }
+                        'DESKLESSPACK' { 'Microsoft 365 F3' }
+                        'SPE_F1' { 'Microsoft 365 F3' }
+                        'EXCHANGESTANDARD' { 'Exchange Online (Plan 1)' }
+                        'EXCHANGEENTERPRISE' { 'Exchange Online (Plan 2)' }
+                        'EXCHANGEDESKLESS' { 'Exchange Online Kiosk' }
+                        'MCOSTANDARD' { 'Skype for Business Online (Plan 2)' }
+                        'POWER_BI_PRO' { 'Power BI Pro' }
+                        'POWER_BI_STANDARD' { 'Power BI (Free)' }
+                        'PROJECTPROFESSIONAL' { 'Project Plan 3' }
+                        'PROJECTONLINE_PLAN_1' { 'Project Plan 1' }
+                        'VISIOCLIENT' { 'Visio Plan 2' }
+                        'ATP_ENTERPRISE' { 'Microsoft Defender for Office 365 (Plan 1)' }
+                        'THREAT_INTELLIGENCE' { 'Microsoft Defender for Office 365 (Plan 2)' }
+                        'EMS' { 'Enterprise Mobility + Security E3' }
+                        'EMSPREMIUM' { 'Enterprise Mobility + Security E5' }
+                        'AAD_PREMIUM' { 'Azure Active Directory Premium P1' }
+                        'AAD_PREMIUM_P2' { 'Azure Active Directory Premium P2' }
+                        'RIGHTSMANAGEMENT' { 'Azure Rights Management' }
+                        'FLOW_FREE' { 'Power Automate Free' }
+                        'POWERAPPS_VIRAL' { 'Power Apps Trial' }
+                        'TEAMS_EXPLORATORY' { 'Microsoft Teams Exploratory' }
+                        'M365_F1_COMM' { 'Microsoft 365 F1' }
+                        'SPB' { 'Microsoft 365 Business Premium' }
+                        'SMB_BUSINESS' { 'Microsoft 365 Business Basic' }
+                        'SMB_BUSINESS_ESSENTIALS' { 'Microsoft 365 Business Basic' }
+                        'SMB_BUSINESS_PREMIUM' { 'Microsoft 365 Business Standard' }
+                        'O365_BUSINESS' { 'Microsoft 365 Apps for Business' }
+                        'O365_BUSINESS_ESSENTIALS' { 'Microsoft 365 Business Basic' }
+                        'O365_BUSINESS_PREMIUM' { 'Microsoft 365 Business Standard' }
+                        'DEVELOPERPACK_E5' { 'Microsoft 365 E5 Developer' }
+                        'STREAM' { 'Microsoft Stream' }
+                        'ENTERPRISEPREMIUM_FACULTY' { 'Microsoft 365 A5 for Faculty' }
+                        'ENTERPRISEPREMIUM_STUDENT' { 'Microsoft 365 A5 for Students' }
+                        'ENTERPRISEPACK_FACULTY' { 'Microsoft 365 A3 for Faculty' }
+                        'ENTERPRISEPACK_STUDENT' { 'Microsoft 365 A3 for Students' }
+                        default { $skuPartNumber }
+                    }
+
+                    $skus[$skuId] = [PSCustomObject]@{
+                        SkuId = $skuId
+                        SkuPartNumber = $skuPartNumber
+                        FriendlyName = $friendlyName
+                        ConsumedUnits = $sku.ConsumedUnits
+                        TotalUnits = if ($sku.PrepaidUnits) { $sku.PrepaidUnits.Enabled } else { 0 }
+                    }
+                }
+            } catch {
+                Write-Warning "Could not retrieve tenant SKUs: $($_.Exception.Message). Using static mapping only."
+            }
+        }
+        
+        # Add static mappings for common SKUs (these will override tenant SKUs if they exist, or add missing ones)
+        foreach ($skuGuid in $staticSkuMapping.Keys) {
+            if (-not $skus.ContainsKey($skuGuid)) {
+                $skus[$skuGuid] = [PSCustomObject]@{
+                    SkuId = $skuGuid
+                    SkuPartNumber = 'UNKNOWN'
+                    FriendlyName = $staticSkuMapping[$skuGuid]
+                    ConsumedUnits = 0
+                    TotalUnits = 0
+                }
+            } else {
+                # Update friendly name if static mapping exists and is more descriptive
+                if ($staticSkuMapping[$skuGuid] -ne $skus[$skuGuid].FriendlyName) {
+                    $skus[$skuGuid].FriendlyName = $staticSkuMapping[$skuGuid]
+                }
             }
         }
 
         return $skus
     } catch {
-        Write-Error "Failed to get tenant license SKUs: $($_.Exception.Message)"
-        return @{}
+        Write-Warning "Failed to get tenant license SKUs: $($_.Exception.Message). Using static mapping only."
+        # Even if tenant lookup fails, return static mappings
+        $skus = @{}
+        foreach ($skuGuid in $staticSkuMapping.Keys) {
+            $skus[$skuGuid] = [PSCustomObject]@{
+                SkuId = $skuGuid
+                SkuPartNumber = 'UNKNOWN'
+                FriendlyName = $staticSkuMapping[$skuGuid]
+                ConsumedUnits = 0
+                TotalUnits = 0
+            }
+        }
+        return $skus
     }
 }
 

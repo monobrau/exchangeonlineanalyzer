@@ -69,17 +69,39 @@ function Connect-EntraGraph {
         
         # Import required Microsoft Graph modules after connection
         Write-Host "Importing required Microsoft Graph modules..." -ForegroundColor Cyan
+        
+        # Define which modules are core vs optional
+        $coreModules = @('Microsoft.Graph.Users', 'Microsoft.Graph.Reports', 'Microsoft.Graph.Identity.SignIns')
+        $optionalModules = @('Microsoft.Graph.Identity.DirectoryManagement', 'Microsoft.Graph.Security')
+        
+        $missingOptional = @()
         foreach ($moduleName in $script:requiredModules) {
             try {
                 if (Get-Module -ListAvailable -Name $moduleName -ErrorAction SilentlyContinue) {
                     Import-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
                     Write-Host "  Imported: $moduleName" -ForegroundColor Gray
                 } else {
-                    Write-Warning "Module $moduleName not available. Some features may not work."
+                    if ($optionalModules -contains $moduleName) {
+                        $missingOptional += $moduleName
+                        # Don't show anything for optional modules - they're truly optional
+                    } else {
+                        Write-Warning "Core module $moduleName not available. Some features may not work."
+                    }
                 }
             } catch {
-                Write-Warning "Could not import module $moduleName : $_"
+                if ($optionalModules -contains $moduleName) {
+                    $missingOptional += $moduleName
+                    # Don't show anything for optional modules
+                } else {
+                    Write-Warning "Could not import core module $moduleName : $_"
+                }
             }
+        }
+        
+        # Only show a brief note if optional modules are missing (and only once, not every time)
+        if ($missingOptional.Count -gt 0 -and -not $script:optionalModulesNoted) {
+            Write-Host "  Note: Optional modules not installed (license info, security features). Core features work fine." -ForegroundColor DarkGray
+            $script:optionalModulesNoted = $true
         }
         
         return $true
@@ -249,12 +271,151 @@ function Get-EntraUserMfaStatus {
         $user = Get-MgUser -UserId $UserPrincipalName -Property Id
         $authMethods = Get-MgUserAuthenticationMethod -UserId $user.Id -ErrorAction SilentlyContinue
         if ($authMethods) {
-            $mfaMethods = $authMethods | Where-Object { $_.'@odata.type' -ne '#microsoft.graph.passwordAuthenticationMethod' }
-            if ($mfaMethods) {
-                $results.PerUserMfa.Enabled = $true
-                $results.PerUserMfa.Methods = $mfaMethods | ForEach-Object { $_.'@odata.type' -replace '#microsoft.graph.', '' -replace 'AuthenticationMethod', '' }
-                $results.PerUserMfa.Details = "Methods: $($results.PerUserMfa.Methods -join ', ')"
+            # Handle both single object and collection
+            $methodsList = @()
+            if ($authMethods -is [Array]) {
+                $methodsList = $authMethods
+            } elseif ($authMethods.GetType().Name -eq 'PSObject' -or $authMethods.GetType().Name -eq 'Object') {
+                # Check if it has a .value property (paged result)
+                if ($authMethods.PSObject.Properties.Name -contains 'value') {
+                    $methodsList = $authMethods.value
+                } else {
+                    $methodsList = @($authMethods)
+                }
             } else {
+                $methodsList = @($authMethods)
+            }
+            
+            $mfaMethods = $methodsList | Where-Object { 
+                if ($null -eq $_) { return $false }
+                $methodType = $null
+                # Try to get @odata.type from AdditionalProperties
+                if ($_.AdditionalProperties) {
+                    if ($_.AdditionalProperties.ContainsKey('@odata.type')) {
+                        $methodType = $_.AdditionalProperties['@odata.type']
+                    } elseif ($_.AdditionalProperties['@odata.type']) {
+                        $methodType = $_.AdditionalProperties['@odata.type']
+                    }
+                }
+                # Exclude password and email methods (email is not MFA)
+                if ($methodType) {
+                    return $methodType -ne '#microsoft.graph.passwordAuthenticationMethod' -and 
+                           $methodType -ne '#microsoft.graph.emailAuthenticationMethod'
+                }
+                # If we can't determine type, include it (might be an MFA method)
+                return $true
+            }
+            
+            if ($mfaMethods) {
+                # If we found any non-password authentication methods, MFA is enabled
+                $results.PerUserMfa.Enabled = $true
+                
+                $methodNames = $mfaMethods | ForEach-Object { 
+                    $method = $_
+                    $methodType = $null
+                    # Get @odata.type from AdditionalProperties
+                    if ($method.AdditionalProperties) {
+                        if ($method.AdditionalProperties.ContainsKey('@odata.type')) {
+                            $methodType = $method.AdditionalProperties['@odata.type']
+                        } elseif ($method.AdditionalProperties['@odata.type']) {
+                            $methodType = $method.AdditionalProperties['@odata.type']
+                        }
+                    }
+                    
+                    if (-not $methodType) { 
+                        # If we can't get the type, try to infer from available properties
+                        $phoneNumber = $null
+                        $phoneType = $null
+                        $deviceTag = $null
+                        if ($method.AdditionalProperties) {
+                            if ($method.AdditionalProperties.ContainsKey('phoneNumber')) { $phoneNumber = $method.AdditionalProperties['phoneNumber'] }
+                            if ($method.AdditionalProperties.ContainsKey('phoneType')) { $phoneType = $method.AdditionalProperties['phoneType'] }
+                            if ($method.AdditionalProperties.ContainsKey('deviceTag')) { $deviceTag = $method.AdditionalProperties['deviceTag'] }
+                        }
+                        
+                        if ($phoneNumber -or $phoneType) {
+                            $methodType = '#microsoft.graph.phoneAuthenticationMethod'
+                        } elseif ($deviceTag) {
+                            $methodType = '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod'
+                        } else {
+                            # Can't determine type, but method exists - return generic indicator
+                            return 'MFA Method (Type Unknown)'
+                        }
+                    }
+                    
+                    # Helper to get property from AdditionalProperties
+                    $getProp = {
+                        param($propName)
+                        if ($method.AdditionalProperties) {
+                            if ($method.AdditionalProperties.ContainsKey($propName)) {
+                                return $method.AdditionalProperties[$propName]
+                            }
+                        }
+                        return $null
+                    }
+                    
+                    # Map to readable names
+                    switch ($methodType) {
+                        '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' { 
+                            $displayName = & $getProp 'displayName'
+                            $deviceTag = & $getProp 'deviceTag'
+                            $parts = @('Microsoft Authenticator')
+                            if ($displayName) { $parts += "($displayName)" }
+                            if ($deviceTag) { $parts += "[$deviceTag]" }
+                            $parts -join ' '
+                        }
+                        '#microsoft.graph.phoneAuthenticationMethod' { 
+                            $phoneNumber = & $getProp 'phoneNumber'
+                            $phoneType = & $getProp 'phoneType'
+                            $parts = @('Phone')
+                            if ($phoneType) {
+                                if ($phoneType -eq 'mobile') { $parts += '(Mobile)' }
+                                elseif ($phoneType -eq 'alternateMobile') { $parts += '(Alternate Mobile)' }
+                                else { $parts += "($phoneType)" }
+                            }
+                            if ($phoneNumber) { $parts += "[$phoneNumber]" }
+                            $parts -join ' '
+                        }
+                        '#microsoft.graph.softwareOathAuthenticationMethod' { 
+                            $displayName = & $getProp 'displayName'
+                            if ($displayName) { "Software OATH Token ($displayName)" } else { 'Software OATH Token' }
+                        }
+                        '#microsoft.graph.fido2AuthenticationMethod' { 
+                            $displayName = & $getProp 'displayName'
+                            if ($displayName) { "FIDO2 Security Key ($displayName)" } else { 'FIDO2 Security Key' }
+                        }
+                        '#microsoft.graph.temporaryAccessPassAuthenticationMethod' { 
+                            $displayName = & $getProp 'displayName'
+                            if ($displayName) { "Temporary Access Pass ($displayName)" } else { 'Temporary Access Pass' }
+                        }
+                        '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod' { 
+                            $displayName = & $getProp 'displayName'
+                            if ($displayName) { "Windows Hello ($displayName)" } else { 'Windows Hello' }
+                        }
+                        default { 
+                            # Fallback: extract readable name from type
+                            $methodName = $methodType -replace '#microsoft.graph.', '' -replace 'AuthenticationMethod', ''
+                            if ($methodName -and $methodName.Trim() -ne '') { 
+                                # Convert camelCase to Title Case
+                                $methodName = $methodName -creplace '([a-z])([A-Z])', '$1 $2'
+                                # Try to get displayName if available
+                                $displayName = & $getProp 'displayName'
+                                if ($displayName) { "$methodName ($displayName)" } else { $methodName }
+                            } else { 
+                                'MFA Method (Type Unknown)'
+                            }
+                        }
+                    }
+                } | Where-Object { $_ -ne $null -and $_ -ne '' }
+                $results.PerUserMfa.Methods = $methodNames
+                if ($methodNames.Count -gt 0) {
+                    $results.PerUserMfa.Details = "Methods: $($methodNames -join ', ')"
+                } else {
+                    # Methods exist but we couldn't parse them - still show as enabled
+                    $results.PerUserMfa.Details = "MFA methods registered (unable to determine specific types)"
+                }
+            } else {
+                $results.PerUserMfa.Enabled = $false
                 $results.PerUserMfa.Details = "No MFA methods registered"
             }
         }
@@ -262,6 +423,13 @@ function Get-EntraUserMfaStatus {
         if ($securityDefaults) {
             $results.SecurityDefaults.Enabled = $securityDefaults.IsEnabled
             $results.SecurityDefaults.Details = if ($securityDefaults.IsEnabled) { "Enabled (requires MFA for all users)" } else { "Disabled" }
+            # If Security Defaults is enabled, MFA is required for this user
+            if ($securityDefaults.IsEnabled) {
+                $results.PerUserMfa.Enabled = $true
+                if ($results.PerUserMfa.Details -eq "Not configured" -or $results.PerUserMfa.Details -eq "No MFA methods registered") {
+                    $results.PerUserMfa.Details = "MFA required via Security Defaults"
+                }
+            }
         }
         $caPolicies = Get-MgIdentityConditionalAccessPolicy -All -ErrorAction SilentlyContinue
         if ($caPolicies) {
@@ -276,7 +444,14 @@ function Get-EntraUserMfaStatus {
                         if ($policy.GrantControls.BuiltInControls -contains "mfa") { $requiresMfa = $true }
                         $policyInfo = @{ Name = $policy.DisplayName; State = $policy.State; Controls = $policy.GrantControls.BuiltInControls -join ", "; Conditions = $policy.Conditions | Out-String; RequiresMfa = $requiresMfa }
                         $applicablePolicies += $policyInfo
-                        if ($requiresMfa) { $results.ConditionalAccess.RequiresMfa = $true }
+                        if ($requiresMfa) { 
+                            $results.ConditionalAccess.RequiresMfa = $true
+                            # If CA requires MFA, MFA is required for this user
+                            $results.PerUserMfa.Enabled = $true
+                            if ($results.PerUserMfa.Details -eq "Not configured" -or $results.PerUserMfa.Details -eq "No MFA methods registered") {
+                                $results.PerUserMfa.Details = "MFA required via Conditional Access policy"
+                            }
+                        }
                     }
                 }
             }
