@@ -6361,8 +6361,11 @@ if (Test-Path `$ReportSelectionsFile) {
                 # OutputFolder will be automatically determined by ExportUtils using:
                 # Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\{TenantName}\{Timestamp}
                 Write-Status "Generating security investigation report..."
+                Write-Host "Starting report generation..." -ForegroundColor Yellow
                 try {
                     `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers @()
+                    Write-Status "Report generation function completed"
+                    Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
                     Write-Status "ERROR: Failed to generate report - `$(`$_.Exception.Message)"
                     Write-Host "ERROR: Failed to generate report - `$(`$_.Exception.Message)" -ForegroundColor Red
@@ -6513,7 +6516,8 @@ if (Test-Path `$ReportSelectionsFile) {
                         $psExe = "powershell.exe"
                     }
 
-                    $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Hidden
+                    # Use Normal window style so users can see progress (can be minimized if needed)
+                    $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Normal
                     $script:clientProcesses[$clientNum] = $process
                     Write-Host "Launched Client $clientNum PowerShell window (PID: $($process.Id))" -ForegroundColor Green
                     Write-Host "  Command file will be: $(Join-Path $commandDir "Client${clientNum}_Command.txt")" -ForegroundColor Gray

@@ -434,28 +434,43 @@ function New-SecurityInvestigationReport {
     if ($exchangeConnected) {
         try {
             if ($IncludeMessageTrace) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last $DaysBack days)..." }
+                $statusMsg = "Collecting message trace data (last $DaysBack days)..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 -SelectedUsers $SelectedUsers # always 10 days per requirement
+                Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
             }
 
             if ($IncludeInboxRules) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting inbox rules..." }
+                $statusMsg = "Exporting inbox rules..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers
+                Write-Host "Collected $($report.InboxRules.Count) inbox rules" -ForegroundColor Green
             }
 
             if ($IncludeTransportRules) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
+                $statusMsg = "Collecting transport rules..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.TransportRules = Get-ExchangeTransportRules
+                Write-Host "Collected $($report.TransportRules.Count) transport rules" -ForegroundColor Green
             }
 
             if ($IncludeMailFlowConnectors) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
+                $statusMsg = "Collecting mail flow connectors..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailFlowConnectors = Get-MailFlowConnectors
+                Write-Host "Collected $($report.MailFlowConnectors.Count) mail flow connectors" -ForegroundColor Green
             }
 
             if ($IncludeMailboxForwarding) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mailbox forwarding and delegation..." }
+                $statusMsg = "Collecting mailbox forwarding and delegation..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers
+                Write-Host "Collected mailbox forwarding data for $($report.MailboxForwarding.Count) mailboxes" -ForegroundColor Green
             }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
@@ -467,13 +482,18 @@ function New-SecurityInvestigationReport {
     if ($graphConnected) {
         try {
             if ($IncludeAuditLogs) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
+                $statusMsg = "Collecting audit logs from Microsoft Graph..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                Write-Host "Collected $($report.AuditLogs.Count) audit log entries" -ForegroundColor Green
             }
 
             if ($IncludeSignInLogs) {
                 try {
-                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This requires Azure AD Premium license." }
+                    $statusMsg = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This requires Azure AD Premium license."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
                     $report.SignInLogs = Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers
                     if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                         Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
@@ -507,11 +527,17 @@ function New-SecurityInvestigationReport {
     # MFA Coverage and User Security Groups
     if ($graphConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
+            $statusMsg = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            Write-Host $statusMsg -ForegroundColor Cyan
             $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
+            Write-Host "MFA coverage evaluation complete" -ForegroundColor Green
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
+            $statusMsg = "Collecting user security groups and roles..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            Write-Host $statusMsg -ForegroundColor Cyan
             $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
+            Write-Host "Collected security groups data for $($report.UserSecurityGroups.Users.Count) users" -ForegroundColor Green
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
@@ -528,7 +554,9 @@ function New-SecurityInvestigationReport {
                 # Collect Conditional Access Policies
                 if ($IncludeConditionalAccessPolicies) {
                     try {
-                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting Conditional Access policies..." }
+                        $statusMsg = "Collecting Conditional Access policies..."
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                        Write-Host $statusMsg -ForegroundColor Cyan
                         $report.ConditionalAccessPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop
                         Write-Host "Collected $($report.ConditionalAccessPolicies.Count) Conditional Access policies" -ForegroundColor Green
                     } catch {
@@ -553,7 +581,9 @@ function New-SecurityInvestigationReport {
                 # Collect App Registrations
                 if ($IncludeAppRegistrations) {
                     try {
-                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting app registrations..." }
+                        $statusMsg = "Collecting app registrations..."
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                        Write-Host $statusMsg -ForegroundColor Cyan
                         $report.AppRegistrations = Get-AppRegistrations -ErrorAction Stop
                         Write-Host "Collected $($report.AppRegistrations.Count) app registrations" -ForegroundColor Green
                     } catch {
@@ -587,22 +617,35 @@ function New-SecurityInvestigationReport {
     }
 
     # Generate AI Investigation Prompt
-    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Generating AI investigation prompts..." }
+    $statusMsg = "Generating AI investigation prompts..."
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Cyan
     $report.AIPrompt = New-AISecurityInvestigationPrompt -Report $report
 
     # Generate Ticketing System Message
-    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Generating non-technical incident summary..." }
+    $statusMsg = "Generating non-technical incident summary..."
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Cyan
     $report.TicketMessage = New-TicketSecuritySummary -Report $report
 
     # Generate comprehensive report
+    $statusMsg = "Generating comprehensive report summary..."
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Cyan
     $report.Summary = New-SecurityInvestigationSummary -Report $report
 
-    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Security investigation report completed" }
+    $statusMsg = "Security investigation report completed"
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Green
     if ($MainForm -and $MainForm.GetType().Name -eq "Form") { $MainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
 
     # Export datasets to CSV (and JSON fallback) if we have an output folder
     # Note: Data is already filtered server-side by the collection functions
     if ($report.OutputFolder) {
+        $statusMsg = "Exporting data to CSV files..."
+        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+        Write-Host $statusMsg -ForegroundColor Cyan
+        Write-Host "Output folder: $($report.OutputFolder)" -ForegroundColor Gray
         $exportError = $null
         try {
             $csv = Join-Path $report.OutputFolder "MessageTrace.csv"
@@ -891,17 +934,25 @@ function New-SecurityInvestigationReport {
 
         # Save only LLM instructions as TXT (no other text files on disk)
         try {
+            $statusMsg = "Generating AI readme instructions..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            Write-Host $statusMsg -ForegroundColor Cyan
             $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
             $llmPath = Join-Path $report.OutputFolder "_AI_Readme.txt"
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
-        } catch {}
+            Write-Host "AI readme instructions saved" -ForegroundColor Green
+        } catch {
+            Write-Warning "Failed to generate AI readme instructions: $($_.Exception.Message)"
+        }
 
         # Automatically create zip file of all reports (excluding _AI_Readme.txt)
         try {
+            $statusMsg = "Creating zip archive of security reports..."
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
-                $StatusLabel.Text = "Creating zip archive of security reports..."
+                $StatusLabel.Text = $statusMsg
             }
+            Write-Host $statusMsg -ForegroundColor Cyan
             $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder
             if ($zipPath) {
                 $report.FilePaths.ZipFile = $zipPath
@@ -910,6 +961,8 @@ function New-SecurityInvestigationReport {
         } catch {
             Write-Warning "Failed to create zip archive: $($_.Exception.Message)"
         }
+        
+        Write-Host "`nReport generation complete! All files saved to: $($report.OutputFolder)" -ForegroundColor Green
     }
 
     return $report
