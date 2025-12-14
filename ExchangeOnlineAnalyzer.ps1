@@ -2048,67 +2048,84 @@ $sTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.Fo
 $sTitle.Location = New-Object System.Drawing.Point(10,10)
 $sTitle.AutoSize = $true
 
+# Settings Location Section
+$lblSettingsLocation = New-Object System.Windows.Forms.Label
+$lblSettingsLocation.Text = "Settings File Location:"
+$lblSettingsLocation.Location = New-Object System.Drawing.Point(10,45)
+$lblSettingsLocation.AutoSize = $true
+$lblSettingsLocation.Width = 180
+
+$txtSettingsLocation = New-Object System.Windows.Forms.TextBox
+$txtSettingsLocation.Location = New-Object System.Drawing.Point(200, 42)
+$txtSettingsLocation.Width = 400
+
+$btnBrowseSettingsLocation = New-Object System.Windows.Forms.Button
+$btnBrowseSettingsLocation.Text = "Browse..."
+$btnBrowseSettingsLocation.Location = New-Object System.Drawing.Point(610, 40)
+$btnBrowseSettingsLocation.Width = 90
+$btnBrowseSettingsLocation.Height = 25
+
 # Basic Settings
 $lblInv = New-Object System.Windows.Forms.Label
 $lblInv.Text = "Investigator Name:"
-$lblInv.Location = New-Object System.Drawing.Point(10,45)
+$lblInv.Location = New-Object System.Drawing.Point(10,75)
 $lblInv.AutoSize = $true
 $lblInv.Width = 180
 
 $txtInv = New-Object System.Windows.Forms.TextBox
-$txtInv.Location = New-Object System.Drawing.Point(200, 42)
+$txtInv.Location = New-Object System.Drawing.Point(200, 72)
 $txtInv.Width = 500
 
 $lblInvTitle = New-Object System.Windows.Forms.Label
 $lblInvTitle.Text = "Investigator Title:"
-$lblInvTitle.Location = New-Object System.Drawing.Point(10,75)
+$lblInvTitle.Location = New-Object System.Drawing.Point(10,105)
 $lblInvTitle.AutoSize = $true
 $lblInvTitle.Width = 180
 
 $txtInvTitle = New-Object System.Windows.Forms.TextBox
-$txtInvTitle.Location = New-Object System.Drawing.Point(200, 72)
+$txtInvTitle.Location = New-Object System.Drawing.Point(200, 102)
 $txtInvTitle.Width = 500
 
 $lblCo = New-Object System.Windows.Forms.Label
 $lblCo.Text = "Company Name:"
-$lblCo.Location = New-Object System.Drawing.Point(10,105)
+$lblCo.Location = New-Object System.Drawing.Point(10,135)
 $lblCo.AutoSize = $true
 $lblCo.Width = 180
 
 $txtCo = New-Object System.Windows.Forms.TextBox
-$txtCo.Location = New-Object System.Drawing.Point(200, 102)
+$txtCo.Location = New-Object System.Drawing.Point(200, 132)
 $txtCo.Width = 500
 
 $lblTZ = New-Object System.Windows.Forms.Label
 $lblTZ.Text = "Time Zone:"
-$lblTZ.Location = New-Object System.Drawing.Point(10,135)
+$lblTZ.Location = New-Object System.Drawing.Point(10,165)
 $lblTZ.AutoSize = $true
 $lblTZ.Width = 180
 
 $txtTZ = New-Object System.Windows.Forms.TextBox
-$txtTZ.Location = New-Object System.Drawing.Point(200, 132)
+$txtTZ.Location = New-Object System.Drawing.Point(200, 162)
 $txtTZ.Width = 500
 
 # API Keys
 $lblGem = New-Object System.Windows.Forms.Label
 $lblGem.Text = "Gemini API Key:"
-$lblGem.Location = New-Object System.Drawing.Point(10,165)
+$lblGem.Location = New-Object System.Drawing.Point(10,195)
 $lblGem.AutoSize = $true
 $lblGem.Width = 180
 
 $txtGem = New-Object System.Windows.Forms.TextBox
-$txtGem.Location = New-Object System.Drawing.Point(200, 162)
+$txtGem.Location = New-Object System.Drawing.Point(200, 192)
 $txtGem.Width = 500
 $txtGem.UseSystemPasswordChar = $true
 
 $lblClaude = New-Object System.Windows.Forms.Label
 $lblClaude.Text = "Claude API Key:"
-$lblClaude.Location = New-Object System.Drawing.Point(10,195)
+$lblClaude.Location = New-Object System.Drawing.Point(10,225)
 $lblClaude.AutoSize = $true
 $lblClaude.Width = 180
 
 $txtClaude = New-Object System.Windows.Forms.TextBox
-$txtClaude.Location = New-Object System.Drawing.Point(200, 192)
+$txtClaude.Location = New-Object System.Drawing.Point(200, 222)
 $txtClaude.Width = 500
 $txtClaude.UseSystemPasswordChar = $true
 
@@ -2116,83 +2133,83 @@ $txtClaude.UseSystemPasswordChar = $true
 $aiSectionTitle = New-Object System.Windows.Forms.Label
 $aiSectionTitle.Text = "AI Readme Configuration (comma-separated unless otherwise noted)"
 $aiSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiSectionTitle.Location = New-Object System.Drawing.Point(10,235)
+$aiSectionTitle.Location = New-Object System.Drawing.Point(10,255)
 $aiSectionTitle.AutoSize = $true
 
 $lblAdminUsers = New-Object System.Windows.Forms.Label
 $lblAdminUsers.Text = "Admin Usernames:"
-$lblAdminUsers.Location = New-Object System.Drawing.Point(10,265)
+$lblAdminUsers.Location = New-Object System.Drawing.Point(10,285)
 $lblAdminUsers.AutoSize = $true
 $lblAdminUsers.Width = 180
 
 $txtAdminUsers = New-Object System.Windows.Forms.TextBox
-$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 262)
+$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 282)
 $txtAdminUsers.Width = 500
 $txtAdminUsers.Multiline = $false
 
 $lblInternalTeams = New-Object System.Windows.Forms.Label
 $lblInternalTeams.Text = "Internal Team Display Names:"
-$lblInternalTeams.Location = New-Object System.Drawing.Point(10,295)
+$lblInternalTeams.Location = New-Object System.Drawing.Point(10,315)
 $lblInternalTeams.AutoSize = $true
 $lblInternalTeams.Width = 180
 
 $txtInternalTeams = New-Object System.Windows.Forms.TextBox
-$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 292)
+$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 312)
 $txtInternalTeams.Width = 500
 $txtInternalTeams.Multiline = $false
 
 $lblAuthorizedISPs = New-Object System.Windows.Forms.Label
 $lblAuthorizedISPs.Text = "Authorized ISPs:"
-$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,325)
+$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,345)
 $lblAuthorizedISPs.AutoSize = $true
 $lblAuthorizedISPs.Width = 180
 
 $txtAuthorizedISPs = New-Object System.Windows.Forms.TextBox
-$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 322)
+$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 342)
 $txtAuthorizedISPs.Width = 500
 $txtAuthorizedISPs.Multiline = $false
 
 $lblInFlightWiFi = New-Object System.Windows.Forms.Label
 $lblInFlightWiFi.Text = "In-Flight Wi-Fi Providers:"
-$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,355)
+$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,375)
 $lblInFlightWiFi.AutoSize = $true
 $lblInFlightWiFi.Width = 180
 
 $txtInFlightWiFi = New-Object System.Windows.Forms.TextBox
-$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 352)
+$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 372)
 $txtInFlightWiFi.Width = 500
 $txtInFlightWiFi.Multiline = $false
 
 $lblServicePrincipals = New-Object System.Windows.Forms.Label
 $lblServicePrincipals.Text = "Service Principal Names:"
-$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,385)
+$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,405)
 $lblServicePrincipals.AutoSize = $true
 $lblServicePrincipals.Width = 180
 
 $txtServicePrincipals = New-Object System.Windows.Forms.TextBox
-$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 382)
+$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 402)
 $txtServicePrincipals.Width = 500
 $txtServicePrincipals.Multiline = $false
 
 $lblKnownAdmins = New-Object System.Windows.Forms.Label
 $lblKnownAdmins.Text = "Known Admins:"
-$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,415)
+$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,435)
 $lblKnownAdmins.AutoSize = $true
 $lblKnownAdmins.Width = 180
 
 $txtKnownAdmins = New-Object System.Windows.Forms.TextBox
-$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 412)
+$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 432)
 $txtKnownAdmins.Width = 500
 $txtKnownAdmins.Multiline = $false
 
 $lblThirdPartyMFA = New-Object System.Windows.Forms.Label
 $lblThirdPartyMFA.Text = "3rd Party MFA:"
-$lblThirdPartyMFA.Location = New-Object System.Drawing.Point(10,445)
+$lblThirdPartyMFA.Location = New-Object System.Drawing.Point(10,465)
 $lblThirdPartyMFA.AutoSize = $true
 $lblThirdPartyMFA.Width = 180
 
 $txtThirdPartyMFA = New-Object System.Windows.Forms.TextBox
-$txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 442)
+$txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 462)
 $txtThirdPartyMFA.Width = 500
 $txtThirdPartyMFA.Multiline = $false
 
@@ -2200,49 +2217,49 @@ $txtThirdPartyMFA.Multiline = $false
 $memberberrySectionTitle = New-Object System.Windows.Forms.Label
 $memberberrySectionTitle.Text = "Memberberry Integration"
 $memberberrySectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$memberberrySectionTitle.Location = New-Object System.Drawing.Point(10,475)
+$memberberrySectionTitle.Location = New-Object System.Drawing.Point(10,495)
 $memberberrySectionTitle.AutoSize = $true
 
 $chkMemberberryEnabled = New-Object System.Windows.Forms.CheckBox
 $chkMemberberryEnabled.Text = "Enable Memberberry Integration"
-$chkMemberberryEnabled.Location = New-Object System.Drawing.Point(10,500)
+$chkMemberberryEnabled.Location = New-Object System.Drawing.Point(10,520)
 $chkMemberberryEnabled.AutoSize = $true
 
 $lblMemberberryPath = New-Object System.Windows.Forms.Label
 $lblMemberberryPath.Text = "Memberberry Instructions File:"
-$lblMemberberryPath.Location = New-Object System.Drawing.Point(10,525)
+$lblMemberberryPath.Location = New-Object System.Drawing.Point(10,545)
 $lblMemberberryPath.AutoSize = $true
 $lblMemberberryPath.Width = 180
 
 $txtMemberberryPath = New-Object System.Windows.Forms.TextBox
-$txtMemberberryPath.Location = New-Object System.Drawing.Point(200, 522)
+$txtMemberberryPath.Location = New-Object System.Drawing.Point(200, 542)
 $txtMemberberryPath.Width = 400
 
 $lblMemberberryExceptionsPath = New-Object System.Windows.Forms.Label
 $lblMemberberryExceptionsPath.Text = "Memberberry Exceptions File:"
-$lblMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(10,555)
+$lblMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(10,575)
 $lblMemberberryExceptionsPath.AutoSize = $true
 $lblMemberberryExceptionsPath.Width = 180
 
 $txtMemberberryExceptionsPath = New-Object System.Windows.Forms.TextBox
-$txtMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(200, 552)
+$txtMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(200, 572)
 $txtMemberberryExceptionsPath.Width = 400
 
 $btnTestMemberberry = New-Object System.Windows.Forms.Button
 $btnTestMemberberry.Text = "Test/Validate"
-$btnTestMemberberry.Location = New-Object System.Drawing.Point(610, 550)
+$btnTestMemberberry.Location = New-Object System.Drawing.Point(610, 570)
 $btnTestMemberberry.Width = 90
 $btnTestMemberberry.Height = 25
 
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,585)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,605)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 582)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 602)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2282,36 +2299,37 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 680)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 730)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 680)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 730)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 720)
+$btnSave.Location = New-Object System.Drawing.Point(200, 770)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 720)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 770)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,760)
+$lblStatus.Location = New-Object System.Drawing.Point(10,810)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
 # Add all controls to scroll panel
-$allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
+$allControls = @($sTitle,$lblSettingsLocation,$txtSettingsLocation,$btnBrowseSettingsLocation,
+    $lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
     $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,
@@ -2328,6 +2346,11 @@ $tabControl.TabPages.Add($settingsTab)
 $settingsTab.add_Enter({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        
+        # Load current settings location
+        $currentSettingsPath = Get-SettingsPath
+        $txtSettingsLocation.Text = $currentSettingsPath
+        
         $s = Get-AppSettings
         if ($s) {
             $txtInv.Text = $s.InvestigatorName
@@ -2380,9 +2403,102 @@ $settingsTab.add_Enter({
     } catch {}
 })
 
+$btnBrowseSettingsLocation.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        
+        # Show save file dialog
+        $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+        $saveDialog.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*"
+        $saveDialog.FileName = "settings.json"
+        $saveDialog.Title = "Choose Settings File Location"
+        
+        # Set initial directory to current settings location if it exists
+        $currentPath = Get-SettingsPath
+        if ($currentPath) {
+            $saveDialog.InitialDirectory = Split-Path -Parent $currentPath
+            $saveDialog.FileName = Split-Path -Leaf $currentPath
+        }
+        
+        if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $newPath = $saveDialog.FileName
+            
+            # Set the new location
+            if (Set-SettingsLocation -SettingsPath $newPath) {
+                $txtSettingsLocation.Text = $newPath
+                $lblStatus.Text = "Settings location updated. Click 'Save Settings' to save your settings to the new location."
+                $lblStatus.ForeColor = [System.Drawing.Color]::Blue
+                
+                # Reload settings from new location
+                $s = Get-AppSettings
+                if ($s) {
+                    # Populate all fields with loaded settings
+                    $txtInv.Text = $s.InvestigatorName
+                    $txtInvTitle.Text = $s.InvestigatorTitle
+                    $txtCo.Text = $s.CompanyName
+                    $txtTZ.Text = $s.TimeZone
+                    $txtGem.Text = $s.GeminiApiKey
+                    $txtClaude.Text = $s.ClaudeApiKey
+                    $txtAdminUsers.Text = $s.AdminUsernames
+                    $txtInternalTeams.Text = $s.InternalTeamDisplayNames
+                    $txtAuthorizedISPs.Text = $s.AuthorizedISPs
+                    $txtInFlightWiFi.Text = $s.InFlightWiFiProviders
+                    $txtServicePrincipals.Text = $s.ServicePrincipalNames
+                    $txtKnownAdmins.Text = $s.KnownAdmins
+                    $txtThirdPartyMFA.Text = $s.ThirdPartyMFA
+                    
+                    # Load memberberry settings
+                    if ($s.MemberberryEnabled) {
+                        $chkMemberberryEnabled.Checked = $true
+                    } else {
+                        $chkMemberberryEnabled.Checked = $false
+                    }
+                    if ($s.MemberberryPath) {
+                        $txtMemberberryPath.Text = $s.MemberberryPath
+                    } else {
+                        $txtMemberberryPath.Text = 'C:\git\memberberry\memberberry-complete-output.txt'
+                    }
+                    if ($s.MemberberryExceptionsPath) {
+                        $txtMemberberryExceptionsPath.Text = $s.MemberberryExceptionsPath
+                    } else {
+                        $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
+                    }
+                    
+                    # Load client contact overrides
+                    $dgvContactOverrides.Rows.Clear()
+                    if ($s.ClientContactOverrides -and $s.ClientContactOverrides -ne '{}') {
+                        try {
+                            $overrides = $s.ClientContactOverrides | ConvertFrom-Json
+                            foreach ($client in $overrides.PSObject.Properties.Name) {
+                                $contact = $overrides.$client.Contact
+                                $greeting = $overrides.$client.Greeting
+                                [void]$dgvContactOverrides.Rows.Add($client, $contact, $greeting)
+                            }
+                        } catch {}
+                    }
+                }
+            } else {
+                $lblStatus.Text = "Failed to update settings location."
+                $lblStatus.ForeColor = [System.Drawing.Color]::Red
+            }
+        }
+    } catch {
+        $lblStatus.Text = "Error: $($_.Exception.Message)"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Red
+    }
+})
+
 $btnSave.add_Click({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        
+        # Update settings location if user changed it manually
+        $manualPath = $txtSettingsLocation.Text.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($manualPath) -and $manualPath -ne (Get-SettingsPath)) {
+            if (Set-SettingsLocation -SettingsPath $manualPath) {
+                Write-Host "Settings location updated to: $manualPath" -ForegroundColor Cyan
+            }
+        }
         
         # Convert DataGridView data to JSON
         $overridesJson = '{}'
@@ -5942,46 +6058,22 @@ $bulkTenantExporterButton.add_Click({
         $bulkConfigGroupBox = New-Object System.Windows.Forms.GroupBox
         $bulkConfigGroupBox.Text = "Configuration"
         $bulkConfigGroupBox.Location = New-Object System.Drawing.Point(15, 110)
-        $bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 150)
-
-        # Investigator Name
-        $bulkInvestigatorLabel = New-Object System.Windows.Forms.Label
-        $bulkInvestigatorLabel.Text = "Investigator Name:"
-        $bulkInvestigatorLabel.Location = New-Object System.Drawing.Point(20, 25)
-        $bulkInvestigatorLabel.Size = New-Object System.Drawing.Size(150, 20)
-
-        $bulkInvestigatorTextBox = New-Object System.Windows.Forms.TextBox
-        $bulkInvestigatorTextBox.Location = New-Object System.Drawing.Point(180, 23)
-        $bulkInvestigatorTextBox.Size = New-Object System.Drawing.Size(200, 20)
-        try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
-        $settings = $null; try { $settings = Get-AppSettings } catch {}
-        if ($settings -and $settings.InvestigatorName) { $bulkInvestigatorTextBox.Text = $settings.InvestigatorName } else { $bulkInvestigatorTextBox.Text = "Security Administrator" }
-
-        # Company Name
-        $bulkCompanyLabel = New-Object System.Windows.Forms.Label
-        $bulkCompanyLabel.Text = "Company Name:"
-        $bulkCompanyLabel.Location = New-Object System.Drawing.Point(20, 55)
-        $bulkCompanyLabel.Size = New-Object System.Drawing.Size(150, 20)
-
-        $bulkCompanyTextBox = New-Object System.Windows.Forms.TextBox
-        $bulkCompanyTextBox.Location = New-Object System.Drawing.Point(180, 53)
-        $bulkCompanyTextBox.Size = New-Object System.Drawing.Size(200, 20)
-        if ($settings -and $settings.CompanyName) { $bulkCompanyTextBox.Text = $settings.CompanyName } else { $bulkCompanyTextBox.Text = "Organization" }
+        $bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 80)
 
         # Days Back
         $bulkDaysLabel = New-Object System.Windows.Forms.Label
         $bulkDaysLabel.Text = "Days Back (Message Trace):"
-        $bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 85)
+        $bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 25)
         $bulkDaysLabel.Size = New-Object System.Drawing.Size(150, 20)
 
         $bulkDaysComboBox = New-Object System.Windows.Forms.ComboBox
-        $bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 83)
+        $bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 23)
         $bulkDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
         $bulkDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
         $bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30"))
         $bulkDaysComboBox.SelectedIndex = 4  # Default to 10 days
 
-        $bulkConfigGroupBox.Controls.AddRange(@($bulkInvestigatorLabel, $bulkInvestigatorTextBox, $bulkCompanyLabel, $bulkCompanyTextBox, $bulkDaysLabel, $bulkDaysComboBox))
+        $bulkConfigGroupBox.Controls.AddRange(@($bulkDaysLabel, $bulkDaysComboBox))
 
         # Report Selection section
         $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
@@ -6153,8 +6245,16 @@ $bulkTenantExporterButton.add_Click({
 
         # Start Export button click handler - Opens Authentication Console
         $bulkStartButton.add_Click({
-            $investigator = if ($bulkInvestigatorTextBox.Text -and $bulkInvestigatorTextBox.Text.Trim().Length -gt 0) { $bulkInvestigatorTextBox.Text } else { 'Security Administrator' }
-            $company = if ($bulkCompanyTextBox.Text -and $bulkCompanyTextBox.Text.Trim().Length -gt 0) { $bulkCompanyTextBox.Text } else { 'Organization' }
+            # Load Investigator Name and Company Name from settings
+            try {
+                Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                $settings = Get-AppSettings
+                $investigator = if ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
+                $company = if ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
+            } catch {
+                $investigator = 'Security Administrator'
+                $company = 'Organization'
+            }
             $days = [int]$bulkDaysComboBox.SelectedItem
 
             # Parse sign-in logs time range
@@ -6544,14 +6644,47 @@ if (Test-Path `$ReportSelectionsFile) {
                 try {
                     Disconnect-MgGraph -ErrorAction SilentlyContinue
                 } catch {}
-    try {
-        if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
+                try {
+                    if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
                         Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue
-        }
-    } catch {}
+                    }
+                } catch {}
+                
+                # Clear authentication context and token cache more thoroughly
+                try {
+                    `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                    if (`$graphSession -and `$graphSession.AuthContext) {
+                        `$graphSession.AuthContext.ClearTokenCache()
+                        Write-Host "Cleared Graph token cache" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing token cache
+                }
+                
+                # Also try to clear any MSAL cache
+                try {
+                    `$msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+                    if (`$msalCache -and (Test-Path `$msalCache)) {
+                        Remove-Item `$msalCache -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared MSAL token cache" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing MSAL cache - method may not be available
+                }
+                
+                # Clear Exchange Online token cache
+                try {
+                    `$exoSession = Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" }
+                    if (`$exoSession) {
+                        Remove-PSSession `$exoSession -ErrorAction SilentlyContinue
+                        Write-Host "Cleared Exchange Online sessions" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing Exchange sessions
+                }
     
                 Write-Status "Authentication cancelled and reset"
-                Write-Host "Authentication cancelled and reset. Ready for new authentication attempt." -ForegroundColor Green
+                Write-Host "Authentication cancelled and reset. All token caches cleared. Ready for new authentication attempt." -ForegroundColor Green
                 Write-CommandResponse "CANCEL_AUTH_SUCCESS"
             } elseif (`$command -eq "EXIT") {
                 Write-Host "Exit command received. Closing window..." -ForegroundColor Yellow
@@ -7304,11 +7437,32 @@ if (Test-Path `$ReportSelectionsFile) {
                     $script:authStatusTextBox.ScrollToCaret()
                     [System.Windows.Forms.Application]::DoEvents()
                     
+                    # Send CANCEL_AUTH command to worker script to clear sessions and token caches
                     Send-CommandToSession -ClientNumber $clientNum -Command "CANCEL_AUTH" -TimeoutSeconds 30 | Out-Null
                     
+                    # Clear all tenant information from state
                     $script:clientAuthStates[$clientNum].GraphAuthenticated = $false
                     $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $false
                     $script:clientAuthStates[$clientNum].TenantName = $null
+                    $script:clientAuthStates[$clientNum].TenantId = $null
+                    $script:clientAuthStates[$clientNum].Account = $null
+                    $script:clientAuthStates[$clientNum].GraphContext = $null
+                    
+                    # Clear cache directory for this tenant if it exists
+                    if ($script:clientCacheDirs -and $script:clientCacheDirs.ContainsKey($clientNum)) {
+                        $cacheDir = $script:clientCacheDirs[$clientNum]
+                        if ($cacheDir -and (Test-Path $cacheDir)) {
+                            try {
+                                Remove-Item -Path $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+                                $script:authStatusTextBox.AppendText("Cleared cache directory for Client $clientNum`r`n")
+                            } catch {
+                                # Ignore errors clearing cache directory
+                            }
+                        }
+                        $script:clientCacheDirs.Remove($clientNum)
+                    }
+                    
+                    # Reset UI controls
                     $script:clientAuthControls[$clientNum].ClientLabel.Text = "Client $clientNum"
                     $script:clientAuthControls[$clientNum].StatusLabel.Text = "Ready for Graph Auth"
                     $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Blue
@@ -7317,7 +7471,7 @@ if (Test-Path `$ReportSelectionsFile) {
                     $script:clientAuthControls[$clientNum].ExchangeButton.Enabled = $false
                     $script:clientAuthControls[$clientNum].ExchangeButton.Text = "Exchange Online Auth"
                     
-                    $script:authStatusTextBox.AppendText("Client $clientNum authentication reset complete.`r`n")
+                    $script:authStatusTextBox.AppendText("Client $clientNum authentication reset complete. Ready for full authentication.`r`n")
                     $script:authStatusTextBox.ScrollToCaret()
                     [System.Windows.Forms.Application]::DoEvents()
                 })
