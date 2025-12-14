@@ -45,6 +45,18 @@ Start-Process 'firefox.exe' -ArgumentList (
 
 ## 🚀 Features
 
+### Bulk Tenant Report Exporter
+- **📦 Standalone Application**: `BulkTenantExporter.ps1` - Run independently for bulk operations
+- **🔄 Integrated Mode**: Available within main application via "Bulk Tenant Report Exporter" button
+- **➕ Dynamic Tenant Management**: Add tenants on-the-fly during export (no fixed count required)
+- **🔐 Per-Tenant Authentication**: Isolated authentication sessions for each tenant
+- **👥 User Filtering**: Filter reports by specific users (name, email, or partial matches) per tenant
+- **📊 Comprehensive Reports**: Export all security investigation reports across multiple tenants
+- **🔄 Reset Authentication**: Fully clear all authentication data and token caches for clean re-authentication
+- **⚙️ Settings Integration**: Uses shared settings.json for Investigator Name, Company Name, and AI configuration
+- **📁 Isolated Cache Directories**: Each tenant uses separate cache directories to prevent conflicts
+- **⚠️ License Warnings**: Visual warnings for tenants requiring manual sign-in log collection
+
 ### Core Functionality
 - **📧 Inbox Rules Analysis**: Comprehensive analysis of Exchange Online inbox rules with suspicious activity detection
 - **🔍 Auto-Domain Detection**: Automatically detects organization domains from loaded mailboxes
@@ -67,12 +79,14 @@ Start-Process 'firefox.exe' -ArgumentList (
 
 ### 🔍 Security Investigation Report
 - **📊 Multi-Source Analysis**: Combines data from Exchange Online and Microsoft Graph
-- **📧 Message Trace Collection**: Last 10 days of all email communications
+- **📧 Message Trace Collection**: Configurable days back (1, 3, 5, 7, 10, 14, or 30 days)
 - **📋 Inbox Rules Export**: Complete audit of all mailbox rules across the organization
-- **🔐 Sign-in Log Analysis**: Authentication patterns and risk assessments
+- **🔐 Sign-in Log Analysis**: Authentication patterns and risk assessments (configurable: 1, 7, or 30 days)
 - **📋 Audit Log Collection**: Directory changes and administrative activities
 - **🤖 AI Investigation Prompts**: Structured prompts for AI-powered security analysis
 - **📝 Executive Summaries**: Non-technical reports for management and ticketing systems
+- **🧠 Memberberry Integration**: Optional integration with memberberry knowledge base for AI instructions
+- **👥 User Filtering**: Filter reports by specific users (server-side filtering where supported)
 
 ### Advanced Features
 - **🚦 Transport Rules Management**: Review, export, and delete Exchange Online transport rules
@@ -141,7 +155,11 @@ Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
 
 3. **Run the Script**
    ```powershell
+   # Main application
    .\ExchangeOnlineAnalyzer.ps1
+   
+   # Standalone bulk tenant exporter
+   .\BulkTenantExporter.ps1
    ```
 
 ## 💻 Usage
@@ -178,14 +196,33 @@ Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
 - Navigate to the "Report Generator" tab
 - Click the blue "🔍 Security Investigation Report" button
 - Configure investigation parameters:
-  - Investigator Name (default: Security Administrator)
-  - Company Name (default: Organization)
-  - Days to Analyze (1, 3, 7, 10, or 30 days)
+  - Investigator Name and Company Name are loaded from Settings tab
+  - Days to Analyze (1, 3, 7, 10, or 30 days for Message Trace)
+  - Sign-In Logs Days (1, 7, or 30 days)
+- Select which reports to include (Message Trace, Inbox Rules, Transport Rules, etc.)
 - Click "🚀 Generate Security Investigation" to start analysis
 - Review results in three tabs:
   - **📋 Investigation Summary** - Technical analysis and findings
   - **🤖 AI Investigation Prompt** - Structured prompt for AI analysis
   - **📝 Non-Technical Summary** - Executive summary for management
+
+#### Bulk Tenant Report Exporter
+- **Standalone Mode**: Run `.\BulkTenantExporter.ps1` directly
+- **Integrated Mode**: Click "Bulk Tenant Report Exporter" button in main application
+- **Add Tenants**: Click "Add Tenant" to dynamically add tenants during export
+- **Authentication Flow**:
+  1. Click "Graph Auth" for each tenant (waits for readiness)
+  2. Complete browser authentication
+  3. Click "Exchange Online Auth" after Graph auth succeeds
+  4. Optionally configure user filtering per tenant
+  5. Click "Generate Reports" to start export
+- **User Filtering** (per tenant):
+  - Check "Filter by users" checkbox
+  - Enter comma-separated search terms (name, email, or partial matches)
+  - Click "Validate" to verify users (or validation happens during export)
+  - Reports filtered to selected users (App Registrations remain unfiltered)
+- **Reset Auth**: Click "Reset Auth" to fully clear authentication and force re-authentication
+- **Settings**: Uses shared settings.json for Investigator Name, Company Name, and AI configuration
 
 #### Troubleshooting Microsoft Graph Connection Issues
 If you encounter connection errors like "Method not found" or module version conflicts:
@@ -253,6 +290,17 @@ If you encounter connection errors like "Method not found" or module version con
 
 ## ⚙️ Configuration
 
+### Settings Tab
+- **Investigator Name & Company Name**: Stored in settings.json and used by all report generators
+- **AI Readme Configuration**: Configure AI instructions with company-specific details
+- **API Keys**: Store Gemini and Claude API keys for AI analysis features
+- **Memberberry Integration**: Optional integration with memberberry knowledge base
+  - Enable/disable memberberry integration
+  - Configure paths to memberberry files
+  - Test/validate memberberry configuration
+- **Client Contact Overrides**: Manage client-specific contact information
+- **Custom Settings Location**: Choose where settings.json is saved (default: %APPDATA%\ExchangeOnlineAnalyzer)
+
 ### Suspicious Keywords
 Default keywords include: `invoice`, `payment`, `password`, `confidential`, `urgent`, `bank`, `account`, `auto forward`, `external`, `hidden`
 
@@ -314,6 +362,14 @@ Enable verbose output by modifying the script's debug settings or checking conso
 ## 📝 Version History
 
 ### v8.1 (Current)
+- ✅ **Standalone Bulk Tenant Exporter**: New `BulkTenantExporter.ps1` script for independent bulk operations
+- ✅ **Dynamic Tenant Management**: Add tenants on-the-fly in bulk exporter (no fixed count)
+- ✅ **Per-Tenant User Filtering**: Filter reports by specific users per tenant with server-side filtering
+- ✅ **Enhanced Reset Auth**: Fully clears all authentication data, token caches, and tenant information
+- ✅ **Settings Integration**: Investigator Name and Company Name now loaded from settings.json (removed from UI)
+- ✅ **Memberberry Integration**: Optional integration with memberberry knowledge base for AI instructions
+- ✅ **Custom Settings Location**: Choose where settings.json is saved (shared between main app and bulk exporter)
+- ✅ **License Warnings**: Visual warnings for tenants requiring manual sign-in log collection
 - ✅ Entra Portal Shortcuts with Firefox containers; tenant auto‑match and deep links
 - ✅ AI Analysis tab: send report outputs to Gemini or Claude; Settings store API keys
 - ✅ Tenant-scoped export folders: Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\<Tenant>\timestamp
