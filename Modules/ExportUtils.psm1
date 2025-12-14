@@ -504,7 +504,12 @@ function New-SecurityInvestigationReport {
                         $report.SignInLogs = @()
                         $report.SignInLogsError = "Permission denied - requires AuditLog.Read.All"
                     } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*premium*") {
+                        $warningMsg = "WARNING: License required - Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days. Pull sign-in logs manually."
                         Write-Warning "Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants can only access last 7 days."
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
+                            $StatusLabel.Text = $warningMsg
+                        }
+                        Write-Host $warningMsg -ForegroundColor Yellow
                         $report.SignInLogs = @()
                         $report.SignInLogsError = "License required - Azure AD Premium P1/P2 (free tenants limited to 7 days)"
                     } else {
@@ -1628,9 +1633,19 @@ function Get-MailboxForwardingAndDelegation {
         Write-Host "Collecting mailbox forwarding and delegation settings..." -ForegroundColor Yellow
 
         $mailboxes = @()
+        $selectedUserSet = @{}  # For quick lookup of selected users
         
-        # If SelectedUsers provided, only query those mailboxes (server-side filtering)
+        # If SelectedUsers provided, query mailboxes owned by selected users AND all mailboxes to check for delegates/forwarding
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            # Build set of selected user UPNs for quick lookup
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                $selectedUserSet[$upn.ToLower()] = $upn
+            }
+            
+            Write-Host "  User filtering enabled: Checking mailboxes owned by selected users AND all mailboxes for delegates/forwarding..." -ForegroundColor Cyan
+            
+            # First, get mailboxes owned by selected users
             foreach ($user in $SelectedUsers) {
                 $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                 try {
@@ -1639,6 +1654,82 @@ function Get-MailboxForwardingAndDelegation {
                 } catch {
                     Write-Warning "Mailbox not found for ${upn}: $($_.Exception.Message)"
                 }
+            }
+            
+            # Also get ALL mailboxes to check for delegates/forwarding that match selected users
+            try {
+                $allMailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
+                foreach ($mbx in $allMailboxes) {
+                    $mbxUpn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
+                    # Skip if already added (owned by selected user)
+                    if ($mailboxes | Where-Object { (if ($_.UserPrincipalName) { $_.UserPrincipalName } else { $_.PrimarySmtpAddress }) -eq $mbxUpn }) {
+                        continue
+                    }
+                    
+                    # Check if this mailbox has forwarding or delegates matching selected users
+                    $hasRelevantForwarding = $false
+                    $hasRelevantDelegates = $false
+                    
+                    # Check forwarding addresses
+                    if ($mbx.ForwardingAddress) {
+                        $forwardingStr = $mbx.ForwardingAddress.ToString().ToLower()
+                        foreach ($selectedUpn in $selectedUserSet.Values) {
+                            if ($forwardingStr -like "*$($selectedUpn.ToLower())*") {
+                                $hasRelevantForwarding = $true
+                                break
+                            }
+                        }
+                    }
+                    if ($mbx.ForwardingSmtpAddress) {
+                        $forwardingStr = $mbx.ForwardingSmtpAddress.ToLower()
+                        foreach ($selectedUpn in $selectedUserSet.Values) {
+                            if ($forwardingStr -like "*$($selectedUpn.ToLower())*") {
+                                $hasRelevantForwarding = $true
+                                break
+                            }
+                        }
+                    }
+                    
+                    # Check delegates (permissions)
+                    try {
+                        $permissions = Get-MailboxPermission -Identity $mbxUpn -ErrorAction SilentlyContinue |
+                                       Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" -and $_.IsInherited -eq $false }
+                        
+                        foreach ($perm in $permissions) {
+                            $permUser = $perm.User.ToString().ToLower()
+                            foreach ($selectedUpn in $selectedUserSet.Values) {
+                                if ($permUser -like "*$($selectedUpn.ToLower())*") {
+                                    $hasRelevantDelegates = $true
+                                    break
+                                }
+                            }
+                            if ($hasRelevantDelegates) { break }
+                        }
+                    } catch {}
+                    
+                    # Check Send-On-Behalf
+                    try {
+                        if ($mbx.GrantSendOnBehalfTo -and $mbx.GrantSendOnBehalfTo.Count -gt 0) {
+                            foreach ($delegate in $mbx.GrantSendOnBehalfTo) {
+                                $delegateStr = $delegate.ToString().ToLower()
+                                foreach ($selectedUpn in $selectedUserSet.Values) {
+                                    if ($delegateStr -like "*$($selectedUpn.ToLower())*") {
+                                        $hasRelevantDelegates = $true
+                                        break
+                                    }
+                                }
+                                if ($hasRelevantDelegates) { break }
+                            }
+                        }
+                    } catch {}
+                    
+                    # Add mailbox if it has relevant forwarding or delegates
+                    if ($hasRelevantForwarding -or $hasRelevantDelegates) {
+                        $mailboxes += $mbx
+                    }
+                }
+            } catch {
+                Write-Warning "Could not retrieve all mailboxes for delegate/forwarding check: $($_.Exception.Message)"
             }
         } else {
             # No selection - get all mailboxes
