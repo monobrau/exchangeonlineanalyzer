@@ -399,13 +399,6 @@ Contributions are welcome! Please follow these guidelines:
 
 This tool is provided as-is for educational and administrative purposes. Always test in non-production environments first. The authors are not responsible for any data loss or system issues resulting from the use of this tool.
 
-## 📞 Support
-
-For issues, questions, or feature requests:
-- 🐛 [Open an Issue](../../issues)
-- 💬 [Discussions](../../discussions)
-- 📧 Contact: [maintainer@email.com]
-
 ## 🙏 Acknowledgments
 
 - Microsoft Exchange Online and Graph API teams
