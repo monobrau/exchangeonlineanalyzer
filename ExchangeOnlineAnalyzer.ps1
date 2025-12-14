@@ -2196,15 +2196,53 @@ $txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 442)
 $txtThirdPartyMFA.Width = 500
 $txtThirdPartyMFA.Multiline = $false
 
+# Memberberry Integration Section
+$memberberrySectionTitle = New-Object System.Windows.Forms.Label
+$memberberrySectionTitle.Text = "Memberberry Integration"
+$memberberrySectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$memberberrySectionTitle.Location = New-Object System.Drawing.Point(10,475)
+$memberberrySectionTitle.AutoSize = $true
+
+$chkMemberberryEnabled = New-Object System.Windows.Forms.CheckBox
+$chkMemberberryEnabled.Text = "Enable Memberberry Integration"
+$chkMemberberryEnabled.Location = New-Object System.Drawing.Point(10,500)
+$chkMemberberryEnabled.AutoSize = $true
+
+$lblMemberberryPath = New-Object System.Windows.Forms.Label
+$lblMemberberryPath.Text = "Memberberry Instructions File:"
+$lblMemberberryPath.Location = New-Object System.Drawing.Point(10,525)
+$lblMemberberryPath.AutoSize = $true
+$lblMemberberryPath.Width = 180
+
+$txtMemberberryPath = New-Object System.Windows.Forms.TextBox
+$txtMemberberryPath.Location = New-Object System.Drawing.Point(200, 522)
+$txtMemberberryPath.Width = 400
+
+$lblMemberberryExceptionsPath = New-Object System.Windows.Forms.Label
+$lblMemberberryExceptionsPath.Text = "Memberberry Exceptions File:"
+$lblMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(10,555)
+$lblMemberberryExceptionsPath.AutoSize = $true
+$lblMemberberryExceptionsPath.Width = 180
+
+$txtMemberberryExceptionsPath = New-Object System.Windows.Forms.TextBox
+$txtMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(200, 552)
+$txtMemberberryExceptionsPath.Width = 400
+
+$btnTestMemberberry = New-Object System.Windows.Forms.Button
+$btnTestMemberberry.Text = "Test/Validate"
+$btnTestMemberberry.Location = New-Object System.Drawing.Point(610, 550)
+$btnTestMemberberry.Width = 90
+$btnTestMemberberry.Height = 25
+
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,475)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,585)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 472)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 582)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2244,31 +2282,31 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 600)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 680)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 600)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 680)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 640)
+$btnSave.Location = New-Object System.Drawing.Point(200, 720)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 640)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 720)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,680)
+$lblStatus.Location = New-Object System.Drawing.Point(10,760)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
@@ -2276,7 +2314,9 @@ $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 $allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
-    $lblThirdPartyMFA,$txtThirdPartyMFA,$lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
+    $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,
+    $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnTestMemberberry,
+    $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
 # Ensure minimum width for content (200 label + 500 textbox + 20 margin = 720)
@@ -2303,6 +2343,23 @@ $settingsTab.add_Enter({
             $txtServicePrincipals.Text = $s.ServicePrincipalNames
             $txtKnownAdmins.Text = $s.KnownAdmins
             $txtThirdPartyMFA.Text = $s.ThirdPartyMFA
+            
+            # Load memberberry settings
+            if ($s.MemberberryEnabled) {
+                $chkMemberberryEnabled.Checked = $true
+            } else {
+                $chkMemberberryEnabled.Checked = $false
+            }
+            if ($s.MemberberryPath) {
+                $txtMemberberryPath.Text = $s.MemberberryPath
+            } else {
+                $txtMemberberryPath.Text = 'C:\git\memberberry\memberberry-complete-output.txt'
+            }
+            if ($s.MemberberryExceptionsPath) {
+                $txtMemberberryExceptionsPath.Text = $s.MemberberryExceptionsPath
+            } else {
+                $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
+            }
             
             # Load client contact overrides into DataGridView
             $dgvContactOverrides.Rows.Clear()
@@ -2362,6 +2419,9 @@ $btnSave.add_Click({
             ServicePrincipalNames = $txtServicePrincipals.Text
             KnownAdmins = $txtKnownAdmins.Text
             ThirdPartyMFA = $txtThirdPartyMFA.Text
+            MemberberryEnabled = $chkMemberberryEnabled.Checked
+            MemberberryPath = $txtMemberberryPath.Text
+            MemberberryExceptionsPath = $txtMemberberryExceptionsPath.Text
             ClientContactOverrides = $overridesJson
         }
         if (Save-AppSettings -Settings $s) {
@@ -2393,6 +2453,55 @@ $btnRemoveOverride.add_Click({
         }
     } elseif ($dgvContactOverrides.CurrentRow -and -not $dgvContactOverrides.CurrentRow.IsNewRow) {
         $dgvContactOverrides.Rows.Remove($dgvContactOverrides.CurrentRow)
+    }
+})
+
+$btnTestMemberberry.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
+        
+        $instructionsPath = $txtMemberberryPath.Text
+        $exceptionsPath = $txtMemberberryExceptionsPath.Text
+        
+        if ([string]::IsNullOrWhiteSpace($instructionsPath)) {
+            [System.Windows.Forms.MessageBox]::Show("Please enter a memberberry instructions file path.", "Path Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        
+        if (-not (Test-Path $instructionsPath)) {
+            [System.Windows.Forms.MessageBox]::Show("Instructions file not found: $instructionsPath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+        
+        if (-not [string]::IsNullOrWhiteSpace($exceptionsPath) -and -not (Test-Path $exceptionsPath)) {
+            [System.Windows.Forms.MessageBox]::Show("Exceptions file not found: $exceptionsPath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+        
+        # Test reading the files
+        $testContent = Get-MemberberryContent -MemberberryPath $instructionsPath -MemberberryExceptionsPath $exceptionsPath -CompanyName $txtCo.Text
+        
+        if ($testContent.Success) {
+            $message = "Memberberry files validated successfully!`n`n"
+            $message += "Instructions file: $instructionsPath`n"
+            $message += "Global instructions: $($testContent.GlobalInstructions.Length) characters`n"
+            if ($testContent.Procedures) {
+                $message += "Procedures section: $($testContent.Procedures.Length) characters`n"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($exceptionsPath)) {
+                $message += "`nExceptions file: $exceptionsPath`n"
+                if ($testContent.ClientExceptions) {
+                    $message += "Client exceptions found for: $($txtCo.Text)`n"
+                } else {
+                    $message += "No client-specific exceptions found for '$($txtCo.Text)' (using general instructions)`n"
+                }
+            }
+            [System.Windows.Forms.MessageBox]::Show($message, "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Validation failed: $($testContent.ErrorMessage)", "Validation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error testing memberberry files: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
 
@@ -6547,18 +6656,34 @@ if (Test-Path `$ReportSelectionsFile) {
             $authCloseBtn.Location = New-Object System.Drawing.Point(880, 570)
             $authCloseBtn.Size = New-Object System.Drawing.Size(100, 40)
             $authCloseBtn.add_Click({
+                # Stop the status update timer first to prevent it from accessing disposed controls
+                try {
+                    if ($statusUpdateTimer -and $statusUpdateTimer.Enabled) {
+                        $statusUpdateTimer.Stop()
+                    }
+                } catch {}
+                
                 # Send exit command to all active PowerShell processes
                 foreach ($clientNum in $script:clientProcesses.Keys) {
                     try {
                         Send-CommandToSession -ClientNumber $clientNum -Command "EXIT" -TimeoutSeconds 5 | Out-Null
                         Start-Sleep -Milliseconds 500
                         $proc = $script:clientProcesses[$clientNum]
-                        if (-not $proc.HasExited) {
+                        if ($proc -and -not $proc.HasExited) {
                             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
                         }
                     } catch {}
                 }
-                $authConsoleForm.Close()
+                
+                # Close the form using DialogResult to properly close modal dialog
+                try {
+                    $authConsoleForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+                } catch {
+                    # Fallback to Close() if DialogResult fails
+                    try {
+                        $authConsoleForm.Close()
+                    } catch {}
+                }
             })
             $authConsoleForm.Controls.Add($authCloseBtn)
 
@@ -6567,9 +6692,9 @@ if (Test-Path `$ReportSelectionsFile) {
             $authStatusTextBox.Multiline = $true
             $authStatusTextBox.ReadOnly = $true
             $authStatusTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-            $authStatusTextBox.Location = New-Object System.Drawing.Point(15, 620)
-            $authStatusTextBox.Size = New-Object System.Drawing.Size(965, 30)
-            $authStatusTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+            $authStatusTextBox.Location = New-Object System.Drawing.Point(15, 650)
+            $authStatusTextBox.Size = New-Object System.Drawing.Size(965, 80)
+            $authStatusTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Top
             
             # Store in script scope for closure access
             $script:authStatusTextBox = $authStatusTextBox
@@ -7409,8 +7534,20 @@ if (Test-Path `$ReportSelectionsFile) {
 
             # Stop timer when form closes
             $authConsoleForm.add_FormClosed({
-                $statusUpdateTimer.Stop()
-                $statusUpdateTimer.Dispose()
+                try {
+                    if ($statusUpdateTimer) {
+                        if ($statusUpdateTimer.Enabled) {
+                            $statusUpdateTimer.Stop()
+                        }
+                        # Small delay to ensure timer stops processing
+                        Start-Sleep -Milliseconds 100
+                        if ($statusUpdateTimer) {
+                            $statusUpdateTimer.Dispose()
+                        }
+                    }
+                } catch {
+                    # Silently ignore disposal errors
+                }
             })
 
             # View Status Files button (for debugging)
@@ -7440,6 +7577,12 @@ if (Test-Path `$ReportSelectionsFile) {
             
             # Show authentication console
             $authConsoleForm.ShowDialog() | Out-Null
+            
+            # When authentication console closes, show the bulk form again
+            # Use Show() instead of ShowDialog() since the form was already shown modally
+            if (-not $bulkForm.Visible) {
+                $bulkForm.Show()
+            }
         })
 
         # Close button handler
