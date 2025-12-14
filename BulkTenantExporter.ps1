@@ -147,16 +147,15 @@ Safe-ImportModule "$script:scriptRoot\Modules\Settings.psm1"
 Write-Host "All modules loaded successfully." -ForegroundColor Green
 
 # Load settings (shared with main application if it exists)
+# Get-AppSettings will use custom location if configured, otherwise default location
 $settings = $null
-$settingsPath = Join-Path $script:scriptRoot "settings.json"
-if (Test-Path $settingsPath) {
-    try {
-        $settings = Get-AppSettings
-        Write-Host "Settings loaded from: $settingsPath" -ForegroundColor Green
-    } catch {
-        Write-Warning "Could not load settings from $settingsPath : $($_.Exception.Message)"
-        $settings = $null
-    }
+try {
+    $settings = Get-AppSettings
+    $actualSettingsPath = Get-SettingsPath
+    Write-Host "Settings loaded from: $actualSettingsPath" -ForegroundColor Green
+} catch {
+    Write-Warning "Could not load settings: $($_.Exception.Message)"
+    $settings = $null
 }
 
 # Initialize script-scope variables
@@ -202,52 +201,22 @@ $bulkDescLabel.AutoSize = $true
 $bulkConfigGroupBox = New-Object System.Windows.Forms.GroupBox
 $bulkConfigGroupBox.Text = "Configuration"
 $bulkConfigGroupBox.Location = New-Object System.Drawing.Point(15, 110)
-$bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 150)
-
-# Investigator Name
-$bulkInvestigatorLabel = New-Object System.Windows.Forms.Label
-$bulkInvestigatorLabel.Text = "Investigator Name:"
-$bulkInvestigatorLabel.Location = New-Object System.Drawing.Point(20, 25)
-$bulkInvestigatorLabel.Size = New-Object System.Drawing.Size(150, 20)
-
-$bulkInvestigatorTextBox = New-Object System.Windows.Forms.TextBox
-$bulkInvestigatorTextBox.Location = New-Object System.Drawing.Point(180, 23)
-$bulkInvestigatorTextBox.Size = New-Object System.Drawing.Size(200, 20)
-if ($settings -and $settings.InvestigatorName) { 
-    $bulkInvestigatorTextBox.Text = $settings.InvestigatorName 
-} else { 
-    $bulkInvestigatorTextBox.Text = "Security Administrator" 
-}
-
-# Company Name
-$bulkCompanyLabel = New-Object System.Windows.Forms.Label
-$bulkCompanyLabel.Text = "Company Name:"
-$bulkCompanyLabel.Location = New-Object System.Drawing.Point(20, 55)
-$bulkCompanyLabel.Size = New-Object System.Drawing.Size(150, 20)
-
-$bulkCompanyTextBox = New-Object System.Windows.Forms.TextBox
-$bulkCompanyTextBox.Location = New-Object System.Drawing.Point(180, 53)
-$bulkCompanyTextBox.Size = New-Object System.Drawing.Size(200, 20)
-if ($settings -and $settings.CompanyName) { 
-    $bulkCompanyTextBox.Text = $settings.CompanyName 
-} else { 
-    $bulkCompanyTextBox.Text = "Organization" 
-}
+$bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 80)
 
 # Days Back
 $bulkDaysLabel = New-Object System.Windows.Forms.Label
 $bulkDaysLabel.Text = "Days Back (Message Trace):"
-$bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 85)
+$bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 25)
 $bulkDaysLabel.Size = New-Object System.Drawing.Size(150, 20)
 
 $bulkDaysComboBox = New-Object System.Windows.Forms.ComboBox
-$bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 83)
+$bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 23)
 $bulkDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
 $bulkDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30"))
 $bulkDaysComboBox.SelectedIndex = 4  # Default to 10 days
 
-$bulkConfigGroupBox.Controls.AddRange(@($bulkInvestigatorLabel, $bulkInvestigatorTextBox, $bulkCompanyLabel, $bulkCompanyTextBox, $bulkDaysLabel, $bulkDaysComboBox))
+$bulkConfigGroupBox.Controls.AddRange(@($bulkDaysLabel, $bulkDaysComboBox))
 
 # Report Selection section
 $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
@@ -428,8 +397,15 @@ $bulkForm.Controls.Add($bulkMainPanel)
 
 # Start Export button click handler - Opens Authentication Console
 $bulkStartButton.add_Click({
-    $investigator = if ($bulkInvestigatorTextBox.Text -and $bulkInvestigatorTextBox.Text.Trim().Length -gt 0) { $bulkInvestigatorTextBox.Text } else { 'Security Administrator' }
-    $company = if ($bulkCompanyTextBox.Text -and $bulkCompanyTextBox.Text.Trim().Length -gt 0) { $bulkCompanyTextBox.Text } else { 'Organization' }
+    # Load Investigator Name and Company Name from settings
+    try {
+        $settings = Get-AppSettings
+        $investigator = if ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
+        $company = if ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
+    } catch {
+        $investigator = 'Security Administrator'
+        $company = 'Organization'
+    }
     $days = [int]$bulkDaysComboBox.SelectedItem
 
     # Parse sign-in logs time range
@@ -893,9 +869,42 @@ try {
                         Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue
                     }
                 } catch {}
+                
+                # Clear authentication context and token cache more thoroughly
+                try {
+                    `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                    if (`$graphSession -and `$graphSession.AuthContext) {
+                        `$graphSession.AuthContext.ClearTokenCache()
+                        Write-Host "Cleared Graph token cache" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing token cache
+                }
+                
+                # Also try to clear any MSAL cache
+                try {
+                    `$msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+                    if (`$msalCache -and (Test-Path `$msalCache)) {
+                        Remove-Item `$msalCache -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared MSAL token cache" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing MSAL cache - method may not be available
+                }
+                
+                # Clear Exchange Online token cache
+                try {
+                    `$exoSession = Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" }
+                    if (`$exoSession) {
+                        Remove-PSSession `$exoSession -ErrorAction SilentlyContinue
+                        Write-Host "Cleared Exchange Online sessions" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing Exchange sessions
+                }
     
                 Write-Status "Authentication cancelled and reset"
-                Write-Host "Authentication cancelled and reset. Ready for new authentication attempt." -ForegroundColor Green
+                Write-Host "Authentication cancelled and reset. All token caches cleared. Ready for new authentication attempt." -ForegroundColor Green
                 Write-CommandResponse "CANCEL_AUTH_SUCCESS"
             } elseif (`$command -eq "EXIT") {
                 Write-Host "Exit command received. Closing window..." -ForegroundColor Yellow
@@ -1896,11 +1905,32 @@ try {
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
             
+            # Send CANCEL_AUTH command to worker script to clear sessions and token caches
             Send-CommandToSession -ClientNumber $clientNum -Command "CANCEL_AUTH" -TimeoutSeconds 30 | Out-Null
             
+            # Clear all tenant information from state
             $script:clientAuthStates[$clientNum].GraphAuthenticated = $false
             $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $false
             $script:clientAuthStates[$clientNum].TenantName = $null
+            $script:clientAuthStates[$clientNum].TenantId = $null
+            $script:clientAuthStates[$clientNum].Account = $null
+            $script:clientAuthStates[$clientNum].GraphContext = $null
+            
+            # Clear cache directory for this tenant if it exists
+            if ($script:clientCacheDirs -and $script:clientCacheDirs.ContainsKey($clientNum)) {
+                $cacheDir = $script:clientCacheDirs[$clientNum]
+                if ($cacheDir -and (Test-Path $cacheDir)) {
+                    try {
+                        Remove-Item -Path $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+                        $script:authStatusTextBox.AppendText("Cleared cache directory for Client $clientNum`r`n")
+                    } catch {
+                        # Ignore errors clearing cache directory
+                    }
+                }
+                $script:clientCacheDirs.Remove($clientNum)
+            }
+            
+            # Reset UI controls
             $script:clientAuthControls[$clientNum].ClientLabel.Text = "Client $clientNum"
             $script:clientAuthControls[$clientNum].StatusLabel.Text = "Ready for Graph Auth"
             $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Blue
@@ -1924,6 +1954,12 @@ try {
             $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $false
             $script:clientAuthControls[$clientNum].GenerateReportsButton.Text = "Generate Reports"
             
+            # Hide and reset warning label
+            if ($script:clientAuthControls[$clientNum].WarningLabel) {
+                $script:clientAuthControls[$clientNum].WarningLabel.Visible = $false
+                $script:clientAuthControls[$clientNum].WarningLabel.Text = ""
+            }
+            
             # Clear validated users and search terms for this tenant
             if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
                 $script:clientValidatedUsers.Remove($clientNum)
@@ -1932,7 +1968,7 @@ try {
                 $script:clientSearchTerms.Remove($clientNum)
             }
             
-            $script:authStatusTextBox.AppendText("Client $clientNum authentication reset complete.`r`n")
+            $script:authStatusTextBox.AppendText("Client $clientNum authentication reset complete. Ready for full authentication.`r`n")
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
         })

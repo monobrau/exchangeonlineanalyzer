@@ -1,7 +1,94 @@
+function Get-SettingsLocationConfig {
+    # Get the script root directory (where ExchangeOnlineAnalyzer.ps1 and BulkTenantExporter.ps1 are located)
+    # This ensures both scripts use the same config file
+    
+    # Try to get the calling script's directory (the script that imported this module)
+    $scriptRoot = $null
+    
+    # Check call stack to find the script that imported this module
+    $callStack = Get-PSCallStack
+    foreach ($frame in $callStack) {
+        if ($frame.ScriptName -and $frame.ScriptName -notlike '*\Modules\*') {
+            $scriptRoot = Split-Path -Parent $frame.ScriptName
+            break
+        }
+    }
+    
+    # Fallback: try to find ExchangeOnlineAnalyzer.ps1 or BulkTenantExporter.ps1 in parent directories
+    if (-not $scriptRoot) {
+        $moduleDir = $PSScriptRoot
+        if ($moduleDir) {
+            $parentDir = Split-Path -Parent $moduleDir
+            if ($parentDir) {
+                # Check if ExchangeOnlineAnalyzer.ps1 or BulkTenantExporter.ps1 exists in parent
+                $exchPath = Join-Path $parentDir 'ExchangeOnlineAnalyzer.ps1'
+                $bulkPath = Join-Path $parentDir 'BulkTenantExporter.ps1'
+                if ((Test-Path $exchPath) -or (Test-Path $bulkPath)) {
+                    $scriptRoot = $parentDir
+                }
+            }
+        }
+    }
+    
+    # Final fallback: use module directory
+    if (-not $scriptRoot) {
+        $scriptRoot = $PSScriptRoot
+        if (-not $scriptRoot) {
+            $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+        }
+    }
+    
+    $configFile = Join-Path $scriptRoot 'settings-location.config'
+    return $configFile
+}
+
 function Get-SettingsPath {
+    # Check for custom settings location
+    $configFile = Get-SettingsLocationConfig
+    if (Test-Path $configFile) {
+        try {
+            $customPath = Get-Content -Path $configFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+            if (-not [string]::IsNullOrWhiteSpace($customPath) -and (Test-Path (Split-Path $customPath -Parent))) {
+                return $customPath
+            }
+        } catch {
+            # If config file is invalid, fall back to default
+        }
+    }
+    
+    # Default location
     $dir = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'ExchangeOnlineAnalyzer'
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     return (Join-Path $dir 'settings.json')
+}
+
+function Set-SettingsLocation {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$SettingsPath
+    )
+    
+    try {
+        # Validate the path
+        $parentDir = Split-Path -Parent $SettingsPath
+        if ([string]::IsNullOrWhiteSpace($parentDir)) {
+            throw "Invalid path: parent directory cannot be determined"
+        }
+        
+        # Ensure parent directory exists
+        if (-not (Test-Path $parentDir)) {
+            New-Item -ItemType Directory -Path $parentDir -Force -ErrorAction Stop | Out-Null
+        }
+        
+        # Save the custom path to config file
+        $configFile = Get-SettingsLocationConfig
+        $SettingsPath | Out-File -FilePath $configFile -Encoding UTF8 -Force -ErrorAction Stop
+        
+        return $true
+    } catch {
+        Write-Error "Failed to set settings location: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Get-AppSettings {
@@ -564,6 +651,6 @@ Clarification Questions [Ask 2 questions here regarding tuning, specific client 
     return $readme
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,New-AIReadme,Get-MemberberryContent
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent
 
 
