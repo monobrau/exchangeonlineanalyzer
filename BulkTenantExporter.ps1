@@ -554,6 +554,8 @@ try {
     Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+    # Import Settings module for memberberry integration and AI readme generation
+    Import-Module "`$ScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
     Write-Status "Modules imported successfully"
     Write-Host ""
     
@@ -1017,13 +1019,13 @@ try {
             } catch {}
         }
         
-        # Close the form
+        # Close the form using DialogResult to properly close modal dialog
         try {
-            $authConsoleForm.Close()
+            $authConsoleForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
         } catch {
-            # If Close() fails, try DialogResult
+            # Fallback to Close() if DialogResult fails
             try {
-                $authConsoleForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+                $authConsoleForm.Close()
             } catch {}
         }
     })
@@ -1034,7 +1036,7 @@ try {
     $authStatusTextBox.Multiline = $true
     $authStatusTextBox.ReadOnly = $true
     $authStatusTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $authStatusTextBox.Location = New-Object System.Drawing.Point(15, 580)
+    $authStatusTextBox.Location = New-Object System.Drawing.Point(15, 610)
     $authStatusTextBox.Size = New-Object System.Drawing.Size(985, 80)
     $authStatusTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Top
     $authConsoleForm.Controls.Add($authStatusTextBox)
@@ -2232,7 +2234,10 @@ try {
     $authConsoleForm.ShowDialog() | Out-Null
     
     # When authentication console closes, show the main form again
-    $bulkForm.ShowDialog() | Out-Null
+    # Use Show() instead of ShowDialog() since the form was already shown modally
+    if (-not $bulkForm.Visible) {
+        $bulkForm.Show()
+    }
 })
 
 # Show the main form
