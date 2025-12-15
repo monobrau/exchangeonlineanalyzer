@@ -892,10 +892,35 @@ by the security agent.
             }
             
             # Append ticket information AFTER the instructions if provided
+            # Ticket section goes at the END so LLM reads instructions first, then applies them to ticket context
             if ($ticketSection) {
                 Write-Host "New-AIReadme: Appending ticket section after memberberry content (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
                 $readme += "`n`n$ticketSection"
                 Write-Host "New-AIReadme: Readme length after appending: $($readme.Length)" -ForegroundColor Gray
+                
+                # Add a final reminder section at the very end to reinforce critical constraints before submission
+                $finalReminder = @"
+
+---
+
+## ✅ FINAL CHECKLIST - BEFORE SUBMITTING YOUR RESPONSE
+
+**Verify your response includes:**
+
+1. ✅ **Ticket Classification**: True Positive / False Positive / Authorized Activity
+2. ✅ **Correct Name**: Used preferred name from CLIENT EXCEPTIONS (if applicable)
+3. ✅ **No Reboot Requests**: If Advanced IP Scanner detected, Action Required says "No action required" or is omitted
+4. ✅ **Software Recommendations**: Included recommended replacement if Advanced IP Scanner detected
+5. ✅ **Ticket Number**: Included in subject line
+6. ✅ **Email Format**: Plaintext code block (no markdown formatting)
+7. ✅ **Subject Line**: Displayed outside code block, includes ticket number
+
+**If ANY item is missing or incorrect, revise your response before submitting.**
+
+---
+
+"@
+                $readme += "`n`n$finalReminder"
             } else {
                 Write-Host "New-AIReadme: No ticket section to append (memberberry enabled)" -ForegroundColor Yellow
             }
