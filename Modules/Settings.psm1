@@ -396,9 +396,17 @@ function New-AIReadme {
     $memberberryWarning = ''
     
     # Debug: Log memberberry settings
-    Write-Host "New-AIReadme: MemberberryEnabled=$($Settings.MemberberryEnabled), MemberberryPath='$($Settings.MemberberryPath)'" -ForegroundColor Gray
+    Write-Host "New-AIReadme: MemberberryEnabled=$($Settings.MemberberryEnabled) (type: $($Settings.MemberberryEnabled.GetType().Name)), MemberberryPath='$($Settings.MemberberryPath)'" -ForegroundColor Gray
     
-    if ($Settings.MemberberryEnabled -eq $true -and $Settings.MemberberryPath) {
+    # Check if memberberry is enabled (handle both boolean true and string "true")
+    $memberberryEnabled = $false
+    if ($Settings.MemberberryEnabled) {
+        if ($Settings.MemberberryEnabled -eq $true -or $Settings.MemberberryEnabled -eq "true" -or $Settings.MemberberryEnabled.ToString() -eq "True") {
+            $memberberryEnabled = $true
+        }
+    }
+    
+    if ($memberberryEnabled -and $Settings.MemberberryPath) {
         # Validate that MemberberryPath is a directory, not a file
         if (Test-Path $Settings.MemberberryPath -PathType Leaf) {
             Write-Warning "MemberberryPath points to a file, not a directory: $($Settings.MemberberryPath). Please set MemberberryPath to the directory containing the compile.ps1 script (e.g., 'C:\git\memberberry')."
@@ -688,34 +696,41 @@ $TicketContent
     
     # If memberberry is enabled and loaded successfully, use it exclusively
     if ($useMemberberry) {
+        Write-Host "New-AIReadme: Using memberberry content (GlobalInstructions length: $($memberberryContent.GlobalInstructions.Length) chars)" -ForegroundColor Green
         $readme = $memberberryContent.GlobalInstructions
         
-        # Append client exceptions if found (procedures are already included in GlobalInstructions)
-        if ($memberberryContent.ClientExceptions) {
-            $readme += "`n`n$($memberberryContent.ClientExceptions)"
-        }
-        
-        # Append ticket information AFTER the instructions if provided
-        if ($ticketSection) {
-            Write-Host "New-AIReadme: Appending ticket section after memberberry content (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
-            $readme += "`n`n$ticketSection"
-            Write-Host "New-AIReadme: Readme length after appending: $($readme.Length)" -ForegroundColor Gray
+        # Validate that we actually have content
+        if ([string]::IsNullOrWhiteSpace($readme)) {
+            Write-Warning "New-AIReadme: WARNING - Memberberry enabled but GlobalInstructions is empty! Falling back to default template."
+            $useMemberberry = $false
         } else {
-            Write-Host "New-AIReadme: No ticket section to append (memberberry enabled)" -ForegroundColor Yellow
+            # Append client exceptions if found (procedures are already included in GlobalInstructions)
+            if ($memberberryContent.ClientExceptions) {
+                $readme += "`n`n$($memberberryContent.ClientExceptions)"
+            }
+            
+            # Append ticket information AFTER the instructions if provided
+            if ($ticketSection) {
+                Write-Host "New-AIReadme: Appending ticket section after memberberry content (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
+                $readme += "`n`n$ticketSection"
+                Write-Host "New-AIReadme: Readme length after appending: $($readme.Length)" -ForegroundColor Gray
+            } else {
+                Write-Host "New-AIReadme: No ticket section to append (memberberry enabled)" -ForegroundColor Yellow
+            }
+            
+            # Add warning if present (prepend)
+            if ($memberberryWarning) {
+                $readme = "$memberberryWarning`n`n$readme"
+            }
+            
+            # Update subject line to include ticket number if provided
+            if ($ticketNumsArray.Count -gt 0) {
+                $subjectLine = "Subject: Security Alert: Ticket $(($ticketNumsArray | ForEach-Object { "#$_" }) -join ', ') - [Brief Subject]"
+                $readme = $readme -replace '(?m)^Subject: Security Alert:.*$', $subjectLine
+            }
+            
+            return $readme
         }
-        
-        # Add warning if present (prepend)
-        if ($memberberryWarning) {
-            $readme = "$memberberryWarning`n`n$readme"
-        }
-        
-        # Update subject line to include ticket number if provided
-        if ($ticketNumsArray.Count -gt 0) {
-            $subjectLine = "Subject: Security Alert: Ticket $(($ticketNumsArray | ForEach-Object { "#$_" }) -join ', ') - [Brief Subject]"
-            $readme = $readme -replace '(?m)^Subject: Security Alert:.*$', $subjectLine
-        }
-        
-        return $readme
     }
     
     # Fall back to default instructions (existing logic)
