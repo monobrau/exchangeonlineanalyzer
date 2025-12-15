@@ -551,81 +551,15 @@ function New-AIReadme {
                     }
                 }
                 
-                if ($Settings.CompanyName -and -not [string]::IsNullOrWhiteSpace($Settings.CompanyName) -and $exceptionsPath) {
+                # Load exceptions JSON if path is valid (global exceptions should ALWAYS be loaded if they exist)
+                if ($exceptionsPath) {
                     try {
                         if (Test-Path $exceptionsPath -PathType Leaf) {
                             $exceptionsJson = Get-Content -Path $exceptionsPath -Raw -ErrorAction Stop | ConvertFrom-Json
                             
-                            # Try to find matching client (exact match first, then partial)
-                            $matchedClient = $null
-                            $matchedKey = $null
-                            
-                            # First try exact match
-                            foreach ($key in $exceptionsJson.PSObject.Properties.Name) {
-                                if ($key -eq $Settings.CompanyName) {
-                                    $matchedClient = $exceptionsJson.$key
-                                    $matchedKey = $key
-                                    break
-                                }
-                            }
-                            
-                            # If no exact match, try case-insensitive partial match
-                            if (-not $matchedClient) {
-                                $companyNameLower = $Settings.CompanyName.ToLower()
-                                foreach ($key in $exceptionsJson.PSObject.Properties.Name) {
-                                    if ($key.ToLower() -eq $companyNameLower -or $key.ToLower().Contains($companyNameLower) -or $companyNameLower.Contains($key.ToLower())) {
-                                        $matchedClient = $exceptionsJson.$key
-                                        $matchedKey = $key
-                                        break
-                                    }
-                                }
-                            }
-                            
-                            # Format client exceptions if found
-                            if ($matchedClient) {
-                                $exceptionText = "## CLIENT EXCEPTIONS`n`n## $matchedKey`n`n"
-                                
-                                if ($matchedClient.detail) {
-                                    $exceptionText += "**Detail Level**: $($matchedClient.detail)`n"
-                                }
-                                if ($matchedClient.mfa) {
-                                    $exceptionText += "**MFA Provider**: $($matchedClient.mfa)`n"
-                                }
-                                if ($matchedClient.vpn) {
-                                    $exceptionText += "**VPN**: $($matchedClient.vpn)`n"
-                                } else {
-                                    $exceptionText += "**VPN**: None`n"
-                                }
-                                if ($matchedClient.PSObject.Properties.Name -contains 'onsite_it') {
-                                    $exceptionText += "**Onsite IT**: $(if ($matchedClient.onsite_it) { 'Yes' } else { 'No' })`n"
-                                }
-                                if ($matchedClient.industry) {
-                                    $exceptionText += "**Industry**: $($matchedClient.industry)`n"
-                                }
-                                if ($matchedClient.authorized_tools -and $matchedClient.authorized_tools.Count -gt 0) {
-                                    $exceptionText += "**Authorized Tools**: $($matchedClient.authorized_tools -join ', ')`n"
-                                }
-                                if ($matchedClient.vips -and $matchedClient.vips.Count -gt 0) {
-                                    $exceptionText += "**VIPs**: $($matchedClient.vips -join ', ')`n"
-                                }
-                                if ($matchedClient.names -and $matchedClient.names.PSObject.Properties.Count -gt 0) {
-                                    $nameMappings = @()
-                                    foreach ($nameProp in $matchedClient.names.PSObject.Properties) {
-                                        $nameMappings += "$($nameProp.Name): $($nameProp.Value)"
-                                    }
-                                    if ($nameMappings.Count -gt 0) {
-                                        $exceptionText += "**Name Mappings**: $($nameMappings -join '; ')`n"
-                                    }
-                                }
-                                if ($matchedClient.notes) {
-                                    $exceptionText += "**Notes**: $($matchedClient.notes)`n"
-                                }
-                                
-                                $memberberryContent.ClientExceptions = $exceptionText.Trim()
-                            }
-                            
-                            # Also include global exceptions if present
+                            # ALWAYS load global exceptions first (they apply to all clients)
                             if ($exceptionsJson._global) {
+                                Write-Host "New-AIReadme: Loading global exceptions from JSON" -ForegroundColor Gray
                                 $globalText = "`n`n## ⚠️ GLOBAL EXCEPTIONS (APPLIES TO ALL CLIENTS) ⚠️`n`n"
                                 if ($exceptionsJson._global.notes) {
                                     $globalText += "### CRITICAL GLOBAL NOTES`n`n$($exceptionsJson._global.notes)`n`n"
@@ -636,10 +570,86 @@ function New-AIReadme {
                                 if ($exceptionsJson._global.vips -and $exceptionsJson._global.vips.Count -gt 0) {
                                     $globalText += "**VIPs**: $($exceptionsJson._global.vips -join ', ')`n`n"
                                 }
-                                if ($memberberryContent.ClientExceptions) {
-                                    $memberberryContent.ClientExceptions += $globalText.Trim()
+                                $memberberryContent.ClientExceptions = $globalText.Trim()
+                                Write-Host "New-AIReadme: Global exceptions loaded successfully (length: $($globalText.Length) chars)" -ForegroundColor Green
+                            }
+                            
+                            # Load client-specific exceptions if company name is provided
+                            if ($Settings.CompanyName -and -not [string]::IsNullOrWhiteSpace($Settings.CompanyName)) {
+                                Write-Host "New-AIReadme: Searching for client exceptions for: $($Settings.CompanyName)" -ForegroundColor Gray
+                                
+                                # Try to find matching client (exact match first, then partial)
+                                $matchedClient = $null
+                                $matchedKey = $null
+                                
+                                # First try exact match
+                                foreach ($key in $exceptionsJson.PSObject.Properties.Name) {
+                                    if ($key -eq $Settings.CompanyName -and $key -ne '_global') {
+                                        $matchedClient = $exceptionsJson.$key
+                                        $matchedKey = $key
+                                        break
+                                    }
+                                }
+                                
+                                # If no exact match, try case-insensitive partial match
+                                if (-not $matchedClient) {
+                                    $companyNameLower = $Settings.CompanyName.ToLower()
+                                    foreach ($key in $exceptionsJson.PSObject.Properties.Name) {
+                                        if ($key -ne '_global' -and ($key.ToLower() -eq $companyNameLower -or $key.ToLower().Contains($companyNameLower) -or $companyNameLower.Contains($key.ToLower()))) {
+                                            $matchedClient = $exceptionsJson.$key
+                                            $matchedKey = $key
+                                            break
+                                        }
+                                    }
+                                }
+                                
+                                # Format client exceptions if found
+                                if ($matchedClient) {
+                                    Write-Host "New-AIReadme: Found client exceptions for: $matchedKey" -ForegroundColor Green
+                                    $exceptionText = "## CLIENT EXCEPTIONS`n`n## $matchedKey`n`n"
+                                    
+                                    if ($matchedClient.detail) {
+                                        $exceptionText += "**Detail Level**: $($matchedClient.detail)`n"
+                                    }
+                                    if ($matchedClient.mfa) {
+                                        $exceptionText += "**MFA Provider**: $($matchedClient.mfa)`n"
+                                    }
+                                    if ($matchedClient.vpn) {
+                                        $exceptionText += "**VPN**: $($matchedClient.vpn)`n"
+                                    } else {
+                                        $exceptionText += "**VPN**: None`n"
+                                    }
+                                    if ($matchedClient.PSObject.Properties.Name -contains 'onsite_it') {
+                                        $exceptionText += "**Onsite IT**: $(if ($matchedClient.onsite_it) { 'Yes' } else { 'No' })`n"
+                                    }
+                                    if ($matchedClient.industry) {
+                                        $exceptionText += "**Industry**: $($matchedClient.industry)`n"
+                                    }
+                                    if ($matchedClient.authorized_tools -and $matchedClient.authorized_tools.Count -gt 0) {
+                                        $exceptionText += "**Authorized Tools**: $($matchedClient.authorized_tools -join ', ')`n"
+                                    }
+                                    if ($matchedClient.vips -and $matchedClient.vips.Count -gt 0) {
+                                        $exceptionText += "**VIPs**: $($matchedClient.vips -join ', ')`n"
+                                    }
+                                    if ($matchedClient.names -and $matchedClient.names.PSObject.Properties.Count -gt 0) {
+                                        $exceptionText += "**Name Preferences** (CRITICAL - Always use these preferred names when addressing users):`n"
+                                        foreach ($nameProp in $matchedClient.names.PSObject.Properties) {
+                                            $exceptionText += "  - **$($nameProp.Name)** → Use preferred name: **$($nameProp.Value)**`n"
+                                        }
+                                        $exceptionText += "`n"
+                                    }
+                                    if ($matchedClient.notes) {
+                                        $exceptionText += "**Notes**: $($matchedClient.notes)`n"
+                                    }
+                                    
+                                    # Append client exceptions to global exceptions (if they exist)
+                                    if ($memberberryContent.ClientExceptions) {
+                                        $memberberryContent.ClientExceptions += "`n`n$($exceptionText.Trim())"
+                                    } else {
+                                        $memberberryContent.ClientExceptions = $exceptionText.Trim()
+                                    }
                                 } else {
-                                    $memberberryContent.ClientExceptions = $globalText.Trim()
+                                    Write-Host "New-AIReadme: No client-specific exceptions found for: $($Settings.CompanyName)" -ForegroundColor Yellow
                                 }
                             }
                         }
