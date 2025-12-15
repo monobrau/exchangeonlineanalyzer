@@ -741,13 +741,14 @@ $TicketContent
 ### Advanced IP Scanner - CRITICAL GLOBAL EXCEPTION (MANDATORY CHECK)
 - **⚠️ ALWAYS check the GLOBAL EXCEPTIONS section for Advanced IP Scanner instructions**
 - **When Advanced IP Scanner is detected:**
-  - **DO NOT request a server reboot** - If file status is "Quarantined" but not "Mitigated," mitigation will complete automatically on next reboot. Inform the client of this, but DO NOT ask them to reboot.
-  - **DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request. This is explicitly stated in GLOBAL EXCEPTIONS.
-  - **DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement if they need IP scanning functionality.
+  - **🚫 ABSOLUTELY DO NOT request a server reboot** - This is EXPLICITLY FORBIDDEN. If file status is "Quarantined" but not "Mitigated," mitigation will complete automatically on next reboot. You may inform the client of this fact, but you MUST NOT ask them to reboot. Do NOT include "Action Required: Please reboot" or any similar reboot request in your response.
+  - **🚫 ABSOLUTELY DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request. This is explicitly stated in GLOBAL EXCEPTIONS. Do NOT create any SOC exception request emails.
+  - **🚫 DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement if they need IP scanning functionality. Explicitly state this is a recommendation for them to implement if needed.
   - **Narrative**: Explain that while River Run historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities.
   - **Replacement**: Suggest "Angry IP Scanner" ONLY if the client requires IP scanning functionality on this device. Explicitly state this is a recommendation for them to implement if needed.
+  - **Action Required Section**: If you include an "Action Required" section, it should be empty or say "No action required" - DO NOT include reboot instructions.
 - **These constraints are in the GLOBAL EXCEPTIONS section - check there for full details**
-- **Failure to follow these constraints is a critical error**
+- **Failure to follow these constraints (especially the reboot prohibition) is a CRITICAL ERROR**
 
 ### Software Recommendations (MANDATORY CHECK)
 - **ALWAYS check for software recommendations in the instructions**
