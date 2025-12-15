@@ -6560,6 +6560,141 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Waiting for Generate Reports command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
+            } elseif (`$command -match "^VALIDATE_USERS") {
+                if (-not `$graphAuthenticated) {
+                    Write-Host "ERROR: Graph authentication must be completed first!" -ForegroundColor Red
+                    Write-CommandResponse "VALIDATE_USERS_FAILED:Graph authentication not completed"
+                    continue
+                }
+                
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "VALIDATE USERS COMMAND RECEIVED" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "User validation command received"
+                Write-CommandResponse "VALIDATE_USERS_STARTED"
+                
+                try {
+                    # Parse search terms from command (format: VALIDATE_USERS|SEARCH_TERMS:term1,term2)
+                    `$searchTerms = @()
+                    if (`$command -match '\|SEARCH_TERMS:(.+)$') {
+                        `$searchTermsJson = `$Matches[1]
+                        try {
+                            `$searchTermsArray = `$searchTermsJson | ConvertFrom-Json -ErrorAction Stop
+                            if (`$searchTermsArray -is [array]) {
+                                `$searchTerms = `$searchTermsArray
+                            } elseif (`$searchTermsArray -is [string]) {
+                                `$searchTerms = @(`$searchTermsArray)
+                            } else {
+                                `$searchTerms = @(`$searchTermsArray)
+                            }
+                        } catch {
+                            # If JSON parsing fails, try splitting as comma-separated string
+                            `$searchTerms = `$searchTermsJson -split ',' | ForEach-Object { `$_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) }
+                        }
+                    } else {
+                        Write-Warning "No search terms found in VALIDATE_USERS command"
+                        Write-CommandResponse "VALIDATE_USERS_FAILED:No search terms provided"
+                        continue
+                    }
+                    
+                    Write-Host "Search terms received: `$(`$searchTerms -join ', ')" -ForegroundColor Cyan
+                    Write-Status "Validating users for search terms: `$(`$searchTerms -join ', ')"
+                    
+                    # Perform user search using improved search logic
+                    `$allFoundUsers = @()
+                    foreach (`$searchTerm in `$searchTerms) {
+                        Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
+                        `$users = @()
+                        try {
+                            # Try server-side filtering first (startsWith) - try multiple case variations
+                            `$users1 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTerm') or startsWith(UserPrincipalName,'`$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$searchTermLower = `$searchTerm.ToLower()
+                            `$searchTermUpper = `$searchTerm.ToUpper()
+                            `$searchTermTitle = (Get-Culture).TextInfo.ToTitleCase(`$searchTermLower)
+                            `$users2 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermLower') or startsWith(UserPrincipalName,'`$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$users3 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermUpper') or startsWith(UserPrincipalName,'`$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$users4 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermTitle') or startsWith(UserPrincipalName,'`$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$users = @(`$users1) + @(`$users2) + @(`$users3) + @(`$users4) | Sort-Object UserPrincipalName -Unique
+                            Write-Host "    Found `$(`$users.Count) users with startsWith filter (tried multiple case variations)" -ForegroundColor Gray
+                        } catch {
+                            Write-Host "    startsWith filter failed: `$(`$_.Exception.Message), trying alternatives..." -ForegroundColor Yellow
+                        }
+                        
+                        if (`$users.Count -eq 0) {
+                            # Try alternative search methods
+                            try {
+                                # Try exact match (case-sensitive first, then variations)
+                                `$usersAlt1 = Get-MgUser -Filter "DisplayName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt1 += Get-MgUser -Filter "DisplayName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt1 = `$usersAlt1 | Sort-Object UserPrincipalName -Unique
+                                
+                                `$usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt2 = `$usersAlt2 | Sort-Object UserPrincipalName -Unique
+                                
+                                # Try case-insensitive search by getting all users and filtering client-side
+                                Write-Host "    Fetching all users for client-side filtering..." -ForegroundColor Gray
+                                try {
+                                    `$allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
+                                    Write-Host "    Retrieved `$(`$allUsers.Count) total users from tenant" -ForegroundColor Gray
+                                    
+                                    # Use case-insensitive matching with -ilike
+                                    `$searchTermPattern = "*`$searchTerm*"
+                                    `$usersAlt3 = `$allUsers | Where-Object { 
+                                        (`$_.DisplayName -and `$_.DisplayName -ilike `$searchTermPattern) -or 
+                                        (`$_.UserPrincipalName -and `$_.UserPrincipalName -ilike `$searchTermPattern)
+                                    }
+                                    Write-Host "    Client-side filtering: Found `$(`$usersAlt3.Count) users matching '`$searchTerm'" -ForegroundColor Gray
+                                } catch {
+                                    Write-Warning "Failed to retrieve all users for client-side filtering: `$(`$_.Exception.Message)"
+                                    `$usersAlt3 = @()
+                                }
+                                
+                                # Combine all results
+                                `$users = @(`$usersAlt1) + @(`$usersAlt2) + @(`$usersAlt3) | Sort-Object UserPrincipalName -Unique
+                                Write-Host "    Combined alternative searches: Found `$(`$users.Count) users" -ForegroundColor Gray
+                            } catch {
+                                Write-Warning "Could not search for users matching '`$searchTerm': `$(`$_.Exception.Message)"
+                            }
+                        }
+                        if (`$users.Count -gt 0) {
+                            `$allFoundUsers += `$users
+                        }
+                    }
+                    
+                    # Get unique UserPrincipalNames
+                    `$validatedUsers = (`$allFoundUsers | Sort-Object UserPrincipalName -Unique | ForEach-Object { `$_.UserPrincipalName })
+                    
+                    if (`$validatedUsers.Count -gt 0) {
+                        Write-Host "Validation successful: Found `$(`$validatedUsers.Count) user(s)" -ForegroundColor Green
+                        Write-Status "Validation successful: Found `$(`$validatedUsers.Count) user(s)"
+                        `$responseJson = @{
+                            Success = `$true
+                            UserCount = `$validatedUsers.Count
+                            Users = `$validatedUsers
+                        } | ConvertTo-Json -Compress
+                        Write-CommandResponse "VALIDATE_USERS_SUCCESS:`$responseJson"
+                    } else {
+                        Write-Host "Validation completed: No users found matching search terms" -ForegroundColor Yellow
+                        Write-Status "Validation completed: No users found matching search terms"
+                        `$responseJson = @{
+                            Success = `$false
+                            UserCount = 0
+                            Users = @()
+                            Message = "No users found matching the search terms"
+                        } | ConvertTo-Json -Compress
+                        Write-CommandResponse "VALIDATE_USERS_SUCCESS:`$responseJson"
+                    }
+                } catch {
+                    Write-Host "ERROR: User validation failed - `$(`$_.Exception.Message)" -ForegroundColor Red
+                    Write-Status "ERROR: User validation failed - `$(`$_.Exception.Message)"
+                    Write-CommandResponse "VALIDATE_USERS_FAILED:`$(`$_.Exception.Message)"
+                }
+                
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+                
             } elseif (`$command -match "^GENERATE_REPORTS") {
                 if (-not `$graphAuthenticated -or -not `$exchangeAuthenticated) {
                     Write-Host "ERROR: Both Graph and Exchange authentication must be completed first!" -ForegroundColor Red
@@ -7523,42 +7658,63 @@ if (Test-Path `$ReportSelectionsFile) {
                         $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Blue
                         [System.Windows.Forms.Application]::DoEvents()
                         
-                        # Use the tenant's Graph context for validation
-                        # Note: The worker script has the Graph context, so we'll need to send a command to validate
-                        # For now, we'll validate using the main Graph context if available, otherwise show a message
-                        try {
-                            $mgContext = Get-MgContext -ErrorAction Stop
-                            if ($mgContext) {
-                                $validated = Search-AndValidateUsers -SearchTerms $controls.UserSearchTextBox.Text -StatusLabel $null
+                        # Send VALIDATE_USERS command to worker script (which has the Graph context)
+                        $searchTerms = $controls.UserSearchTextBox.Text
+                        $searchTermsArray = ($searchTerms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
+                        
+                        $command = "VALIDATE_USERS|SEARCH_TERMS:$searchTermsJson"
+                        Write-Host "Sending VALIDATE_USERS command to Client $clientNum with search terms: $searchTerms" -ForegroundColor Cyan
+                        $script:authStatusTextBox.AppendText("Client $clientNum : Validating users: $searchTerms`r`n")
+                        
+                        $response = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 60
+                        
+                        if ($response -match "^VALIDATE_USERS_SUCCESS:(.+)$") {
+                            $responseJson = $Matches[1]
+                            try {
+                                $result = $responseJson | ConvertFrom-Json
                                 
-                                if ($validated.Count -gt 0) {
-                                    $script:clientValidatedUsers[$clientNum] = $validated
-                                    $controls.UserValidationLabel.Text = "Validated: $($validated.Count) user(s)"
+                                if ($result.Success -and $result.UserCount -gt 0) {
+                                    $validatedUsers = if ($result.Users -is [array]) { $result.Users } else { @($result.Users) }
+                                    $script:clientValidatedUsers[$clientNum] = $validatedUsers
+                                    $controls.UserValidationLabel.Text = "Validated: $($validatedUsers.Count) user(s)"
                                     $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Green
-                                    [System.Windows.Forms.MessageBox]::Show("Found and validated $($validated.Count) user(s) for Client $clientNum :`n`n$($validated -join "`n")", "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                                    $script:authStatusTextBox.AppendText("Client $clientNum : Found $($validatedUsers.Count) user(s)`r`n")
+                                    [System.Windows.Forms.MessageBox]::Show("Found and validated $($validatedUsers.Count) user(s) for Client $clientNum :`n`n$($validatedUsers -join "`n")", "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                                 } else {
                                     if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
                                         $script:clientValidatedUsers.Remove($clientNum)
                                     }
                                     $controls.UserValidationLabel.Text = "No users found"
                                     $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
-                                    [System.Windows.Forms.MessageBox]::Show("No users found matching the search terms for Client $clientNum.", "No Users Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                                    $message = if ($result.Message) { $result.Message } else { "No users found matching the search terms." }
+                                    $script:authStatusTextBox.AppendText("Client $clientNum : $message`r`n")
+                                    [System.Windows.Forms.MessageBox]::Show("$message for Client $clientNum.", "No Users Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                                 }
-                            } else {
-                                throw "Microsoft Graph context not available"
+                            } catch {
+                                Write-Host "Failed to parse validation response: $($_.Exception.Message)" -ForegroundColor Red
+                                $controls.UserValidationLabel.Text = "Validation failed"
+                                $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                                [System.Windows.Forms.MessageBox]::Show("Error parsing validation response for Client $clientNum : $($_.Exception.Message)", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                             }
-                        } catch {
-                            # Fallback: Store search terms and validate later via worker script
-                            $searchTerms = $controls.UserSearchTextBox.Text
-                            if (-not [string]::IsNullOrWhiteSpace($searchTerms)) {
-                                $script:clientSearchTerms[$clientNum] = $searchTerms
-                                Write-Host "Stored search terms for Client $clientNum : $searchTerms" -ForegroundColor Yellow
-                                $script:authStatusTextBox.AppendText("Client $clientNum : User validation will be performed during report generation. Search terms stored: $searchTerms`r`n")
-                                $controls.UserValidationLabel.Text = "Will validate during export"
-                                $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Orange
-                            } else {
-                                Write-Host "Warning: Search terms are empty for Client $clientNum" -ForegroundColor Yellow
+                        } elseif ($response -match "^VALIDATE_USERS_FAILED:(.+)$") {
+                            $errorMsg = $Matches[1]
+                            Write-Host "Validation failed: $errorMsg" -ForegroundColor Red
+                            if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                                $script:clientValidatedUsers.Remove($clientNum)
                             }
+                            $controls.UserValidationLabel.Text = "Validation failed"
+                            $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                            $script:authStatusTextBox.AppendText("Client $clientNum : Validation failed - $errorMsg`r`n")
+                            [System.Windows.Forms.MessageBox]::Show("Validation failed for Client $clientNum : $errorMsg", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        } else {
+                            Write-Host "Unexpected response from validation command: $response" -ForegroundColor Yellow
+                            if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                                $script:clientValidatedUsers.Remove($clientNum)
+                            }
+                            $controls.UserValidationLabel.Text = "Validation failed"
+                            $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                            [System.Windows.Forms.MessageBox]::Show("Unexpected response from validation command for Client $clientNum.", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                         }
                     } catch {
                         if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
