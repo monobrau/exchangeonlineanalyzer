@@ -7706,6 +7706,59 @@ if (Test-Path `$ReportSelectionsFile) {
                         
                         $response = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 60
                         
+                        # If we got VALIDATE_USERS_STARTED, continue polling for the final result
+                        if ($response -eq "VALIDATE_USERS_STARTED") {
+                            $script:authStatusTextBox.AppendText("Client $clientNum : User validation started. Searching...`r`n")
+                            $script:authStatusTextBox.ScrollToCaret()
+                            [System.Windows.Forms.Application]::DoEvents()
+                            
+                            # Continue polling the response file for the final result
+                            $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                            $startTime = Get-Date
+                            $finalResponse = $null
+                            $pollCount = 0
+                            
+                            while (((Get-Date) - $startTime).TotalSeconds -lt 60) {
+                                $pollCount++
+                                $elapsedSeconds = [int]((Get-Date) - $startTime).TotalSeconds
+                                
+                                # Update status every 5 seconds
+                                if ($pollCount % 25 -eq 0) {
+                                    $statusMsg = "Validating users... (${elapsedSeconds}s elapsed)"
+                                    $controls.UserValidationLabel.Text = $statusMsg
+                                    $script:authStatusTextBox.AppendText("Client ${clientNum}: $statusMsg`r`n")
+                                    $script:authStatusTextBox.ScrollToCaret()
+                                    [System.Windows.Forms.Application]::DoEvents()
+                                }
+                                
+                                if (Test-Path $responseFile) {
+                                    Start-Sleep -Milliseconds 200
+                                    try {
+                                        $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                        # Check if we got a final response (not VALIDATE_USERS_STARTED)
+                                        if ($finalResponse -and $finalResponse -ne "VALIDATE_USERS_STARTED" -and $finalResponse -notmatch "^VALIDATE_USERS_STARTED") {
+                                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Final validation response received`r`n")
+                                            $script:authStatusTextBox.ScrollToCaret()
+                                            [System.Windows.Forms.Application]::DoEvents()
+                                            $response = $finalResponse
+                                            break
+                                        }
+                                    } catch {}
+                                }
+                                Start-Sleep -Milliseconds 200
+                                [System.Windows.Forms.Application]::DoEvents()
+                            }
+                            
+                            if (-not $finalResponse -or $finalResponse -eq "VALIDATE_USERS_STARTED") {
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Timeout waiting for user validation response.`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                $controls.UserValidationLabel.Text = "Validation timeout"
+                                $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                                [System.Windows.Forms.MessageBox]::Show("Timeout waiting for user validation response for Client $clientNum.", "Validation Timeout", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                                return
+                            }
+                        }
+                        
                         if ($response -match "^VALIDATE_USERS_SUCCESS:(.+)$") {
                             $responseJson = $Matches[1]
                             try {
