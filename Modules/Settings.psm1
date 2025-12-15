@@ -401,9 +401,9 @@ function New-AIReadme {
             Write-Host "Running memberberry script to generate updated output..." -ForegroundColor Cyan
             
             # Try to find and execute memberberry script
-            # Common script names: memberberry.ps1, run.ps1, main.ps1, memberberry.py, run.py, main.py
+            # Common script names: compile.ps1, memberberry.ps1, run.ps1, main.ps1, memberberry.py, run.py, main.py
             $memberberryScript = $null
-            $scriptNames = @('memberberry.ps1', 'run.ps1', 'main.ps1', 'memberberry.py', 'run.py', 'main.py', 'memberberry.bat', 'run.bat')
+            $scriptNames = @('compile.ps1', 'memberberry.ps1', 'run.ps1', 'main.ps1', 'memberberry.py', 'run.py', 'main.py', 'memberberry.bat', 'run.bat')
             
             foreach ($scriptName in $scriptNames) {
                 $scriptPath = Join-Path $Settings.MemberberryPath $scriptName
