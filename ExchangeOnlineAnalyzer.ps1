@@ -2644,48 +2644,91 @@ $btnTestMemberberry.add_Click({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
         
-        $instructionsPath = $txtMemberberryPath.Text
-        $exceptionsPath = $txtMemberberryExceptionsPath.Text
+        $memberberryDir = $txtMemberberryPath.Text.Trim()
+        $exceptionsPath = $txtMemberberryExceptionsPath.Text.Trim()
         
-        if ([string]::IsNullOrWhiteSpace($instructionsPath)) {
+        if ([string]::IsNullOrWhiteSpace($memberberryDir)) {
             [System.Windows.Forms.MessageBox]::Show("Please enter a memberberry directory path.", "Path Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
             return
         }
         
-        if (-not (Test-Path $instructionsPath -PathType Container)) {
-            [System.Windows.Forms.MessageBox]::Show("Memberberry directory not found: $instructionsPath", "Directory Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        # Validate directory path
+        if (Test-Path $memberberryDir -PathType Leaf) {
+            [System.Windows.Forms.MessageBox]::Show("Memberberry Directory must point to a directory, not a file.`n`nCurrent value: $memberberryDir`n`nExpected: Directory path (e.g., C:\git\memberberry)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             return
         }
         
-        if (-not [string]::IsNullOrWhiteSpace($exceptionsPath) -and -not (Test-Path $exceptionsPath)) {
-            [System.Windows.Forms.MessageBox]::Show("Exceptions file not found: $exceptionsPath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        if (-not (Test-Path $memberberryDir -PathType Container)) {
+            [System.Windows.Forms.MessageBox]::Show("Memberberry directory not found: $memberberryDir", "Directory Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             return
         }
         
-        # Test reading the files
-        $testContent = Get-MemberberryContent -MemberberryPath $instructionsPath -MemberberryExceptionsPath $exceptionsPath -CompanyName $txtCo.Text
+        # Check for compile.ps1 script
+        $scriptFound = $false
+        $scriptNames = @('compile.ps1', 'memberberry.ps1', 'run.ps1', 'main.ps1')
+        $foundScript = $null
+        foreach ($scriptName in $scriptNames) {
+            $scriptPath = Join-Path $memberberryDir $scriptName
+            if (Test-Path $scriptPath) {
+                $foundScript = $scriptPath
+                $scriptFound = $true
+                break
+            }
+        }
         
-        if ($testContent.Success) {
-            $message = "Memberberry files validated successfully!`n`n"
-            $message += "Instructions file: $instructionsPath`n"
-            $message += "Global instructions: $($testContent.GlobalInstructions.Length) characters`n"
-            if ($testContent.Procedures) {
-                $message += "Procedures section: $($testContent.Procedures.Length) characters`n"
+        # Check for output\memberberry.md file
+        $outputFile = Join-Path $memberberryDir "output\memberberry.md"
+        $outputFileExists = Test-Path $outputFile
+        
+        # Validate exceptions path if provided
+        if (-not [string]::IsNullOrWhiteSpace($exceptionsPath)) {
+            if (Test-Path $exceptionsPath -PathType Container) {
+                [System.Windows.Forms.MessageBox]::Show("Memberberry Exceptions File must point to a file, not a directory.`n`nCurrent value: $exceptionsPath`n`nExpected: File path (e.g., C:\git\memberberry\exceptions.json)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                return
             }
-            if (-not [string]::IsNullOrWhiteSpace($exceptionsPath)) {
-                $message += "`nExceptions file: $exceptionsPath`n"
-                if ($testContent.ClientExceptions) {
-                    $message += "Client exceptions found for: $($txtCo.Text)`n"
-                } else {
-                    $message += "No client-specific exceptions found for '$($txtCo.Text)' (using general instructions)`n"
-                }
+            if (-not (Test-Path $exceptionsPath -PathType Leaf)) {
+                [System.Windows.Forms.MessageBox]::Show("Exceptions file not found: $exceptionsPath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                # Continue validation even if exceptions file doesn't exist (it's optional)
             }
+        }
+        
+        # Build validation message
+        $message = "Memberberry Configuration Validation`n`n"
+        $message += "Directory: $memberberryDir`n"
+        $message += "  ✓ Directory exists`n"
+        
+        if ($scriptFound) {
+            $message += "  ✓ Script found: $(Split-Path $foundScript -Leaf)`n"
+        } else {
+            $message += "  ⚠ Script not found (looking for: compile.ps1, memberberry.ps1, run.ps1, main.ps1)`n"
+        }
+        
+        if ($outputFileExists) {
+            $fileSize = (Get-Item $outputFile).Length
+            $message += "  ✓ Output file exists: output\memberberry.md ($fileSize bytes)`n"
+        } else {
+            $message += "  ⚠ Output file not found: output\memberberry.md`n"
+            $message += "     (This will be generated when compile.ps1 runs)`n"
+        }
+        
+        if (-not [string]::IsNullOrWhiteSpace($exceptionsPath)) {
+            $message += "`nExceptions File: $exceptionsPath`n"
+            if (Test-Path $exceptionsPath -PathType Leaf) {
+                $message += "  ✓ File exists`n"
+            } else {
+                $message += "  ⚠ File not found (optional)`n"
+            }
+        }
+        
+        if ($scriptFound -and $outputFileExists) {
+            $message += "`n✓ Configuration is valid and ready to use!"
             [System.Windows.Forms.MessageBox]::Show($message, "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         } else {
-            [System.Windows.Forms.MessageBox]::Show("Validation failed: $($testContent.ErrorMessage)", "Validation Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $message += "`n⚠ Configuration has warnings but may still work."
+            [System.Windows.Forms.MessageBox]::Show($message, "Validation Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         }
     } catch {
-        [System.Windows.Forms.MessageBox]::Show("Error testing memberberry files: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Error testing memberberry configuration: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
 
