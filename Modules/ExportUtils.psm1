@@ -650,6 +650,29 @@ function New-SecurityInvestigationReport {
     Write-Host $statusMsg -ForegroundColor Green
     if ($MainForm -and $MainForm.GetType().Name -eq "Form") { $MainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
 
+    # Helper function to generate filename suffix with ticket numbers
+    $getTicketSuffix = {
+        param([array]$TicketNumbers)
+        $ticketNumsArray = @()
+        if ($TicketNumbers) {
+            if ($TicketNumbers -is [string]) {
+                $ticketNumsArray = @($TicketNumbers)
+            } elseif ($TicketNumbers -is [array]) {
+                $ticketNumsArray = $TicketNumbers
+            } else {
+                $ticketNumsArray = @($TicketNumbers)
+            }
+        }
+        if ($ticketNumsArray.Count -gt 0) {
+            $ticketSuffix = "_Ticket_" + ($ticketNumsArray -join '_')
+            return $ticketSuffix
+        }
+        return ""
+    }
+    
+    # Get ticket suffix for filenames
+    $ticketSuffix = & $getTicketSuffix $report.TicketNumbers
+    
     # Export datasets to CSV (and JSON fallback) if we have an output folder
     # Note: Data is already filtered server-side by the collection functions
     if ($report.OutputFolder) {
@@ -659,46 +682,46 @@ function New-SecurityInvestigationReport {
         Write-Host "Output folder: $($report.OutputFolder)" -ForegroundColor Gray
         $exportError = $null
         try {
-            $csv = Join-Path $report.OutputFolder "MessageTrace.csv"
-            $json = Join-Path $report.OutputFolder "MessageTrace.json"
+            $csv = Join-Path $report.OutputFolder "MessageTrace$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "MessageTrace$ticketSuffix.json"
             if ($report.MessageTrace -and $report.MessageTrace.Count -gt 0) {
                 try { $report.MessageTrace | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MessageTraceCsv = $csv }
                 catch { $report.MessageTrace | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.MessageTraceJson = $json }
             }
 
-            $csv = Join-Path $report.OutputFolder "InboxRules.csv"
-            $json = Join-Path $report.OutputFolder "InboxRules.json"
+            $csv = Join-Path $report.OutputFolder "InboxRules$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "InboxRules$ticketSuffix.json"
             if ($report.InboxRules -and $report.InboxRules.Count -gt 0) {
                 try { $report.InboxRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboxRulesCsv = $csv }
                 catch { $report.InboxRules | ConvertTo-Json -Depth 6 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboxRulesJson = $json }
             }
 
             # Transport Rules export
-            $csv = Join-Path $report.OutputFolder "TransportRules.csv"
-            $json = Join-Path $report.OutputFolder "TransportRules.json"
+            $csv = Join-Path $report.OutputFolder "TransportRules$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "TransportRules$ticketSuffix.json"
             if ($report.TransportRules -and $report.TransportRules.Count -gt 0) {
                 try { $report.TransportRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.TransportRulesCsv = $csv }
                 catch { $report.TransportRules | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.TransportRulesJson = $json }
             }
 
             # Mail Flow Connectors export (combined Inbound + Outbound)
-            $csv = Join-Path $report.OutputFolder "MailFlowConnectors.csv"
-            $json = Join-Path $report.OutputFolder "MailFlowConnectors.json"
+            $csv = Join-Path $report.OutputFolder "MailFlowConnectors$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "MailFlowConnectors$ticketSuffix.json"
             if ($report.MailFlowConnectors -and $report.MailFlowConnectors.Count -gt 0) {
                 try { $report.MailFlowConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MailFlowConnectorsCsv = $csv }
                 catch { $report.MailFlowConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.MailFlowConnectorsJson = $json }
             }
 
-            $csv = Join-Path $report.OutputFolder "GraphAuditLogs.csv"
-            $json = Join-Path $report.OutputFolder "GraphAuditLogs.json"
+            $csv = Join-Path $report.OutputFolder "GraphAuditLogs$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "GraphAuditLogs$ticketSuffix.json"
             if ($report.AuditLogs -and $report.AuditLogs.Count -gt 0) {
                 try { $report.AuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.AuditLogsCsv = $csv }
                 catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
             }
 
             # Sign-in Logs export
-            $csv = Join-Path $report.OutputFolder "SignInLogs.csv"
-            $json = Join-Path $report.OutputFolder "SignInLogs.json"
+            $csv = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix.json"
             if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                 try { 
                     $report.SignInLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
@@ -712,14 +735,14 @@ function New-SecurityInvestigationReport {
                 }
             } elseif ($report.SignInLogsError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "SignInLogs_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix_Error.txt"
                 "Error collecting Sign-in Logs:`n$($report.SignInLogsError)`n`nNote: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days of data." | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.SignInLogsError = $errorFile
             }
 
             # Conditional Access Policies export
-            $csv = Join-Path $report.OutputFolder "ConditionalAccessPolicies.csv"
-            $json = Join-Path $report.OutputFolder "ConditionalAccessPolicies.json"
+            $csv = Join-Path $report.OutputFolder "ConditionalAccessPolicies$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "ConditionalAccessPolicies$ticketSuffix.json"
             if ($report.ConditionalAccessPolicies -and $report.ConditionalAccessPolicies.Count -gt 0) {
                 try {
                     # Flatten CA policies for CSV export
@@ -758,14 +781,14 @@ function New-SecurityInvestigationReport {
                 }
             } elseif ($report.CAPoliciesError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies$ticketSuffix_Error.txt"
                 "Error collecting Conditional Access Policies:`n$($report.CAPoliciesError)" | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.ConditionalAccessPoliciesError = $errorFile
             }
 
             # App Registrations export
-            $csv = Join-Path $report.OutputFolder "AppRegistrations.csv"
-            $json = Join-Path $report.OutputFolder "AppRegistrations.json"
+            $csv = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix.json"
             if ($report.AppRegistrations -and $report.AppRegistrations.Count -gt 0) {
                 try {
                     # Flatten app registrations for CSV export
@@ -802,7 +825,7 @@ function New-SecurityInvestigationReport {
                 }
             } elseif ($report.AppRegistrationsError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "AppRegistrations_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix_Error.txt"
                 "Error collecting App Registrations:`n$($report.AppRegistrationsError)" | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.AppRegistrationsError = $errorFile
             }
@@ -935,7 +958,7 @@ function New-SecurityInvestigationReport {
 
                 # Export combined user security posture
                 if ($userPosture.Count -gt 0) {
-                    $csv = Join-Path $report.OutputFolder "UserSecurityPosture.csv"
+                    $csv = Join-Path $report.OutputFolder "UserSecurityPosture$ticketSuffix.csv"
                     try { $userPosture | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityPostureCsv = $csv } catch {}
                 }
             } catch {
@@ -983,7 +1006,8 @@ function New-SecurityInvestigationReport {
             
             # Always generate standard AI readme (with all ticket data if provided, or without if not)
             $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
-            $llmPath = Join-Path $report.OutputFolder "_AI_Readme.txt"
+            $llmFileName = if ($ticketSuffix) { "_AI_Readme$ticketSuffix.txt" } else { "_AI_Readme.txt" }
+            $llmPath = Join-Path $report.OutputFolder $llmFileName
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
             Write-Host "AI readme instructions saved" -ForegroundColor Green
@@ -998,7 +1022,13 @@ function New-SecurityInvestigationReport {
                 $StatusLabel.Text = $statusMsg
             }
             Write-Host $statusMsg -ForegroundColor Cyan
-            $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder
+            # Generate zip filename with ticket numbers
+            $zipFileName = $null
+            if ($ticketSuffix) {
+                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                $zipFileName = "SecurityInvestigation$ticketSuffix`_$timestamp.zip"
+            }
+            $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder -ZipFileName $zipFileName
             if ($zipPath) {
                 $report.FilePaths.ZipFile = $zipPath
                 Write-Host "Zip archive created: $zipPath" -ForegroundColor Green
@@ -2545,9 +2575,11 @@ function New-SecurityInvestigationZip {
         # Create zip file path in the output folder
         $zipPath = Join-Path $OutputFolder $ZipFileName
 
-        # Get all CSV and JSON files, excluding _AI_Readme.txt
-        $filesToZip = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse |
-                      Where-Object { $_.Name -ne '_AI_Readme.txt' }
+        # Get all CSV, JSON files, and relevant TXT files (AI readme files and error files)
+        $csvJsonFiles = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse
+        $txtFiles = Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse |
+                    Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt)$' }
+        $filesToZip = $csvJsonFiles + $txtFiles
 
         if ($filesToZip.Count -eq 0) {
             Write-Warning "No CSV or JSON files found to zip in $OutputFolder"
