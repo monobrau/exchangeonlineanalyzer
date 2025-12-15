@@ -1732,7 +1732,15 @@ function Get-MailboxForwardingAndDelegation {
                 foreach ($mbx in $allMailboxes) {
                     $mbxUpn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
                     # Skip if already added (owned by selected user)
-                    if ($mailboxes | Where-Object { (if ($_.UserPrincipalName) { $_.UserPrincipalName } else { $_.PrimarySmtpAddress }) -eq $mbxUpn }) {
+                    $alreadyAdded = $false
+                    foreach ($existingMbx in $mailboxes) {
+                        $existingUpn = if ($existingMbx.UserPrincipalName) { $existingMbx.UserPrincipalName } else { $existingMbx.PrimarySmtpAddress }
+                        if ($existingUpn -eq $mbxUpn) {
+                            $alreadyAdded = $true
+                            break
+                        }
+                    }
+                    if ($alreadyAdded) {
                         continue
                     }
                     
