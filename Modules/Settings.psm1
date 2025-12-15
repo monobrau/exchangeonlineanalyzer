@@ -373,7 +373,11 @@ function Get-MemberberryContent {
 function New-AIReadme {
     param(
         [Parameter(Mandatory=$false)]
-        [object]$Settings
+        [object]$Settings,
+        [Parameter(Mandatory=$false)]
+        [string[]]$TicketNumbers = @(),
+        [Parameter(Mandatory=$false)]
+        [string]$TicketContent = ''
     )
     
     if (-not $Settings) {
@@ -399,9 +403,55 @@ function New-AIReadme {
         }
     }
     
+    # Build ticket information section if tickets are provided
+    $ticketSection = ''
+    # Ensure TicketNumbers is an array
+    $ticketNumsArray = @()
+    if ($TicketNumbers) {
+        if ($TicketNumbers -is [string]) {
+            $ticketNumsArray = @($TicketNumbers)
+        } elseif ($TicketNumbers -is [array]) {
+            $ticketNumsArray = $TicketNumbers
+        } else {
+            $ticketNumsArray = @($TicketNumbers)
+        }
+    }
+    Write-Host "New-AIReadme: Received TicketNumbers=$($ticketNumsArray.Count) ($($ticketNumsArray -join ', ')), TicketContent length=$($TicketContent.Length)" -ForegroundColor Gray
+    # Add ticket section if we have ticket numbers OR ticket content
+    if (($ticketNumsArray.Count -gt 0) -or (-not [string]::IsNullOrWhiteSpace($TicketContent))) {
+        Write-Host "New-AIReadme: Building ticket section (has numbers: $($ticketNumsArray.Count -gt 0), has content: $(-not [string]::IsNullOrWhiteSpace($TicketContent)))" -ForegroundColor Gray
+        $ticketNums = if ($ticketNumsArray.Count -gt 0) { $ticketNumsArray -join ', #' } else { '[Ticket Number]' }
+        $ticketSection = @"
+
+## ConnectWise Ticket Information
+
+**Ticket Number(s)**: #$ticketNums
+
+**Instructions**: Analyze the security alert based on the ticket information provided below. Use this ticket context to understand the specific alert details, user involved, timeline, and any relevant discussion or resolution notes.
+
+**Ticket Content**:
+$TicketContent
+
+---
+
+"@
+        Write-Host "New-AIReadme: Ticket section built (length: $($ticketSection.Length) chars, content preview: $($TicketContent.Substring(0, [Math]::Min(100, $TicketContent.Length)))...)" -ForegroundColor Gray
+    } else {
+        Write-Host "New-AIReadme: No ticket section (no numbers and no content)" -ForegroundColor Gray
+    }
+    
     # If memberberry is enabled and loaded successfully, use it exclusively
     if ($useMemberberry) {
         $readme = $memberberryContent.GlobalInstructions
+        
+        # Prepend ticket information if provided
+        if ($ticketSection) {
+            Write-Host "New-AIReadme: Prepending ticket section to memberberry content (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
+            $readme = "$ticketSection$readme"
+            Write-Host "New-AIReadme: Readme length after prepending: $($readme.Length)" -ForegroundColor Gray
+        } else {
+            Write-Host "New-AIReadme: No ticket section to prepend (memberberry enabled)" -ForegroundColor Yellow
+        }
         
         # Append client exceptions if found
         if ($memberberryContent.ClientExceptions) {
@@ -416,6 +466,12 @@ function New-AIReadme {
         # Add warning if present (prepend)
         if ($memberberryWarning) {
             $readme = "$memberberryWarning`n`n$readme"
+        }
+        
+        # Update subject line to include ticket number if provided
+        if ($ticketNumsArray.Count -gt 0) {
+            $subjectLine = "Subject: Security Alert: Ticket $(($ticketNumsArray | ForEach-Object { "#$_" }) -join ', ') - [Brief Subject]"
+            $readme = $readme -replace '(?m)^Subject: Security Alert:.*$', $subjectLine
         }
         
         return $readme
@@ -458,7 +514,7 @@ function New-AIReadme {
     
     $readme = @"
 Master Prompt - Generic Template (Copy and Save This)
-
+$ticketSection
 Role & Objective You are a Security Engineer acting on behalf of $companyName. Your task is to analyze security alert tickets, cross-reference them with attached CSV logs/text files, and classify the event as True Positive, False Positive, or Authorized Activity.
 
 
@@ -593,7 +649,7 @@ Action: Draft email asking for confirmation.
 
 III. Output Format
 
-Subject: Security Alert: Ticket #[Ticket Number] - [Brief Subject]
+Subject: Security Alert: Ticket #$(if ($ticketNumsArray.Count -gt 0) { $ticketNumsArray[0] } else { '[Ticket Number]' }) - [Brief Subject]
 
 
 
@@ -651,6 +707,145 @@ Clarification Questions [Ask 2 questions here regarding tuning, specific client 
     return $readme
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent
+function Extract-TicketNumbers {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TicketContent
+    )
+    
+    $ticketNumbers = @()
+    
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        Write-Host "Extract-TicketNumbers: Ticket content is empty or whitespace" -ForegroundColor Yellow
+        return $ticketNumbers
+    }
+    
+    Write-Host "Extract-TicketNumbers: Processing ticket content (length: $($TicketContent.Length))" -ForegroundColor Gray
+    Write-Host "Extract-TicketNumbers: Content preview (first 200 chars): $($TicketContent.Substring(0, [Math]::Min(200, $TicketContent.Length)))" -ForegroundColor Gray
+    
+    # Pattern 1: "Ticket #1809100" or "Service Ticket #1809100"
+    $pattern1 = 'Ticket\s+#(\d+)'
+    $matches1 = [regex]::Matches($TicketContent, $pattern1, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    Write-Host "Extract-TicketNumbers: Pattern 1 (Ticket #) found $($matches1.Count) match(es)" -ForegroundColor Gray
+    foreach ($match in $matches1) {
+        if ($match.Groups.Count -gt 1) {
+            $ticketNum = $match.Groups[1].Value
+            $ticketNumbers += $ticketNum
+            Write-Host "Extract-TicketNumbers: Found ticket number (Pattern 1): $ticketNum" -ForegroundColor Green
+        }
+    }
+    
+    # Pattern 2: "Ticket: 126575144" or "Ticket 126575144"
+    $pattern2 = 'Ticket[:\s]+(\d{7,})'
+    $matches2 = [regex]::Matches($TicketContent, $pattern2, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    Write-Host "Extract-TicketNumbers: Pattern 2 (Ticket: or Ticket ) found $($matches2.Count) match(es)" -ForegroundColor Gray
+    foreach ($match in $matches2) {
+        if ($match.Groups.Count -gt 1) {
+            $ticketNum = $match.Groups[1].Value
+            # Only add if not already found by pattern 1
+            if ($ticketNumbers -notcontains $ticketNum) {
+                $ticketNumbers += $ticketNum
+                Write-Host "Extract-TicketNumbers: Found ticket number (Pattern 2): $ticketNum" -ForegroundColor Green
+            }
+        }
+    }
+    
+    # Return unique ticket numbers
+    $uniqueTickets = $ticketNumbers | Select-Object -Unique
+    Write-Host "Extract-TicketNumbers: Extracted $($uniqueTickets.Count) unique ticket number(s): $($uniqueTickets -join ', ')" -ForegroundColor $(if ($uniqueTickets.Count -gt 0) { 'Green' } else { 'Yellow' })
+    return $uniqueTickets
+}
+
+function Filter-TicketContent {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TicketContent
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        return $TicketContent
+    }
+    
+    $lines = $TicketContent -split "`r?`n"
+    $filteredLines = @()
+    $skipConfigSection = $false
+    
+    $configListStarted = $false
+    foreach ($line in $lines) {
+        # Detect start of Configurations/Config List section
+        # Look for "Config List" header or "(No View)" marker that indicates config section
+        if ($line -match '^Configurations\s*$' -or $line -match '^Configurations\s+\d+' -or 
+            $line -match '^Config List' -or $line -match '^Configurations\s*:' -or
+            ($line -match '\(No View\)' -and ($line -match 'Config' -or $line -match 'Attachments'))) {
+            $skipConfigSection = $true
+            $configListStarted = $true
+            continue
+        }
+        
+        # Also detect if we're in a config table by looking for table headers
+        if (-not $skipConfigSection -and ($line -match 'Configuration Name\s+Configuration Type\s+Serial Number' -or
+            $line -match '^\s*RMITs are Remote')) {
+            $skipConfigSection = $true
+            $configListStarted = $true
+            continue
+        }
+        
+        # Detect end of Configurations section (look for next major section or end of file)
+        if ($skipConfigSection) {
+            # Stop skipping when we hit a new major section header
+            if ($line -match '^(Additional Details|Knowledge Base|Resources|Team|Ticket Where|Board Icon|Ticket Type|Notes|Discussion|Resolution|Request ID|Impact|Request Status|Source IP|Contact:|Resources:|Cc:|Tasks|Attachments|Category|Subcategory|Allow all clients|Do not show)' -or
+                ($line -match '^[A-Z][a-z]+\s*:' -and -not ($line -match 'Config'))) {
+                $skipConfigSection = $false
+                $configListStarted = $false
+                # Don't add the section header line itself if it's just a label
+                if ($line -match '^\s*[A-Z][a-z]+\s*:\s*$') {
+                    continue
+                }
+            }
+            # Skip lines that look like configuration table entries
+            # Pattern: starts with whitespace, then device ID, then device type/status
+            if ($line -match '^\s*[A-Z0-9\-]+\s+(Managed Workstation|Managed Server|APPLICATION|BACKUP|Managed Network Switch)' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+\d{2}/\d{2}/\d{2}' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Active\s+[0-9A-F]{2}-[0-9A-F]{2}-' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Active\s+\d+$' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z]\\[A-Z]' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Microsoft Windows' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+macOS' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Steve Bucek' -or
+                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}') {
+                continue
+            }
+            # Skip table header rows
+            if ($line -match 'Configuration Name\s+Configuration Type\s+Serial Number' -or
+                $line -match '^\s*RMITs are Remote' -or
+                $line -match '^\s*Drag a pod here') {
+                continue
+            }
+            # If we hit a meaningful line (not a config entry), stop skipping
+            if ($line.Trim().Length -gt 10 -and -not ($line -match '^\s*[A-Z0-9\-]+\s+')) {
+                $skipConfigSection = $false
+                $configListStarted = $false
+            } elseif ($line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+') {
+                # Looks like a config table row with 3+ columns, skip it
+                continue
+            } elseif ($line.Trim().Length -eq 0) {
+                # Blank line - continue skipping if we're in config section
+                continue
+            } else {
+                continue
+            }
+        }
+        
+        $filteredLines += $line
+    }
+    
+    # Remove excessive blank lines
+    $result = ($filteredLines -join "`n") -replace "(`r?`n){3,}", "`n`n"
+    
+    return $result.Trim()
+}
+
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent
 
 
