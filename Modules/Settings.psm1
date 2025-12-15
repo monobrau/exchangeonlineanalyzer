@@ -397,6 +397,68 @@ function New-AIReadme {
     
     if ($Settings.MemberberryEnabled -eq $true -and $Settings.MemberberryPath) {
         try {
+            # Run memberberry script to generate fresh output
+            Write-Host "Running memberberry script to generate updated output..." -ForegroundColor Cyan
+            
+            # Try to find and execute memberberry script
+            # Common script names: memberberry.ps1, run.ps1, main.ps1, memberberry.py, run.py, main.py
+            $memberberryScript = $null
+            $scriptNames = @('memberberry.ps1', 'run.ps1', 'main.ps1', 'memberberry.py', 'run.py', 'main.py', 'memberberry.bat', 'run.bat')
+            
+            foreach ($scriptName in $scriptNames) {
+                $scriptPath = Join-Path $Settings.MemberberryPath $scriptName
+                if (Test-Path $scriptPath) {
+                    $memberberryScript = $scriptPath
+                    break
+                }
+            }
+            
+            if ($memberberryScript) {
+                Write-Host "Found memberberry script: $memberberryScript" -ForegroundColor Gray
+                try {
+                    $scriptExtension = [System.IO.Path]::GetExtension($memberberryScript).ToLower()
+                    
+                    if ($scriptExtension -eq '.ps1') {
+                        # Execute PowerShell script using call operator to show output in current console
+                        try {
+                            & $memberberryScript
+                            Write-Host "Memberberry script completed successfully" -ForegroundColor Green
+                        } catch {
+                            Write-Warning "Memberberry script execution failed: $($_.Exception.Message). Continuing with existing output file."
+                        }
+                    } elseif ($scriptExtension -eq '.py') {
+                        # Execute Python script
+                        $pythonExe = Get-Command python -ErrorAction SilentlyContinue
+                        if (-not $pythonExe) {
+                            $pythonExe = Get-Command python3 -ErrorAction SilentlyContinue
+                        }
+                        if ($pythonExe) {
+                            $process = Start-Process -FilePath $pythonExe.Path -ArgumentList "`"$memberberryScript`"" -Wait -PassThru -NoNewWindow
+                            if ($process.ExitCode -ne 0) {
+                                Write-Warning "Memberberry script exited with code $($process.ExitCode)"
+                            } else {
+                                Write-Host "Memberberry script completed successfully" -ForegroundColor Green
+                            }
+                        } else {
+                            Write-Warning "Python not found. Skipping memberberry script execution."
+                        }
+                    } elseif ($scriptExtension -eq '.bat' -or $scriptExtension -eq '.cmd') {
+                        # Execute batch file
+                        $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$memberberryScript`"" -Wait -PassThru -NoNewWindow
+                        if ($process.ExitCode -ne 0) {
+                            Write-Warning "Memberberry script exited with code $($process.ExitCode)"
+                        } else {
+                            Write-Host "Memberberry script completed successfully" -ForegroundColor Green
+                        }
+                    }
+                } catch {
+                    Write-Warning "Failed to execute memberberry script: $($_.Exception.Message). Continuing with existing output file."
+                }
+            } else {
+                Write-Host "Memberberry script not found in $($Settings.MemberberryPath). Looking for: $($scriptNames -join ', ')" -ForegroundColor Yellow
+                Write-Host "Continuing with existing output file if available." -ForegroundColor Yellow
+            }
+            
             # Construct path to memberberry output file
             # Expected: $MemberberryPath\output\memberberry.md
             # Example: C:\Git\memberberry\output\memberberry.md
