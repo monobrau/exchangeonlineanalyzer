@@ -670,18 +670,18 @@ $TicketContent
     if ($useMemberberry) {
         $readme = $memberberryContent.GlobalInstructions
         
-        # Prepend ticket information if provided
-        if ($ticketSection) {
-            Write-Host "New-AIReadme: Prepending ticket section to memberberry content (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
-            $readme = "$ticketSection$readme"
-            Write-Host "New-AIReadme: Readme length after prepending: $($readme.Length)" -ForegroundColor Gray
-        } else {
-            Write-Host "New-AIReadme: No ticket section to prepend (memberberry enabled)" -ForegroundColor Yellow
-        }
-        
         # Append client exceptions if found (procedures are already included in GlobalInstructions)
         if ($memberberryContent.ClientExceptions) {
             $readme += "`n`n$($memberberryContent.ClientExceptions)"
+        }
+        
+        # Append ticket information AFTER the instructions if provided
+        if ($ticketSection) {
+            Write-Host "New-AIReadme: Appending ticket section after memberberry content (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
+            $readme += "`n`n$ticketSection"
+            Write-Host "New-AIReadme: Readme length after appending: $($readme.Length)" -ForegroundColor Gray
+        } else {
+            Write-Host "New-AIReadme: No ticket section to append (memberberry enabled)" -ForegroundColor Yellow
         }
         
         # Add warning if present (prepend)
