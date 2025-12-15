@@ -338,15 +338,15 @@ function Get-MemberberryContent {
                     
                     # Also include global exceptions if present
                     if ($exceptionsJson._global) {
-                        $globalText = "`n`n## _global`n`n"
+                        $globalText = "`n`n## ⚠️ GLOBAL EXCEPTIONS (APPLIES TO ALL CLIENTS) ⚠️`n`n"
                         if ($exceptionsJson._global.notes) {
-                            $globalText += "**Notes**: $($exceptionsJson._global.notes)`n"
+                            $globalText += "### CRITICAL GLOBAL NOTES`n`n$($exceptionsJson._global.notes)`n`n"
                         }
                         if ($exceptionsJson._global.authorized_tools -and $exceptionsJson._global.authorized_tools.Count -gt 0) {
-                            $globalText += "**Authorized Tools**: $($exceptionsJson._global.authorized_tools -join ', ')`n"
+                            $globalText += "**Authorized Tools**: $($exceptionsJson._global.authorized_tools -join ', ')`n`n"
                         }
                         if ($exceptionsJson._global.vips -and $exceptionsJson._global.vips.Count -gt 0) {
-                            $globalText += "**VIPs**: $($exceptionsJson._global.vips -join ', ')`n"
+                            $globalText += "**VIPs**: $($exceptionsJson._global.vips -join ', ')`n`n"
                         }
                         if ($result.ClientExceptions) {
                             $result.ClientExceptions += $globalText.Trim()
@@ -626,15 +626,15 @@ function New-AIReadme {
                             
                             # Also include global exceptions if present
                             if ($exceptionsJson._global) {
-                                $globalText = "`n`n## _global`n`n"
+                                $globalText = "`n`n## ⚠️ GLOBAL EXCEPTIONS (APPLIES TO ALL CLIENTS) ⚠️`n`n"
                                 if ($exceptionsJson._global.notes) {
-                                    $globalText += "**Notes**: $($exceptionsJson._global.notes)`n"
+                                    $globalText += "### CRITICAL GLOBAL NOTES`n`n$($exceptionsJson._global.notes)`n`n"
                                 }
                                 if ($exceptionsJson._global.authorized_tools -and $exceptionsJson._global.authorized_tools.Count -gt 0) {
-                                    $globalText += "**Authorized Tools**: $($exceptionsJson._global.authorized_tools -join ', ')`n"
+                                    $globalText += "**Authorized Tools**: $($exceptionsJson._global.authorized_tools -join ', ')`n`n"
                                 }
                                 if ($exceptionsJson._global.vips -and $exceptionsJson._global.vips.Count -gt 0) {
-                                    $globalText += "**VIPs**: $($exceptionsJson._global.vips -join ', ')`n"
+                                    $globalText += "**VIPs**: $($exceptionsJson._global.vips -join ', ')`n`n"
                                 }
                                 if ($memberberryContent.ClientExceptions) {
                                     $memberberryContent.ClientExceptions += $globalText.Trim()
@@ -727,6 +727,17 @@ $TicketContent
 - Example: If you see "**Joseph Nedvidek** → Use preferred name: **Joe**", address the user as "Hi Joe," NOT "Hi Joseph,"
 - Name preferences are listed in the CLIENT EXCEPTIONS section under "**Name Preferences**"
 - **Failure to use preferred names is a critical error**
+
+### Advanced IP Scanner - CRITICAL GLOBAL EXCEPTION (MANDATORY CHECK)
+- **⚠️ ALWAYS check the GLOBAL EXCEPTIONS section for Advanced IP Scanner instructions**
+- **When Advanced IP Scanner is detected:**
+  - **DO NOT request a server reboot** - If file status is "Quarantined" but not "Mitigated," mitigation will complete automatically on next reboot. Inform the client of this, but DO NOT ask them to reboot.
+  - **DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request. This is explicitly stated in GLOBAL EXCEPTIONS.
+  - **DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement if they need IP scanning functionality.
+  - **Narrative**: Explain that while River Run historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities.
+  - **Replacement**: Suggest "Angry IP Scanner" ONLY if the client requires IP scanning functionality on this device. Explicitly state this is a recommendation for them to implement if needed.
+- **These constraints are in the GLOBAL EXCEPTIONS section - check there for full details**
+- **Failure to follow these constraints is a critical error**
 
 ### Software Recommendations (MANDATORY CHECK)
 - **ALWAYS check for software recommendations in the instructions**
