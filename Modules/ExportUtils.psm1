@@ -2237,6 +2237,7 @@ function New-LLMInvestigationInstructions {
             Import-Module $settingsPath -Force -ErrorAction SilentlyContinue
             if (Get-Command New-AIReadme -ErrorAction SilentlyContinue) {
                 $settings = Get-AppSettings
+                Write-Host "New-LLMInvestigationInstructions: Loaded settings - MemberberryEnabled=$($settings.MemberberryEnabled), MemberberryPath='$($settings.MemberberryPath)'" -ForegroundColor Cyan
                 # Override InvestigatorName and CompanyName from report if provided
                 if ($Report.Investigator) { $settings.InvestigatorName = $Report.Investigator }
                 if ($Report.Company) { $settings.CompanyName = $Report.Company }
@@ -2254,7 +2255,16 @@ function New-LLMInvestigationInstructions {
                 }
                 $ticketContent = if ($Report.TicketContent) { $Report.TicketContent } else { '' }
                 Write-Host "New-LLMInvestigationInstructions: Passing TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), TicketContent length=$($ticketContent.Length)" -ForegroundColor Gray
-                return New-AIReadme -Settings $settings -TicketNumbers $ticketNumbers -TicketContent $ticketContent
+                $result = New-AIReadme -Settings $settings -TicketNumbers $ticketNumbers -TicketContent $ticketContent
+                Write-Host "New-LLMInvestigationInstructions: AI readme generated (length: $($result.Length) chars)" -ForegroundColor Cyan
+                # Check if result contains memberberry content (should start with "# MEMBERBERRY" or similar, not "Master Prompt")
+                if ($result -match '^Master Prompt') {
+                    Write-Warning "New-LLMInvestigationInstructions: WARNING - Generated readme appears to be using default template instead of memberberry content!"
+                    Write-Host "  This suggests memberberry is not enabled or failed to load. Check settings: MemberberryEnabled=$($settings.MemberberryEnabled), MemberberryPath='$($settings.MemberberryPath)'" -ForegroundColor Yellow
+                } elseif ($result -match 'MEMBERBERRY|# MEMBERBERRY') {
+                    Write-Host "New-LLMInvestigationInstructions: ✓ Memberberry content detected in generated readme" -ForegroundColor Green
+                }
+                return $result
             }
         }
     } catch {
