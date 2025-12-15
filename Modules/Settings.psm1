@@ -562,7 +562,13 @@ function New-AIReadme {
                                 Write-Host "New-AIReadme: Loading global exceptions from JSON" -ForegroundColor Gray
                                 $globalText = "`n`n## ⚠️ GLOBAL EXCEPTIONS (APPLIES TO ALL CLIENTS) ⚠️`n`n"
                                 if ($exceptionsJson._global.notes) {
-                                    $globalText += "### CRITICAL GLOBAL NOTES`n`n$($exceptionsJson._global.notes)`n`n"
+                                    # Process notes to add explicit reboot prohibition for Advanced IP Scanner
+                                    $notes = $exceptionsJson._global.notes
+                                    # If notes mention Advanced IP Scanner and mitigation/reboot, add explicit prohibition
+                                    if ($notes -match 'Advanced IP Scanner' -and ($notes -match 'mitigation|reboot|Quarantined|Mitigated')) {
+                                        $notes = $notes -replace '(?m)(Technical Note:.*?reboot\.)', "`$1`n`n**🚫 CRITICAL: DO NOT REQUEST A REBOOT. Mitigation happens automatically - inform the client but DO NOT ask them to reboot.**"
+                                    }
+                                    $globalText += "### CRITICAL GLOBAL NOTES`n`n$notes`n`n"
                                 }
                                 if ($exceptionsJson._global.authorized_tools -and $exceptionsJson._global.authorized_tools.Count -gt 0) {
                                     $globalText += "**Authorized Tools**: $($exceptionsJson._global.authorized_tools -join ', ')`n`n"
