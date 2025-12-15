@@ -2226,10 +2226,11 @@ $chkMemberberryEnabled.Location = New-Object System.Drawing.Point(10,520)
 $chkMemberberryEnabled.AutoSize = $true
 
 $lblMemberberryPath = New-Object System.Windows.Forms.Label
-$lblMemberberryPath.Text = "Memberberry Instructions File:"
+$lblMemberberryPath.Text = "Memberberry Directory:"
 $lblMemberberryPath.Location = New-Object System.Drawing.Point(10,545)
 $lblMemberberryPath.AutoSize = $true
 $lblMemberberryPath.Width = 180
+$lblMemberberryPath.ToolTipText = "Directory containing compile.ps1 and output\memberberry.md (e.g., C:\git\memberberry)"
 
 $txtMemberberryPath = New-Object System.Windows.Forms.TextBox
 $txtMemberberryPath.Location = New-Object System.Drawing.Point(200, 542)
@@ -2240,6 +2241,7 @@ $lblMemberberryExceptionsPath.Text = "Memberberry Exceptions File:"
 $lblMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(10,575)
 $lblMemberberryExceptionsPath.AutoSize = $true
 $lblMemberberryExceptionsPath.Width = 180
+$lblMemberberryExceptionsPath.ToolTipText = "Path to exceptions.json file (e.g., C:\git\memberberry\exceptions.json)"
 
 $txtMemberberryExceptionsPath = New-Object System.Windows.Forms.TextBox
 $txtMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(200, 572)
@@ -2376,7 +2378,7 @@ $settingsTab.add_Enter({
             if ($s.MemberberryPath) {
                 $txtMemberberryPath.Text = $s.MemberberryPath
             } else {
-                $txtMemberberryPath.Text = 'C:\git\memberberry\memberberry-complete-output.txt'
+                $txtMemberberryPath.Text = 'C:\git\memberberry'
             }
             if ($s.MemberberryExceptionsPath) {
                 $txtMemberberryExceptionsPath.Text = $s.MemberberryExceptionsPath
@@ -2456,7 +2458,7 @@ $btnBrowseSettingsLocation.add_Click({
                     if ($s.MemberberryPath) {
                         $txtMemberberryPath.Text = $s.MemberberryPath
                     } else {
-                        $txtMemberberryPath.Text = 'C:\git\memberberry\memberberry-complete-output.txt'
+                        $txtMemberberryPath.Text = 'C:\git\memberberry'
                     }
                     if ($s.MemberberryExceptionsPath) {
                         $txtMemberberryExceptionsPath.Text = $s.MemberberryExceptionsPath
@@ -2521,6 +2523,31 @@ $btnSave.add_Click({
             }
         }
         
+        # Validate memberberry paths before saving
+        $memberberryPath = $txtMemberberryPath.Text.Trim()
+        $memberberryExceptionsPath = $txtMemberberryExceptionsPath.Text.Trim()
+        
+        if ($chkMemberberryEnabled.Checked) {
+            # Validate MemberberryPath is a directory
+            if ($memberberryPath) {
+                if (Test-Path $memberberryPath -PathType Leaf) {
+                    [System.Windows.Forms.MessageBox]::Show("Memberberry Directory must point to a directory, not a file.`n`nCurrent value: $memberberryPath`n`nExpected: Directory path (e.g., C:\git\memberberry)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                } elseif (-not (Test-Path $memberberryPath -PathType Container)) {
+                    [System.Windows.Forms.MessageBox]::Show("Memberberry Directory does not exist: $memberberryPath", "Directory Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                }
+            }
+            
+            # Validate MemberberryExceptionsPath is a file (if provided)
+            if ($memberberryExceptionsPath) {
+                if (Test-Path $memberberryExceptionsPath -PathType Container) {
+                    [System.Windows.Forms.MessageBox]::Show("Memberberry Exceptions File must point to a file, not a directory.`n`nCurrent value: $memberberryExceptionsPath`n`nExpected: File path (e.g., C:\git\memberberry\exceptions.json)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                }
+            }
+        }
+        
         $s = [pscustomobject]@{
             InvestigatorName = $txtInv.Text
             InvestigatorTitle = $txtInvTitle.Text
@@ -2536,8 +2563,8 @@ $btnSave.add_Click({
             KnownAdmins = $txtKnownAdmins.Text
             ThirdPartyMFA = $txtThirdPartyMFA.Text
             MemberberryEnabled = $chkMemberberryEnabled.Checked
-            MemberberryPath = $txtMemberberryPath.Text
-            MemberberryExceptionsPath = $txtMemberberryExceptionsPath.Text
+            MemberberryPath = $memberberryPath
+            MemberberryExceptionsPath = $memberberryExceptionsPath
             ClientContactOverrides = $overridesJson
         }
         if (Save-AppSettings -Settings $s) {
