@@ -541,9 +541,21 @@ function New-AIReadme {
                 
                 # Load client exceptions from JSON file if provided
                 $exceptionsPath = if ($Settings.MemberberryExceptionsPath) { $Settings.MemberberryExceptionsPath } else { '' }
+                
+                # Validate exceptions path - must be a file, not a directory
+                if ($exceptionsPath) {
+                    if (Test-Path $exceptionsPath -PathType Container) {
+                        Write-Warning "MemberberryExceptionsPath points to a directory, not a file: $exceptionsPath. Expected path to exceptions.json file (e.g., 'C:\git\memberberry\exceptions.json'). Skipping exceptions loading."
+                        $exceptionsPath = ''
+                    } elseif (-not (Test-Path $exceptionsPath -PathType Leaf)) {
+                        Write-Warning "MemberberryExceptionsPath file not found: $exceptionsPath. Skipping exceptions loading."
+                        $exceptionsPath = ''
+                    }
+                }
+                
                 if ($Settings.CompanyName -and -not [string]::IsNullOrWhiteSpace($Settings.CompanyName) -and $exceptionsPath) {
                     try {
-                        if (Test-Path $exceptionsPath) {
+                        if (Test-Path $exceptionsPath -PathType Leaf) {
                             $exceptionsJson = Get-Content -Path $exceptionsPath -Raw -ErrorAction Stop | ConvertFrom-Json
                             
                             # Try to find matching client (exact match first, then partial)
