@@ -769,83 +769,129 @@ function Filter-TicketContent {
     $lines = $TicketContent -split "`r?`n"
     $filteredLines = @()
     $skipConfigSection = $false
-    
     $configListStarted = $false
+    $blankLineCount = 0
+    
     foreach ($line in $lines) {
         # Detect start of Configurations/Config List section
-        # Look for "Config List" header or "(No View)" marker that indicates config section
-        if ($line -match '^Configurations\s*$' -or $line -match '^Configurations\s+\d+' -or 
-            $line -match '^Config List' -or $line -match '^Configurations\s*:' -or
+        # Look for various markers that indicate config section
+        if ($line -match '^Configurations\s*$' -or 
+            $line -match '^Configurations\s+\d+' -or 
+            $line -match '^Config List' -or 
+            $line -match '^Configurations\s*:' -or
+            $line -match 'Config List\s*\(No View\)' -or
             ($line -match '\(No View\)' -and ($line -match 'Config' -or $line -match 'Attachments'))) {
             $skipConfigSection = $true
             $configListStarted = $true
+            $blankLineCount = 0
             continue
         }
         
-        # Also detect if we're in a config table by looking for table headers
-        if (-not $skipConfigSection -and ($line -match 'Configuration Name\s+Configuration Type\s+Serial Number' -or
-            $line -match '^\s*RMITs are Remote')) {
+        # Detect config table headers (more comprehensive patterns)
+        if (-not $skipConfigSection -and (
+            $line -match 'Configuration Name\s+Configuration Type\s+Serial Number' -or
+            $line -match 'Configuration Name\s+Configuration Type\s+Serial Number\s+Model Number' -or
+            $line -match '^\s*RMITs are Remote' -or
+            $line -match '^\s*Drag a pod here')) {
             $skipConfigSection = $true
             $configListStarted = $true
+            $blankLineCount = 0
             continue
         }
         
-        # Detect end of Configurations section (look for next major section or end of file)
+        # Detect end of Configurations section
         if ($skipConfigSection) {
-            # Stop skipping when we hit a new major section header
-            if ($line -match '^(Additional Details|Knowledge Base|Resources|Team|Ticket Where|Board Icon|Ticket Type|Notes|Discussion|Resolution|Request ID|Impact|Request Status|Source IP|Contact:|Resources:|Cc:|Tasks|Attachments|Category|Subcategory|Allow all clients|Do not show)' -or
-                ($line -match '^[A-Z][a-z]+\s*:' -and -not ($line -match 'Config'))) {
+            # Stop skipping when we hit a new major section header or meaningful content
+            if ($line -match '^(Additional Details|Knowledge Base|Resources|Team|Ticket Where|Board Icon|Ticket Type|Notes|Discussion|Resolution|Request ID|Impact|Request Status|Source IP|Contact:|Resources:|Cc:|Tasks|Attachments|Category|Subcategory|Allow all clients|Do not show|Drag a pod here|Search)' -or
+                ($line -match '^[A-Z][a-z]+\s*:' -and -not ($line -match 'Config|Configuration'))) {
                 $skipConfigSection = $false
                 $configListStarted = $false
+                $blankLineCount = 0
                 # Don't add the section header line itself if it's just a label
                 if ($line -match '^\s*[A-Z][a-z]+\s*:\s*$') {
                     continue
                 }
             }
+            
             # Skip lines that look like configuration table entries
-            # Pattern: starts with whitespace, then device ID, then device type/status
-            if ($line -match '^\s*[A-Z0-9\-]+\s+(Managed Workstation|Managed Server|APPLICATION|BACKUP|Managed Network Switch)' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+\d{2}/\d{2}/\d{2}' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Active\s+[0-9A-F]{2}-[0-9A-F]{2}-' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Active\s+\d+$' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z]\\[A-Z]' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Microsoft Windows' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+macOS' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+Steve Bucek' -or
-                $line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}') {
+            # Pattern: Device name/ID followed by device type (Managed Workstation, Managed Server, etc.)
+            if ($line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|APPLICATION|BACKUP|Managed Network Switch|FIREWALL|HYPERVISOR|Managed Network Firewall)' -or
+                # Pattern: Device name followed by serial/model numbers and dates
+                $line -match '^\s*[A-Z0-9\-_]+\s+[A-Z0-9]+\s+[A-Z0-9\-]+\s+\d{1,2}/\d{1,2}/\d{2,4}' -or
+                # Pattern: Device name, type, serial, model, contact name, date
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+[A-Z0-9\-]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d{1,2}/\d{1,2}/\d{2,4}' -or
+                # Pattern: Device name, type, serial, Active status, MAC address
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+Active\s+[0-9A-F]{2}-[0-9A-F]{2}-' -or
+                # Pattern: Device name, type, serial, Active, numeric ID
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+Active\s+\d+$' -or
+                # Pattern: Device name, type, serial, domain\username
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+[A-Z]\\[A-Z0-9]' -or
+                # Pattern: Device name, type, serial, IP address
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' -or
+                # Pattern: Device name, type, OS version
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+Microsoft Windows' -or
+                # Pattern: Device name, type, macOS
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+macOS' -or
+                # Pattern: Device name, type, serial, contact name, date, Active
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+[A-Z0-9\-]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d{1,2}/\d{1,2}/\d{2,4}\s+Active' -or
+                # Pattern: Device name, type, serial, IP, OS
+                $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\s+Microsoft Windows' -or
+                # Pattern: Multiple tab-separated columns (config table row)
+                ($line -match '^\s*[A-Z0-9\-_]+\s+' -and ($line -split '\s+').Count -ge 4 -and $line -match '(Managed|Active|Microsoft Windows|macOS|FIREWALL|HYPERVISOR)')) {
+                $blankLineCount = 0
                 continue
             }
+            
             # Skip table header rows
             if ($line -match 'Configuration Name\s+Configuration Type\s+Serial Number' -or
+                $line -match 'Configuration Name\s+Configuration Type\s+Serial Number\s+Model Number' -or
                 $line -match '^\s*RMITs are Remote' -or
-                $line -match '^\s*Drag a pod here') {
+                $line -match '^\s*Drag a pod here' -or
+                $line -match '^\s*Show All Active') {
+                $blankLineCount = 0
                 continue
             }
-            # If we hit a meaningful line (not a config entry), stop skipping
-            if ($line.Trim().Length -gt 10 -and -not ($line -match '^\s*[A-Z0-9\-]+\s+')) {
+            
+            # Track blank lines - if we see 3+ blank lines in a row, likely end of config section
+            if ($line.Trim().Length -eq 0) {
+                $blankLineCount++
+                if ($blankLineCount -ge 3) {
+                    # Multiple blank lines - might be end of config section, but continue skipping
+                    continue
+                }
+            } else {
+                $blankLineCount = 0
+            }
+            
+            # If we hit a meaningful line that doesn't look like a config entry, stop skipping
+            # Meaningful content: has substantial text, doesn't start with device ID pattern
+            if ($line.Trim().Length -gt 20 -and 
+                -not ($line -match '^\s*[A-Z0-9\-_]+\s+') -and
+                -not ($line -match '^\s*[A-Z0-9\-_]+\s+(Managed|FIREWALL|HYPERVISOR)')) {
+                # This looks like real content, stop skipping
                 $skipConfigSection = $false
                 $configListStarted = $false
-            } elseif ($line -match '^\s*[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+[A-Z0-9\-]+\s+') {
-                # Looks like a config table row with 3+ columns, skip it
-                continue
-            } elseif ($line.Trim().Length -eq 0) {
-                # Blank line - continue skipping if we're in config section
-                continue
+                $blankLineCount = 0
+                # Add this line
+                $filteredLines += $line
             } else {
+                # Still looks like config content, skip it
                 continue
             }
+        } else {
+            # Not in config section, add the line
+            $blankLineCount = 0
+            $filteredLines += $line
         }
-        
-        $filteredLines += $line
     }
     
-    # Remove excessive blank lines
+    # Remove excessive blank lines (3+ consecutive blank lines become 2)
     $result = ($filteredLines -join "`n") -replace "(`r?`n){3,}", "`n`n"
     
     return $result.Trim()
 }
 
 Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent
+
 
 
