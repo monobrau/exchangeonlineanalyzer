@@ -1098,6 +1098,22 @@ try {
                 # Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\{TenantName}\{Timestamp}
                 Write-Status "Generating security investigation report..."
                 Write-Host "Starting report generation..." -ForegroundColor Yellow
+                # Filter ticket content to remove configuration sections
+                if (`$ticketContent -and -not [string]::IsNullOrWhiteSpace(`$ticketContent)) {
+                    try {
+                        Import-Module "`$ScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                        if (Get-Command Filter-TicketContent -ErrorAction SilentlyContinue) {
+                            `$originalLength = `$ticketContent.Length
+                            `$ticketContent = Filter-TicketContent -TicketContent `$ticketContent
+                            Write-Host "Ticket content filtered: `$originalLength -> `$(`$ticketContent.Length) characters" -ForegroundColor Gray
+                        } else {
+                            Write-Warning "Filter-TicketContent function not found, using raw ticket content"
+                        }
+                    } catch {
+                        Write-Warning "Failed to filter ticket content: `$(`$_.Exception.Message). Using raw content."
+                    }
+                }
+                
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
