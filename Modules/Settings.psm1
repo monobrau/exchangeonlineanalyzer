@@ -499,40 +499,26 @@ function New-AIReadme {
                 }
                 
                 # Extract only useful content (before ticket starts)
+                # Use the ENTIRE memberberry.md content as-is (minus ticket information)
                 $usefulContent = if ($ticketStartPos -lt $rawContent.Length) {
                     $rawContent.Substring(0, $ticketStartPos).TrimEnd()
                 } else {
                     $rawContent
                 }
                 
-                # Extract global instructions (everything before PROCEDURES)
-                $proceduresMarker = '(?m)^# PROCEDURES'
-                if ($usefulContent -match "(.+?)$proceduresMarker") {
-                    $memberberryContent.GlobalInstructions = $matches[1].Trim()
-                } else {
-                    # If no PROCEDURES marker, use everything we have
-                    $memberberryContent.GlobalInstructions = $usefulContent.Trim()
+                # Remove CLIENT EXCEPTIONS section from the file (we use JSON for that instead)
+                # But keep everything else including PROCEDURES
+                $clientExceptionsMarker = '(?m)^# CLIENT EXCEPTIONS'
+                if ($usefulContent -match "(.+?)$clientExceptionsMarker") {
+                    $usefulContent = $matches[1].TrimEnd()
                 }
                 
-                # Extract procedures section
-                if ($usefulContent -match "$proceduresMarker(.+)") {
-                    $proceduresContent = $matches[1]
-                    
-                    # Remove CLIENT EXCEPTIONS section if present (we use JSON for that)
-                    $clientExceptionsMarker = '(?m)^# CLIENT EXCEPTIONS'
-                    if ($proceduresContent -match "(.+?)$clientExceptionsMarker") {
-                        $proceduresContent = $matches[1]
-                    }
-                    
-                    # Clean up any trailing ticket markers
-                    foreach ($marker in $ticketMarkers) {
-                        if ($proceduresContent -match "(.+?)$marker") {
-                            $proceduresContent = $matches[1]
-                        }
-                    }
-                    
-                    $memberberryContent.Procedures = $proceduresContent.Trim()
-                }
+                # Use the entire filtered content as GlobalInstructions (includes PROCEDURES)
+                # This preserves the complete memberberry instructions as intended
+                $memberberryContent.GlobalInstructions = $usefulContent.Trim()
+                
+                # Procedures are already included in GlobalInstructions, so set to empty
+                $memberberryContent.Procedures = ''
                 
                 # Load client exceptions from JSON file if provided
                 $exceptionsPath = if ($Settings.MemberberryExceptionsPath) { $Settings.MemberberryExceptionsPath } else { '' }
@@ -693,14 +679,9 @@ $TicketContent
             Write-Host "New-AIReadme: No ticket section to prepend (memberberry enabled)" -ForegroundColor Yellow
         }
         
-        # Append client exceptions if found
+        # Append client exceptions if found (procedures are already included in GlobalInstructions)
         if ($memberberryContent.ClientExceptions) {
             $readme += "`n`n$($memberberryContent.ClientExceptions)"
-        }
-        
-        # Append procedures if available
-        if ($memberberryContent.Procedures) {
-            $readme += "`n`n$($memberberryContent.Procedures)"
         }
         
         # Add warning if present (prepend)
