@@ -386,17 +386,195 @@ function New-AIReadme {
     
     # Check if memberberry is enabled and file exists
     $useMemberberry = $false
-    $memberberryContent = $null
+    $memberberryContent = @{
+        GlobalInstructions = ''
+        ClientExceptions = ''
+        Procedures = ''
+        Success = $false
+        ErrorMessage = ''
+    }
     $memberberryWarning = ''
     
     if ($Settings.MemberberryEnabled -eq $true -and $Settings.MemberberryPath) {
         try {
-            $exceptionsPath = if ($Settings.MemberberryExceptionsPath) { $Settings.MemberberryExceptionsPath } else { '' }
-            $memberberryContent = Get-MemberberryContent -MemberberryPath $Settings.MemberberryPath -MemberberryExceptionsPath $exceptionsPath -CompanyName $Settings.CompanyName
-            if ($memberberryContent.Success) {
+            # Construct path to memberberry output file
+            # Expected: $MemberberryPath\output\memberberry.md
+            # Example: C:\Git\memberberry\output\memberberry.md
+            $memberberryOutputFile = Join-Path $Settings.MemberberryPath "output\memberberry.md"
+            
+            if (Test-Path $memberberryOutputFile) {
+                Write-Host "Reading memberberry content from: $memberberryOutputFile" -ForegroundColor Gray
+                $rawContent = Get-Content $memberberryOutputFile -Raw -ErrorAction Stop
+                
+                # Filter out ticket information (same logic as before)
+                $ticketMarkers = @(
+                    '(?m)^Please analyze the following',
+                    '(?m)^Ticket #[0-9]',
+                    '(?m)^Security Alert',
+                    '(?m)^Alert Type',
+                    '(?m)^User:',
+                    '(?m)^Timestamp:',
+                    '(?m)^IP Address:',
+                    '(?m)^Contact:',
+                    '(?m)^Subject:',
+                    '(?m)^From:',
+                    '(?m)^To:',
+                    '(?m)^Date:',
+                    '(?m)^Message ID:',
+                    '(?m)^Incident',
+                    '(?m)^Case'
+                )
+                
+                # Find the earliest ticket marker position
+                $ticketStartPos = $rawContent.Length
+                foreach ($marker in $ticketMarkers) {
+                    if ($rawContent -match $marker) {
+                        $matchPos = $rawContent.IndexOf($matches[0])
+                        if ($matchPos -ge 0 -and $matchPos -lt $ticketStartPos) {
+                            $ticketStartPos = $matchPos
+                        }
+                    }
+                }
+                
+                # Extract only useful content (before ticket starts)
+                $usefulContent = if ($ticketStartPos -lt $rawContent.Length) {
+                    $rawContent.Substring(0, $ticketStartPos).TrimEnd()
+                } else {
+                    $rawContent
+                }
+                
+                # Extract global instructions (everything before PROCEDURES)
+                $proceduresMarker = '(?m)^# PROCEDURES'
+                if ($usefulContent -match "(.+?)$proceduresMarker") {
+                    $memberberryContent.GlobalInstructions = $matches[1].Trim()
+                } else {
+                    # If no PROCEDURES marker, use everything we have
+                    $memberberryContent.GlobalInstructions = $usefulContent.Trim()
+                }
+                
+                # Extract procedures section
+                if ($usefulContent -match "$proceduresMarker(.+)") {
+                    $proceduresContent = $matches[1]
+                    
+                    # Remove CLIENT EXCEPTIONS section if present (we use JSON for that)
+                    $clientExceptionsMarker = '(?m)^# CLIENT EXCEPTIONS'
+                    if ($proceduresContent -match "(.+?)$clientExceptionsMarker") {
+                        $proceduresContent = $matches[1]
+                    }
+                    
+                    # Clean up any trailing ticket markers
+                    foreach ($marker in $ticketMarkers) {
+                        if ($proceduresContent -match "(.+?)$marker") {
+                            $proceduresContent = $matches[1]
+                        }
+                    }
+                    
+                    $memberberryContent.Procedures = $proceduresContent.Trim()
+                }
+                
+                # Load client exceptions from JSON file if provided
+                $exceptionsPath = if ($Settings.MemberberryExceptionsPath) { $Settings.MemberberryExceptionsPath } else { '' }
+                if ($Settings.CompanyName -and -not [string]::IsNullOrWhiteSpace($Settings.CompanyName) -and $exceptionsPath) {
+                    try {
+                        if (Test-Path $exceptionsPath) {
+                            $exceptionsJson = Get-Content -Path $exceptionsPath -Raw -ErrorAction Stop | ConvertFrom-Json
+                            
+                            # Try to find matching client (exact match first, then partial)
+                            $matchedClient = $null
+                            $matchedKey = $null
+                            
+                            # First try exact match
+                            foreach ($key in $exceptionsJson.PSObject.Properties.Name) {
+                                if ($key -eq $Settings.CompanyName) {
+                                    $matchedClient = $exceptionsJson.$key
+                                    $matchedKey = $key
+                                    break
+                                }
+                            }
+                            
+                            # If no exact match, try case-insensitive partial match
+                            if (-not $matchedClient) {
+                                $companyNameLower = $Settings.CompanyName.ToLower()
+                                foreach ($key in $exceptionsJson.PSObject.Properties.Name) {
+                                    if ($key.ToLower() -eq $companyNameLower -or $key.ToLower().Contains($companyNameLower) -or $companyNameLower.Contains($key.ToLower())) {
+                                        $matchedClient = $exceptionsJson.$key
+                                        $matchedKey = $key
+                                        break
+                                    }
+                                }
+                            }
+                            
+                            # Format client exceptions if found
+                            if ($matchedClient) {
+                                $exceptionText = "## CLIENT EXCEPTIONS`n`n## $matchedKey`n`n"
+                                
+                                if ($matchedClient.detail) {
+                                    $exceptionText += "**Detail Level**: $($matchedClient.detail)`n"
+                                }
+                                if ($matchedClient.mfa) {
+                                    $exceptionText += "**MFA Provider**: $($matchedClient.mfa)`n"
+                                }
+                                if ($matchedClient.vpn) {
+                                    $exceptionText += "**VPN**: $($matchedClient.vpn)`n"
+                                } else {
+                                    $exceptionText += "**VPN**: None`n"
+                                }
+                                if ($matchedClient.PSObject.Properties.Name -contains 'onsite_it') {
+                                    $exceptionText += "**Onsite IT**: $(if ($matchedClient.onsite_it) { 'Yes' } else { 'No' })`n"
+                                }
+                                if ($matchedClient.industry) {
+                                    $exceptionText += "**Industry**: $($matchedClient.industry)`n"
+                                }
+                                if ($matchedClient.authorized_tools -and $matchedClient.authorized_tools.Count -gt 0) {
+                                    $exceptionText += "**Authorized Tools**: $($matchedClient.authorized_tools -join ', ')`n"
+                                }
+                                if ($matchedClient.vips -and $matchedClient.vips.Count -gt 0) {
+                                    $exceptionText += "**VIPs**: $($matchedClient.vips -join ', ')`n"
+                                }
+                                if ($matchedClient.names -and $matchedClient.names.PSObject.Properties.Count -gt 0) {
+                                    $nameMappings = @()
+                                    foreach ($nameProp in $matchedClient.names.PSObject.Properties) {
+                                        $nameMappings += "$($nameProp.Name): $($nameProp.Value)"
+                                    }
+                                    if ($nameMappings.Count -gt 0) {
+                                        $exceptionText += "**Name Mappings**: $($nameMappings -join '; ')`n"
+                                    }
+                                }
+                                if ($matchedClient.notes) {
+                                    $exceptionText += "**Notes**: $($matchedClient.notes)`n"
+                                }
+                                
+                                $memberberryContent.ClientExceptions = $exceptionText.Trim()
+                            }
+                            
+                            # Also include global exceptions if present
+                            if ($exceptionsJson._global) {
+                                $globalText = "`n`n## _global`n`n"
+                                if ($exceptionsJson._global.notes) {
+                                    $globalText += "**Notes**: $($exceptionsJson._global.notes)`n"
+                                }
+                                if ($exceptionsJson._global.authorized_tools -and $exceptionsJson._global.authorized_tools.Count -gt 0) {
+                                    $globalText += "**Authorized Tools**: $($exceptionsJson._global.authorized_tools -join ', ')`n"
+                                }
+                                if ($exceptionsJson._global.vips -and $exceptionsJson._global.vips.Count -gt 0) {
+                                    $globalText += "**VIPs**: $($exceptionsJson._global.vips -join ', ')`n"
+                                }
+                                if ($memberberryContent.ClientExceptions) {
+                                    $memberberryContent.ClientExceptions += $globalText.Trim()
+                                } else {
+                                    $memberberryContent.ClientExceptions = $globalText.Trim()
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Warning "Failed to load memberberry exceptions JSON: $($_.Exception.Message)"
+                    }
+                }
+                
+                $memberberryContent.Success = $true
                 $useMemberberry = $true
             } else {
-                $memberberryWarning = "Warning: $($memberberryContent.ErrorMessage). Using default instructions."
+                $memberberryWarning = "Warning: Memberberry output file not found: $memberberryOutputFile. Using default instructions."
             }
         } catch {
             $memberberryWarning = "Warning: Failed to load memberberry content: $($_.Exception.Message). Using default instructions."
