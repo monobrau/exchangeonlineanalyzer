@@ -566,7 +566,12 @@ function New-AIReadme {
                                     $notes = $exceptionsJson._global.notes
                                     # If notes mention Advanced IP Scanner and mitigation/reboot, add explicit prohibition
                                     if ($notes -match 'Advanced IP Scanner' -and ($notes -match 'mitigation|reboot|Quarantined|Mitigated')) {
-                                        $notes = $notes -replace '(?m)(Technical Note:.*?reboot\.)', "`$1`n`n**🚫 CRITICAL: DO NOT REQUEST A REBOOT. Mitigation happens automatically - inform the client but DO NOT ask them to reboot.**"
+                                        # Replace the technical note to make it clearer
+                                        $notes = $notes -replace '(?m)(Technical Note:.*?reboot\.)', "`$1`n`n**🚫 ABSOLUTE PROHIBITION: DO NOT REQUEST A REBOOT. DO NOT ASK THE CLIENT TO REBOOT. DO NOT INCLUDE 'Action Required: Please reboot' OR ANY VARIATION. Mitigation happens automatically - you may inform the client of this fact, but you MUST NOT request any action from them.**"
+                                        # Also add a prominent warning at the end of Advanced IP Scanner section
+                                        if ($notes -match 'Advanced IP Scanner:') {
+                                            $notes = $notes -replace '(?m)(STRICT CONSTRAINT:.*?DO NOT NEED.*?allow-list.*?SOC)', "`$1`n`n**🚫 REBOOT PROHIBITION: When Advanced IP Scanner is detected, your 'Action Required' section MUST say 'No action required' or be omitted entirely. DO NOT request a reboot, even if mitigation is pending. Mitigation completes automatically.**"
+                                        }
                                     }
                                     $globalText += "### CRITICAL GLOBAL NOTES`n`n$notes`n`n"
                                 }
