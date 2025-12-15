@@ -8657,56 +8657,6 @@ if (Test-Path `$ReportSelectionsFile) {
                     } catch {}
                 }
             })
-                            $statusLines = Get-Content $statusFile -Tail 3 -ErrorAction SilentlyContinue
-                            if ($statusLines) {
-                                $latestStatus = $statusLines | Select-Object -Last 1
-                                # Extract just the message part (after timestamp)
-                                if ($latestStatus -match '\]\s+(.+)') {
-                                    $statusMessage = $matches[1]
-                                    $controls = $script:clientAuthControls[$clientNum]
-                                    if ($controls) {
-                                        # Check if worker script is ready and enable Graph Auth button if needed
-                                        # Wait for "Command polling loop started" to ensure the loop is actually running
-                                        if ($statusMessage -match 'Command polling loop started|Ready!.*Waiting for Graph Auth|Modules imported successfully') {
-                                            if ($controls.GraphButton -and -not $controls.GraphButton.Enabled) {
-                                                # Small delay to ensure polling loop has started
-                                                Start-Sleep -Milliseconds 500
-                                                $controls.GraphButton.Enabled = $true
-                                                $controls.GraphButton.Text = "Graph Auth"
-                                                if ($script:authStatusTextBox) {
-                                                    $script:authStatusTextBox.AppendText("Client $clientNum is ready for authentication (detected by status timer).`r`n")
-                                                    $script:authStatusTextBox.ScrollToCaret()
-                                                }
-                                            }
-                                        }
-                                        
-                                        # Only update if status has changed to avoid flickering
-                                        if ($controls.StatusLabel.Text -ne $statusMessage) {
-                                            # Update status label with latest message
-                                            $controls.StatusLabel.Text = $statusMessage
-                                            
-                                            # Color code based on status
-                                            if ($statusMessage -match 'successful|complete|SUCCESS|authenticated') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Green
-                                            } elseif ($statusMessage -match 'error|failed|ERROR|FAILED') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Red
-                                            } elseif ($statusMessage -match 'generating|processing|running|starting') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                                            } elseif ($statusMessage -match 'Ready!|Waiting for Graph Auth') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                                            } elseif ($statusMessage -match 'waiting|polling') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Gray
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } catch {
-                            # Silently ignore errors reading status file
-                        }
-                    }
-                }
-            })
             $statusUpdateTimer.Start()
 
             # Stop timer when form closes
