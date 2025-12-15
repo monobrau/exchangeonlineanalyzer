@@ -1046,10 +1046,15 @@ function Filter-TicketContent {
     $skipConfigSection = $false
     $configListStarted = $false
     $blankLineCount = 0
+    $inMultiLineConfigEntry = $false
+    $configEntryLineCount = 0
     
-    foreach ($line in $lines) {
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        $nextLine = if ($i -lt $lines.Count - 1) { $lines[$i + 1] } else { '' }
+        $prevLine = if ($i -gt 0) { $lines[$i - 1] } else { '' }
+        
         # Detect start of Configurations/Config List section
-        # Look for various markers that indicate config section
         if ($line -match '^Configurations\s*$' -or 
             $line -match '^Configurations\s+\d+' -or 
             $line -match '^Config List' -or 
@@ -1059,10 +1064,11 @@ function Filter-TicketContent {
             $skipConfigSection = $true
             $configListStarted = $true
             $blankLineCount = 0
+            $inMultiLineConfigEntry = $false
             continue
         }
         
-        # Detect config table headers (more comprehensive patterns)
+        # Detect config table headers
         if (-not $skipConfigSection -and (
             $line -match 'Configuration Name\s+Configuration Type\s+Serial Number' -or
             $line -match 'Configuration Name\s+Configuration Type\s+Serial Number\s+Model Number' -or
@@ -1071,49 +1077,116 @@ function Filter-TicketContent {
             $skipConfigSection = $true
             $configListStarted = $true
             $blankLineCount = 0
+            $inMultiLineConfigEntry = $false
             continue
         }
         
-        # Detect end of Configurations section
+        # Detect multi-line config entries: Device name/ID on one line, followed by "Managed Server" or "Managed Workstation" on next line
+        # Pattern: Line with device ID (IP-AC1F92B9, JAMIE, JASONNEW-PC, etc.) followed by device type on next line
+        if (-not $skipConfigSection -and 
+            $line.Trim() -match '^(IP-[A-Z0-9]+|[A-Z0-9\-_]+(?:-PC|_WORK)?)$' -and
+            -not [string]::IsNullOrWhiteSpace($nextLine) -and
+            $nextLine.Trim() -match '^(Managed Server|Managed Workstation|Managed Network Switch|Managed Network Firewall|FIREWALL|HYPERVISOR|APPLICATION|BACKUP|Domain Controller|Windows Server)$') {
+            $skipConfigSection = $true
+            $configListStarted = $true
+            $inMultiLineConfigEntry = $true
+            $configEntryLineCount = 0
+            $blankLineCount = 0
+            continue
+        }
+        
+        # Detect single-line config entries (device name followed by type on same line)
+        if (-not $skipConfigSection -and (
+            $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|APPLICATION|BACKUP|Managed Network Switch|FIREWALL|HYPERVISOR|Managed Network Firewall)' -or
+            $line -match '^\s*[A-Z0-9\-_]+\s+[A-Z0-9]+\s+[A-Z0-9\-]+\s+\d{1,2}/\d{1,2}/\d{2,4}' -or
+            ($line -match '^\s*[A-Z0-9\-_]+\s+' -and ($line -split '\s+').Count -ge 4 -and $line -match '(Managed|Active|Microsoft Windows|macOS|FIREWALL|HYPERVISOR)'))) {
+            $skipConfigSection = $true
+            $configListStarted = $true
+            $inMultiLineConfigEntry = $false
+            $blankLineCount = 0
+            continue
+        }
+        
+        # Handle lines when we're in a config section
         if ($skipConfigSection) {
+            # If we're in a multi-line config entry, count lines and stop after reasonable number (e.g., 20 lines per device)
+            if ($inMultiLineConfigEntry) {
+                $configEntryLineCount++
+                
+                # Check if next line starts a new device entry (device ID pattern)
+                if (-not [string]::IsNullOrWhiteSpace($nextLine) -and 
+                    $nextLine.Trim() -match '^(IP-[A-Z0-9]+|[A-Z0-9\-_]+(?:-PC|_WORK)?)$' -and
+                    $i + 1 -lt $lines.Count -and
+                    $lines[$i + 1].Trim() -match '^(Managed Server|Managed Workstation|Managed Network Switch|Managed Network Firewall|FIREWALL|HYPERVISOR|APPLICATION|BACKUP|Domain Controller|Windows Server)$') {
+                    # Next line starts a new device entry, reset counter
+                    $configEntryLineCount = 0
+                    continue
+                }
+                
+                # Stop multi-line entry after 20 lines (should cover one device entry)
+                if ($configEntryLineCount -ge 20) {
+                    $inMultiLineConfigEntry = $false
+                    $configEntryLineCount = 0
+                }
+            }
+            
             # Stop skipping when we hit a new major section header or meaningful content
-            if ($line -match '^(Additional Details|Knowledge Base|Resources|Team|Ticket Where|Board Icon|Ticket Type|Notes|Discussion|Resolution|Request ID|Impact|Request Status|Source IP|Contact:|Resources:|Cc:|Tasks|Attachments|Category|Subcategory|Allow all clients|Do not show|Drag a pod here|Search)' -or
-                ($line -match '^[A-Z][a-z]+\s*:' -and -not ($line -match 'Config|Configuration'))) {
+            if ($line -match '^(Additional Details|Knowledge Base|Resources|Team|Ticket Where|Board Icon|Ticket Type|Notes|Discussion|Resolution|Request ID|Impact|Request Status|Source IP|Destination IP|Contact:|Resources:|Cc:|Tasks|Attachments|Category|Subcategory|Allow all clients|Do not show|Drag a pod here|Search|---)' -or
+                ($line -match '^[A-Z][a-z]+\s*:' -and -not ($line -match 'Config|Configuration')) -or
+                ($line.Trim() -eq '---' -and $prevLine.Trim().Length -gt 0)) {
                 $skipConfigSection = $false
                 $configListStarted = $false
+                $inMultiLineConfigEntry = $false
+                $configEntryLineCount = 0
                 $blankLineCount = 0
                 # Don't add the section header line itself if it's just a label
                 if ($line -match '^\s*[A-Z][a-z]+\s*:\s*$') {
                     continue
                 }
+                # Add meaningful section headers
+                $filteredLines += $line
+                continue
             }
             
-            # Skip lines that look like configuration table entries
-            # Pattern: Device name/ID followed by device type (Managed Workstation, Managed Server, etc.)
+            # Skip lines that look like configuration entries (single-line patterns)
             if ($line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|APPLICATION|BACKUP|Managed Network Switch|FIREWALL|HYPERVISOR|Managed Network Firewall)' -or
-                # Pattern: Device name followed by serial/model numbers and dates
                 $line -match '^\s*[A-Z0-9\-_]+\s+[A-Z0-9]+\s+[A-Z0-9\-]+\s+\d{1,2}/\d{1,2}/\d{2,4}' -or
-                # Pattern: Device name, type, serial, model, contact name, date
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+[A-Z0-9\-]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d{1,2}/\d{1,2}/\d{2,4}' -or
-                # Pattern: Device name, type, serial, Active status, MAC address
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+Active\s+[0-9A-F]{2}-[0-9A-F]{2}-' -or
-                # Pattern: Device name, type, serial, Active, numeric ID
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+Active\s+\d+$' -or
-                # Pattern: Device name, type, serial, domain\username
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+[A-Z]\\[A-Z0-9]' -or
-                # Pattern: Device name, type, serial, IP address
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' -or
-                # Pattern: Device name, type, OS version
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+Microsoft Windows' -or
-                # Pattern: Device name, type, macOS
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+macOS' -or
-                # Pattern: Device name, type, serial, contact name, date, Active
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+[A-Z0-9\-]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d{1,2}/\d{1,2}/\d{2,4}\s+Active' -or
-                # Pattern: Device name, type, serial, IP, OS
                 $line -match '^\s*[A-Z0-9\-_]+\s+(Managed Workstation|Managed Server|FIREWALL)\s+[A-Z0-9]+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\s+Microsoft Windows' -or
-                # Pattern: Multiple tab-separated columns (config table row)
                 ($line -match '^\s*[A-Z0-9\-_]+\s+' -and ($line -split '\s+').Count -ge 4 -and $line -match '(Managed|Active|Microsoft Windows|macOS|FIREWALL|HYPERVISOR)')) {
                 $blankLineCount = 0
+                continue
+            }
+            
+            # Skip device type lines (Managed Server, Managed Workstation, etc.) when in multi-line entry
+            if ($inMultiLineConfigEntry -and $line.Trim() -match '^(Managed Server|Managed Workstation|Managed Network Switch|Managed Network Firewall|FIREWALL|HYPERVISOR|APPLICATION|BACKUP|Domain Controller|Windows Server)$') {
+                continue
+            }
+            
+            # Skip lines that look like config entry data (UUIDs, serial numbers, model numbers, dates, status, MAC addresses, IPs, OS versions)
+            if ($inMultiLineConfigEntry -and (
+                $line.Trim() -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -or  # UUID
+                $line.Trim() -match '^(t3\.|c7i-|ec2[a-z0-9-]+)$' -or  # AWS instance types
+                $line.Trim() -match '^\d{1,2}/\d{1,2}/\d{2,4}$' -or  # Dates
+                $line.Trim() -match '^(Active|Inactive)$' -or  # Status
+                $line.Trim() -match '^[0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2}$' -or  # MAC addresses
+                $line.Trim() -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' -or  # IP addresses
+                $line.Trim() -match '^Microsoft Windows.*x64$' -or  # OS versions
+                $line.Trim() -match '^[A-Z]\\[A-Z0-9]+$' -or  # Domain\username
+                $line.Trim() -match '^\d{5,}$' -or  # Numeric IDs
+                $line.Trim() -match '^(Parent|Child)$' -or  # Relationship indicators
+                $line.Trim() -match '^[A-Z]{2}$' -or  # State codes
+                $line.Trim() -match '^\d{5}$' -or  # ZIP codes
+                $line.Trim() -match '^[A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+$' -or  # Full names
+                $line.Trim() -match '^\d{3}\s+W\s+[A-Z]' -or  # Addresses like "700 W Virginia"
+                $line.Trim() -match '^Suite\s+\d+$')) {  # Suite numbers
                 continue
             }
             
@@ -1127,27 +1200,32 @@ function Filter-TicketContent {
                 continue
             }
             
-            # Track blank lines - if we see 3+ blank lines in a row, likely end of config section
+            # Track blank lines
             if ($line.Trim().Length -eq 0) {
                 $blankLineCount++
                 if ($blankLineCount -ge 3) {
-                    # Multiple blank lines - might be end of config section, but continue skipping
+                    # Multiple blank lines might indicate end of config section
+                    # But continue skipping to be safe
                     continue
                 }
             } else {
                 $blankLineCount = 0
             }
             
-            # If we hit a meaningful line that doesn't look like a config entry, stop skipping
-            # Meaningful content: has substantial text, doesn't start with device ID pattern
+            # If we hit meaningful content that doesn't look like config, stop skipping
             if ($line.Trim().Length -gt 20 -and 
-                -not ($line -match '^\s*[A-Z0-9\-_]+\s+') -and
-                -not ($line -match '^\s*[A-Z0-9\-_]+\s+(Managed|FIREWALL|HYPERVISOR)')) {
+                -not ($line -match '^\s*[A-Z0-9\-_]+\s*$') -and  # Not just a device ID
+                -not ($line -match '^\s*[A-Z0-9\-_]+\s+(Managed|FIREWALL|HYPERVISOR)') -and  # Not device type
+                -not ($line.Trim() -match '^(Managed Server|Managed Workstation|FIREWALL|HYPERVISOR)$') -and  # Not standalone device type
+                -not ($line.Trim() -match '^[0-9a-f]{8}-') -and  # Not UUID
+                -not ($line.Trim() -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') -and  # Not IP
+                -not ($line.Trim() -match '^\d{1,2}/\d{1,2}/\d{2,4}$')) {  # Not date
                 # This looks like real content, stop skipping
                 $skipConfigSection = $false
                 $configListStarted = $false
+                $inMultiLineConfigEntry = $false
+                $configEntryLineCount = 0
                 $blankLineCount = 0
-                # Add this line
                 $filteredLines += $line
             } else {
                 # Still looks like config content, skip it
