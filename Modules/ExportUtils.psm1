@@ -1248,8 +1248,39 @@ function Get-ExchangeInboxRules {
         foreach ($mbx in $mailboxes) {
             $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
             try {
-                $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
+                # Try to get all rules including hidden/system-managed ones
+                # Some rules like "Junk E-Mail Rule" may be hidden or system-managed
+                $rules = @()
+                try {
+                    # First try with IncludeHidden parameter if it exists (Exchange Online)
+                    $rules = Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop
+                } catch {
+                    # If IncludeHidden doesn't work, try without it (fallback)
+                    try {
+                        $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
+                    } catch {
+                        Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
+                        continue
+                    }
+                }
+                
                 foreach ($r in $rules) {
+                    # Check if rule is hidden/system-managed
+                    $isHidden = $false
+                    if ($r.PSObject.Properties.Name -contains 'IsHidden') {
+                        $isHidden = $r.IsHidden
+                    } elseif ($r.PSObject.Properties.Name -contains 'Hidden') {
+                        $isHidden = $r.Hidden
+                    } elseif ($r.PSObject.Properties.Name -contains 'SystemManaged') {
+                        $isHidden = $r.SystemManaged
+                    }
+                    
+                    # Check if rule name indicates it's a system rule (like "Junk E-Mail Rule")
+                    $isSystemRule = $false
+                    if ($r.Name -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)') {
+                        $isSystemRule = $true
+                    }
+                    
                     $obj = [pscustomobject]@{
                         MailboxOwner        = $upn
                         Name                = $r.Name
@@ -1263,7 +1294,8 @@ function Get-ExchangeInboxRules {
                         ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
                         DeleteMessage       = $r.DeleteMessage
                         StopProcessing      = $r.StopProcessingRules
-                        IsHidden            = $false
+                        IsHidden            = $isHidden
+                        IsSystemManaged     = $isSystemRule
                         Description         = ($r.Description -join ' ')
                     }
                     [void]$allRules.Add($obj)
