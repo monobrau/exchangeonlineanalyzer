@@ -708,14 +708,23 @@ function New-AIReadme {
         $ticketNums = if ($ticketNumsArray.Count -gt 0) { $ticketNumsArray -join ', #' } else { '[Ticket Number]' }
         $ticketSection = @"
 
-## ConnectWise Ticket Information
+---
+
+## 📋 TICKET INFORMATION - USE THIS CONTEXT FOR YOUR ANALYSIS
 
 **Ticket Number(s)**: #$ticketNums
 
-**Instructions**: Analyze the security alert based on the ticket information provided below. Use this ticket context to understand the specific alert details, user involved, timeline, and any relevant discussion or resolution notes.
+**CRITICAL INSTRUCTIONS:**
+1. **Read the ticket content below carefully** - It contains specific alert details, user information, timestamps, and context
+2. **Extract key information** from the ticket: user account, IP addresses, file paths, timestamps, alert type
+3. **Reference ticket details** in your analysis when relevant (e.g., "The login from IP 192.168.1.100 at 2:30 PM EST...")
+4. **Use ticket context** to understand the specific scenario - don't provide generic responses
+5. **Include ticket number** in your subject line: "Subject: [Security Alert/Resolved]: [Brief Description] - Ticket #$ticketNums"
 
-**Ticket Content**:
+**Ticket Content:**
 $TicketContent
+
+**Remember:** The ticket content above provides the specific context for this alert. Use it to craft a detailed, accurate response that addresses the actual situation described, not a generic template.
 
 ---
 
@@ -736,50 +745,129 @@ $TicketContent
             $useMemberberry = $false
         } else {
             # Add critical reminders section at the beginning to ensure LLMs don't miss important details
+            # Reorganized for maximum LLM effectiveness: checklist format, explicit examples, clear hierarchy
             $criticalReminders = @"
 
 ---
 
-## ⚠️ CRITICAL REMINDERS - READ BEFORE DRAFTING ⚠️
+## ⚠️ PRE-FLIGHT CHECKLIST - MANDATORY CHECKS BEFORE DRAFTING ⚠️
 
-### Name Preferences (MANDATORY CHECK)
-- **ALWAYS check the CLIENT EXCEPTIONS section for Name Preferences before addressing users**
-- If a name preference exists (e.g., "Joseph Nedvidek → Use preferred name: Joe"), you MUST use the preferred name
-- Example: If you see "**Joseph Nedvidek** → Use preferred name: **Joe**", address the user as "Hi Joe," NOT "Hi Joseph,"
-- Name preferences are listed in the CLIENT EXCEPTIONS section under "**Name Preferences**"
-- **Failure to use preferred names is a critical error**
+**Before you write ANY response, you MUST:**
 
-### Advanced IP Scanner - CRITICAL GLOBAL EXCEPTION (MANDATORY CHECK)
-- **⚠️ ALWAYS check the GLOBAL EXCEPTIONS section for Advanced IP Scanner instructions**
-- **When Advanced IP Scanner is detected:**
-  - **🚫 ABSOLUTELY DO NOT request a server reboot** - This is EXPLICITLY FORBIDDEN. NO EXCEPTIONS. NO REBOOT REQUESTS ARE ALLOWED, REGARDLESS OF WORDING OR REASONING.
-  - **❌ FORBIDDEN - DO NOT INCLUDE ANY OF THESE IN YOUR RESPONSE:**
-    - "Action Required: Please reboot"
-    - "Please reboot the server"
-    - "Reboot required"
-    - "Action Required: Please reboot the server to clear any temporary files"
-    - "Please reboot the server to clear any temporary files locked by the security agent"
-    - "Please reboot the server... as the original installation was interrupted"
-    - "Action Required" section containing ANY mention of reboot
-    - ANY phrase containing "reboot" + "required" or "please reboot" or "reboot the"
-    - ANY request, suggestion, or instruction to reboot the server
-  - **✅ CORRECT APPROACH**: 
-    - If mitigation is pending, you may say: "Mitigation will complete automatically on the next system reboot" (informational only, no action requested)
-    - Your "Action Required" section should say: "No action required" or be omitted entirely
-    - DO NOT mention rebooting in any context that implies the client should do it
-  - **🚫 ABSOLUTELY DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request. This is explicitly stated in GLOBAL EXCEPTIONS. Do NOT create any SOC exception request emails.
-  - **🚫 DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement if they need IP scanning functionality. Explicitly state this is a recommendation for them to implement if needed.
-  - **Narrative**: Explain that while River Run historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities.
-  - **Replacement**: Suggest "Angry IP Scanner" ONLY if the client requires IP scanning functionality on this device. Explicitly state this is a recommendation for them to implement if needed.
-  - **Action Required Section**: MUST say "No action required" or be omitted entirely - DO NOT include ANY reboot-related instructions or suggestions.
-- **These constraints are in the GLOBAL EXCEPTIONS section - check there for full details**
-- **CRITICAL: If you include ANY reboot request in your response, you have FAILED this task. NO REBOOT REQUESTS ARE ALLOWED.**
+1. ✅ **Check CLIENT EXCEPTIONS for Name Preferences** - Use preferred names when addressing users
+2. ✅ **Check GLOBAL EXCEPTIONS for Advanced IP Scanner** - If detected, follow strict reboot prohibition rules
+3. ✅ **Check for Software Recommendations** - Include recommended replacements when relevant
+4. ✅ **Verify ticket classification** - Every response must include True Positive/False Positive/Authorized Activity classification
 
-### Software Recommendations (MANDATORY CHECK)
-- **ALWAYS check for software recommendations in the instructions**
-- When Advanced IP Scanner is detected, you MUST mention the recommended replacement: **Angry IP Scanner**
-- The instructions specify: "Recommend using alternative network scanning tools that are actively maintained and have valid certificates" - the specific recommendation is **Angry IP Scanner**
-- **Always include software recommendations when relevant to the alert**
+**If you skip ANY of these checks, your response is INCORRECT.**
+
+---
+
+## 🚨 CRITICAL CONSTRAINTS - ABSOLUTE PROHIBITIONS 🚨
+
+### 1. Advanced IP Scanner - REBOOT PROHIBITION (ZERO TOLERANCE)
+
+**⚠️ THIS IS THE MOST CRITICAL CONSTRAINT - READ CAREFULLY ⚠️**
+
+**When Advanced IP Scanner is detected in ANY alert:**
+
+#### ❌ ABSOLUTELY FORBIDDEN - DO NOT INCLUDE ANY OF THESE:
+
+```
+❌ "Action Required: Please reboot"
+❌ "Please reboot the server"
+❌ "Reboot required"
+❌ "Action Required: Please reboot the server to clear any temporary files"
+❌ "Please reboot the server to clear any temporary files locked by the security agent"
+❌ "Please reboot the server... as the original installation was interrupted"
+❌ "Action Required" section containing ANY mention of reboot
+❌ ANY phrase containing "reboot" + "required" or "please reboot" or "reboot the"
+❌ ANY request, suggestion, or instruction to reboot the server
+❌ "Please restart" (synonym for reboot)
+❌ "System restart required"
+```
+
+#### ✅ CORRECT APPROACH - ONLY THESE ARE ALLOWED:
+
+```
+✅ "No action required" (in Action Required section)
+✅ Omit Action Required section entirely
+✅ "Mitigation will complete automatically on the next system reboot" (informational ONLY, no action requested)
+```
+
+**Example of CORRECT response:**
+```
+Action Required: No action required.
+
+The detected file is Advanced IP Scanner, a deprecated network scanning tool. 
+While River Run historically used this tool, it is now deprecated because it has 
+not received updates in over 3 years and contains unpatched vulnerabilities.
+
+Mitigation will complete automatically on the next system reboot. No action is 
+required from you at this time.
+```
+
+**Example of INCORRECT response (DO NOT DO THIS):**
+```
+Action Required: Please reboot the server to clear any temporary files locked 
+by the security agent.
+```
+
+**CONSEQUENCE:** If you include ANY reboot request in your response, you have **FAILED this task completely**. The response will be rejected.
+
+#### Additional Advanced IP Scanner Rules:
+
+- **🚫 DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request
+- **🚫 DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement
+- **Narrative**: Explain that while River Run historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities
+- **Replacement**: Suggest "Angry IP Scanner" ONLY if the client requires IP scanning functionality. Explicitly state this is a recommendation for them to implement if needed
+
+**These constraints are ALSO detailed in the GLOBAL EXCEPTIONS section below - check there for full context.**
+
+---
+
+### 2. Name Preferences - MANDATORY CHECK
+
+**Before addressing ANY user in your response:**
+
+1. **Check the CLIENT EXCEPTIONS section** for Name Preferences
+2. **If a preference exists**, you MUST use the preferred name
+3. **Example**: If you see "**Joseph Nedvidek** → Use preferred name: **Joe**", address as "Hi Joe," NOT "Hi Joseph,"
+
+**Failure to use preferred names is a critical error and will result in rejection.**
+
+---
+
+### 3. Software Recommendations - MANDATORY CHECK
+
+**When Advanced IP Scanner is detected:**
+
+- You MUST mention the recommended replacement: **Angry IP Scanner**
+- Frame it as a recommendation for the client to implement if needed
+- Do NOT offer to install it yourself
+
+---
+
+### 4. Ticket Classification - MANDATORY REQUIREMENT
+
+**Every response MUST include one of these classifications:**
+
+- **True Positive**: Confirmed security threat or malicious activity
+- **False Positive**: Alert triggered incorrectly, no actual threat  
+- **Authorized Activity**: Legitimate activity that triggered the alert
+
+**This classification is required because Barracuda XDR uses these designations for tracking and reporting.**
+
+---
+
+## 📋 COMMON MISTAKES TO AVOID
+
+1. **❌ Requesting reboots for Advanced IP Scanner** → ✅ Say "No action required" instead
+2. **❌ Using full names when preferences exist** → ✅ Always check and use preferred names
+3. **❌ Missing software recommendations** → ✅ Always include recommended replacements when relevant
+4. **❌ Omitting ticket classification** → ✅ Every response must classify the alert
+5. **❌ Creating SOC exception requests for Advanced IP Scanner** → ✅ Do NOT create exception requests for this tool
+6. **❌ Offering to install software** → ✅ Only recommend, don't offer to install
 
 ---
 
