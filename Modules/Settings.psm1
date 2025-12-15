@@ -785,11 +785,18 @@ $TicketContent
 
 "@
             # Insert reminders after the main header but before the main content
-            if ($readme -match '^(# MEMBERBERRY.*?\n)') {
-                $readme = $readme -replace '^(# MEMBERBERRY.*?\n)', "`$1$criticalReminders"
+            # Try multiple patterns to catch different header formats
+            if ($readme -match '^(# MEMBERBERRY[^\n]*\r?\n)') {
+                $readme = $readme -replace '^(# MEMBERBERRY[^\n]*\r?\n)', "`$1$criticalReminders"
+                Write-Host "New-AIReadme: CRITICAL REMINDERS section inserted after header" -ForegroundColor Green
+            } elseif ($readme -match '^# MEMBERBERRY') {
+                # If header exists but no newline after, insert after first line
+                $readme = $readme -replace '^(# MEMBERBERRY[^\n]*)', "`$1`n$criticalReminders"
+                Write-Host "New-AIReadme: CRITICAL REMINDERS section inserted after header (no newline)" -ForegroundColor Green
             } else {
                 # If no header match, prepend reminders
                 $readme = "$criticalReminders`n`n$readme"
+                Write-Host "New-AIReadme: CRITICAL REMINDERS section prepended (no header found)" -ForegroundColor Yellow
             }
             # Append client exceptions if found (procedures are already included in GlobalInstructions)
             if ($memberberryContent.ClientExceptions) {
