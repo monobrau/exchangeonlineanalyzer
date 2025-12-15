@@ -323,13 +323,11 @@ function Get-MemberberryContent {
                             $exceptionText += "**VIPs**: $($matchedClient.vips -join ', ')`n"
                         }
                         if ($matchedClient.names -and $matchedClient.names.PSObject.Properties.Count -gt 0) {
-                            $nameMappings = @()
+                            $exceptionText += "**Name Preferences** (CRITICAL - Always use these preferred names when addressing users):`n"
                             foreach ($nameProp in $matchedClient.names.PSObject.Properties) {
-                                $nameMappings += "$($nameProp.Name): $($nameProp.Value)"
+                                $exceptionText += "  - **$($nameProp.Name)** → Use preferred name: **$($nameProp.Value)**`n"
                             }
-                            if ($nameMappings.Count -gt 0) {
-                                $exceptionText += "**Name Mappings**: $($nameMappings -join '; ')`n"
-                            }
+                            $exceptionText += "`n"
                         }
                         if ($matchedClient.notes) {
                             $exceptionText += "**Notes**: $($matchedClient.notes)`n"
@@ -716,6 +714,36 @@ $TicketContent
             Write-Warning "New-AIReadme: WARNING - Memberberry enabled but GlobalInstructions is empty! Falling back to default template."
             $useMemberberry = $false
         } else {
+            # Add critical reminders section at the beginning to ensure LLMs don't miss important details
+            $criticalReminders = @"
+
+---
+
+## ⚠️ CRITICAL REMINDERS - READ BEFORE DRAFTING ⚠️
+
+### Name Preferences (MANDATORY CHECK)
+- **ALWAYS check the CLIENT EXCEPTIONS section for Name Preferences before addressing users**
+- If a name preference exists (e.g., "Joseph Nedvidek → Use preferred name: Joe"), you MUST use the preferred name
+- Example: If you see "**Joseph Nedvidek** → Use preferred name: **Joe**", address the user as "Hi Joe," NOT "Hi Joseph,"
+- Name preferences are listed in the CLIENT EXCEPTIONS section under "**Name Preferences**"
+- **Failure to use preferred names is a critical error**
+
+### Software Recommendations (MANDATORY CHECK)
+- **ALWAYS check for software recommendations in the instructions**
+- When Advanced IP Scanner is detected, you MUST mention the recommended replacement: **Angry IP Scanner**
+- The instructions specify: "Recommend using alternative network scanning tools that are actively maintained and have valid certificates" - the specific recommendation is **Angry IP Scanner**
+- **Always include software recommendations when relevant to the alert**
+
+---
+
+"@
+            # Insert reminders after the main header but before the main content
+            if ($readme -match '^(# MEMBERBERRY.*?\n)') {
+                $readme = $readme -replace '^(# MEMBERBERRY.*?\n)', "`$1$criticalReminders"
+            } else {
+                # If no header match, prepend reminders
+                $readme = "$criticalReminders`n`n$readme"
+            }
             # Append client exceptions if found (procedures are already included in GlobalInstructions)
             if ($memberberryContent.ClientExceptions) {
                 $readme += "`n`n$($memberberryContent.ClientExceptions)"
