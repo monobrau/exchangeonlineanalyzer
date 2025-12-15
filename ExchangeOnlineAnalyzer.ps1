@@ -2230,7 +2230,6 @@ $lblMemberberryPath.Text = "Memberberry Directory:"
 $lblMemberberryPath.Location = New-Object System.Drawing.Point(10,545)
 $lblMemberberryPath.AutoSize = $true
 $lblMemberberryPath.Width = 180
-$lblMemberberryPath.ToolTipText = "Directory containing compile.ps1 and output\memberberry.md (e.g., C:\git\memberberry)"
 
 $txtMemberberryPath = New-Object System.Windows.Forms.TextBox
 $txtMemberberryPath.Location = New-Object System.Drawing.Point(200, 542)
@@ -2241,7 +2240,6 @@ $lblMemberberryExceptionsPath.Text = "Memberberry Exceptions File:"
 $lblMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(10,575)
 $lblMemberberryExceptionsPath.AutoSize = $true
 $lblMemberberryExceptionsPath.Width = 180
-$lblMemberberryExceptionsPath.ToolTipText = "Path to exceptions.json file (e.g., C:\git\memberberry\exceptions.json)"
 
 $txtMemberberryExceptionsPath = New-Object System.Windows.Forms.TextBox
 $txtMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(200, 572)
