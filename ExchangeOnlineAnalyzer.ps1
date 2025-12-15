@@ -2609,6 +2609,37 @@ $btnRemoveOverride.add_Click({
     }
 })
 
+$btnBrowseMemberberryPath.add_Click({
+    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+    $fbd.Description = "Select the Memberberry directory containing compile.ps1 and output folder"
+    if ($txtMemberberryPath.Text -and (Test-Path $txtMemberberryPath.Text -PathType Container)) {
+        $fbd.SelectedPath = $txtMemberberryPath.Text
+    } elseif ($txtMemberberryPath.Text -and (Test-Path (Split-Path $txtMemberberryPath.Text -Parent) -PathType Container)) {
+        $fbd.SelectedPath = Split-Path $txtMemberberryPath.Text -Parent
+    }
+    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtMemberberryPath.Text = $fbd.SelectedPath
+    }
+})
+
+$btnBrowseMemberberryExceptionsPath.add_Click({
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Title = "Select Memberberry Exceptions JSON File"
+    $ofd.Filter = "JSON Files|*.json|All Files|*.*"
+    $ofd.FilterIndex = 1
+    if ($txtMemberberryExceptionsPath.Text -and (Test-Path $txtMemberberryExceptionsPath.Text -PathType Leaf)) {
+        $ofd.InitialDirectory = Split-Path $txtMemberberryExceptionsPath.Text -Parent
+        $ofd.FileName = Split-Path $txtMemberberryExceptionsPath.Text -Leaf
+    } elseif ($txtMemberberryExceptionsPath.Text -and (Test-Path $txtMemberberryExceptionsPath.Text -PathType Container)) {
+        $ofd.InitialDirectory = $txtMemberberryExceptionsPath.Text
+    } elseif ($txtMemberberryPath.Text -and (Test-Path $txtMemberberryPath.Text -PathType Container)) {
+        $ofd.InitialDirectory = $txtMemberberryPath.Text
+    }
+    if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtMemberberryExceptionsPath.Text = $ofd.FileName
+    }
+})
+
 $btnTestMemberberry.add_Click({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
@@ -2617,12 +2648,12 @@ $btnTestMemberberry.add_Click({
         $exceptionsPath = $txtMemberberryExceptionsPath.Text
         
         if ([string]::IsNullOrWhiteSpace($instructionsPath)) {
-            [System.Windows.Forms.MessageBox]::Show("Please enter a memberberry instructions file path.", "Path Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            [System.Windows.Forms.MessageBox]::Show("Please enter a memberberry directory path.", "Path Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
             return
         }
         
-        if (-not (Test-Path $instructionsPath)) {
-            [System.Windows.Forms.MessageBox]::Show("Instructions file not found: $instructionsPath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        if (-not (Test-Path $instructionsPath -PathType Container)) {
+            [System.Windows.Forms.MessageBox]::Show("Memberberry directory not found: $instructionsPath", "Directory Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             return
         }
         
