@@ -6462,10 +6462,34 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Status "Graph authentication command received"
                 Write-CommandResponse "GRAPH_AUTH_STARTED"
                 
-                # Clear any existing sessions
-                Write-Status "Clearing existing sessions..."
-                Write-Host "Clearing existing sessions..." -ForegroundColor Cyan
+                # Clear any existing sessions and token caches
+                Write-Status "Clearing existing sessions and token caches..."
+                Write-Host "Clearing existing sessions and token caches..." -ForegroundColor Cyan
                 try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch {}
+                
+                # Clear Graph token cache
+                try {
+                    `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                    if (`$graphSession -and `$graphSession.AuthContext) {
+                        `$graphSession.AuthContext.ClearTokenCache()
+                        Write-Host "Cleared Graph token cache" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors clearing token cache
+                }
+                
+                # Clear MSAL cache files in the cache directory if they exist
+                try {
+                    if (`$env:MSAL_CACHE_DIR -and (Test-Path `$env:MSAL_CACHE_DIR)) {
+                        `$msalCacheFiles = Get-ChildItem -Path `$env:MSAL_CACHE_DIR -Filter "*cache*" -ErrorAction SilentlyContinue
+                        foreach (`$file in `$msalCacheFiles) {
+                            Remove-Item `$file.FullName -Force -ErrorAction SilentlyContinue
+                        }
+                        Write-Host "Cleared MSAL cache files from cache directory" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors clearing MSAL cache
+                }
                 
                 # Graph Authentication
     Write-Host ""
@@ -6483,8 +6507,21 @@ if (Test-Path `$ReportSelectionsFile) {
         "Reports.Read.All"
     )
     
-    try {
-                    Connect-MgGraph -Scopes `$scopes -ContextScope Process -ErrorAction Stop
+                try {
+                    # Use ForceRefresh to force fresh authentication (bypass cached tokens)
+                    # If ForceRefresh is not supported, fall back to regular Connect-MgGraph
+                    try {
+                        Connect-MgGraph -Scopes `$scopes -ContextScope Process -ForceRefresh -ErrorAction Stop
+                        Write-Host "Connected with ForceRefresh (fresh authentication)" -ForegroundColor Green
+                    } catch {
+                        # If ForceRefresh parameter doesn't exist, try without it
+                        if (`$_.Exception.Message -match "parameter name 'ForceRefresh'|matches parameter name 'ForceRefresh'|ForceRefresh") {
+                            Write-Host "ForceRefresh not supported, using standard Connect-MgGraph" -ForegroundColor Yellow
+                            Connect-MgGraph -Scopes `$scopes -ContextScope Process -ErrorAction Stop
+                        } else {
+                            throw
+                        }
+                    }
         `$mgContext = Get-MgContext -ErrorAction Stop
                     `$graphAuthenticated = `$true
                     Write-Status "Graph authentication successful! Tenant: `$(`$mgContext.TenantId)"
