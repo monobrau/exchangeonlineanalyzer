@@ -131,7 +131,7 @@ function Get-DefaultSettings {
         ClientContactOverrides = '{}'
         ThirdPartyMFA = ''
         MemberberryEnabled = $false
-        MemberberryPath = 'C:\git\memberberry\memberberry-complete-output.txt'
+        MemberberryPath = 'C:\git\memberberry'
         MemberberryExceptionsPath = 'C:\git\memberberry\exceptions.json'
     }
 }
@@ -395,10 +395,21 @@ function New-AIReadme {
     }
     $memberberryWarning = ''
     
+    # Debug: Log memberberry settings
+    Write-Host "New-AIReadme: MemberberryEnabled=$($Settings.MemberberryEnabled), MemberberryPath='$($Settings.MemberberryPath)'" -ForegroundColor Gray
+    
     if ($Settings.MemberberryEnabled -eq $true -and $Settings.MemberberryPath) {
-        try {
-            # Run memberberry script to generate fresh output
-            Write-Host "Running memberberry script to generate updated output..." -ForegroundColor Cyan
+        # Validate that MemberberryPath is a directory, not a file
+        if (Test-Path $Settings.MemberberryPath -PathType Leaf) {
+            Write-Warning "MemberberryPath points to a file, not a directory: $($Settings.MemberberryPath). Please set MemberberryPath to the directory containing the compile.ps1 script (e.g., 'C:\git\memberberry')."
+            $memberberryWarning = "MemberberryPath is configured incorrectly (points to file instead of directory). Using default instructions."
+        } elseif (-not (Test-Path $Settings.MemberberryPath -PathType Container)) {
+            Write-Warning "MemberberryPath directory does not exist: $($Settings.MemberberryPath). Using default instructions."
+            $memberberryWarning = "MemberberryPath directory not found: $($Settings.MemberberryPath). Using default instructions."
+        } else {
+            try {
+                # Run memberberry script to generate fresh output
+                Write-Host "Running memberberry script to generate updated output..." -ForegroundColor Cyan
             
             # Try to find and execute memberberry script
             # Common script names: compile.ps1, memberberry.ps1, run.ps1, main.ps1, memberberry.py, run.py, main.py
@@ -621,12 +632,21 @@ function New-AIReadme {
                 
                 $memberberryContent.Success = $true
                 $useMemberberry = $true
+                Write-Host "New-AIReadme: Memberberry content loaded successfully (length: $($memberberryContent.GlobalInstructions.Length) chars)" -ForegroundColor Green
             } else {
                 $memberberryWarning = "Warning: Memberberry output file not found: $memberberryOutputFile. Using default instructions."
+                Write-Warning $memberberryWarning
             }
-        } catch {
-            $memberberryWarning = "Warning: Failed to load memberberry content: $($_.Exception.Message). Using default instructions."
+            } catch {
+                $memberberryWarning = "Warning: Failed to load memberberry content: $($_.Exception.Message). Using default instructions."
+                Write-Warning $memberberryWarning
+            }
         }
+    } elseif ($Settings.MemberberryEnabled -eq $true) {
+        Write-Warning "Memberberry is enabled but MemberberryPath is not configured. Using default instructions."
+        $memberberryWarning = "Memberberry is enabled but MemberberryPath is not configured."
+    } elseif ($Settings.MemberberryPath -and -not $Settings.MemberberryEnabled) {
+        Write-Host "New-AIReadme: MemberberryPath is configured but MemberberryEnabled is false. Using default instructions." -ForegroundColor Yellow
     }
     
     # Build ticket information section if tickets are provided
