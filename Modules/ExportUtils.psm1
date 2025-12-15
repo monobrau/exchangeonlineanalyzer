@@ -331,7 +331,11 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [int]$SignInLogsDaysBack = 7,
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [string[]]$TicketNumbers = @(),
+        [Parameter(Mandatory=$false)]
+        [string]$TicketContent = ''
     )
 
     try {
@@ -354,6 +358,8 @@ function New-SecurityInvestigationReport {
     $report.DaysAnalyzed = $DaysBack
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
     $report.FilePaths = @{}
+    $report.TicketNumbers = $TicketNumbers
+    $report.TicketContent = $TicketContent
 
     # Resolve output folder (tenant-scoped/timestamped)
     try {
@@ -942,6 +948,40 @@ function New-SecurityInvestigationReport {
             $statusMsg = "Generating AI readme instructions..."
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
             Write-Host $statusMsg -ForegroundColor Cyan
+            
+            # If ticket numbers exist, generate separate AI readme file for each ticket
+            # Ensure TicketNumbers is an array - use report property, not parameter
+            $ticketNumsArray = @()
+            if ($report.TicketNumbers) {
+                if ($report.TicketNumbers -is [string]) {
+                    $ticketNumsArray = @($report.TicketNumbers)
+                } elseif ($report.TicketNumbers -is [array]) {
+                    $ticketNumsArray = $report.TicketNumbers
+                } else {
+                    $ticketNumsArray = @($report.TicketNumbers)
+                }
+            }
+            Write-Host "AI Readme Generation: Checking ticket numbers - report.TicketNumbers=$($report.TicketNumbers), ticketNumsArray.Count=$($ticketNumsArray.Count)" -ForegroundColor Cyan
+            if ($ticketNumsArray.Count -gt 0) {
+                Write-Host "Generating separate AI readme files for $($ticketNumsArray.Count) ticket(s): $($ticketNumsArray -join ', ')" -ForegroundColor Cyan
+                foreach ($ticketNum in $ticketNumsArray) {
+                    try {
+                        $ticketReport = $report.PSObject.Copy()
+                        $ticketReport.TicketNumbers = @($ticketNum)  # Single ticket number for this file
+                        $ticketReport.LLMInstructions = New-LLMInvestigationInstructions -Report $ticketReport
+                        $ticketLlmPath = Join-Path $report.OutputFolder "_AI_Readme_Ticket_$ticketNum.txt"
+                        if ($ticketReport.LLMInstructions) {
+                            $ticketReport.LLMInstructions | Out-File -FilePath $ticketLlmPath -Encoding utf8
+                            $report.FilePaths["LLMInstructionsTxt_Ticket_$ticketNum"] = $ticketLlmPath
+                            Write-Host "AI readme instructions saved for ticket #$ticketNum" -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Warning "Failed to generate AI readme for ticket #$ticketNum : $($_.Exception.Message)"
+                    }
+                }
+            }
+            
+            # Always generate standard AI readme (with all ticket data if provided, or without if not)
             $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
             $llmPath = Join-Path $report.OutputFolder "_AI_Readme.txt"
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
@@ -2162,7 +2202,21 @@ function New-LLMInvestigationInstructions {
                 # Override InvestigatorName and CompanyName from report if provided
                 if ($Report.Investigator) { $settings.InvestigatorName = $Report.Investigator }
                 if ($Report.Company) { $settings.CompanyName = $Report.Company }
-                return New-AIReadme -Settings $settings
+                # Pass ticket data if available
+                # Ensure TicketNumbers is an array
+                $ticketNumbers = @()
+                if ($Report.TicketNumbers) {
+                    if ($Report.TicketNumbers -is [string]) {
+                        $ticketNumbers = @($Report.TicketNumbers)
+                    } elseif ($Report.TicketNumbers -is [array]) {
+                        $ticketNumbers = $Report.TicketNumbers
+                    } else {
+                        $ticketNumbers = @($Report.TicketNumbers)
+                    }
+                }
+                $ticketContent = if ($Report.TicketContent) { $Report.TicketContent } else { '' }
+                Write-Host "New-LLMInvestigationInstructions: Passing TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), TicketContent length=$($ticketContent.Length)" -ForegroundColor Gray
+                return New-AIReadme -Settings $settings -TicketNumbers $ticketNumbers -TicketContent $ticketContent
             }
         }
     } catch {

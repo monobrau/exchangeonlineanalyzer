@@ -91,35 +91,84 @@ function Search-AndValidateUsers {
         
         $users = @()
         try {
-            # Try server-side filtering first (startsWith)
-            $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
-            Write-Host "  Found $($users.Count) users with startsWith filter"
+            # Try server-side filtering first (startsWith) - case-sensitive but we'll also try case variations
+            # Microsoft Graph OData filters are case-sensitive, so try both original and lowercase
+            $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+            $searchTermLower = $searchTerm.ToLower()
+            $searchTermUpper = $searchTerm.ToUpper()
+            $searchTermTitle = (Get-Culture).TextInfo.ToTitleCase($searchTermLower)
+            $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+            $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+            $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+            $users = @($users1) + @($users2) + @($users3) + @($users4) | Sort-Object UserPrincipalName -Unique
+            Write-Host "  Found $($users.Count) users with startsWith filter (tried multiple case variations)"
         } catch {
-            Write-Host "  startsWith filter failed, trying alternatives..."
+            Write-Host "  startsWith filter failed: $($_.Exception.Message), trying alternatives..."
         }
         
         if ($users.Count -eq 0) {
             # Try alternative search methods
             try {
-                # Try exact match
+                # Try exact match (case-sensitive first, then variations)
                 $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                $usersAlt1 = $usersAlt1 | Sort-Object UserPrincipalName -Unique
                 Write-Host "  Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
                 
                 $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                $usersAlt2 = $usersAlt2 | Sort-Object UserPrincipalName -Unique
                 Write-Host "  Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
                 
                 # Try case-insensitive search by getting all users and filtering client-side
-                $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                $usersAlt3 = $allUsers | Where-Object { 
-                    $_.DisplayName -like "*$searchTerm*" -or $_.UserPrincipalName -like "*$searchTerm*" 
+                Write-Host "  Fetching all users for client-side filtering..."
+                try {
+                    $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
+                    Write-Host "  Retrieved $($allUsers.Count) total users from tenant"
+                    
+                    # Use case-insensitive matching with -ilike or -match
+                    $searchTermPattern = "*$searchTerm*"
+                    $usersAlt3 = $allUsers | Where-Object { 
+                        ($_.DisplayName -and $_.DisplayName -ilike $searchTermPattern) -or 
+                        ($_.UserPrincipalName -and $_.UserPrincipalName -ilike $searchTermPattern)
+                    }
+                    Write-Host "  Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users matching '$searchTerm'"
+                    
+                    # Show sample matches for debugging
+                    if ($usersAlt3.Count -gt 0 -and $usersAlt3.Count -le 5) {
+                        Write-Host "  Sample matches:" -ForegroundColor Gray
+                        foreach ($u in $usersAlt3) {
+                            Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                        }
+                    } elseif ($usersAlt3.Count -gt 5) {
+                        Write-Host "  Sample matches (first 5):" -ForegroundColor Gray
+                        foreach ($u in ($usersAlt3 | Select-Object -First 5)) {
+                            Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                        }
+                    }
+                } catch {
+                    Write-Host "  Failed to retrieve all users for client-side filtering: $($_.Exception.Message)" -ForegroundColor Yellow
+                    $usersAlt3 = @()
                 }
-                Write-Host "  Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users"
                 
                 # Combine all results
                 $users = @($usersAlt1) + @($usersAlt2) + @($usersAlt3) | Sort-Object UserPrincipalName -Unique
                 Write-Host "  Combined alternative searches: Found $($users.Count) users"
             } catch {
-                Write-Host "  Alternative searches also failed: $($_.Exception.Message)"
+                Write-Host "  Alternative searches also failed: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        } else {
+            # Show sample matches for startsWith results too
+            if ($users.Count -gt 0 -and $users.Count -le 5) {
+                Write-Host "  Sample matches:" -ForegroundColor Gray
+                foreach ($u in $users) {
+                    Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                }
+            } elseif ($users.Count -gt 5) {
+                Write-Host "  Sample matches (first 5):" -ForegroundColor Gray
+                foreach ($u in ($users | Select-Object -First 5)) {
+                    Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                }
             }
         }
         
@@ -167,6 +216,8 @@ $script:clientAuthControls = @{}
 $script:clientCacheDirs = @{}
 $script:clientValidatedUsers = @{}  # Store validated UserPrincipalNames per tenant (keyed by ClientNumber)
 $script:clientSearchTerms = @{}  # Store search terms per tenant when validation can't complete (keyed by ClientNumber)
+$script:clientTickets = @{}  # Store ConnectWise ticket content per tenant (keyed by ClientNumber)
+$script:clientReportFolders = @{}  # Store report output folder paths per tenant (keyed by ClientNumber)
 
 # Create Bulk Tenant Exporter form
 $bulkForm = New-Object System.Windows.Forms.Form
@@ -698,14 +749,74 @@ try {
                     continue
                 }
                 
-                # Parse SelectedUsers from command if provided
+                # Parse SelectedUsers and TicketData from command if provided
                 `$selectedUsersForReport = @()
+                `$ticketNumbers = @()
+                `$ticketContent = ''
+                
+                # Parse ticket data from command (format: |TICKET_DATA:{"TicketNumbers":["12345"],"TicketContent":"..."})
+                # Use a more robust regex that captures everything after TICKET_DATA: until end of string
+                # This handles cases where ticket content might contain special characters
+                Write-Host "Parsing ticket data from command. Command length: `$(`$command.Length)" -ForegroundColor Gray
+                Write-Host "Command preview (first 500 chars): `$(`$command.Substring(0, [Math]::Min(500, `$command.Length)))" -ForegroundColor Gray
+                if (`$command -match '\|TICKET_DATA:(.+)$') {
+                    Write-Host "TICKET_DATA regex matched!" -ForegroundColor Green
+                    try {
+                        `$ticketDataJson = `$Matches[1]
+                        Write-Host "Ticket data JSON extracted (length: `$(`$ticketDataJson.Length))" -ForegroundColor Gray
+                        Write-Host "Ticket data JSON preview (first 300 chars): `$(`$ticketDataJson.Substring(0, [Math]::Min(300, `$ticketDataJson.Length)))" -ForegroundColor Gray
+                        `$ticketData = `$ticketDataJson | ConvertFrom-Json -ErrorAction Stop
+                        Write-Host "Ticket data JSON parsed successfully" -ForegroundColor Green
+                        if (`$ticketData.TicketNumbers) {
+                            Write-Host "TicketNumbers property found: `$(`$ticketData.TicketNumbers)" -ForegroundColor Gray
+                            # Ensure TicketNumbers is always an array
+                            if (`$ticketData.TicketNumbers -is [string]) {
+                                `$ticketNumbers = @(`$ticketData.TicketNumbers)
+                                Write-Host "TicketNumbers was string, converted to array: `$ticketNumbers" -ForegroundColor Gray
+                            } elseif (`$ticketData.TicketNumbers -is [array]) {
+                                `$ticketNumbers = `$ticketData.TicketNumbers
+                                Write-Host "TicketNumbers was array: `$ticketNumbers" -ForegroundColor Gray
+                            } else {
+                                `$ticketNumbers = @(`$ticketData.TicketNumbers)
+                                Write-Host "TicketNumbers was other type, converted to array: `$ticketNumbers" -ForegroundColor Gray
+                            }
+                        } else {
+                            Write-Host "TicketNumbers property not found in parsed data" -ForegroundColor Yellow
+                        }
+                        if (`$ticketData.TicketContent) {
+                            `$ticketContent = `$ticketData.TicketContent
+                            Write-Host "TicketContent property found (length: `$(`$ticketContent.Length))" -ForegroundColor Gray
+                        } else {
+                            Write-Host "TicketContent property not found in parsed data" -ForegroundColor Yellow
+                        }
+                        Write-Host "Ticket data parsed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
+                        Write-Host "Ticket data found: `$(`$ticketNumbers.Count) ticket number(s): `$(`$ticketNumbers -join ', ')" -ForegroundColor Cyan
+                        Write-Status "Ticket data found: `$(`$ticketNumbers.Count) ticket number(s): `$(`$ticketNumbers -join ', ')"
+                    } catch {
+                        Write-Warning "Could not parse ticket data from command: `$(`$_.Exception.Message)"
+                        Write-Host "Ticket data JSON that failed to parse: `$ticketDataJson" -ForegroundColor Yellow
+                        Write-Host "Full command was: `$command" -ForegroundColor Yellow
+                        Write-Host "Exception details: `$(`$_.Exception | Out-String)" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "No TICKET_DATA found in command. Command preview: `$(`$command.Substring(0, [Math]::Min(500, `$command.Length)))" -ForegroundColor Yellow
+                    Write-Host "Checking if command contains 'TICKET_DATA': `$(`$command.Contains('TICKET_DATA'))" -ForegroundColor Yellow
+                }
                 
                 # Check if this is a search terms command (GENERATE_REPORTS_SEARCH:["term1","term2"])
-                if (`$command -match "^GENERATE_REPORTS_SEARCH:(.+)$") {
+                # Extract search terms before TICKET_DATA if present
+                if (`$command -match "^GENERATE_REPORTS_SEARCH:(.+?)(?:\|TICKET_DATA:|$)") {
                     try {
                         `$searchTermsJson = `$Matches[1]
-                        `$searchTerms = `$searchTermsJson | ConvertFrom-Json -ErrorAction Stop
+                        `$searchTermsParsed = `$searchTermsJson | ConvertFrom-Json -ErrorAction Stop
+                        # Ensure searchTerms is always an array (ConvertFrom-Json might return a string for single values)
+                        if (`$searchTermsParsed -is [string]) {
+                            `$searchTerms = @(`$searchTermsParsed)
+                        } elseif (`$searchTermsParsed -is [array]) {
+                            `$searchTerms = `$searchTermsParsed
+                        } else {
+                            `$searchTerms = @(`$searchTermsParsed)
+                        }
                         Write-Host "User filtering enabled with search terms. Validating users..." -ForegroundColor Cyan
                         Write-Status "User filtering enabled with search terms. Validating users..."
                         
@@ -715,17 +826,53 @@ try {
                             Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
                             `$users = @()
                             try {
-                                `$users = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTerm') or startsWith(UserPrincipalName,'`$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
+                                # Try server-side filtering first (startsWith) - try multiple case variations
+                                `$users1 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTerm') or startsWith(UserPrincipalName,'`$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$searchTermLower = `$searchTerm.ToLower()
+                                `$searchTermUpper = `$searchTerm.ToUpper()
+                                `$searchTermTitle = (Get-Culture).TextInfo.ToTitleCase(`$searchTermLower)
+                                `$users2 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermLower') or startsWith(UserPrincipalName,'`$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users3 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermUpper') or startsWith(UserPrincipalName,'`$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users4 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermTitle') or startsWith(UserPrincipalName,'`$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users = @(`$users1) + @(`$users2) + @(`$users3) + @(`$users4) | Sort-Object UserPrincipalName -Unique
+                                Write-Host "    Found `$(`$users.Count) users with startsWith filter (tried multiple case variations)" -ForegroundColor Gray
                             } catch {
+                                Write-Host "    startsWith filter failed: `$(`$_.Exception.Message), trying alternatives..." -ForegroundColor Yellow
+                            }
+                            
+                            if (`$users.Count -eq 0) {
                                 # Try alternative search methods
                                 try {
+                                    # Try exact match (case-sensitive first, then variations)
                                     `$usersAlt1 = Get-MgUser -Filter "DisplayName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    `$usersAlt1 += Get-MgUser -Filter "DisplayName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    `$usersAlt1 = `$usersAlt1 | Sort-Object UserPrincipalName -Unique
+                                    
                                     `$usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                    `$allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                    `$usersAlt3 = `$allUsers | Where-Object { 
-                                        `$_.DisplayName -like "*`$searchTerm*" -or `$_.UserPrincipalName -like "*`$searchTerm*" 
+                                    `$usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    `$usersAlt2 = `$usersAlt2 | Sort-Object UserPrincipalName -Unique
+                                    
+                                    # Try case-insensitive search by getting all users and filtering client-side
+                                    Write-Host "    Fetching all users for client-side filtering..." -ForegroundColor Gray
+                                    try {
+                                        `$allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
+                                        Write-Host "    Retrieved `$(`$allUsers.Count) total users from tenant" -ForegroundColor Gray
+                                        
+                                        # Use case-insensitive matching with -ilike
+                                        `$searchTermPattern = "*`$searchTerm*"
+                                        `$usersAlt3 = `$allUsers | Where-Object { 
+                                            (`$_.DisplayName -and `$_.DisplayName -ilike `$searchTermPattern) -or 
+                                            (`$_.UserPrincipalName -and `$_.UserPrincipalName -ilike `$searchTermPattern)
+                                        }
+                                        Write-Host "    Client-side filtering: Found `$(`$usersAlt3.Count) users matching '`$searchTerm'" -ForegroundColor Gray
+                                    } catch {
+                                        Write-Warning "Failed to retrieve all users for client-side filtering: `$(`$_.Exception.Message)"
+                                        `$usersAlt3 = @()
                                     }
+                                    
+                                    # Combine all results
                                     `$users = @(`$usersAlt1) + @(`$usersAlt2) + @(`$usersAlt3) | Sort-Object UserPrincipalName -Unique
+                                    Write-Host "    Combined alternative searches: Found `$(`$users.Count) users" -ForegroundColor Gray
                                 } catch {
                                     Write-Warning "Could not search for users matching '`$searchTerm': `$(`$_.Exception.Message)"
                                 }
@@ -752,8 +899,8 @@ try {
                         `$selectedUsersForReport = @()
                     }
                 }
-                # Check if this is a direct users command (GENERATE_REPORTS:["user1","user2"])
-                elseif (`$command -match "^GENERATE_REPORTS:(.+)$") {
+                # Check if this is a direct users command (GENERATE_REPORTS|SelectedUsers:["user1","user2"])
+                elseif (`$command -match '\|SelectedUsers:(.+?)(?:\||$)') {
                     try {
                         `$usersJson = `$Matches[1]
                         `$selectedUsersForReport = `$usersJson | ConvertFrom-Json -ErrorAction Stop
@@ -779,8 +926,9 @@ try {
                 # Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\{TenantName}\{Timestamp}
                 Write-Status "Generating security investigation report..."
                 Write-Host "Starting report generation..." -ForegroundColor Yellow
+                Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers `$selectedUsersForReport
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
@@ -997,8 +1145,8 @@ try {
     $script:clientAuthStates = @{}
     $script:clientAuthControls = @{}
     $script:clientCacheDirs = @{}
-    $clientRowHeight = 50
-    $clientRowSpacing = 5
+    $clientRowHeight = 200  # Increased to accommodate all controls including ticket textbox (80px) and view reports button
+    $clientRowSpacing = 10  # Increased spacing between rows
 
     # Add controls to form
     $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $authPanel))
@@ -1269,8 +1417,9 @@ try {
         }
         
         # Create UI row for this client
-        $clientRowHeight = 50
-        $clientRowSpacing = 5
+        # Row height must account for: buttons (30px) + user filter row (25px) + ticket row (80px) + view reports button (25px) + spacing
+        $clientRowHeight = 200  # Increased to accommodate all controls including ticket textbox (80px) and view reports button
+        $clientRowSpacing = 10  # Increased spacing between rows
         $existingRows = ($script:clientAuthControls.Keys | Measure-Object).Count
         $yPos = $existingRows * ($clientRowHeight + $clientRowSpacing) + 10
         
@@ -1343,6 +1492,37 @@ try {
         $userValidationLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
         $userValidationLabel.Visible = $false
 
+        # ConnectWise Ticket Label
+        $ticketLabel = New-Object System.Windows.Forms.Label
+        $ticketLabel.Text = "ConnectWise Ticket(s):"
+        $ticketLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 75))
+        $ticketLabel.Size = New-Object System.Drawing.Size(150, 20)
+        $ticketLabel.Enabled = $false
+        $ticketLabel.Visible = $false  # Shown after Exchange Auth
+        $ticketLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+
+        # ConnectWise Ticket TextBox (multiline)
+        $ticketTextBox = New-Object System.Windows.Forms.TextBox
+        $ticketTextBox.Multiline = $true
+        $ticketTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+        $ticketTextBox.Location = New-Object System.Drawing.Point(170, ($yPos + 73))
+        $ticketTextBox.Size = New-Object System.Drawing.Size(400, 80)
+        $ticketTextBox.Enabled = $false
+        $ticketTextBox.Visible = $false  # Shown after Exchange Auth
+        $ticketTextBox.Tag = $ClientNumber
+        $ticketTextBox.ShortcutsEnabled = $true
+        $ticketTextBox.AcceptsReturn = $true
+        $ticketTextBox.AcceptsTab = $false
+
+        # Ticket Numbers Detected Label
+        $ticketNumbersLabel = New-Object System.Windows.Forms.Label
+        $ticketNumbersLabel.Text = ""
+        $ticketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($yPos + 73))
+        $ticketNumbersLabel.Size = New-Object System.Drawing.Size(200, 15)
+        $ticketNumbersLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+        $ticketNumbersLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+        $ticketNumbersLabel.Visible = $false
+
         # Exchange Online Auth button
         $exchangeAuthBtn = New-Object System.Windows.Forms.Button
         $exchangeAuthBtn.Text = "Exchange Online Auth"
@@ -1380,8 +1560,19 @@ try {
         $generateReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
         $generateReportsBtn.ForeColor = [System.Drawing.Color]::White
 
+        # View Reports button (shown after report generation completes)
+        $viewReportsBtn = New-Object System.Windows.Forms.Button
+        $viewReportsBtn.Text = "View Reports"
+        $viewReportsBtn.Location = New-Object System.Drawing.Point(760, ($yPos + 160))
+        $viewReportsBtn.Size = New-Object System.Drawing.Size(140, 25)
+        $viewReportsBtn.Enabled = $false
+        $viewReportsBtn.Visible = $false
+        $viewReportsBtn.Tag = $ClientNumber
+        $viewReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
+        $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
+
         # Add controls to panel
-        $script:authPanel.Controls.AddRange(@($clientLabel, $statusLabel, $warningLabel, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn))
+        $script:authPanel.Controls.AddRange(@($clientLabel, $statusLabel, $warningLabel, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $viewReportsBtn))
 
         # Store controls and state
         $script:clientAuthStates[$ClientNumber] = @{
@@ -1405,10 +1596,64 @@ try {
             ValidateUsersButton = $validateUsersBtn
             UserValidationLabel = $userValidationLabel
             GenerateReportsButton = $generateReportsBtn
+            TicketLabel = $ticketLabel
+            TicketTextBox = $ticketTextBox
+            TicketNumbersLabel = $ticketNumbersLabel
+            ViewReportsButton = $viewReportsBtn
         }
         
-        # Update panel height to accommodate new row (accounting for user filtering row and warning label)
-        $newHeight = ($existingRows + 1) * ($clientRowHeight + $clientRowSpacing) + 70  # Extra space for user filtering row and warning label
+        # View Reports button handler
+        $capturedClientNumForView = $ClientNumber
+        $viewReportsBtn.add_Click({
+            $clientNum = $this.Tag
+            if (-not $clientNum) { $clientNum = $capturedClientNumForView }
+            
+            if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                $reportFolder = $script:clientReportFolders[$clientNum]
+                if ($reportFolder) {
+                    $reportFolder = $reportFolder.Trim()
+                    if (Test-Path $reportFolder) {
+                        Start-Process explorer.exe -ArgumentList "`"$reportFolder`""
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show("Report folder not found: $reportFolder", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    }
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show("Report folder path is empty for Client $clientNum", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                }
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("No report folder available for Client $clientNum", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            }
+        })
+        
+        # Add event handler to extract ticket numbers when text changes
+        $capturedClientNum = $ClientNumber
+        $ticketTextBox.add_TextChanged({
+            try {
+                Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
+                    $ticketContent = $this.Text
+                    if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                        $ticketNums = Extract-TicketNumbers -TicketContent $ticketContent
+                        if ($ticketNums -and $ticketNums.Count -gt 0) {
+                            $ticketNumsStr = ($ticketNums | ForEach-Object { "#$_" }) -join ', '
+                            $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Text = "Detected: $ticketNumsStr"
+                            $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Visible = $true
+                        } else {
+                            $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Text = ""
+                            $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Visible = $false
+                        }
+                    } else {
+                        $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Text = ""
+                        $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Visible = $false
+                    }
+                }
+            } catch {
+                # Ignore errors
+            }
+        })
+        
+        # Update panel height to accommodate new row (accounting for user filtering row, warning label, and ticket controls)
+        $newHeight = ($existingRows + 1) * ($clientRowHeight + $clientRowSpacing) + 100  # Extra space for user filtering row, warning label, and ticket controls
         if ($newHeight -gt 420) {
             $script:authPanel.AutoScroll = $true
         }
@@ -1506,105 +1751,7 @@ try {
             }
         })
         
-        # Generate Reports button handler
-        $generateReportsBtn.add_Click({
-            $clientNum = $this.Tag
-            if (-not $clientNum) { $clientNum = $capturedClientNum }
-            
-            # Check if both authentications are complete
-            if (-not $script:clientAuthStates[$clientNum].GraphAuthenticated -or -not $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                [System.Windows.Forms.MessageBox]::Show("Please complete both Graph and Exchange authentication first.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                return
-            }
-            
-            # Check if user filtering is enabled
-            $controls = $script:clientAuthControls[$clientNum]
-            if ($controls.UserFilterCheckBox.Checked) {
-                # Check if users were validated OR if search terms are stored for validation during export
-                $hasValidatedUsers = $script:clientValidatedUsers.ContainsKey($clientNum) -and $script:clientValidatedUsers[$clientNum].Count -gt 0
-                $hasSearchTerms = $script:clientSearchTerms.ContainsKey($clientNum) -and -not [string]::IsNullOrWhiteSpace($script:clientSearchTerms[$clientNum])
-                
-                Write-Host "Generate Reports: Client $clientNum - HasValidatedUsers: $hasValidatedUsers, HasSearchTerms: $hasSearchTerms" -ForegroundColor Cyan
-                if ($hasSearchTerms) {
-                    Write-Host "Generate Reports: Search terms for Client $clientNum : $($script:clientSearchTerms[$clientNum])" -ForegroundColor Cyan
-                    $script:authStatusTextBox.AppendText("Client $clientNum : Found stored search terms: $($script:clientSearchTerms[$clientNum])`r`n")
-                }
-                
-                if (-not $hasValidatedUsers -and -not $hasSearchTerms) {
-                    # No validation and no search terms - ask if they want to proceed
-                    Write-Host "Generate Reports: No validated users and no search terms - showing warning dialog" -ForegroundColor Yellow
-                    $result = [System.Windows.Forms.MessageBox]::Show("User filtering is enabled but no users have been validated. Do you want to proceed without filtering?", "No Users Validated", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-                    if ($result -eq [System.Windows.Forms.DialogResult]::No) {
-                        return
-                    }
-                } elseif ($hasSearchTerms -and -not $hasValidatedUsers) {
-                    # Search terms stored but not validated - this is fine, will validate during export
-                    Write-Host "Generate Reports: Proceeding with search terms for Client $clientNum" -ForegroundColor Green
-                    $script:authStatusTextBox.AppendText("Client $clientNum : User filtering enabled with search terms. Validation will occur during report generation.`r`n")
-                }
-            }
-            
-            $this.Enabled = $false
-            $this.Text = "Generating..."
-            $script:clientAuthControls[$clientNum].StatusLabel.Text = "Generating Reports..."
-            $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-            $script:authStatusTextBox.AppendText("Starting report generation for Client $clientNum...`r`n")
-            $script:authStatusTextBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-            
-            # Get SelectedUsers for this tenant if user filtering is enabled
-            $selectedUsersForTenant = @()
-            $generateCommand = $null
-            
-            if ($controls.UserFilterCheckBox.Checked) {
-                # First check if we have validated users
-                if ($script:clientValidatedUsers.ContainsKey($clientNum) -and $script:clientValidatedUsers[$clientNum].Count -gt 0) {
-                    $selectedUsersForTenant = $script:clientValidatedUsers[$clientNum]
-                    $usersJson = ($selectedUsersForTenant | ConvertTo-Json -Compress)
-                    $generateCommand = "GENERATE_REPORTS:$usersJson"
-                }
-                # If not validated but search terms exist, send search terms to worker script for validation
-                elseif ($script:clientSearchTerms.ContainsKey($clientNum) -and -not [string]::IsNullOrWhiteSpace($script:clientSearchTerms[$clientNum])) {
-                    # Send search terms as JSON array - worker script will validate them
-                    $searchTermsArray = $script:clientSearchTerms[$clientNum] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-                    $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
-                    $generateCommand = "GENERATE_REPORTS_SEARCH:$searchTermsJson"
-                    $script:authStatusTextBox.AppendText("Client $clientNum : Sending search terms for validation during export: $($script:clientSearchTerms[$clientNum])`r`n")
-                }
-            }
-            
-            # Build GENERATE_REPORTS command if not already set
-            if (-not $generateCommand) {
-                $generateCommand = "GENERATE_REPORTS"
-            }
-            
-            Write-Host "Generate Reports button clicked for Client $clientNum" -ForegroundColor Cyan
-            Write-Host "Command to send: $generateCommand" -ForegroundColor Cyan
-            $script:authStatusTextBox.AppendText("Client $clientNum : Sending GENERATE_REPORTS command...`r`n")
-            $script:authStatusTextBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-            
-            $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $generateCommand -TimeoutSeconds 600
-            if ($reportResponse -like "GENERATE_REPORTS_SUCCESS:*") {
-                $outputPath = $reportResponse -replace "GENERATE_REPORTS_SUCCESS:", ""
-                $script:clientAuthControls[$clientNum].StatusLabel.Text = "Complete"
-                $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Green
-                $this.Text = "Reports Generated ✓"
-                $script:authStatusTextBox.AppendText("Client $clientNum report generation successful! Output: $outputPath`r`n")
-            } elseif ($reportResponse -like "GENERATE_REPORTS_STARTED*") {
-                $script:authStatusTextBox.AppendText("Client $clientNum report generation started (running in background).`r`n")
-                $script:clientAuthControls[$clientNum].StatusLabel.Text = "Generating Reports..."
-                $this.Text = "Generating..."
-            } else {
-                $script:authStatusTextBox.AppendText("Client $clientNum report generation failed or timeout: $reportResponse`r`n")
-                $script:clientAuthControls[$clientNum].StatusLabel.Text = "Report Failed"
-                $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Red
-                $this.Enabled = $true
-                $this.Text = "Generate Reports"
-            }
-            $script:authStatusTextBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-        })
+        # Generate Reports button handler - REMOVED (duplicate, replaced by handler below with ticket extraction support)
         
         # Graph Auth button handler
         $graphAuthBtn.add_Click({
@@ -1882,6 +2029,12 @@ try {
                 # Show Generate Reports button
                 $script:clientAuthControls[$clientNum].GenerateReportsButton.Visible = $true
                 $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $true
+                
+                # Show ticket controls
+                $script:clientAuthControls[$clientNum].TicketLabel.Visible = $true
+                $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
+                $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
+                $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
             } elseif ($response -like "EXCHANGE_AUTH_FAILED:*") {
                 $errorMsg = $response -replace "EXCHANGE_AUTH_FAILED:", ""
                 $this.Enabled = $true
@@ -1892,6 +2045,215 @@ try {
                 $this.Text = "Exchange Online Auth"
                 $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication failed or timeout. Response: $response`r`n")
                 $script:authStatusTextBox.AppendText("Client $clientNum Check the PowerShell window for details.`r`n")
+            }
+            $script:authStatusTextBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        })
+        
+        # Generate Reports button handler
+        $generateReportsBtn.add_Click({
+            $clientNum = $this.Tag
+            if (-not $clientNum) { $clientNum = $capturedClientNum }
+            
+            # Check if both authentications are complete
+            if (-not $script:clientAuthStates[$clientNum].GraphAuthenticated -or -not $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                [System.Windows.Forms.MessageBox]::Show("Please complete both Graph and Exchange authentication first.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+            
+            # Check if user filtering is enabled - do this BEFORE processing ticket data
+            $controls = $script:clientAuthControls[$clientNum]
+            if ($controls.UserFilterCheckBox.Checked) {
+                # Check if users were validated OR if search terms are stored for validation during export
+                $hasValidatedUsers = $script:clientValidatedUsers.ContainsKey($clientNum) -and $script:clientValidatedUsers[$clientNum].Count -gt 0
+                $hasSearchTerms = $script:clientSearchTerms.ContainsKey($clientNum) -and -not [string]::IsNullOrWhiteSpace($script:clientSearchTerms[$clientNum])
+                
+                Write-Host "Generate Reports: Client $clientNum - HasValidatedUsers: $hasValidatedUsers, HasSearchTerms: $hasSearchTerms" -ForegroundColor Cyan
+                if ($hasSearchTerms) {
+                    Write-Host "Generate Reports: Search terms for Client $clientNum : $($script:clientSearchTerms[$clientNum])" -ForegroundColor Cyan
+                }
+                
+                if (-not $hasValidatedUsers -and -not $hasSearchTerms) {
+                    # No validation and no search terms - ask if they want to proceed
+                    Write-Host "Generate Reports: No validated users and no search terms - showing warning dialog" -ForegroundColor Yellow
+                    $result = [System.Windows.Forms.MessageBox]::Show("User filtering is enabled but no users have been validated. Do you want to proceed without filtering?", "No Users Validated", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+                    if ($result -eq [System.Windows.Forms.DialogResult]::No) {
+                        Write-Host "Generate Reports: User clicked No - canceling report generation" -ForegroundColor Yellow
+                        $script:authStatusTextBox.AppendText("Client $clientNum : Report generation canceled. Please validate users or disable filtering.`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                        return  # Exit the function - do not proceed with report generation
+                    }
+                    # User clicked Yes - proceed without filtering
+                    Write-Host "Generate Reports: User clicked Yes - proceeding without user filtering" -ForegroundColor Green
+                }
+            }
+            
+            # Get ticket content and extract ticket numbers
+            $ticketContent = $script:clientAuthControls[$clientNum].TicketTextBox.Text
+            $ticketNumbers = @()
+            $filteredTicketContent = ''
+            
+            Write-Host "Generate Reports: Processing ticket content (length: $($ticketContent.Length))" -ForegroundColor Cyan
+            Write-Host "Generate Reports: Ticket textbox exists: $($null -ne $script:clientAuthControls[$clientNum].TicketTextBox)" -ForegroundColor Gray
+            Write-Host "Generate Reports: Ticket textbox text length: $($script:clientAuthControls[$clientNum].TicketTextBox.Text.Length)" -ForegroundColor Gray
+            if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                Write-Host "Generate Reports: Ticket content is not empty, extracting..." -ForegroundColor Green
+                try {
+                    Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                    if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
+                        $ticketNumbers = Extract-TicketNumbers -TicketContent $ticketContent
+                        Write-Host "Generate Reports: Extracted $($ticketNumbers.Count) ticket number(s): $($ticketNumbers -join ', ')" -ForegroundColor Cyan
+                    } else {
+                        Write-Warning "Extract-TicketNumbers function not found"
+                    }
+                    if (Get-Command Filter-TicketContent -ErrorAction SilentlyContinue) {
+                        $filteredTicketContent = Filter-TicketContent -TicketContent $ticketContent
+                        Write-Host "Generate Reports: Filtered ticket content length: $($filteredTicketContent.Length)" -ForegroundColor Cyan
+                    } else {
+                        $filteredTicketContent = $ticketContent
+                        Write-Warning "Filter-TicketContent function not found, using raw content"
+                    }
+                } catch {
+                    Write-Warning "Failed to process ticket content: $($_.Exception.Message)"
+                    Write-Host "Exception details: $($_.Exception | Out-String)" -ForegroundColor Red
+                    $filteredTicketContent = $ticketContent
+                }
+            } else {
+                Write-Host "Generate Reports: No ticket content provided (textbox is empty or whitespace)" -ForegroundColor Yellow
+                Write-Host "Generate Reports: Ticket content check - IsNullOrWhiteSpace: $([string]::IsNullOrWhiteSpace($ticketContent))" -ForegroundColor Yellow
+            }
+            
+            Write-Host "Generate Reports: After extraction - TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), FilteredContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
+            
+            # Store ticket data
+            if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
+                $script:clientTickets[$clientNum] = @{
+                    Content = $filteredTicketContent
+                    TicketNumbers = $ticketNumbers
+                }
+            }
+            
+            # Get validated users or search terms
+            $selectedUsers = @()
+            if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                $selectedUsers = $script:clientValidatedUsers[$clientNum]
+            } elseif ($script:clientSearchTerms.ContainsKey($clientNum)) {
+                # If search terms exist but not validated, send GENERATE_REPORTS_SEARCH command
+                $searchTerms = $script:clientSearchTerms[$clientNum]
+                if (-not [string]::IsNullOrWhiteSpace($searchTerms)) {
+                    # Parse search terms (comma-separated) into array
+                    $searchTermsArray = @()
+                    if ($searchTerms -match ',') {
+                        $searchTermsArray = ($searchTerms -split ',' | ForEach-Object { $_.Trim() }) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                    } else {
+                        $searchTermsArray = @($searchTerms.Trim())
+                    }
+                    # Convert to JSON array for proper parsing (ensure it's always an array, not a string)
+                    $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
+                    # Ensure it's a JSON array (not a string) - if ConvertTo-Json returned a string, wrap it
+                    if ($searchTermsJson -notmatch '^\[') {
+                        $searchTermsJson = "[$searchTermsJson]"
+                    }
+                    $command = "GENERATE_REPORTS_SEARCH:$searchTermsJson"
+                    # Include ticket data if we have ticket numbers OR ticket content
+                    Write-Host "Generate Reports (SEARCH): Checking ticket data - TicketNumbers.Count=$($ticketNumbers.Count), FilteredContent length=$($filteredTicketContent.Length), IsNullOrWhiteSpace=$([string]::IsNullOrWhiteSpace($filteredTicketContent))" -ForegroundColor Cyan
+                    if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
+                        Write-Host "Generate Reports (SEARCH): Ticket data condition met, including in command" -ForegroundColor Green
+                        # Ensure ticketNumbers is always an array for JSON serialization
+                        $ticketNumsArray = if ($ticketNumbers -is [array]) { $ticketNumbers } else { @($ticketNumbers) }
+                        Write-Host "Generate Reports (SEARCH): TicketNumbers array: $($ticketNumsArray -join ', ')" -ForegroundColor Gray
+                        # Force TicketNumbers to be serialized as an array by ensuring it's always an array type
+                        $ticketDataObj = [PSCustomObject]@{
+                            TicketNumbers = [array]$ticketNumsArray
+                            TicketContent = [string]$filteredTicketContent
+                        }
+                        $ticketDataJson = ($ticketDataObj | ConvertTo-Json -Compress -Depth 10)
+                        Write-Host "Generate Reports (SEARCH): Ticket data JSON before verification: $($ticketDataJson.Substring(0, [Math]::Min(300, $ticketDataJson.Length)))..." -ForegroundColor Gray
+                        # Verify TicketNumbers is an array in JSON (should be ["1811523"], not "1811523")
+                        if ($ticketDataJson -notmatch '"TicketNumbers"\s*:\s*\[') {
+                            Write-Warning "TicketNumbers was not serialized as an array, fixing..."
+                            # Manually fix the JSON if needed
+                            $ticketDataJson = $ticketDataJson -replace '"TicketNumbers"\s*:\s*"([^"]+)"', '"TicketNumbers":["$1"]'
+                            Write-Host "Generate Reports (SEARCH): Ticket data JSON after fix: $($ticketDataJson.Substring(0, [Math]::Min(300, $ticketDataJson.Length)))..." -ForegroundColor Yellow
+                        }
+                        $command += "|TICKET_DATA:$ticketDataJson"
+                        Write-Host "Generate Reports (SEARCH): Including ticket data - TicketNumbers=$($ticketNumsArray.Count) ($($ticketNumsArray -join ', ')), TicketContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
+                        Write-Host "Generate Reports (SEARCH): Ticket data JSON preview: $($ticketDataJson.Substring(0, [Math]::Min(200, $ticketDataJson.Length)))..." -ForegroundColor Gray
+                    } else {
+                        Write-Host "Generate Reports (SEARCH): No ticket data to include (TicketNumbers.Count=$($ticketNumbers.Count), FilteredContent empty=$([string]::IsNullOrWhiteSpace($filteredTicketContent)))" -ForegroundColor Yellow
+                    }
+                    Write-Host "Generate Reports (SEARCH): Final command being sent: $($command.Substring(0, [Math]::Min(500, $command.Length)))..." -ForegroundColor Cyan
+                    $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 300
+                    if ($reportResponse -like "GENERATE_REPORTS_SUCCESS:*") {
+                        $outputPath = ($reportResponse -replace "GENERATE_REPORTS_SUCCESS:", "").Trim()
+                        if ($outputPath) {
+                            $script:clientReportFolders[$clientNum] = $outputPath
+                            $script:clientAuthControls[$clientNum].ViewReportsButton.Visible = $true
+                            $script:clientAuthControls[$clientNum].ViewReportsButton.Enabled = $true
+                        }
+                    }
+                    $script:authStatusTextBox.AppendText("Client $($clientNum): Generating reports with user search and ticket data...`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    return
+                }
+            }
+            
+            # Build GENERATE_REPORTS command
+            $command = "GENERATE_REPORTS"
+            if ($selectedUsers.Count -gt 0) {
+                $usersJson = ($selectedUsers | ConvertTo-Json -Compress)
+                $command += "|SelectedUsers:$usersJson"
+            }
+            # Include ticket data if we have ticket numbers OR ticket content
+            if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
+                # Ensure ticketNumbers is always an array for JSON serialization
+                $ticketNumsArray = if ($ticketNumbers -is [array]) { $ticketNumbers } else { @($ticketNumbers) }
+                # Force TicketNumbers to be serialized as an array by ensuring it's always an array type
+                $ticketDataObj = [PSCustomObject]@{
+                    TicketNumbers = [array]$ticketNumsArray
+                    TicketContent = [string]$filteredTicketContent
+                }
+                $ticketDataJson = ($ticketDataObj | ConvertTo-Json -Compress -Depth 10)
+                # Verify TicketNumbers is an array in JSON (should be ["1811523"], not "1811523")
+                if ($ticketDataJson -notmatch '"TicketNumbers"\s*:\s*\[') {
+                    Write-Warning "TicketNumbers was not serialized as an array, fixing..."
+                    # Manually fix the JSON if needed
+                    $ticketDataJson = $ticketDataJson -replace '"TicketNumbers"\s*:\s*"([^"]+)"', '"TicketNumbers":["$1"]'
+                }
+                $command += "|TICKET_DATA:$ticketDataJson"
+                Write-Host "Generate Reports: Including ticket data - TicketNumbers=$($ticketNumsArray.Count) ($($ticketNumsArray -join ', ')), TicketContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
+                Write-Host "Generate Reports: Ticket data JSON preview: $($ticketDataJson.Substring(0, [Math]::Min(200, $ticketDataJson.Length)))..." -ForegroundColor Gray
+            }
+            
+            # Send command to worker script
+            $this.Enabled = $false
+            $this.Text = "Generating..."
+            $script:authStatusTextBox.AppendText("Client $($clientNum): Sending generate reports command...`r`n")
+            if ($ticketNumbers.Count -gt 0) {
+                $script:authStatusTextBox.AppendText("Client $($clientNum): Ticket numbers detected: $(($ticketNumbers | ForEach-Object { "#$_" }) -join ', ')`r`n")
+            }
+            if (-not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
+                $script:authStatusTextBox.AppendText("Client $($clientNum): Ticket content included ($($filteredTicketContent.Length) characters)`r`n")
+            }
+            $script:authStatusTextBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+            
+            # Use longer timeout for report generation (reports can take several minutes, but we just need GENERATE_REPORTS_STARTED response)
+            Write-Host "Generate Reports: Final command being sent: $($command.Substring(0, [Math]::Min(500, $command.Length)))..." -ForegroundColor Cyan
+            $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 300
+            
+            if ($reportResponse -like "GENERATE_REPORTS_SUCCESS:*") {
+                $outputPath = ($reportResponse -replace "GENERATE_REPORTS_SUCCESS:", "").Trim()
+                $script:clientReportFolders[$clientNum] = $outputPath
+                if ($script:clientAuthControls[$clientNum].ViewReportsButton) {
+                    $script:clientAuthControls[$clientNum].ViewReportsButton.Visible = $true
+                    $script:clientAuthControls[$clientNum].ViewReportsButton.Enabled = $true
+                }
+                $script:authStatusTextBox.AppendText("Client $($clientNum): Report generation completed! Output: $outputPath`r`n")
+            } else {
+                $script:authStatusTextBox.AppendText("Client $($clientNum): Report generation started.`r`n")
             }
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
@@ -1954,6 +2316,29 @@ try {
             $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $false
             $script:clientAuthControls[$clientNum].GenerateReportsButton.Text = "Generate Reports"
             
+            # Hide ticket controls
+            $script:clientAuthControls[$clientNum].TicketLabel.Visible = $false
+            $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $false
+            $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $false
+            $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $false
+            $script:clientAuthControls[$clientNum].TicketTextBox.Text = ""
+            $script:clientAuthControls[$clientNum].TicketNumbersLabel.Visible = $false
+            $script:clientAuthControls[$clientNum].TicketNumbersLabel.Text = ""
+            
+            # Hide View Reports button
+            $script:clientAuthControls[$clientNum].ViewReportsButton.Visible = $false
+            $script:clientAuthControls[$clientNum].ViewReportsButton.Enabled = $false
+            
+            # Clear report folder for this tenant
+            if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                $script:clientReportFolders.Remove($clientNum)
+            }
+            
+            # Clear ticket data for this tenant
+            if ($script:clientTickets.ContainsKey($clientNum)) {
+                $script:clientTickets.Remove($clientNum)
+            }
+            
             # Hide and reset warning label
             if ($script:clientAuthControls[$clientNum].WarningLabel) {
                 $script:clientAuthControls[$clientNum].WarningLabel.Visible = $false
@@ -2007,10 +2392,23 @@ try {
                 $script:authPanel.Controls.Remove($controls.ValidateUsersButton)
                 $script:authPanel.Controls.Remove($controls.UserValidationLabel)
                 $script:authPanel.Controls.Remove($controls.GenerateReportsButton)
+                $script:authPanel.Controls.Remove($controls.TicketLabel)
+                $script:authPanel.Controls.Remove($controls.TicketTextBox)
+                $script:authPanel.Controls.Remove($controls.TicketNumbersLabel)
+                $script:authPanel.Controls.Remove($controls.ViewReportsButton)
                 
                 # Remove from state dictionaries
                 $script:clientAuthStates.Remove($clientNum)
                 $script:clientAuthControls.Remove($clientNum)
+                if ($script:clientTickets.ContainsKey($clientNum)) {
+                    $script:clientTickets.Remove($clientNum)
+                }
+                if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                    $script:clientReportFolders.Remove($clientNum)
+                }
+                if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                    $script:clientReportFolders.Remove($clientNum)
+                }
                 
                 # Recalculate positions for remaining rows
                 $rowIndex = 0
@@ -2022,8 +2420,28 @@ try {
                     $controls.WarningLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 35))
                     $controls.GraphButton.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
                     $controls.ExchangeButton.Location = New-Object System.Drawing.Point(610, ($yPos + 10))
-                    $controls.RemoveButton.Location = New-Object System.Drawing.Point(770, ($yPos + 10))
-                    $controls.ResetButton.Location = New-Object System.Drawing.Point(860, ($yPos + 10))
+                    $controls.RemoveButton.Location = New-Object System.Drawing.Point(760, ($yPos + 10))
+                    $controls.ResetButton.Location = New-Object System.Drawing.Point(840, ($yPos + 10))
+                    # Update user filtering controls
+                    if ($controls.UserFilterCheckBox) {
+                        $controls.UserFilterCheckBox.Location = New-Object System.Drawing.Point(10, ($yPos + 50))
+                        $controls.UserSearchTextBox.Location = New-Object System.Drawing.Point(120, ($yPos + 48))
+                        $controls.ValidateUsersButton.Location = New-Object System.Drawing.Point(330, ($yPos + 47))
+                        $controls.UserValidationLabel.Location = New-Object System.Drawing.Point(410, ($yPos + 50))
+                    }
+                    # Update ticket controls
+                    if ($controls.TicketLabel) {
+                        $controls.TicketLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 75))
+                        $controls.TicketTextBox.Location = New-Object System.Drawing.Point(170, ($yPos + 73))
+                        $controls.TicketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($yPos + 73))
+                    }
+                    # Update action buttons
+                    if ($controls.GenerateReportsButton) {
+                        $controls.GenerateReportsButton.Location = New-Object System.Drawing.Point(760, ($yPos + 47))
+                    }
+                    if ($controls.ViewReportsButton) {
+                        $controls.ViewReportsButton.Location = New-Object System.Drawing.Point(760, ($yPos + 160))
+                    }
                     $rowIndex++
                 }
                 
@@ -2194,6 +2612,27 @@ try {
                                                     $script:authStatusTextBox.ScrollToCaret()
                                                 }
                                             } catch {}
+                                        }
+                                    }
+                                    
+                                    # Check for report generation completion
+                                    $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                                    if (Test-Path $responseFile) {
+                                        try {
+                                            $responseContent = Get-Content $responseFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { $_.Trim() }
+                                            if ($responseContent -match '^GENERATE_REPORTS_SUCCESS:(.+)$') {
+                                                $reportFolder = $matches[1].Trim()
+                                                if (-not [string]::IsNullOrWhiteSpace($reportFolder) -and (Test-Path $reportFolder)) {
+                                                    # Store report folder and show View Reports button
+                                                    $script:clientReportFolders[$clientNum] = $reportFolder
+                                                    if ($controls.ViewReportsButton -and -not $controls.ViewReportsButton.IsDisposed) {
+                                                        $controls.ViewReportsButton.Visible = $true
+                                                        $controls.ViewReportsButton.Enabled = $true
+                                                    }
+                                                }
+                                            }
+                                        } catch {
+                                            # Ignore errors reading response file
                                         }
                                     }
                                     
