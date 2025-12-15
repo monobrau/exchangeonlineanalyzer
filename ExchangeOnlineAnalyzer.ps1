@@ -2233,7 +2233,13 @@ $lblMemberberryPath.Width = 180
 
 $txtMemberberryPath = New-Object System.Windows.Forms.TextBox
 $txtMemberberryPath.Location = New-Object System.Drawing.Point(200, 542)
-$txtMemberberryPath.Width = 400
+$txtMemberberryPath.Width = 370
+
+$btnBrowseMemberberryPath = New-Object System.Windows.Forms.Button
+$btnBrowseMemberberryPath.Text = "Browse..."
+$btnBrowseMemberberryPath.Location = New-Object System.Drawing.Point(575, 540)
+$btnBrowseMemberberryPath.Width = 75
+$btnBrowseMemberberryPath.Height = 25
 
 $lblMemberberryExceptionsPath = New-Object System.Windows.Forms.Label
 $lblMemberberryExceptionsPath.Text = "Memberberry Exceptions File:"
@@ -2243,11 +2249,17 @@ $lblMemberberryExceptionsPath.Width = 180
 
 $txtMemberberryExceptionsPath = New-Object System.Windows.Forms.TextBox
 $txtMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(200, 572)
-$txtMemberberryExceptionsPath.Width = 400
+$txtMemberberryExceptionsPath.Width = 370
+
+$btnBrowseMemberberryExceptionsPath = New-Object System.Windows.Forms.Button
+$btnBrowseMemberberryExceptionsPath.Text = "Browse..."
+$btnBrowseMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(575, 570)
+$btnBrowseMemberberryExceptionsPath.Width = 75
+$btnBrowseMemberberryExceptionsPath.Height = 25
 
 $btnTestMemberberry = New-Object System.Windows.Forms.Button
 $btnTestMemberberry.Text = "Test/Validate"
-$btnTestMemberberry.Location = New-Object System.Drawing.Point(610, 570)
+$btnTestMemberberry.Location = New-Object System.Drawing.Point(655, 570)
 $btnTestMemberberry.Width = 90
 $btnTestMemberberry.Height = 25
 
@@ -2332,8 +2344,8 @@ $allControls = @($sTitle,$lblSettingsLocation,$txtSettingsLocation,$btnBrowseSet
     $lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
-    $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,
-    $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnTestMemberberry,
+    $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,$btnBrowseMemberberryPath,
+    $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnBrowseMemberberryExceptionsPath,$btnTestMemberberry,
     $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
