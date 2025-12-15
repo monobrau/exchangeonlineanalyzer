@@ -735,7 +735,7 @@ $TicketContent
     
     $readme = @"
 Master Prompt - Generic Template (Copy and Save This)
-$ticketSection
+
 Role & Objective You are a Security Engineer acting on behalf of $companyName. Your task is to analyze security alert tickets, cross-reference them with attached CSV logs/text files, and classify the event as True Positive, False Positive, or Authorized Activity.
 
 
@@ -924,6 +924,13 @@ $investigatorName $investigatorTitle
 
 Clarification Questions [Ask 2 questions here regarding tuning, specific client policies, or missing data.]
 "@
+    
+    # Append ticket information AFTER the instructions if provided
+    if ($ticketSection) {
+        Write-Host "New-AIReadme: Appending ticket section after default template (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
+        $readme += "`n`n$ticketSection"
+        Write-Host "New-AIReadme: Readme length after appending: $($readme.Length)" -ForegroundColor Gray
+    }
     
     return $readme
 }
