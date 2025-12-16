@@ -1167,11 +1167,172 @@ $investigatorName $investigatorTitle
 Clarification Questions [Ask 2 questions here regarding tuning, specific client policies, or missing data.]
 "@
     
+    # Add the same critical reminders to default template for consistency
+    # Insert reminders at the beginning (after "Master Prompt - Generic Template")
+    $criticalReminders = @"
+
+---
+
+## ⚠️ PRE-FLIGHT CHECKLIST - MANDATORY CHECKS BEFORE DRAFTING ⚠️
+
+**Before you write ANY response, you MUST:**
+
+1. ✅ **Check CLIENT EXCEPTIONS for Name Preferences** - Use preferred names when addressing users
+2. ✅ **Check GLOBAL EXCEPTIONS for Advanced IP Scanner** - If detected, follow strict reboot prohibition rules
+3. ✅ **Check for Software Recommendations** - Include recommended replacements when relevant
+4. ✅ **Verify ticket classification** - Every response must include True Positive/False Positive/Authorized Activity classification
+
+**If you skip ANY of these checks, your response is INCORRECT.**
+
+---
+
+## 🚨 CRITICAL CONSTRAINTS - ABSOLUTE PROHIBITIONS 🚨
+
+### 1. Advanced IP Scanner - REBOOT PROHIBITION (ZERO TOLERANCE)
+
+**⚠️ THIS IS THE MOST CRITICAL CONSTRAINT - READ CAREFULLY ⚠️**
+
+**When Advanced IP Scanner is detected in ANY alert:**
+
+#### ❌ ABSOLUTELY FORBIDDEN - DO NOT INCLUDE ANY OF THESE:
+
+```
+❌ "Action Required: Please reboot"
+❌ "Please reboot the server"
+❌ "Reboot required"
+❌ "Action Required: Please reboot the server to clear any temporary files"
+❌ "Please reboot the server to clear any temporary files locked by the security agent"
+❌ "Please reboot the server... as the original installation was interrupted"
+❌ "Action Required" section containing ANY mention of reboot
+❌ ANY phrase containing "reboot" + "required" or "please reboot" or "reboot the"
+❌ ANY request, suggestion, or instruction to reboot the server
+❌ "Please restart" (synonym for reboot)
+❌ "System restart required"
+```
+
+#### ✅ CORRECT APPROACH - ONLY THESE ARE ALLOWED:
+
+```
+✅ "No action required" (in Action Required section)
+✅ Omit Action Required section entirely
+✅ "Mitigation will complete automatically on the next system reboot" (informational ONLY, no action requested)
+```
+
+**Example of CORRECT response:**
+```
+Action Required: No action required.
+
+The detected file is Advanced IP Scanner, a deprecated network scanning tool. 
+While River Run historically used this tool, it is now deprecated because it has 
+not received updates in over 3 years and contains unpatched vulnerabilities.
+
+Mitigation will complete automatically on the next system reboot. No action is 
+required from you at this time.
+```
+
+**Example of INCORRECT response (DO NOT DO THIS):**
+```
+Action Required: Please reboot the server to clear any temporary files locked 
+by the security agent.
+```
+
+**CONSEQUENCE:** If you include ANY reboot request in your response, you have **FAILED this task completely**. The response will be rejected.
+
+#### Additional Advanced IP Scanner Rules:
+
+- **🚫 DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request
+- **🚫 DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement
+- **Narrative**: Explain that while River Run historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities
+- **Replacement**: Suggest "Angry IP Scanner" ONLY if the client requires IP scanning functionality. Explicitly state this is a recommendation for them to implement if needed
+
+---
+
+### 2. Name Preferences - MANDATORY CHECK
+
+**Before addressing ANY user in your response:**
+
+1. **Check the CLIENT EXCEPTIONS section** for Name Preferences
+2. **If a preference exists**, you MUST use the preferred name
+3. **Example**: If you see "**Joseph Nedvidek** → Use preferred name: **Joe**", address as "Hi Joe," NOT "Hi Joseph,"
+
+**Failure to use preferred names is a critical error and will result in rejection.**
+
+---
+
+### 3. Software Recommendations - MANDATORY CHECK
+
+**When Advanced IP Scanner is detected:**
+
+- You MUST mention the recommended replacement: **Angry IP Scanner**
+- Frame it as a recommendation for the client to implement if needed
+- Do NOT offer to install it yourself
+
+---
+
+### 4. Ticket Classification - MANDATORY REQUIREMENT
+
+**Every response MUST include one of these classifications:**
+
+- **True Positive**: Confirmed security threat or malicious activity
+- **False Positive**: Alert triggered incorrectly, no actual threat  
+- **Authorized Activity**: Legitimate activity that triggered the alert
+
+**This classification is required because Barracuda XDR uses these designations for tracking and reporting.**
+
+---
+
+## 📋 COMMON MISTAKES TO AVOID
+
+1. **❌ Requesting reboots for Advanced IP Scanner** → ✅ Say "No action required" instead
+2. **❌ Using full names when preferences exist** → ✅ Always check and use preferred names
+3. **❌ Missing software recommendations** → ✅ Always include recommended replacements when relevant
+4. **❌ Omitting ticket classification** → ✅ Every response must classify the alert
+5. **❌ Creating SOC exception requests for Advanced IP Scanner** → ✅ Do NOT create exception requests for this tool
+6. **❌ Offering to install software** → ✅ Only recommend, don't offer to install
+
+---
+
+"@
+    
+    # Insert reminders after the template header
+    if ($readme -match '^(Master Prompt.*?\n)') {
+        $readme = $readme -replace '^(Master Prompt.*?\n)', "`$1$criticalReminders"
+        Write-Host "New-AIReadme: CRITICAL REMINDERS section inserted into default template after header" -ForegroundColor Green
+    } else {
+        # If no header match, prepend reminders
+        $readme = "$criticalReminders`n`n$readme"
+        Write-Host "New-AIReadme: CRITICAL REMINDERS section prepended to default template (no header found)" -ForegroundColor Yellow
+    }
+    
     # Append ticket information AFTER the instructions if provided
     if ($ticketSection) {
         Write-Host "New-AIReadme: Appending ticket section after default template (ticket section length: $($ticketSection.Length), readme length before: $($readme.Length))" -ForegroundColor Gray
         $readme += "`n`n$ticketSection"
         Write-Host "New-AIReadme: Readme length after appending: $($readme.Length)" -ForegroundColor Gray
+        
+        # Add final checklist for default template too
+        $finalReminder = @"
+
+---
+
+## ✅ FINAL CHECKLIST - BEFORE SUBMITTING YOUR RESPONSE
+
+**Verify your response includes:**
+
+1. ✅ **Ticket Classification**: True Positive / False Positive / Authorized Activity
+2. ✅ **Correct Name**: Used preferred name from CLIENT EXCEPTIONS (if applicable)
+3. ✅ **No Reboot Requests**: If Advanced IP Scanner detected, Action Required says "No action required" or is omitted
+4. ✅ **Software Recommendations**: Included recommended replacement if Advanced IP Scanner detected
+5. ✅ **Ticket Number**: Included in subject line
+6. ✅ **Email Format**: Plaintext code block (no markdown formatting)
+7. ✅ **Subject Line**: Displayed outside code block, includes ticket number
+
+**If ANY item is missing or incorrect, revise your response before submitting.**
+
+---
+
+"@
+        $readme += "`n`n$finalReminder"
     }
     
     return $readme
