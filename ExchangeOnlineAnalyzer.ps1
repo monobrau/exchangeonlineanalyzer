@@ -6778,11 +6778,22 @@ if (Test-Path `$ReportSelectionsFile) {
             $authInstructionsLabel.AutoSize = $true
 
             # Create Panel for client authentication rows
-            $authPanel = New-Object System.Windows.Forms.Panel
+            $authPanel = New-Object System.Windows.Forms.FlowLayoutPanel
             $authPanel.Location = New-Object System.Drawing.Point(15, 105)
             $authPanel.Size = New-Object System.Drawing.Size(960, 450)
             $authPanel.AutoScroll = $true
+            $authPanel.WrapContents = $false
+            $authPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
             $authPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+            $authPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+            $authPanel.add_SizeChanged({
+                $rowWidth = [Math]::Max(100, $authPanel.ClientSize.Width - 20)
+                foreach ($row in $authPanel.Controls) {
+                    if ($row -is [System.Windows.Forms.Panel]) {
+                        $row.Width = $rowWidth
+                    }
+                }
+            })
 
             # Store client authentication state and controls
             $script:clientAuthStates = @{}
@@ -6793,13 +6804,18 @@ if (Test-Path `$ReportSelectionsFile) {
 
             # Create rows for each client
             for ($i = 1; $i -le $tenantCount; $i++) {
-                $yPos = ($i - 1) * ($clientRowHeight + $clientRowSpacing) + 10
+                # Row container keeps spacing consistent regardless of tenant count
+                $rowPanel = New-Object System.Windows.Forms.Panel
+                $rowPanel.Height = $clientRowHeight
+                $rowPanel.Width = $authPanel.ClientSize.Width - 20
+                $rowPanel.Margin = New-Object System.Windows.Forms.Padding(0,0,0,$clientRowSpacing)
+                $rowPanel.Padding = New-Object System.Windows.Forms.Padding(0)
                 
                 # Client label - wider to accommodate longer tenant names
                 $clientLabel = New-Object System.Windows.Forms.Label
                 $clientLabel.Text = "Client $i"
                 $clientLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-                $clientLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 15))
+                $clientLabel.Location = New-Object System.Drawing.Point(10, 15)
                 $clientLabel.Size = New-Object System.Drawing.Size(250, 20)
                 $clientLabel.AutoEllipsis = $true  # Show ellipsis if text is too long
 
@@ -6807,14 +6823,14 @@ if (Test-Path `$ReportSelectionsFile) {
                 $statusLabel = New-Object System.Windows.Forms.Label
                 $statusLabel.Text = "Not Started"
                 $statusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-                $statusLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 15))
+                $statusLabel.Location = New-Object System.Drawing.Point(270, 15)
                 $statusLabel.Size = New-Object System.Drawing.Size(200, 20)
                 $statusLabel.ForeColor = [System.Drawing.Color]::Gray
 
                 # Graph Auth button
                 $graphAuthBtn = New-Object System.Windows.Forms.Button
                 $graphAuthBtn.Text = "Graph Auth"
-                $graphAuthBtn.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
+                $graphAuthBtn.Location = New-Object System.Drawing.Point(480, 10)
                 $graphAuthBtn.Size = New-Object System.Drawing.Size(120, 30)
                 $graphAuthBtn.Enabled = ($i -eq 1)  # Only first client enabled initially
                 $graphAuthBtn.Tag = $i
@@ -6822,7 +6838,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 # Exchange Online Auth button
                 $exchangeAuthBtn = New-Object System.Windows.Forms.Button
                 $exchangeAuthBtn.Text = "Exchange Online Auth"
-                $exchangeAuthBtn.Location = New-Object System.Drawing.Point(610, ($yPos + 10))
+                $exchangeAuthBtn.Location = New-Object System.Drawing.Point(610, 10)
                 $exchangeAuthBtn.Size = New-Object System.Drawing.Size(150, 30)
                 $exchangeAuthBtn.Enabled = $false
                 $exchangeAuthBtn.Tag = $i
@@ -6830,14 +6846,15 @@ if (Test-Path `$ReportSelectionsFile) {
                 # Reset Auth button
                 $resetAuthBtn = New-Object System.Windows.Forms.Button
                 $resetAuthBtn.Text = "Reset Auth"
-                $resetAuthBtn.Location = New-Object System.Drawing.Point(770, ($yPos + 10))
+                $resetAuthBtn.Location = New-Object System.Drawing.Point(770, 10)
                 $resetAuthBtn.Size = New-Object System.Drawing.Size(100, 30)
                 $resetAuthBtn.Enabled = $true
                 $resetAuthBtn.Tag = $i
                 $resetAuthBtn.ForeColor = [System.Drawing.Color]::DarkRed
 
                 # Add controls to panel
-                $authPanel.Controls.AddRange(@($clientLabel, $statusLabel, $graphAuthBtn, $exchangeAuthBtn, $resetAuthBtn))
+                $rowPanel.Controls.AddRange(@($clientLabel, $statusLabel, $graphAuthBtn, $exchangeAuthBtn, $resetAuthBtn))
+                $authPanel.Controls.Add($rowPanel)
 
                 # Store controls and state
                 $script:clientAuthStates[$i] = @{
