@@ -48,20 +48,25 @@ function Add-ToolTip {
 }
 
 # Import all modules with error handling
+$script:moduleImportErrors = @()
 function Safe-ImportModule($modulePath) {
-    try {
-        # Get the module name from the path
-        $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($modulePath)
-        
-        # Remove the module if it's already loaded to force reload
-        if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
-            Remove-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
+    # Get the module name from the path
+    $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($modulePath)
+    
+    # Remove the module if it's already loaded to force reload
+    if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
+        Remove-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
+    }
+    
+    $importError = $null
+    Import-Module $modulePath -Global -ErrorAction SilentlyContinue -ErrorVariable importError
+    if ($importError) {
+        $errorMessage = if ($importError[0].Exception.Message) { $importError[0].Exception.Message } else { $importError[0].ToString() }
+        $script:moduleImportErrors += [pscustomobject]@{
+            ModuleName = $moduleName
+            ModulePath = $modulePath
+            Message    = $errorMessage
         }
-        
-        Import-Module $modulePath -Global -ErrorAction Stop
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to import module: $modulePath`nError: $($_.Exception.Message)", "Module Import Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        exit
     }
 }
 Safe-ImportModule "$PSScriptRoot\Modules\ExchangeOnline.psm1"
@@ -74,6 +79,12 @@ Safe-ImportModule "$PSScriptRoot\Modules\SignInManagement.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
+if ($script:moduleImportErrors.Count -gt 0) {
+    $errorLines = $script:moduleImportErrors | ForEach-Object { "- $($_.ModuleName): $($_.Message)" }
+    $fullMessage = "Failed to import one or more modules:`n`n$($errorLines -join \"`n\")"
+    [System.Windows.Forms.MessageBox]::Show($fullMessage, "Module Import Errors", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    exit
+}
 
 # Function to show/hide progress bar
 function Show-Progress {
@@ -104,15 +115,26 @@ function Load-MailboxesOptimized {
         Show-Progress -message "Loading mailboxes..." -progress 10
         
         # Server-side filtering: Get mailboxes with enhanced filtering
-        if ($LoadAll) {
-            $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox | 
-                        Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
-                        Sort-Object UserPrincipalName
-        } else {
-            # Load only first batch for faster initial load
-            $mailboxes = Get-Mailbox -ResultSize $MaxMailboxes -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox | 
-                        Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
-                        Sort-Object UserPrincipalName
+        try {
+            if ($LoadAll) {
+                $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox -ErrorAction Stop | 
+                            Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
+                            Sort-Object UserPrincipalName
+            } else {
+                # Load only first batch for faster initial load
+                $mailboxes = Get-Mailbox -ResultSize $MaxMailboxes -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox -ErrorAction Stop | 
+                            Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
+                            Sort-Object UserPrincipalName
+            }
+        } catch {
+            Show-Progress -message "Failed to load mailboxes." -progress -1
+            [System.Windows.Forms.MessageBox]::Show("Failed to load mailboxes. Please check your permissions or network connectivity.`nError: $($_.Exception.Message)", "Mailbox Load Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+        if (-not $mailboxes -or $mailboxes.Count -eq 0) {
+            Show-Progress -message "No mailboxes found to load." -progress -1
+            [System.Windows.Forms.MessageBox]::Show("No mailboxes were returned from Exchange. Confirm your account has permissions and mailboxes exist before retrying.", "Mailbox Load Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
         }
         
 
@@ -9897,4 +9919,3 @@ function New-PatternPassword {
     
     return $password
 }
-
