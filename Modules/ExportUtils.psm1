@@ -1,5 +1,20 @@
+# Helper for consistent API warning logging and counting
+function Write-ApiWarning {
+    param(
+        [Parameter(Mandatory=$true)][string]$Operation,
+        [string]$Target = "",
+        $Exception = $null,
+        [ref]$WarningCounter = $null
+    )
+
+    $targetText = if ([string]::IsNullOrWhiteSpace($Target)) { "" } else { " for $Target" }
+    $message = if ($Exception -and $Exception.Message) { $Exception.Message } else { "Unknown error" }
+    Write-Warning ("{0}{1}: {2}" -f $Operation, $targetText, $message)
+    if ($WarningCounter) { $WarningCounter.Value++ }
+}
+
 # Returns:
-#   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
+#   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects>; WarningCount = <int> }
 function Get-MfaCoverageReport {
     param(
         [Parameter(Mandatory=$false)]
@@ -7,19 +22,24 @@ function Get-MfaCoverageReport {
     )
     
     try {
+        $warningCount = 0
         # 1) Security Defaults status (authoritative)
         $secDefaultsEnabled = $false
         try {
             $secDefaults = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction Stop
             if ($secDefaults -and $secDefaults.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$secDefaults.isEnabled }
-        } catch {}
+        } catch {
+            Write-ApiWarning -Operation "Fetch Security Defaults policy" -Exception $_.Exception -WarningCounter ([ref]$warningCount)
+        }
 
         # 2) Conditional Access policies requiring MFA (tenant-wide set)
         $caPolicies = @()
         try {
             $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
             if ($resp.value) { $caPolicies = $resp.value }
-        } catch {}
+        } catch {
+            Write-ApiWarning -Operation "List Conditional Access policies" -Exception $_.Exception -WarningCounter ([ref]$warningCount)
+        }
 
         # Filter enabled policies that require MFA
         $mfaPolicies = @()
@@ -40,7 +60,7 @@ function Get-MfaCoverageReport {
         try {
             # Directory roles map (for policy role assignment evaluation) - needed for CA policy evaluation
             $roles = @(); $roleIdToName = @{}
-            try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
+            try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch { Write-ApiWarning -Operation "List directory roles" -Exception $_.Exception -WarningCounter ([ref]$warningCount) }
             foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
             # If SelectedUsers provided, only query those users (server-side filtering)
@@ -54,12 +74,17 @@ function Get-MfaCoverageReport {
                             $userPage += $u
                         }
                     } catch {
-                        Write-Warning "User not found for MFA coverage: ${upn}: $($_.Exception.Message)"
+                        Write-ApiWarning -Operation "User not found for MFA coverage" -Target $upn -Exception $_.Exception -WarningCounter ([ref]$warningCount)
                     }
                 }
             } else {
                 # No selection - get all users
-                $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+                try {
+                    $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+                } catch {
+                    Write-ApiWarning -Operation "List users for MFA coverage" -Exception $_.Exception -WarningCounter ([ref]$warningCount)
+                    $userPage = @()
+                }
             }
 
             foreach ($u in $userPage) {
@@ -79,7 +104,9 @@ function Get-MfaCoverageReport {
                             }
                         }
                     }
-                } catch {}
+                } catch {
+                    Write-ApiWarning -Operation "List authentication methods" -Target $u.UserPrincipalName -Exception $_.Exception -WarningCounter ([ref]$warningCount)
+                }
 
                 # Determine if any MFA CA policy applies to this user
                 $userGroups = @()
@@ -90,7 +117,9 @@ function Get-MfaCoverageReport {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
                         elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
                     }
-                } catch {}
+                } catch {
+                    Write-ApiWarning -Operation "Get directory membership" -Target $u.UserPrincipalName -Exception $_.Exception -WarningCounter ([ref]$warningCount)
+                }
 
                 $userCaRequiresMfa = $false
                 foreach ($p in $mfaPolicies) {
@@ -127,10 +156,12 @@ function Get-MfaCoverageReport {
                     MfaCovered         = $covered
                 }
             }
-        } catch {}
+        } catch {
+            Write-ApiWarning -Operation "Process MFA coverage for users" -Exception $_.Exception -WarningCounter ([ref]$warningCount)
+        }
 
         $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
-        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users }
+        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users; WarningCount = $warningCount }
     } catch {
         Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"; return @{ SecurityDefaultsEnabled=$false; CAPoliciesRequireMfa=$false; Users=@() }
     }
@@ -144,11 +175,12 @@ function Get-UserSecurityGroupsReport {
     )
     
     try {
+        $warningCount = 0
         $results = New-Object System.Collections.Generic.List[object]
 
         # Directory roles (e.g., Global Administrator)
         $roles = @()
-        try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch {}
+        try { $roles = Get-MgDirectoryRole -All -ErrorAction SilentlyContinue } catch { Write-ApiWarning -Operation "List directory roles" -Exception $_.Exception -WarningCounter ([ref]$warningCount) }
         $roleIdToName = @{}
         foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
@@ -161,12 +193,12 @@ function Get-UserSecurityGroupsReport {
                     $u = Get-MgUser -UserId $upn -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
                     if ($u) { $users += $u }
                 } catch {
-                    Write-Warning "User not found: ${upn}: $($_.Exception.Message)"
+                    Write-ApiWarning -Operation "User not found for security groups" -Target $upn -Exception $_.Exception -WarningCounter ([ref]$warningCount)
                 }
             }
         } else {
             # No selection - get all users
-            try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
+            try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch { Write-ApiWarning -Operation "List users for security groups" -Exception $_.Exception -WarningCounter ([ref]$warningCount) }
         }
 
         foreach ($u in $users) {
@@ -179,7 +211,9 @@ function Get-UserSecurityGroupsReport {
                     elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $name = if ($roleIdToName.ContainsKey($m.Id)) { $roleIdToName[$m.Id] } else { 'Directory Role' } }
                     if ($name) { $groups += $name }
                 }
-            } catch {}
+            } catch {
+                Write-ApiWarning -Operation "Get directory membership" -Target $u.UserPrincipalName -Exception $_.Exception -WarningCounter ([ref]$warningCount)
+            }
 
             $results.Add([pscustomobject]@{
                 DisplayName       = $u.DisplayName
@@ -188,7 +222,9 @@ function Get-UserSecurityGroupsReport {
             }) | Out-Null
         }
 
-        return [System.Collections.ArrayList]$results
+        $resultsList = [System.Collections.ArrayList]$results
+        Add-Member -InputObject $resultsList -NotePropertyName WarningCount -NotePropertyValue $warningCount -Force | Out-Null
+        return $resultsList
     } catch { Write-Error "Get-UserSecurityGroupsReport failed: $($_.Exception.Message)"; return @() }
 }
 function Format-InboxRuleXlsx {
