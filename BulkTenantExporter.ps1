@@ -571,6 +571,9 @@ try {
     `$null = New-Item -ItemType Directory -Path `$cacheDir -Force -ErrorAction Stop
     `$env:IDENTITY_SERVICE_CACHE_DIR = `$cacheDir
     `$env:MSAL_CACHE_DIR = `$cacheDir
+    `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+    `$env:MSAL_DISABLE_BROKER = "1"
+    `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
     Write-Status "Using isolated cache directory: `$cacheDir"
     Write-Host "Cache directory: `$cacheDir" -ForegroundColor Gray
     Write-Host ""
@@ -645,9 +648,23 @@ try {
                 Write-CommandResponse "GRAPH_AUTH_STARTED"
                 
                 # Clear any existing sessions and token caches
+                # NOTE: Each tenant runs in its own isolated PowerShell process, so disconnecting only affects
+                # this tenant's session, not other tenants' sessions running in separate processes.
                 Write-Status "Clearing existing sessions and token caches..."
                 Write-Host "Clearing existing sessions and token caches..." -ForegroundColor Cyan
-                try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch {}
+                
+                # Disconnect Graph session first (only if one exists in this process)
+                try { 
+                    `$mgContext = Get-MgContext -ErrorAction SilentlyContinue
+                    if (`$mgContext) {
+                        Disconnect-MgGraph -ErrorAction SilentlyContinue 
+                        Write-Host "Disconnected existing Graph session for this tenant" -ForegroundColor Gray
+                    } else {
+                        Write-Host "No existing Graph session to disconnect" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors - session may not exist
+                }
                 
                 # Clear Graph token cache
                 try {
@@ -660,25 +677,82 @@ try {
                     # Ignore errors clearing token cache
                 }
                 
-                # Clear MSAL cache files in the cache directory if they exist
+                # Clear ALL files in the MSAL cache directory (not just "*cache*" files)
+                # This ensures no cached tokens from previous tenants remain
                 try {
                     if (`$env:MSAL_CACHE_DIR -and (Test-Path `$env:MSAL_CACHE_DIR)) {
-                        `$msalCacheFiles = Get-ChildItem -Path `$env:MSAL_CACHE_DIR -Filter "*cache*" -ErrorAction SilentlyContinue
-                        foreach (`$file in `$msalCacheFiles) {
+                        `$allCacheFiles = Get-ChildItem -Path `$env:MSAL_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue
+                        foreach (`$file in `$allCacheFiles) {
                             Remove-Item `$file.FullName -Force -ErrorAction SilentlyContinue
                         }
-                        Write-Host "Cleared MSAL cache files from cache directory" -ForegroundColor Gray
+                        Write-Host "Cleared all files from MSAL cache directory ($(`$allCacheFiles.Count) files)" -ForegroundColor Gray
                     }
                 } catch {
                     # Ignore errors clearing MSAL cache
                 }
                 
+                # Also clear IDENTITY_SERVICE_CACHE_DIR if it exists
+                try {
+                    if (`$env:IDENTITY_SERVICE_CACHE_DIR -and (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
+                        `$allIdentityFiles = Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue
+                        foreach (`$file in `$allIdentityFiles) {
+                            Remove-Item `$file.FullName -Force -ErrorAction SilentlyContinue
+                        }
+                        Write-Host "Cleared all files from Identity cache directory ($(`$allIdentityFiles.Count) files)" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors clearing Identity cache
+                }
+                
                 # Graph Authentication
+                # NOTE: Microsoft Graph Authentication Behavior
+                # Microsoft.Graph.Authentication version 2.33.0+ defaults to using WAM (Web Account Manager) on Windows,
+                # which shows a popup dialog instead of opening the system browser. Unlike Connect-ExchangeOnline which
+                # has a -DisableWAM parameter, Connect-MgGraph does not have this option. Environment variables to disable
+                # WAM are set below, but newer module versions may ignore them. The authentication will still work via
+                # the WAM popup if the browser doesn't open automatically.
+                # TODO: Revisit this implementation if/when Microsoft.Graph.Authentication adds a -DisableWAM parameter
+                #       or provides another mechanism to force system browser authentication.
                 Write-Host ""
-                Write-Host "A browser window will open for Microsoft Graph authentication - this may take 10-30 seconds to appear." -ForegroundColor Yellow
-                Write-Host "Please wait for the browser popup and complete the sign-in in your browser window." -ForegroundColor Yellow
+                Write-Host "Starting Microsoft Graph authentication..." -ForegroundColor Yellow
+                Write-Host "Note: A popup may appear instead of your browser (this is a limitation of Microsoft.Graph.Authentication)." -ForegroundColor Yellow
                 Write-Host ""
-                Write-Status "Waiting for browser popup to appear (this may take 10-30 seconds)..."
+                Write-Status "Waiting for authentication window to appear (this may take 10-30 seconds)..."
+
+                # Disable broker/WAM so authentication uses the system browser instead of an embedded popup
+                `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+                `$env:MSAL_DISABLE_BROKER = "1"
+                `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+
+                # Ensure the per-client cache directory exists and is completely empty before authenticating
+                # This is critical to prevent reusing tokens from previous tenants
+                if (`$env:MSAL_CACHE_DIR) {
+                    try {
+                        if (-not (Test-Path `$env:MSAL_CACHE_DIR)) {
+                            New-Item -ItemType Directory -Path `$env:MSAL_CACHE_DIR -Force -ErrorAction SilentlyContinue | Out-Null
+                        } else {
+                            # Remove ALL contents (files and subdirectories) to ensure fresh authentication
+                            Get-ChildItem -Path `$env:MSAL_CACHE_DIR -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-Host "Cleared MSAL cache directory contents before authentication" -ForegroundColor Gray
+                        }
+                    } catch {
+                        # Ignore cache cleanup errors to avoid blocking auth
+                    }
+                }
+                
+                # Also clear IDENTITY_SERVICE_CACHE_DIR before authentication
+                if (`$env:IDENTITY_SERVICE_CACHE_DIR) {
+                    try {
+                        if (-not (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
+                            New-Item -ItemType Directory -Path `$env:IDENTITY_SERVICE_CACHE_DIR -Force -ErrorAction SilentlyContinue | Out-Null
+                        } else {
+                            Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-Host "Cleared Identity cache directory contents before authentication" -ForegroundColor Gray
+                        }
+                    } catch {
+                        # Ignore cache cleanup errors to avoid blocking auth
+                    }
+                }
     
                 `$scopes = @(
                     "AuditLog.Read.All",
@@ -690,19 +764,100 @@ try {
                 )
     
                 try {
-                    # Use ForceRefresh to force fresh authentication (bypass cached tokens)
-                    # If ForceRefresh is not supported, fall back to regular Connect-MgGraph
+                    # Try to use Azure.Identity directly to bypass WAM, but fall back to standard Connect-MgGraph if not available
+                    `$useAzureIdentity = `$false
                     try {
-                        Connect-MgGraph -Scopes `$scopes -ContextScope Process -ForceRefresh -ErrorAction Stop
-                        Write-Host "Connected with ForceRefresh (fresh authentication)" -ForegroundColor Green
-                    } catch {
-                        # If ForceRefresh parameter doesn't exist, try without it
-                        if (`$_.Exception.Message -match "parameter name 'ForceRefresh'|matches parameter name 'ForceRefresh'|ForceRefresh") {
-                            Write-Host "ForceRefresh not supported, using standard Connect-MgGraph" -ForegroundColor Yellow
-                            Connect-MgGraph -Scopes `$scopes -ContextScope Process -ErrorAction Stop
-                        } else {
-                            throw
+                        # Check if Azure.Identity types are available in already-loaded assemblies
+                        `$identityType = `$null
+                        
+                        # First, try to find the type in loaded assemblies (Microsoft.Graph might have brought it in)
+                        foreach (`$assembly in [System.AppDomain]::CurrentDomain.GetAssemblies()) {
+                            try {
+                                `$identityType = `$assembly.GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                                if (`$identityType -ne `$null) { break }
+                            } catch {}
                         }
+                        
+                        # If not found, try Type::GetType with assembly qualified name
+                        if (`$null -eq `$identityType) {
+                            `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions, Azure.Identity, Version=1.0.0.0, Culture=neutral, PublicKeyToken=92742159e12e44c8")
+                        }
+                        
+                        # If still not found, try loading from Microsoft.Graph.Authentication module path
+                        if (`$null -eq `$identityType) {
+                            `$mgAuthModule = Get-Module Microsoft.Graph.Authentication -ErrorAction SilentlyContinue
+                            if (`$mgAuthModule) {
+                                `$mgAuthPath = Split-Path `$mgAuthModule.Path
+                                `$identityDll = Join-Path `$mgAuthPath "Azure.Identity.dll"
+                                if (Test-Path `$identityDll) {
+                                    [System.Reflection.Assembly]::LoadFrom(`$identityDll) | Out-Null
+                                    `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                                }
+                            }
+                        }
+                        
+                        # Last resort: try to install/load the module
+                        if (`$null -eq `$identityType) {
+                            if (Get-Module -ListAvailable -Name Azure.Identity -ErrorAction SilentlyContinue) {
+                                Import-Module Azure.Identity -Force -ErrorAction Stop
+                                `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                            } else {
+                                # Try installing with explicit repository
+                                Write-Host "Attempting to install Azure.Identity from PSGallery..." -ForegroundColor Yellow
+                                try {
+                                    Register-PSRepository -Default -ErrorAction SilentlyContinue
+                                    Install-Module -Name Azure.Identity -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
+                                    Import-Module Azure.Identity -Force -ErrorAction Stop
+                                    `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                                } catch {
+                                    Write-Host "Could not install Azure.Identity: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+                                }
+                            }
+                        }
+                        
+                        if (`$null -ne `$identityType) {
+                            `$useAzureIdentity = `$true
+                            Write-Host "Using Azure.Identity for browser authentication (bypassing WAM)..." -ForegroundColor Cyan
+                            
+                            # Create browser credential options to use system browser (not embedded/WAM)
+                            `$browserOptions = New-Object Azure.Identity.InteractiveBrowserCredentialOptions
+                            `$browserOptions.UseOperatingSystemAccount = `$false
+                            `$browserOptions.TenantId = "organizations"  # Allow any work/school account
+                            
+                            # Create the credential with system browser
+                            `$browserCredential = New-Object Azure.Identity.InteractiveBrowserCredential -ArgumentList `$browserOptions
+                            
+                            # Get token using the browser credential (will open system browser)
+                            Write-Host "Opening browser for authentication..." -ForegroundColor Yellow
+                            `$tokenRequestContext = New-Object Azure.Core.TokenRequestContext -ArgumentList (,[string[]]`$scopes)
+                            `$accessToken = `$browserCredential.GetToken(`$tokenRequestContext, [System.Threading.CancellationToken]::None)
+                            
+                            # Connect to Graph using the access token
+                            `$secureToken = ConvertTo-SecureString -String `$accessToken.Token -AsPlainText -Force
+                            Connect-MgGraph -AccessToken `$secureToken -ErrorAction Stop
+                        }
+                    } catch {
+                        Write-Host "Azure.Identity approach failed: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "Falling back to standard Connect-MgGraph..." -ForegroundColor Yellow
+                        `$useAzureIdentity = `$false
+                    }
+                    
+                    # Fallback to standard Connect-MgGraph if Azure.Identity approach didn't work
+                    # LIMITATION: Microsoft.Graph.Authentication version 2.33.0+ defaults to WAM (Web Account Manager) on Windows.
+                    # Unlike Connect-ExchangeOnline which has a -DisableWAM parameter, Connect-MgGraph does not provide
+                    # this option. Environment variables are set below to attempt disabling WAM, but newer module versions
+                    # may ignore them. The authentication will still function correctly via the WAM popup if the system
+                    # browser doesn't open automatically. This is a known limitation of the Microsoft.Graph.Authentication
+                    # module and not a bug in this script.
+                    # TODO: Revisit this implementation if/when Microsoft.Graph.Authentication adds a -DisableWAM parameter
+                    #       or provides another mechanism to force system browser authentication.
+                    if (-not `$useAzureIdentity) {
+                        # Set environment variables to try to disable WAM (may not work with newer module versions)
+                        `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+                        `$env:MSAL_DISABLE_BROKER = "1"
+                        `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+                        Write-Host "Using standard Connect-MgGraph authentication..." -ForegroundColor Yellow
+                        Connect-MgGraph -Scopes `$scopes -ContextScope Process -NoWelcome -ErrorAction Stop
                     }
                     `$mgContext = Get-MgContext -ErrorAction Stop
                     `$graphAuthenticated = `$true
