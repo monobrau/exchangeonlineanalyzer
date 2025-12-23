@@ -367,7 +367,11 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [int]$SignInLogsDaysBack = 7,
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [string[]]$TicketNumbers = @(),
+        [Parameter(Mandatory=$false)]
+        [string]$TicketContent = ''
     )
 
     try {
@@ -390,6 +394,8 @@ function New-SecurityInvestigationReport {
     $report.DaysAnalyzed = $DaysBack
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
     $report.FilePaths = @{}
+    $report.TicketNumbers = $TicketNumbers
+    $report.TicketContent = $TicketContent
 
     # Resolve output folder (tenant-scoped/timestamped)
     try {
@@ -470,28 +476,43 @@ function New-SecurityInvestigationReport {
     if ($exchangeConnected) {
         try {
             if ($IncludeMessageTrace) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting message trace data (last $DaysBack days)..." }
+                $statusMsg = "Collecting message trace data (last $DaysBack days)..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 -SelectedUsers $SelectedUsers # always 10 days per requirement
+                Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
             }
 
             if ($IncludeInboxRules) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Exporting inbox rules..." }
+                $statusMsg = "Exporting inbox rules..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers
+                Write-Host "Collected $($report.InboxRules.Count) inbox rules" -ForegroundColor Green
             }
 
             if ($IncludeTransportRules) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting transport rules..." }
+                $statusMsg = "Collecting transport rules..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.TransportRules = Get-ExchangeTransportRules
+                Write-Host "Collected $($report.TransportRules.Count) transport rules" -ForegroundColor Green
             }
 
             if ($IncludeMailFlowConnectors) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mail flow connectors..." }
+                $statusMsg = "Collecting mail flow connectors..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailFlowConnectors = Get-MailFlowConnectors
+                Write-Host "Collected $($report.MailFlowConnectors.Count) mail flow connectors" -ForegroundColor Green
             }
 
             if ($IncludeMailboxForwarding) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting mailbox forwarding and delegation..." }
+                $statusMsg = "Collecting mailbox forwarding and delegation..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers
+                Write-Host "Collected mailbox forwarding data for $($report.MailboxForwarding.Count) mailboxes" -ForegroundColor Green
             }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
@@ -503,13 +524,18 @@ function New-SecurityInvestigationReport {
     if ($graphConnected) {
         try {
             if ($IncludeAuditLogs) {
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting audit logs from Microsoft Graph..." }
+                $statusMsg = "Collecting audit logs from Microsoft Graph..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
                 $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                Write-Host "Collected $($report.AuditLogs.Count) audit log entries" -ForegroundColor Green
             }
 
             if ($IncludeSignInLogs) {
                 try {
-                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This requires Azure AD Premium license." }
+                    $statusMsg = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This requires Azure AD Premium license."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
                     $report.SignInLogs = Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers
                     if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                         Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
@@ -520,7 +546,12 @@ function New-SecurityInvestigationReport {
                         $report.SignInLogs = @()
                         $report.SignInLogsError = "Permission denied - requires AuditLog.Read.All"
                     } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*premium*") {
+                        $warningMsg = "WARNING: License required - Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days. Pull sign-in logs manually."
                         Write-Warning "Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants can only access last 7 days."
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
+                            $StatusLabel.Text = $warningMsg
+                        }
+                        Write-Host $warningMsg -ForegroundColor Yellow
                         $report.SignInLogs = @()
                         $report.SignInLogsError = "License required - Azure AD Premium P1/P2 (free tenants limited to 7 days)"
                     } else {
@@ -547,14 +578,19 @@ function New-SecurityInvestigationReport {
     # Groups: Always full pull (fast to collect, not user-specific)
     if ($graphConnected) {
         try {
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..." }
+            $statusMsg = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            Write-Host $statusMsg -ForegroundColor Cyan
             # Filter by SelectedUsers when provided (per-user report for speed)
             # Empty array when no selection = full pull (comprehensive investigation)
             $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
+            Write-Host "MFA coverage evaluation complete" -ForegroundColor Green
 
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting user security groups and roles..." }
-            # Always pass empty array to get full pull of all users (fast, not user-specific)
-            $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers @()
+            $statusMsg = "Collecting user security groups and roles..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            Write-Host $statusMsg -ForegroundColor Cyan
+            $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
+            Write-Host "Collected security groups data for $($report.UserSecurityGroups.Users.Count) users" -ForegroundColor Green
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }
@@ -571,7 +607,9 @@ function New-SecurityInvestigationReport {
                 # Collect Conditional Access Policies
                 if ($IncludeConditionalAccessPolicies) {
                     try {
-                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting Conditional Access policies..." }
+                        $statusMsg = "Collecting Conditional Access policies..."
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                        Write-Host $statusMsg -ForegroundColor Cyan
                         $report.ConditionalAccessPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop
                         Write-Host "Collected $($report.ConditionalAccessPolicies.Count) Conditional Access policies" -ForegroundColor Green
                     } catch {
@@ -596,7 +634,9 @@ function New-SecurityInvestigationReport {
                 # Collect App Registrations
                 if ($IncludeAppRegistrations) {
                     try {
-                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Collecting app registrations..." }
+                        $statusMsg = "Collecting app registrations..."
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                        Write-Host $statusMsg -ForegroundColor Cyan
                         $report.AppRegistrations = Get-AppRegistrations -ErrorAction Stop
                         Write-Host "Collected $($report.AppRegistrations.Count) app registrations" -ForegroundColor Green
                     } catch {
@@ -630,64 +670,100 @@ function New-SecurityInvestigationReport {
     }
 
     # Generate AI Investigation Prompt
-    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Generating AI investigation prompts..." }
+    $statusMsg = "Generating AI investigation prompts..."
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Cyan
     $report.AIPrompt = New-AISecurityInvestigationPrompt -Report $report
 
     # Generate Ticketing System Message
-    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Generating non-technical incident summary..." }
+    $statusMsg = "Generating non-technical incident summary..."
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Cyan
     $report.TicketMessage = New-TicketSecuritySummary -Report $report
 
     # Generate comprehensive report
+    $statusMsg = "Generating comprehensive report summary..."
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Cyan
     $report.Summary = New-SecurityInvestigationSummary -Report $report
 
-    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = "Security investigation report completed" }
+    $statusMsg = "Security investigation report completed"
+    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+    Write-Host $statusMsg -ForegroundColor Green
     if ($MainForm -and $MainForm.GetType().Name -eq "Form") { $MainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
 
+    # Helper function to generate filename suffix with ticket numbers
+    $getTicketSuffix = {
+        param([array]$TicketNumbers)
+        $ticketNumsArray = @()
+        if ($TicketNumbers) {
+            if ($TicketNumbers -is [string]) {
+                $ticketNumsArray = @($TicketNumbers)
+            } elseif ($TicketNumbers -is [array]) {
+                $ticketNumsArray = $TicketNumbers
+            } else {
+                $ticketNumsArray = @($TicketNumbers)
+            }
+        }
+        if ($ticketNumsArray.Count -gt 0) {
+            $ticketSuffix = "_Ticket_" + ($ticketNumsArray -join '_')
+            return $ticketSuffix
+        }
+        return ""
+    }
+    
+    # Get ticket suffix for filenames
+    $ticketSuffix = & $getTicketSuffix $report.TicketNumbers
+    
     # Export datasets to CSV (and JSON fallback) if we have an output folder
     # Note: Data is already filtered server-side by the collection functions
     if ($report.OutputFolder) {
+        $statusMsg = "Exporting data to CSV files..."
+        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+        Write-Host $statusMsg -ForegroundColor Cyan
+        Write-Host "Output folder: $($report.OutputFolder)" -ForegroundColor Gray
         $exportError = $null
         try {
-            $csv = Join-Path $report.OutputFolder "MessageTrace.csv"
-            $json = Join-Path $report.OutputFolder "MessageTrace.json"
+            $csv = Join-Path $report.OutputFolder "MessageTrace$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "MessageTrace$ticketSuffix.json"
             if ($report.MessageTrace -and $report.MessageTrace.Count -gt 0) {
                 try { $report.MessageTrace | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MessageTraceCsv = $csv }
                 catch { $report.MessageTrace | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.MessageTraceJson = $json }
             }
 
-            $csv = Join-Path $report.OutputFolder "InboxRules.csv"
-            $json = Join-Path $report.OutputFolder "InboxRules.json"
+            $csv = Join-Path $report.OutputFolder "InboxRules$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "InboxRules$ticketSuffix.json"
             if ($report.InboxRules -and $report.InboxRules.Count -gt 0) {
                 try { $report.InboxRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.InboxRulesCsv = $csv }
                 catch { $report.InboxRules | ConvertTo-Json -Depth 6 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.InboxRulesJson = $json }
             }
 
             # Transport Rules export
-            $csv = Join-Path $report.OutputFolder "TransportRules.csv"
-            $json = Join-Path $report.OutputFolder "TransportRules.json"
+            $csv = Join-Path $report.OutputFolder "TransportRules$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "TransportRules$ticketSuffix.json"
             if ($report.TransportRules -and $report.TransportRules.Count -gt 0) {
                 try { $report.TransportRules | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.TransportRulesCsv = $csv }
                 catch { $report.TransportRules | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.TransportRulesJson = $json }
             }
 
             # Mail Flow Connectors export (combined Inbound + Outbound)
-            $csv = Join-Path $report.OutputFolder "MailFlowConnectors.csv"
-            $json = Join-Path $report.OutputFolder "MailFlowConnectors.json"
+            $csv = Join-Path $report.OutputFolder "MailFlowConnectors$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "MailFlowConnectors$ticketSuffix.json"
             if ($report.MailFlowConnectors -and $report.MailFlowConnectors.Count -gt 0) {
                 try { $report.MailFlowConnectors | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MailFlowConnectorsCsv = $csv }
                 catch { $report.MailFlowConnectors | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.MailFlowConnectorsJson = $json }
             }
 
-            $csv = Join-Path $report.OutputFolder "GraphAuditLogs.csv"
-            $json = Join-Path $report.OutputFolder "GraphAuditLogs.json"
+            $csv = Join-Path $report.OutputFolder "GraphAuditLogs$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "GraphAuditLogs$ticketSuffix.json"
             if ($report.AuditLogs -and $report.AuditLogs.Count -gt 0) {
                 try { $report.AuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.AuditLogsCsv = $csv }
                 catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
             }
 
             # Sign-in Logs export
-            $csv = Join-Path $report.OutputFolder "SignInLogs.csv"
-            $json = Join-Path $report.OutputFolder "SignInLogs.json"
+            $csv = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix.json"
             if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                 try { 
                     $report.SignInLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
@@ -701,14 +777,14 @@ function New-SecurityInvestigationReport {
                 }
             } elseif ($report.SignInLogsError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "SignInLogs_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix_Error.txt"
                 "Error collecting Sign-in Logs:`n$($report.SignInLogsError)`n`nNote: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days of data." | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.SignInLogsError = $errorFile
             }
 
             # Conditional Access Policies export
-            $csv = Join-Path $report.OutputFolder "ConditionalAccessPolicies.csv"
-            $json = Join-Path $report.OutputFolder "ConditionalAccessPolicies.json"
+            $csv = Join-Path $report.OutputFolder "ConditionalAccessPolicies$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "ConditionalAccessPolicies$ticketSuffix.json"
             if ($report.ConditionalAccessPolicies -and $report.ConditionalAccessPolicies.Count -gt 0) {
                 try {
                     # Flatten CA policies for CSV export
@@ -747,14 +823,14 @@ function New-SecurityInvestigationReport {
                 }
             } elseif ($report.CAPoliciesError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies$ticketSuffix_Error.txt"
                 "Error collecting Conditional Access Policies:`n$($report.CAPoliciesError)" | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.ConditionalAccessPoliciesError = $errorFile
             }
 
             # App Registrations export
-            $csv = Join-Path $report.OutputFolder "AppRegistrations.csv"
-            $json = Join-Path $report.OutputFolder "AppRegistrations.json"
+            $csv = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix.json"
             if ($report.AppRegistrations -and $report.AppRegistrations.Count -gt 0) {
                 try {
                     # Flatten app registrations for CSV export
@@ -791,7 +867,7 @@ function New-SecurityInvestigationReport {
                 }
             } elseif ($report.AppRegistrationsError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "AppRegistrations_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix_Error.txt"
                 "Error collecting App Registrations:`n$($report.AppRegistrationsError)" | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.AppRegistrationsError = $errorFile
             }
@@ -918,7 +994,7 @@ function New-SecurityInvestigationReport {
 
                 # Export combined user security posture
                 if ($userPosture.Count -gt 0) {
-                    $csv = Join-Path $report.OutputFolder "UserSecurityPosture.csv"
+                    $csv = Join-Path $report.OutputFolder "UserSecurityPosture$ticketSuffix.csv"
                     try { $userPosture | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityPostureCsv = $csv } catch {}
                 }
             } catch {
@@ -928,18 +1004,67 @@ function New-SecurityInvestigationReport {
 
         # Save only LLM instructions as TXT (no other text files on disk)
         try {
+            $statusMsg = "Generating AI readme instructions..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            Write-Host $statusMsg -ForegroundColor Cyan
+            
+            # If ticket numbers exist, generate separate AI readme file for each ticket
+            # Ensure TicketNumbers is an array - use report property, not parameter
+            $ticketNumsArray = @()
+            if ($report.TicketNumbers) {
+                if ($report.TicketNumbers -is [string]) {
+                    $ticketNumsArray = @($report.TicketNumbers)
+                } elseif ($report.TicketNumbers -is [array]) {
+                    $ticketNumsArray = $report.TicketNumbers
+                } else {
+                    $ticketNumsArray = @($report.TicketNumbers)
+                }
+            }
+            Write-Host "AI Readme Generation: Checking ticket numbers - report.TicketNumbers=$($report.TicketNumbers), ticketNumsArray.Count=$($ticketNumsArray.Count)" -ForegroundColor Cyan
+            if ($ticketNumsArray.Count -gt 0) {
+                Write-Host "Generating separate AI readme files for $($ticketNumsArray.Count) ticket(s): $($ticketNumsArray -join ', ')" -ForegroundColor Cyan
+                foreach ($ticketNum in $ticketNumsArray) {
+                    try {
+                        $ticketReport = $report.PSObject.Copy()
+                        $ticketReport.TicketNumbers = @($ticketNum)  # Single ticket number for this file
+                        $ticketReport.LLMInstructions = New-LLMInvestigationInstructions -Report $ticketReport
+                        $ticketLlmPath = Join-Path $report.OutputFolder "_AI_Readme_Ticket_$ticketNum.txt"
+                        if ($ticketReport.LLMInstructions) {
+                            $ticketReport.LLMInstructions | Out-File -FilePath $ticketLlmPath -Encoding utf8
+                            $report.FilePaths["LLMInstructionsTxt_Ticket_$ticketNum"] = $ticketLlmPath
+                            Write-Host "AI readme instructions saved for ticket #$ticketNum" -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Warning "Failed to generate AI readme for ticket #$ticketNum : $($_.Exception.Message)"
+                    }
+                }
+            }
+            
+            # Always generate standard AI readme (with all ticket data if provided, or without if not)
             $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
-            $llmPath = Join-Path $report.OutputFolder "_AI_Readme.txt"
+            $llmFileName = if ($ticketSuffix) { "_AI_Readme$ticketSuffix.txt" } else { "_AI_Readme.txt" }
+            $llmPath = Join-Path $report.OutputFolder $llmFileName
             if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
             $report.FilePaths.LLMInstructionsTxt = $llmPath
-        } catch {}
+            Write-Host "AI readme instructions saved" -ForegroundColor Green
+        } catch {
+            Write-Warning "Failed to generate AI readme instructions: $($_.Exception.Message)"
+        }
 
         # Automatically create zip file of all reports (excluding _AI_Readme.txt)
         try {
+            $statusMsg = "Creating zip archive of security reports..."
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
-                $StatusLabel.Text = "Creating zip archive of security reports..."
+                $StatusLabel.Text = $statusMsg
             }
-            $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder
+            Write-Host $statusMsg -ForegroundColor Cyan
+            # Generate zip filename with ticket numbers
+            $zipFileName = $null
+            if ($ticketSuffix) {
+                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                $zipFileName = "SecurityInvestigation$ticketSuffix`_$timestamp.zip"
+            }
+            $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder -ZipFileName $zipFileName
             if ($zipPath) {
                 $report.FilePaths.ZipFile = $zipPath
                 Write-Host "Zip archive created: $zipPath" -ForegroundColor Green
@@ -947,6 +1072,8 @@ function New-SecurityInvestigationReport {
         } catch {
             Write-Warning "Failed to create zip archive: $($_.Exception.Message)"
         }
+        
+        Write-Host "`nReport generation complete! All files saved to: $($report.OutputFolder)" -ForegroundColor Green
     }
 
     return $report
@@ -1157,8 +1284,39 @@ function Get-ExchangeInboxRules {
         foreach ($mbx in $mailboxes) {
             $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
             try {
-                $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
+                # Try to get all rules including hidden/system-managed ones
+                # Some rules like "Junk E-Mail Rule" may be hidden or system-managed
+                $rules = @()
+                try {
+                    # First try with IncludeHidden parameter if it exists (Exchange Online)
+                    $rules = Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop
+                } catch {
+                    # If IncludeHidden doesn't work, try without it (fallback)
+                    try {
+                        $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
+                    } catch {
+                        Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
+                        continue
+                    }
+                }
+                
                 foreach ($r in $rules) {
+                    # Check if rule is hidden/system-managed
+                    $isHidden = $false
+                    if ($r.PSObject.Properties.Name -contains 'IsHidden') {
+                        $isHidden = $r.IsHidden
+                    } elseif ($r.PSObject.Properties.Name -contains 'Hidden') {
+                        $isHidden = $r.Hidden
+                    } elseif ($r.PSObject.Properties.Name -contains 'SystemManaged') {
+                        $isHidden = $r.SystemManaged
+                    }
+                    
+                    # Check if rule name indicates it's a system rule (like "Junk E-Mail Rule")
+                    $isSystemRule = $false
+                    if ($r.Name -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)') {
+                        $isSystemRule = $true
+                    }
+                    
                     $obj = [pscustomobject]@{
                         MailboxOwner        = $upn
                         Name                = $r.Name
@@ -1172,7 +1330,8 @@ function Get-ExchangeInboxRules {
                         ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
                         DeleteMessage       = $r.DeleteMessage
                         StopProcessing      = $r.StopProcessingRules
-                        IsHidden            = $false
+                        IsHidden            = $isHidden
+                        IsSystemManaged     = $isSystemRule
                         Description         = ($r.Description -join ' ')
                     }
                     [void]$allRules.Add($obj)
@@ -1612,9 +1771,19 @@ function Get-MailboxForwardingAndDelegation {
         Write-Host "Collecting mailbox forwarding and delegation settings..." -ForegroundColor Yellow
 
         $mailboxes = @()
+        $selectedUserSet = @{}  # For quick lookup of selected users
         
-        # If SelectedUsers provided, only query those mailboxes (server-side filtering)
+        # If SelectedUsers provided, query mailboxes owned by selected users AND all mailboxes to check for delegates/forwarding
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            # Build set of selected user UPNs for quick lookup
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                $selectedUserSet[$upn.ToLower()] = $upn
+            }
+            
+            Write-Host "  User filtering enabled: Checking mailboxes owned by selected users AND all mailboxes for delegates/forwarding..." -ForegroundColor Cyan
+            
+            # First, get mailboxes owned by selected users
             foreach ($user in $SelectedUsers) {
                 $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                 try {
@@ -1623,6 +1792,90 @@ function Get-MailboxForwardingAndDelegation {
                 } catch {
                     Write-Warning "Mailbox not found for ${upn}: $($_.Exception.Message)"
                 }
+            }
+            
+            # Also get ALL mailboxes to check for delegates/forwarding that match selected users
+            try {
+                $allMailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
+                foreach ($mbx in $allMailboxes) {
+                    $mbxUpn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
+                    # Skip if already added (owned by selected user)
+                    $alreadyAdded = $false
+                    foreach ($existingMbx in $mailboxes) {
+                        $existingUpn = if ($existingMbx.UserPrincipalName) { $existingMbx.UserPrincipalName } else { $existingMbx.PrimarySmtpAddress }
+                        if ($existingUpn -eq $mbxUpn) {
+                            $alreadyAdded = $true
+                            break
+                        }
+                    }
+                    if ($alreadyAdded) {
+                        continue
+                    }
+                    
+                    # Check if this mailbox has forwarding or delegates matching selected users
+                    $hasRelevantForwarding = $false
+                    $hasRelevantDelegates = $false
+                    
+                    # Check forwarding addresses
+                    if ($mbx.ForwardingAddress) {
+                        $forwardingStr = $mbx.ForwardingAddress.ToString().ToLower()
+                        foreach ($selectedUpn in $selectedUserSet.Values) {
+                            if ($forwardingStr -like "*$($selectedUpn.ToLower())*") {
+                                $hasRelevantForwarding = $true
+                                break
+                            }
+                        }
+                    }
+                    if ($mbx.ForwardingSmtpAddress) {
+                        $forwardingStr = $mbx.ForwardingSmtpAddress.ToLower()
+                        foreach ($selectedUpn in $selectedUserSet.Values) {
+                            if ($forwardingStr -like "*$($selectedUpn.ToLower())*") {
+                                $hasRelevantForwarding = $true
+                                break
+                            }
+                        }
+                    }
+                    
+                    # Check delegates (permissions)
+                    try {
+                        $permissions = Get-MailboxPermission -Identity $mbxUpn -ErrorAction SilentlyContinue |
+                                       Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" -and $_.IsInherited -eq $false }
+                        
+                        foreach ($perm in $permissions) {
+                            $permUser = $perm.User.ToString().ToLower()
+                            foreach ($selectedUpn in $selectedUserSet.Values) {
+                                if ($permUser -like "*$($selectedUpn.ToLower())*") {
+                                    $hasRelevantDelegates = $true
+                                    break
+                                }
+                            }
+                            if ($hasRelevantDelegates) { break }
+                        }
+                    } catch {}
+                    
+                    # Check Send-On-Behalf
+                    try {
+                        if ($mbx.GrantSendOnBehalfTo -and $mbx.GrantSendOnBehalfTo.Count -gt 0) {
+                            foreach ($delegate in $mbx.GrantSendOnBehalfTo) {
+                                $delegateStr = $delegate.ToString().ToLower()
+                                foreach ($selectedUpn in $selectedUserSet.Values) {
+                                    if ($delegateStr -like "*$($selectedUpn.ToLower())*") {
+                                        $hasRelevantDelegates = $true
+                                        break
+                                    }
+                                }
+                                if ($hasRelevantDelegates) { break }
+                            }
+                        }
+                    } catch {}
+                    
+                    # Add mailbox if it has relevant forwarding or delegates
+                    if ($hasRelevantForwarding -or $hasRelevantDelegates) {
+                        $mailboxes += $mbx
+                    }
+                }
+            } catch {
+                Write-Warning "Could not retrieve all mailboxes for delegate/forwarding check: $($_.Exception.Message)"
             }
         } else {
             # No selection - get all mailboxes
@@ -2052,10 +2305,34 @@ function New-LLMInvestigationInstructions {
             Import-Module $settingsPath -Force -ErrorAction SilentlyContinue
             if (Get-Command New-AIReadme -ErrorAction SilentlyContinue) {
                 $settings = Get-AppSettings
+                Write-Host "New-LLMInvestigationInstructions: Loaded settings - MemberberryEnabled=$($settings.MemberberryEnabled), MemberberryPath='$($settings.MemberberryPath)'" -ForegroundColor Cyan
                 # Override InvestigatorName and CompanyName from report if provided
                 if ($Report.Investigator) { $settings.InvestigatorName = $Report.Investigator }
                 if ($Report.Company) { $settings.CompanyName = $Report.Company }
-                return New-AIReadme -Settings $settings
+                # Pass ticket data if available
+                # Ensure TicketNumbers is an array
+                $ticketNumbers = @()
+                if ($Report.TicketNumbers) {
+                    if ($Report.TicketNumbers -is [string]) {
+                        $ticketNumbers = @($Report.TicketNumbers)
+                    } elseif ($Report.TicketNumbers -is [array]) {
+                        $ticketNumbers = $Report.TicketNumbers
+                    } else {
+                        $ticketNumbers = @($Report.TicketNumbers)
+                    }
+                }
+                $ticketContent = if ($Report.TicketContent) { $Report.TicketContent } else { '' }
+                Write-Host "New-LLMInvestigationInstructions: Passing TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), TicketContent length=$($ticketContent.Length)" -ForegroundColor Gray
+                $result = New-AIReadme -Settings $settings -TicketNumbers $ticketNumbers -TicketContent $ticketContent
+                Write-Host "New-LLMInvestigationInstructions: AI readme generated (length: $($result.Length) chars)" -ForegroundColor Cyan
+                # Check if result contains memberberry content (should start with "# MEMBERBERRY" or similar, not "Master Prompt")
+                if ($result -match '^Master Prompt') {
+                    Write-Warning "New-LLMInvestigationInstructions: WARNING - Generated readme appears to be using default template instead of memberberry content!"
+                    Write-Host "  This suggests memberberry is not enabled or failed to load. Check settings: MemberberryEnabled=$($settings.MemberberryEnabled), MemberberryPath='$($settings.MemberberryPath)'" -ForegroundColor Yellow
+                } elseif ($result -match 'MEMBERBERRY|# MEMBERBERRY') {
+                    Write-Host "New-LLMInvestigationInstructions: ✓ Memberberry content detected in generated readme" -ForegroundColor Green
+                }
+                return $result
             }
         }
     } catch {
@@ -2384,9 +2661,11 @@ function New-SecurityInvestigationZip {
         # Create zip file path in the output folder
         $zipPath = Join-Path $OutputFolder $ZipFileName
 
-        # Get all CSV and JSON files, excluding _AI_Readme.txt
-        $filesToZip = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse |
-                      Where-Object { $_.Name -ne '_AI_Readme.txt' }
+        # Get all CSV, JSON files, and relevant TXT files (AI readme files and error files)
+        $csvJsonFiles = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse
+        $txtFiles = Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse |
+                    Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt)$' }
+        $filesToZip = $csvJsonFiles + $txtFiles
 
         if ($filesToZip.Count -eq 0) {
             Write-Warning "No CSV or JSON files found to zip in $OutputFolder"
