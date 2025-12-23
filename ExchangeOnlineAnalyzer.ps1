@@ -81,7 +81,8 @@ Safe-ImportModule "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
 if ($script:moduleImportErrors.Count -gt 0) {
     $errorLines = $script:moduleImportErrors | ForEach-Object { "- $($_.ModuleName): $($_.Message)" }
-    $fullMessage = "Failed to import one or more modules:`n`n$($errorLines -join \"`n\")"
+    $newline = "`n"
+    $fullMessage = "Failed to import one or more modules:$newline$newline$($errorLines -join $newline)"
     [System.Windows.Forms.MessageBox]::Show($fullMessage, "Module Import Errors", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     exit
 }
