@@ -1,0 +1,54 @@
+# Settings and Configuration Files (may contain API keys and sensitive data)
+settings.json
+settings-location.config
+*.config
+
+# Test Output Files (may contain PII, client data, ticket information)
+test_*.txt
+*_output*.txt
+*_execution*.txt
+*_integration*.txt
+*_simple*.txt
+*_memberberry*.txt
+
+# Temporary Files
+*.tmp
+*.temp
+*.log
+*.bak
+*.backup
+
+# PowerShell Module Cache
+*.psm1.cache
+
+# User-specific data directories
+ExchangeOnlineAnalyzer/
+BulkReports/
+*_Client*/
+
+# API Keys and Secrets (common patterns)
+*apikey*
+*secret*
+*password*
+*credential*
+*token*
+*.key
+*.pem
+*.p12
+*.pfx
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Generated Scripts
+BulkTenantWorker.ps1
+
