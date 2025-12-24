@@ -2065,6 +2065,11 @@ $btnBrowseSettingsLocation.Location = New-Object System.Drawing.Point(610, 40)
 $btnBrowseSettingsLocation.Width = 90
 $btnBrowseSettingsLocation.Height = 25
 
+# Add tooltip explaining default location
+$settingsLocationTooltip = New-Object System.Windows.Forms.ToolTip
+$settingsLocationTooltip.SetToolTip($txtSettingsLocation, "If no custom path is selected, settings will be saved to: %APPDATA%\ExchangeOnlineAnalyzer\settings.json (outside the repository directory)")
+$settingsLocationTooltip.SetToolTip($btnBrowseSettingsLocation, "Choose a custom location for settings.json. If not specified, defaults to %APPDATA%\ExchangeOnlineAnalyzer\settings.json")
+
 # Basic Settings
 $lblInv = New-Object System.Windows.Forms.Label
 $lblInv.Text = "Investigator Name:"
