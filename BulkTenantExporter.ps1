@@ -709,10 +709,11 @@ try {
                 try {
                     if (`$env:MSAL_CACHE_DIR -and (Test-Path `$env:MSAL_CACHE_DIR)) {
                         `$allCacheFiles = Get-ChildItem -Path `$env:MSAL_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue
+                        `$fileCount = `$allCacheFiles.Count
                         foreach (`$file in `$allCacheFiles) {
                             Remove-Item `$file.FullName -Force -ErrorAction SilentlyContinue
                         }
-                        Write-Host "Cleared all files from MSAL cache directory ($(`$allCacheFiles.Count) files)" -ForegroundColor Gray
+                        Write-Host "Cleared all files from MSAL cache directory (`$fileCount files)" -ForegroundColor Gray
                     }
                 } catch {
                     # Ignore errors clearing MSAL cache
@@ -722,10 +723,11 @@ try {
                 try {
                     if (`$env:IDENTITY_SERVICE_CACHE_DIR -and (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
                         `$allIdentityFiles = Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue
+                        `$identityFileCount = `$allIdentityFiles.Count
                         foreach (`$file in `$allIdentityFiles) {
                             Remove-Item `$file.FullName -Force -ErrorAction SilentlyContinue
                         }
-                        Write-Host "Cleared all files from Identity cache directory ($(`$allIdentityFiles.Count) files)" -ForegroundColor Gray
+                        Write-Host "Cleared all files from Identity cache directory (`$identityFileCount files)" -ForegroundColor Gray
                     }
                 } catch {
                     # Ignore errors clearing Identity cache
