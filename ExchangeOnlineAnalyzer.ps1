@@ -48,25 +48,20 @@ function Add-ToolTip {
 }
 
 # Import all modules with error handling
-$script:moduleImportErrors = @()
 function Safe-ImportModule($modulePath) {
-    # Get the module name from the path
-    $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($modulePath)
-    
-    # Remove the module if it's already loaded to force reload
-    if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
-        Remove-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
-    }
-    
-    $importError = $null
-    Import-Module $modulePath -Global -ErrorAction SilentlyContinue -ErrorVariable importError
-    if ($importError) {
-        $errorMessage = if ($importError[0].Exception.Message) { $importError[0].Exception.Message } else { $importError[0].ToString() }
-        $script:moduleImportErrors += [pscustomobject]@{
-            ModuleName = $moduleName
-            ModulePath = $modulePath
-            Message    = $errorMessage
+    try {
+        # Get the module name from the path
+        $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($modulePath)
+        
+        # Remove the module if it's already loaded to force reload
+        if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
+            Remove-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
         }
+        
+        Import-Module $modulePath -Global -ErrorAction Stop
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to import module: $modulePath`nError: $($_.Exception.Message)", "Module Import Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        exit
     }
 }
 Safe-ImportModule "$PSScriptRoot\Modules\ExchangeOnline.psm1"
@@ -79,12 +74,6 @@ Safe-ImportModule "$PSScriptRoot\Modules\SignInManagement.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
-if ($script:moduleImportErrors.Count -gt 0) {
-    $errorLines = $script:moduleImportErrors | ForEach-Object { "- $($_.ModuleName): $($_.Message)" }
-    $fullMessage = "Failed to import one or more modules:`n`n$($errorLines -join \"`n\")"
-    [System.Windows.Forms.MessageBox]::Show($fullMessage, "Module Import Errors", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    exit
-}
 
 # Function to show/hide progress bar
 function Show-Progress {
@@ -115,26 +104,15 @@ function Load-MailboxesOptimized {
         Show-Progress -message "Loading mailboxes..." -progress 10
         
         # Server-side filtering: Get mailboxes with enhanced filtering
-        try {
-            if ($LoadAll) {
-                $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox -ErrorAction Stop | 
-                            Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
-                            Sort-Object UserPrincipalName
-            } else {
-                # Load only first batch for faster initial load
-                $mailboxes = Get-Mailbox -ResultSize $MaxMailboxes -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox -ErrorAction Stop | 
-                            Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
-                            Sort-Object UserPrincipalName
-            }
-        } catch {
-            Show-Progress -message "Failed to load mailboxes." -progress -1
-            [System.Windows.Forms.MessageBox]::Show("Failed to load mailboxes. Please check your permissions or network connectivity.`nError: $($_.Exception.Message)", "Mailbox Load Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            return
-        }
-        if (-not $mailboxes -or $mailboxes.Count -eq 0) {
-            Show-Progress -message "No mailboxes found to load." -progress -1
-            [System.Windows.Forms.MessageBox]::Show("No mailboxes were returned from Exchange. Confirm your account has permissions and mailboxes exist before retrying.", "Mailbox Load Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            return
+        if ($LoadAll) {
+            $mailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox | 
+                        Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
+                        Sort-Object UserPrincipalName
+        } else {
+            # Load only first batch for faster initial load
+            $mailboxes = Get-Mailbox -ResultSize $MaxMailboxes -RecipientTypeDetails UserMailbox,SharedMailbox,RoomMailbox,EquipmentMailbox | 
+                        Select-Object UserPrincipalName, DisplayName, AccountDisabled, IsLicensed, RecipientTypeDetails | 
+                        Sort-Object UserPrincipalName
         }
         
 
@@ -2070,370 +2048,230 @@ $sTitle.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.Fo
 $sTitle.Location = New-Object System.Drawing.Point(10,10)
 $sTitle.AutoSize = $true
 
+# Settings Location Section
+$lblSettingsLocation = New-Object System.Windows.Forms.Label
+$lblSettingsLocation.Text = "Settings File Location:"
+$lblSettingsLocation.Location = New-Object System.Drawing.Point(10,45)
+$lblSettingsLocation.AutoSize = $true
+$lblSettingsLocation.Width = 180
+
+$txtSettingsLocation = New-Object System.Windows.Forms.TextBox
+$txtSettingsLocation.Location = New-Object System.Drawing.Point(200, 42)
+$txtSettingsLocation.Width = 400
+
+$btnBrowseSettingsLocation = New-Object System.Windows.Forms.Button
+$btnBrowseSettingsLocation.Text = "Browse..."
+$btnBrowseSettingsLocation.Location = New-Object System.Drawing.Point(610, 40)
+$btnBrowseSettingsLocation.Width = 90
+$btnBrowseSettingsLocation.Height = 25
+
 # Basic Settings
 $lblInv = New-Object System.Windows.Forms.Label
 $lblInv.Text = "Investigator Name:"
-$lblInv.Location = New-Object System.Drawing.Point(10,45)
+$lblInv.Location = New-Object System.Drawing.Point(10,75)
 $lblInv.AutoSize = $true
 $lblInv.Width = 180
 
 $txtInv = New-Object System.Windows.Forms.TextBox
-$txtInv.Location = New-Object System.Drawing.Point(200, 42)
+$txtInv.Location = New-Object System.Drawing.Point(200, 72)
 $txtInv.Width = 500
 
 $lblInvTitle = New-Object System.Windows.Forms.Label
 $lblInvTitle.Text = "Investigator Title:"
-$lblInvTitle.Location = New-Object System.Drawing.Point(10,75)
+$lblInvTitle.Location = New-Object System.Drawing.Point(10,105)
 $lblInvTitle.AutoSize = $true
 $lblInvTitle.Width = 180
 
 $txtInvTitle = New-Object System.Windows.Forms.TextBox
-$txtInvTitle.Location = New-Object System.Drawing.Point(200, 72)
+$txtInvTitle.Location = New-Object System.Drawing.Point(200, 102)
 $txtInvTitle.Width = 500
 
 $lblCo = New-Object System.Windows.Forms.Label
 $lblCo.Text = "Company Name:"
-$lblCo.Location = New-Object System.Drawing.Point(10,105)
+$lblCo.Location = New-Object System.Drawing.Point(10,135)
 $lblCo.AutoSize = $true
 $lblCo.Width = 180
 
 $txtCo = New-Object System.Windows.Forms.TextBox
-$txtCo.Location = New-Object System.Drawing.Point(200, 102)
+$txtCo.Location = New-Object System.Drawing.Point(200, 132)
 $txtCo.Width = 500
 
 $lblTZ = New-Object System.Windows.Forms.Label
 $lblTZ.Text = "Time Zone:"
-$lblTZ.Location = New-Object System.Drawing.Point(10,135)
+$lblTZ.Location = New-Object System.Drawing.Point(10,165)
 $lblTZ.AutoSize = $true
 $lblTZ.Width = 180
 
 $txtTZ = New-Object System.Windows.Forms.TextBox
-$txtTZ.Location = New-Object System.Drawing.Point(200, 132)
+$txtTZ.Location = New-Object System.Drawing.Point(200, 162)
 $txtTZ.Width = 500
 
 # API Keys
 $lblGem = New-Object System.Windows.Forms.Label
 $lblGem.Text = "Gemini API Key:"
-$lblGem.Location = New-Object System.Drawing.Point(10,165)
+$lblGem.Location = New-Object System.Drawing.Point(10,195)
 $lblGem.AutoSize = $true
 $lblGem.Width = 180
 
 $txtGem = New-Object System.Windows.Forms.TextBox
-$txtGem.Location = New-Object System.Drawing.Point(200, 162)
+$txtGem.Location = New-Object System.Drawing.Point(200, 192)
 $txtGem.Width = 500
 $txtGem.UseSystemPasswordChar = $true
 
 $lblClaude = New-Object System.Windows.Forms.Label
 $lblClaude.Text = "Claude API Key:"
-$lblClaude.Location = New-Object System.Drawing.Point(10,195)
+$lblClaude.Location = New-Object System.Drawing.Point(10,225)
 $lblClaude.AutoSize = $true
 $lblClaude.Width = 180
 
 $txtClaude = New-Object System.Windows.Forms.TextBox
-$txtClaude.Location = New-Object System.Drawing.Point(200, 192)
+$txtClaude.Location = New-Object System.Drawing.Point(200, 222)
 $txtClaude.Width = 500
 $txtClaude.UseSystemPasswordChar = $true
-
-# Add Fix Module Conflicts button to Settings tab
-$fixModsBtn = New-Object System.Windows.Forms.Button
-$fixModsBtn.Text = "Fix Graph Module Conflicts"
-$fixModsBtn.Location = New-Object System.Drawing.Point(200, 225)
-$fixModsBtn.Width = 200
-$fixModsBtn.add_Click({
-    try {
-        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
-        $lblStatus.Text = "Fixing Graph modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
-        $ok = Fix-GraphModuleConflicts -statusLabel $null
-        if ($ok) { $lblStatus.Text = "Graph modules repaired. Restart PowerShell."; $lblStatus.ForeColor = [System.Drawing.Color]::Green }
-        else { $lblStatus.Text = "Repair failed. See console."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
-    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
-})
-
-# Add Install All Modules button to Settings tab
-$installAllModsBtn = New-Object System.Windows.Forms.Button
-$installAllModsBtn.Text = "Install All PowerShell Modules"
-$installAllModsBtn.Location = New-Object System.Drawing.Point(410, 225)
-$installAllModsBtn.Width = 200
-$installAllModsBtn.add_Click({
-    try {
-        $lblStatus.Text = "Installing all required PowerShell modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
-        [System.Windows.Forms.Application]::DoEvents()
-        
-        # Define all required modules (install Authentication first as it's a dependency)
-        # Note: Some modules like Identity.Protection, Identity.ConditionalAccess, and ServicePrincipals
-        # are not available as separate modules - they're part of other Graph modules
-        $allModules = @(
-            "ExchangeOnlineManagement",
-            "Microsoft.Graph.Authentication",  # Install first - required dependency
-            "Microsoft.Graph.Users",
-            "Microsoft.Graph.Users.Actions",
-            "Microsoft.Graph.Identity.SignIns",
-            "Microsoft.Graph.Reports",
-            "Microsoft.Graph.Identity.DirectoryManagement",
-            "Microsoft.Graph.Applications",  # Required for SecurityAnalysis (includes ServicePrincipals functionality)
-            "Microsoft.Graph.Security"  # Required for EntraInvestigator
-        )
-        
-        $installed = @()
-        $failed = @()
-        $skipped = @()
-        
-        # First, disconnect from any active Graph/Exchange sessions and remove all Graph modules
-        $lblStatus.Text = "Unloading modules from current session..."; [System.Windows.Forms.Application]::DoEvents()
-        try {
-            Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
-            Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
-        } catch {}
-        
-        # Remove all Microsoft.Graph.* modules from current session (try multiple times to handle dependencies)
-        for ($retry = 0; $retry -lt 3; $retry++) {
-            $loadedGraphModules = Get-Module -Name "Microsoft.Graph*" -All -ErrorAction SilentlyContinue
-            if ($loadedGraphModules) {
-                foreach ($loadedModule in $loadedGraphModules) {
-                    try {
-                        $null = Remove-Module -Name $loadedModule.Name -Force -ErrorAction SilentlyContinue
-                    } catch {}
-                }
-                Start-Sleep -Milliseconds 300
-            } else {
-                break
-            }
-        }
-        
-        # Remove ExchangeOnlineManagement if loaded (try multiple times)
-        for ($retry = 0; $retry -lt 3; $retry++) {
-            $loadedExoModule = Get-Module -Name "ExchangeOnlineManagement" -All -ErrorAction SilentlyContinue
-            if ($loadedExoModule) {
-                try {
-                    $null = Remove-Module -Name "ExchangeOnlineManagement" -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Milliseconds 300
-                } catch {}
-            } else {
-                break
-            }
-        }
-        
-        # Additional cleanup: Remove modules from Global scope if they exist there
-        try {
-            Get-Module -Name "Microsoft.Graph*" -ListAvailable -ErrorAction SilentlyContinue | ForEach-Object {
-                try {
-                    Remove-Module -Name $_.Name -Force -ErrorAction SilentlyContinue | Out-Null
-                } catch {}
-            }
-        } catch {}
-        
-        # Install Authentication first as it's a dependency for other Graph modules
-        $authModule = "Microsoft.Graph.Authentication"
-        if ($allModules -contains $authModule) {
-            try {
-                $lblStatus.Text = "Installing $authModule (required dependency)..."; [System.Windows.Forms.Application]::DoEvents()
-                # Suppress the "module in use" warning by redirecting warnings
-                $null = Install-Module -Name $authModule -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -WarningAction SilentlyContinue -ErrorAction Stop
-                $installed += $authModule
-                Write-Host "✓ Installed $authModule" -ForegroundColor Green
-            } catch {
-                $failed += "$authModule`: $($_.Exception.Message)"
-                Write-Host "✗ Failed to install $authModule`: $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-        
-        # Install remaining modules
-        foreach ($module in $allModules) {
-            if ($module -eq $authModule) { continue }  # Skip, already installed
-            
-            try {
-                $lblStatus.Text = "Installing $module..."; [System.Windows.Forms.Application]::DoEvents()
-                
-                # Double-check module is not loaded (remove any that might have been loaded as dependencies)
-                $loaded = Get-Module -Name $module -All -ErrorAction SilentlyContinue
-                if ($loaded) {
-                    for ($retry = 0; $retry -lt 3; $retry++) {
-                        try {
-                            Remove-Module -Name $module -Force -ErrorAction Stop | Out-Null
-                            break
-                        } catch {
-                            Start-Sleep -Milliseconds 200
-                        }
-                    }
-                    Start-Sleep -Milliseconds 300  # Brief pause to ensure module is fully unloaded
-                }
-                
-                # Check if module is already installed
-                $existingModule = Get-Module -ListAvailable -Name $module -ErrorAction SilentlyContinue
-                if ($existingModule) {
-                    # Update existing module - suppress "module in use" warnings
-                    $null = Install-Module -Name $module -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -WarningAction SilentlyContinue -ErrorAction Stop
-                    $installed += "$module (updated)"
-                    Write-Host "✓ Updated $module" -ForegroundColor Green
-                } else {
-                    # Install new module - suppress "module in use" warnings
-                    $null = Install-Module -Name $module -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -WarningAction SilentlyContinue -ErrorAction Stop
-                    $installed += $module
-                    Write-Host "✓ Installed $module" -ForegroundColor Green
-                }
-            } catch {
-                $failed += "$module`: $($_.Exception.Message)"
-                Write-Host "✗ Failed to install $module`: $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-        
-        # Also try using the existing install functions from modules (suppress warnings for non-existent modules)
-        try {
-            $lblStatus.Text = "Verifying SecurityAnalysis modules..."; [System.Windows.Forms.Application]::DoEvents()
-            Import-Module "$PSScriptRoot\Modules\SecurityAnalysis.psm1" -Force -ErrorAction SilentlyContinue
-            if (Get-Command Install-SecurityAnalysisModules -ErrorAction SilentlyContinue) {
-                # Suppress warnings from Install-SecurityAnalysisModules about non-existent modules
-                $null = Install-SecurityAnalysisModules -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 2>&1 | Where-Object { $_ -notmatch "No match was found" }
-                Write-Host "✓ Verified SecurityAnalysis modules" -ForegroundColor Green
-            }
-        } catch {
-            Write-Host "Note: Could not verify SecurityAnalysis modules: $_" -ForegroundColor Yellow
-        }
-        
-        try {
-            $lblStatus.Text = "Verifying EntraInvestigator modules..."; [System.Windows.Forms.Application]::DoEvents()
-            Import-Module "$PSScriptRoot\Modules\EntraInvestigator.psm1" -Force -ErrorAction SilentlyContinue
-            if (Get-Command Install-EntraModules -ErrorAction SilentlyContinue) {
-                $missing = Test-EntraModules
-                if ($missing.Count -gt 0) {
-                    Install-EntraModules -Modules $missing
-                    Write-Host "✓ Verified EntraInvestigator modules" -ForegroundColor Green
-                }
-            }
-        } catch {
-            Write-Host "Note: Could not verify EntraInvestigator modules: $_" -ForegroundColor Yellow
-        }
-        
-        if ($failed.Count -eq 0) {
-            $lblStatus.Text = "✅ All modules installed successfully! ($($installed.Count) modules)"
-            $lblStatus.ForeColor = [System.Drawing.Color]::Green
-            [System.Windows.Forms.MessageBox]::Show(
-                "All PowerShell modules have been installed successfully!`n`n" +
-                "Installed/Updated: $($installed.Count) modules`n`n" +
-                "You may need to restart PowerShell for all modules to be available.",
-                "Installation Complete",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Information
-            )
-        } else {
-            $lblStatus.Text = "⚠ Some modules failed to install. See details."
-            $lblStatus.ForeColor = [System.Drawing.Color]::Orange
-            [System.Windows.Forms.MessageBox]::Show(
-                "Module installation completed with some errors:`n`n" +
-                "✅ Installed: $($installed.Count) modules`n" +
-                "❌ Failed: $($failed.Count) modules`n`n" +
-                "Failed modules:`n" + ($failed -join "`n") + "`n`n" +
-                "You may need to run PowerShell as Administrator for some modules.",
-                "Installation Complete with Errors",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-        }
-    } catch {
-        $lblStatus.Text = "Error: $($_.Exception.Message)"
-        $lblStatus.ForeColor = [System.Drawing.Color]::Red
-        [System.Windows.Forms.MessageBox]::Show(
-            "Error installing modules: $($_.Exception.Message)",
-            "Installation Error",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Error
-        )
-    }
-})
 
 # AI Readme Settings Section
 $aiSectionTitle = New-Object System.Windows.Forms.Label
 $aiSectionTitle.Text = "AI Readme Configuration (comma-separated unless otherwise noted)"
 $aiSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiSectionTitle.Location = New-Object System.Drawing.Point(10,260)
+$aiSectionTitle.Location = New-Object System.Drawing.Point(10,255)
 $aiSectionTitle.AutoSize = $true
 
 $lblAdminUsers = New-Object System.Windows.Forms.Label
 $lblAdminUsers.Text = "Admin Usernames:"
-$lblAdminUsers.Location = New-Object System.Drawing.Point(10,290)
+$lblAdminUsers.Location = New-Object System.Drawing.Point(10,285)
 $lblAdminUsers.AutoSize = $true
 $lblAdminUsers.Width = 180
 
 $txtAdminUsers = New-Object System.Windows.Forms.TextBox
-$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 287)
+$txtAdminUsers.Location = New-Object System.Drawing.Point(200, 282)
 $txtAdminUsers.Width = 500
 $txtAdminUsers.Multiline = $false
 
 $lblInternalTeams = New-Object System.Windows.Forms.Label
 $lblInternalTeams.Text = "Internal Team Display Names:"
-$lblInternalTeams.Location = New-Object System.Drawing.Point(10,320)
+$lblInternalTeams.Location = New-Object System.Drawing.Point(10,315)
 $lblInternalTeams.AutoSize = $true
 $lblInternalTeams.Width = 180
 
 $txtInternalTeams = New-Object System.Windows.Forms.TextBox
-$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 317)
+$txtInternalTeams.Location = New-Object System.Drawing.Point(200, 312)
 $txtInternalTeams.Width = 500
 $txtInternalTeams.Multiline = $false
 
 $lblAuthorizedISPs = New-Object System.Windows.Forms.Label
 $lblAuthorizedISPs.Text = "Authorized ISPs:"
-$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,350)
+$lblAuthorizedISPs.Location = New-Object System.Drawing.Point(10,345)
 $lblAuthorizedISPs.AutoSize = $true
 $lblAuthorizedISPs.Width = 180
 
 $txtAuthorizedISPs = New-Object System.Windows.Forms.TextBox
-$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 347)
+$txtAuthorizedISPs.Location = New-Object System.Drawing.Point(200, 342)
 $txtAuthorizedISPs.Width = 500
 $txtAuthorizedISPs.Multiline = $false
 
 $lblInFlightWiFi = New-Object System.Windows.Forms.Label
 $lblInFlightWiFi.Text = "In-Flight Wi-Fi Providers:"
-$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,380)
+$lblInFlightWiFi.Location = New-Object System.Drawing.Point(10,375)
 $lblInFlightWiFi.AutoSize = $true
 $lblInFlightWiFi.Width = 180
 
 $txtInFlightWiFi = New-Object System.Windows.Forms.TextBox
-$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 377)
+$txtInFlightWiFi.Location = New-Object System.Drawing.Point(200, 372)
 $txtInFlightWiFi.Width = 500
 $txtInFlightWiFi.Multiline = $false
 
 $lblServicePrincipals = New-Object System.Windows.Forms.Label
 $lblServicePrincipals.Text = "Service Principal Names:"
-$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,410)
+$lblServicePrincipals.Location = New-Object System.Drawing.Point(10,405)
 $lblServicePrincipals.AutoSize = $true
 $lblServicePrincipals.Width = 180
 
 $txtServicePrincipals = New-Object System.Windows.Forms.TextBox
-$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 407)
+$txtServicePrincipals.Location = New-Object System.Drawing.Point(200, 402)
 $txtServicePrincipals.Width = 500
 $txtServicePrincipals.Multiline = $false
 
 $lblKnownAdmins = New-Object System.Windows.Forms.Label
 $lblKnownAdmins.Text = "Known Admins:"
-$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,440)
+$lblKnownAdmins.Location = New-Object System.Drawing.Point(10,435)
 $lblKnownAdmins.AutoSize = $true
 $lblKnownAdmins.Width = 180
 
 $txtKnownAdmins = New-Object System.Windows.Forms.TextBox
-$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 437)
+$txtKnownAdmins.Location = New-Object System.Drawing.Point(200, 432)
 $txtKnownAdmins.Width = 500
 $txtKnownAdmins.Multiline = $false
 
 $lblThirdPartyMFA = New-Object System.Windows.Forms.Label
 $lblThirdPartyMFA.Text = "3rd Party MFA:"
-$lblThirdPartyMFA.Location = New-Object System.Drawing.Point(10,470)
+$lblThirdPartyMFA.Location = New-Object System.Drawing.Point(10,465)
 $lblThirdPartyMFA.AutoSize = $true
 $lblThirdPartyMFA.Width = 180
 
 $txtThirdPartyMFA = New-Object System.Windows.Forms.TextBox
-$txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 467)
+$txtThirdPartyMFA.Location = New-Object System.Drawing.Point(200, 462)
 $txtThirdPartyMFA.Width = 500
 $txtThirdPartyMFA.Multiline = $false
 
+# Memberberry Integration Section
+$memberberrySectionTitle = New-Object System.Windows.Forms.Label
+$memberberrySectionTitle.Text = "Memberberry Integration"
+$memberberrySectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$memberberrySectionTitle.Location = New-Object System.Drawing.Point(10,495)
+$memberberrySectionTitle.AutoSize = $true
+
+$chkMemberberryEnabled = New-Object System.Windows.Forms.CheckBox
+$chkMemberberryEnabled.Text = "Enable Memberberry Integration"
+$chkMemberberryEnabled.Location = New-Object System.Drawing.Point(10,520)
+$chkMemberberryEnabled.AutoSize = $true
+
+$lblMemberberryPath = New-Object System.Windows.Forms.Label
+$lblMemberberryPath.Text = "Memberberry Directory:"
+$lblMemberberryPath.Location = New-Object System.Drawing.Point(10,545)
+$lblMemberberryPath.AutoSize = $true
+$lblMemberberryPath.Width = 180
+
+$txtMemberberryPath = New-Object System.Windows.Forms.TextBox
+$txtMemberberryPath.Location = New-Object System.Drawing.Point(200, 542)
+$txtMemberberryPath.Width = 370
+
+$btnBrowseMemberberryPath = New-Object System.Windows.Forms.Button
+$btnBrowseMemberberryPath.Text = "Browse..."
+$btnBrowseMemberberryPath.Location = New-Object System.Drawing.Point(575, 540)
+$btnBrowseMemberberryPath.Width = 75
+$btnBrowseMemberberryPath.Height = 25
+
+$lblMemberberryExceptionsPath = New-Object System.Windows.Forms.Label
+$lblMemberberryExceptionsPath.Text = "Memberberry Exceptions File:"
+$lblMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(10,575)
+$lblMemberberryExceptionsPath.AutoSize = $true
+$lblMemberberryExceptionsPath.Width = 180
+
+$txtMemberberryExceptionsPath = New-Object System.Windows.Forms.TextBox
+$txtMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(200, 572)
+$txtMemberberryExceptionsPath.Width = 370
+
+$btnBrowseMemberberryExceptionsPath = New-Object System.Windows.Forms.Button
+$btnBrowseMemberberryExceptionsPath.Text = "Browse..."
+$btnBrowseMemberberryExceptionsPath.Location = New-Object System.Drawing.Point(575, 570)
+$btnBrowseMemberberryExceptionsPath.Width = 75
+$btnBrowseMemberberryExceptionsPath.Height = 25
+
+$btnTestMemberberry = New-Object System.Windows.Forms.Button
+$btnTestMemberberry.Text = "Test/Validate"
+$btnTestMemberberry.Location = New-Object System.Drawing.Point(655, 570)
+$btnTestMemberberry.Width = 90
+$btnTestMemberberry.Height = 25
+
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,500)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,605)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 472)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 602)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2473,40 +2311,42 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 600)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 730)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 600)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 730)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 640)
+$btnSave.Location = New-Object System.Drawing.Point(200, 770)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 640)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 770)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,680)
+$lblStatus.Location = New-Object System.Drawing.Point(10,810)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
 # Add all controls to scroll panel
-$allControls = @($sTitle,$lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
-    $fixModsBtn,$installAllModsBtn,
+$allControls = @($sTitle,$lblSettingsLocation,$txtSettingsLocation,$btnBrowseSettingsLocation,
+    $lblInv,$txtInv,$lblInvTitle,$txtInvTitle,$lblCo,$txtCo,$lblTZ,$txtTZ,$lblGem,$txtGem,$lblClaude,$txtClaude,
     $aiSectionTitle,$lblAdminUsers,$txtAdminUsers,$lblInternalTeams,$txtInternalTeams,$lblAuthorizedISPs,$txtAuthorizedISPs,
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
-    $lblThirdPartyMFA,$txtThirdPartyMFA,$lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
+    $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,$btnBrowseMemberberryPath,
+    $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnBrowseMemberberryExceptionsPath,$btnTestMemberberry,
+    $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
 # Ensure minimum width for content (200 label + 500 textbox + 20 margin = 720)
@@ -2518,6 +2358,11 @@ $tabControl.TabPages.Add($settingsTab)
 $settingsTab.add_Enter({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        
+        # Load current settings location
+        $currentSettingsPath = Get-SettingsPath
+        $txtSettingsLocation.Text = $currentSettingsPath
+        
         $s = Get-AppSettings
         if ($s) {
             $txtInv.Text = $s.InvestigatorName
@@ -2533,6 +2378,23 @@ $settingsTab.add_Enter({
             $txtServicePrincipals.Text = $s.ServicePrincipalNames
             $txtKnownAdmins.Text = $s.KnownAdmins
             $txtThirdPartyMFA.Text = $s.ThirdPartyMFA
+            
+            # Load memberberry settings
+            if ($s.MemberberryEnabled) {
+                $chkMemberberryEnabled.Checked = $true
+            } else {
+                $chkMemberberryEnabled.Checked = $false
+            }
+            if ($s.MemberberryPath) {
+                $txtMemberberryPath.Text = $s.MemberberryPath
+            } else {
+                $txtMemberberryPath.Text = 'C:\git\memberberry'
+            }
+            if ($s.MemberberryExceptionsPath) {
+                $txtMemberberryExceptionsPath.Text = $s.MemberberryExceptionsPath
+            } else {
+                $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
+            }
             
             # Load client contact overrides into DataGridView
             $dgvContactOverrides.Rows.Clear()
@@ -2553,9 +2415,102 @@ $settingsTab.add_Enter({
     } catch {}
 })
 
+$btnBrowseSettingsLocation.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        
+        # Show save file dialog
+        $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+        $saveDialog.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*"
+        $saveDialog.FileName = "settings.json"
+        $saveDialog.Title = "Choose Settings File Location"
+        
+        # Set initial directory to current settings location if it exists
+        $currentPath = Get-SettingsPath
+        if ($currentPath) {
+            $saveDialog.InitialDirectory = Split-Path -Parent $currentPath
+            $saveDialog.FileName = Split-Path -Leaf $currentPath
+        }
+        
+        if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $newPath = $saveDialog.FileName
+            
+            # Set the new location
+            if (Set-SettingsLocation -SettingsPath $newPath) {
+                $txtSettingsLocation.Text = $newPath
+                $lblStatus.Text = "Settings location updated. Click 'Save Settings' to save your settings to the new location."
+                $lblStatus.ForeColor = [System.Drawing.Color]::Blue
+                
+                # Reload settings from new location
+                $s = Get-AppSettings
+                if ($s) {
+                    # Populate all fields with loaded settings
+                    $txtInv.Text = $s.InvestigatorName
+                    $txtInvTitle.Text = $s.InvestigatorTitle
+                    $txtCo.Text = $s.CompanyName
+                    $txtTZ.Text = $s.TimeZone
+                    $txtGem.Text = $s.GeminiApiKey
+                    $txtClaude.Text = $s.ClaudeApiKey
+                    $txtAdminUsers.Text = $s.AdminUsernames
+                    $txtInternalTeams.Text = $s.InternalTeamDisplayNames
+                    $txtAuthorizedISPs.Text = $s.AuthorizedISPs
+                    $txtInFlightWiFi.Text = $s.InFlightWiFiProviders
+                    $txtServicePrincipals.Text = $s.ServicePrincipalNames
+                    $txtKnownAdmins.Text = $s.KnownAdmins
+                    $txtThirdPartyMFA.Text = $s.ThirdPartyMFA
+                    
+                    # Load memberberry settings
+                    if ($s.MemberberryEnabled) {
+                        $chkMemberberryEnabled.Checked = $true
+                    } else {
+                        $chkMemberberryEnabled.Checked = $false
+                    }
+                    if ($s.MemberberryPath) {
+                        $txtMemberberryPath.Text = $s.MemberberryPath
+                    } else {
+                        $txtMemberberryPath.Text = 'C:\git\memberberry'
+                    }
+                    if ($s.MemberberryExceptionsPath) {
+                        $txtMemberberryExceptionsPath.Text = $s.MemberberryExceptionsPath
+                    } else {
+                        $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
+                    }
+                    
+                    # Load client contact overrides
+                    $dgvContactOverrides.Rows.Clear()
+                    if ($s.ClientContactOverrides -and $s.ClientContactOverrides -ne '{}') {
+                        try {
+                            $overrides = $s.ClientContactOverrides | ConvertFrom-Json
+                            foreach ($client in $overrides.PSObject.Properties.Name) {
+                                $contact = $overrides.$client.Contact
+                                $greeting = $overrides.$client.Greeting
+                                [void]$dgvContactOverrides.Rows.Add($client, $contact, $greeting)
+                            }
+                        } catch {}
+                    }
+                }
+            } else {
+                $lblStatus.Text = "Failed to update settings location."
+                $lblStatus.ForeColor = [System.Drawing.Color]::Red
+            }
+        }
+    } catch {
+        $lblStatus.Text = "Error: $($_.Exception.Message)"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Red
+    }
+})
+
 $btnSave.add_Click({
     try {
         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        
+        # Update settings location if user changed it manually
+        $manualPath = $txtSettingsLocation.Text.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($manualPath) -and $manualPath -ne (Get-SettingsPath)) {
+            if (Set-SettingsLocation -SettingsPath $manualPath) {
+                Write-Host "Settings location updated to: $manualPath" -ForegroundColor Cyan
+            }
+        }
         
         # Convert DataGridView data to JSON
         $overridesJson = '{}'
@@ -2578,6 +2533,31 @@ $btnSave.add_Click({
             }
         }
         
+        # Validate memberberry paths before saving
+        $memberberryPath = $txtMemberberryPath.Text.Trim()
+        $memberberryExceptionsPath = $txtMemberberryExceptionsPath.Text.Trim()
+        
+        if ($chkMemberberryEnabled.Checked) {
+            # Validate MemberberryPath is a directory
+            if ($memberberryPath) {
+                if (Test-Path $memberberryPath -PathType Leaf) {
+                    [System.Windows.Forms.MessageBox]::Show("Memberberry Directory must point to a directory, not a file.`n`nCurrent value: $memberberryPath`n`nExpected: Directory path (e.g., C:\git\memberberry)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                } elseif (-not (Test-Path $memberberryPath -PathType Container)) {
+                    [System.Windows.Forms.MessageBox]::Show("Memberberry Directory does not exist: $memberberryPath", "Directory Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                }
+            }
+            
+            # Validate MemberberryExceptionsPath is a file (if provided)
+            if ($memberberryExceptionsPath) {
+                if (Test-Path $memberberryExceptionsPath -PathType Container) {
+                    [System.Windows.Forms.MessageBox]::Show("Memberberry Exceptions File must point to a file, not a directory.`n`nCurrent value: $memberberryExceptionsPath`n`nExpected: File path (e.g., C:\git\memberberry\exceptions.json)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                }
+            }
+        }
+        
         $s = [pscustomobject]@{
             InvestigatorName = $txtInv.Text
             InvestigatorTitle = $txtInvTitle.Text
@@ -2592,6 +2572,9 @@ $btnSave.add_Click({
             ServicePrincipalNames = $txtServicePrincipals.Text
             KnownAdmins = $txtKnownAdmins.Text
             ThirdPartyMFA = $txtThirdPartyMFA.Text
+            MemberberryEnabled = $chkMemberberryEnabled.Checked
+            MemberberryPath = $memberberryPath
+            MemberberryExceptionsPath = $memberberryExceptionsPath
             ClientContactOverrides = $overridesJson
         }
         if (Save-AppSettings -Settings $s) {
@@ -2623,6 +2606,129 @@ $btnRemoveOverride.add_Click({
         }
     } elseif ($dgvContactOverrides.CurrentRow -and -not $dgvContactOverrides.CurrentRow.IsNewRow) {
         $dgvContactOverrides.Rows.Remove($dgvContactOverrides.CurrentRow)
+    }
+})
+
+$btnBrowseMemberberryPath.add_Click({
+    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+    $fbd.Description = "Select the Memberberry directory containing compile.ps1 and output folder"
+    if ($txtMemberberryPath.Text -and (Test-Path $txtMemberberryPath.Text -PathType Container)) {
+        $fbd.SelectedPath = $txtMemberberryPath.Text
+    } elseif ($txtMemberberryPath.Text -and (Test-Path (Split-Path $txtMemberberryPath.Text -Parent) -PathType Container)) {
+        $fbd.SelectedPath = Split-Path $txtMemberberryPath.Text -Parent
+    }
+    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtMemberberryPath.Text = $fbd.SelectedPath
+    }
+})
+
+$btnBrowseMemberberryExceptionsPath.add_Click({
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Title = "Select Memberberry Exceptions JSON File"
+    $ofd.Filter = "JSON Files|*.json|All Files|*.*"
+    $ofd.FilterIndex = 1
+    if ($txtMemberberryExceptionsPath.Text -and (Test-Path $txtMemberberryExceptionsPath.Text -PathType Leaf)) {
+        $ofd.InitialDirectory = Split-Path $txtMemberberryExceptionsPath.Text -Parent
+        $ofd.FileName = Split-Path $txtMemberberryExceptionsPath.Text -Leaf
+    } elseif ($txtMemberberryExceptionsPath.Text -and (Test-Path $txtMemberberryExceptionsPath.Text -PathType Container)) {
+        $ofd.InitialDirectory = $txtMemberberryExceptionsPath.Text
+    } elseif ($txtMemberberryPath.Text -and (Test-Path $txtMemberberryPath.Text -PathType Container)) {
+        $ofd.InitialDirectory = $txtMemberberryPath.Text
+    }
+    if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtMemberberryExceptionsPath.Text = $ofd.FileName
+    }
+})
+
+$btnTestMemberberry.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
+        
+        $memberberryDir = $txtMemberberryPath.Text.Trim()
+        $exceptionsPath = $txtMemberberryExceptionsPath.Text.Trim()
+        
+        if ([string]::IsNullOrWhiteSpace($memberberryDir)) {
+            [System.Windows.Forms.MessageBox]::Show("Please enter a memberberry directory path.", "Path Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        
+        # Validate directory path
+        if (Test-Path $memberberryDir -PathType Leaf) {
+            [System.Windows.Forms.MessageBox]::Show("Memberberry Directory must point to a directory, not a file.`n`nCurrent value: $memberberryDir`n`nExpected: Directory path (e.g., C:\git\memberberry)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+        
+        if (-not (Test-Path $memberberryDir -PathType Container)) {
+            [System.Windows.Forms.MessageBox]::Show("Memberberry directory not found: $memberberryDir", "Directory Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+        
+        # Check for compile.ps1 script
+        $scriptFound = $false
+        $scriptNames = @('compile.ps1', 'memberberry.ps1', 'run.ps1', 'main.ps1')
+        $foundScript = $null
+        foreach ($scriptName in $scriptNames) {
+            $scriptPath = Join-Path $memberberryDir $scriptName
+            if (Test-Path $scriptPath) {
+                $foundScript = $scriptPath
+                $scriptFound = $true
+                break
+            }
+        }
+        
+        # Check for output\memberberry.md file
+        $outputFile = Join-Path $memberberryDir "output\memberberry.md"
+        $outputFileExists = Test-Path $outputFile
+        
+        # Validate exceptions path if provided
+        if (-not [string]::IsNullOrWhiteSpace($exceptionsPath)) {
+            if (Test-Path $exceptionsPath -PathType Container) {
+                [System.Windows.Forms.MessageBox]::Show("Memberberry Exceptions File must point to a file, not a directory.`n`nCurrent value: $exceptionsPath`n`nExpected: File path (e.g., C:\git\memberberry\exceptions.json)", "Invalid Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                return
+            }
+            if (-not (Test-Path $exceptionsPath -PathType Leaf)) {
+                [System.Windows.Forms.MessageBox]::Show("Exceptions file not found: $exceptionsPath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                # Continue validation even if exceptions file doesn't exist (it's optional)
+            }
+        }
+        
+        # Build validation message
+        $message = "Memberberry Configuration Validation`n`n"
+        $message += "Directory: $memberberryDir`n"
+        $message += "  ✓ Directory exists`n"
+        
+        if ($scriptFound) {
+            $message += "  ✓ Script found: $(Split-Path $foundScript -Leaf)`n"
+        } else {
+            $message += "  ⚠ Script not found (looking for: compile.ps1, memberberry.ps1, run.ps1, main.ps1)`n"
+        }
+        
+        if ($outputFileExists) {
+            $fileSize = (Get-Item $outputFile).Length
+            $message += "  ✓ Output file exists: output\memberberry.md ($fileSize bytes)`n"
+        } else {
+            $message += "  ⚠ Output file not found: output\memberberry.md`n"
+            $message += "     (This will be generated when compile.ps1 runs)`n"
+        }
+        
+        if (-not [string]::IsNullOrWhiteSpace($exceptionsPath)) {
+            $message += "`nExceptions File: $exceptionsPath`n"
+            if (Test-Path $exceptionsPath -PathType Leaf) {
+                $message += "  ✓ File exists`n"
+            } else {
+                $message += "  ⚠ File not found (optional)`n"
+            }
+        }
+        
+        if ($scriptFound -and $outputFileExists) {
+            $message += "`n✓ Configuration is valid and ready to use!"
+            [System.Windows.Forms.MessageBox]::Show($message, "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        } else {
+            $message += "`n⚠ Configuration has warnings but may still work."
+            [System.Windows.Forms.MessageBox]::Show($message, "Validation Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error testing memberberry configuration: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
 
@@ -2664,6 +2770,22 @@ $btnGenerateReadme.add_Click({
         $lblStatus.Text = "Error generating readme: $($_.Exception.Message)"
         $lblStatus.ForeColor = [System.Drawing.Color]::Red
     }
+})
+
+# Add Fix Module Conflicts button to Settings tab
+$fixModsBtn = New-Object System.Windows.Forms.Button
+$fixModsBtn.Text = "Fix Graph Module Conflicts"
+$fixModsBtn.Location = New-Object System.Drawing.Point(270, 165)
+$fixModsBtn.Width = 180
+$settingsPanel.Controls.Add($fixModsBtn)
+$fixModsBtn.add_Click({
+    try {
+        Import-Module "$PSScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
+        $lblStatus.Text = "Fixing Graph modules..."; $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+        $ok = Fix-GraphModuleConflicts -statusLabel $null
+        if ($ok) { $lblStatus.Text = "Graph modules repaired. Restart PowerShell."; $lblStatus.ForeColor = [System.Drawing.Color]::Green }
+        else { $lblStatus.Text = "Repair failed. See console."; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
+    } catch { $lblStatus.Text = $_.Exception.Message; $lblStatus.ForeColor = [System.Drawing.Color]::Red }
 })
 
 # Ensure Settings tab is the rightmost tab (last position)
@@ -3913,34 +4035,57 @@ $searchUsersButton.add_Click({
             # Search for users using the search term (Microsoft Graph supports startsWith and eq)
             $users = @()
             try {
-                $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
-                Write-Host "  Found $($users.Count) users with startsWith filter"
+                # Try server-side filtering first (startsWith) - try multiple case variations
+                $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $searchTermLower = $searchTerm.ToLower()
+                $searchTermUpper = $searchTerm.ToUpper()
+                $searchTermTitle = (Get-Culture).TextInfo.ToTitleCase($searchTermLower)
+                $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                $users = @($users1) + @($users2) + @($users3) + @($users4) | Sort-Object UserPrincipalName -Unique
+                Write-Host "  Found $($users.Count) users with startsWith filter (tried multiple case variations)"
             } catch {
-                Write-Host "  startsWith filter failed, trying alternatives..."
+                Write-Host "  startsWith filter failed: $($_.Exception.Message), trying alternatives..."
             }
             
             if ($users.Count -eq 0) {
                 # Try alternative search methods using supported operators
                 try {
-                    # Try exact match first
+                    # Try exact match (case-sensitive first, then variations)
                     $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                    $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                    $usersAlt1 = $usersAlt1 | Sort-Object UserPrincipalName -Unique
                     Write-Host "  Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
                     
                     $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                    $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
+                    $usersAlt2 = $usersAlt2 | Sort-Object UserPrincipalName -Unique
                     Write-Host "  Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
                     
                     # Try case-insensitive search by getting all users and filtering client-side
-                    $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction SilentlyContinue
-                    $usersAlt3 = $allUsers | Where-Object { 
-                        $_.DisplayName -like "*$searchTerm*" -or $_.UserPrincipalName -like "*$searchTerm*" 
+                    Write-Host "  Fetching all users for client-side filtering..."
+                    try {
+                        $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName, AssignedLicenses -ErrorAction Stop
+                        Write-Host "  Retrieved $($allUsers.Count) total users from tenant"
+                        
+                        # Use case-insensitive matching with -ilike
+                        $searchTermPattern = "*$searchTerm*"
+                        $usersAlt3 = $allUsers | Where-Object { 
+                            ($_.DisplayName -and $_.DisplayName -ilike $searchTermPattern) -or 
+                            ($_.UserPrincipalName -and $_.UserPrincipalName -ilike $searchTermPattern)
+                        }
+                        Write-Host "  Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users matching '$searchTerm'"
+                    } catch {
+                        Write-Host "  Failed to retrieve all users for client-side filtering: $($_.Exception.Message)" -ForegroundColor Yellow
+                        $usersAlt3 = @()
                     }
-                    Write-Host "  Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users"
                     
                     # Combine all results
                     $users = @($usersAlt1) + @($usersAlt2) + @($usersAlt3) | Sort-Object UserPrincipalName -Unique
                     Write-Host "  Combined alternative searches: Found $($users.Count) users"
                 } catch {
-                    Write-Host "  Alternative searches also failed: $($_.Exception.Message)"
+                    Write-Host "  Alternative searches also failed: $($_.Exception.Message)" -ForegroundColor Red
                 }
             }
             
@@ -4676,8 +4821,8 @@ $disconnectButton.add_Click({
     $statusLabel.Text = "Disconnected."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
 })
-$selectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $true }; $null })
-$deselectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $false }; $null })
+$selectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $true } })
+$deselectAllButton.add_Click({ for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) { $userMailboxGrid.Rows[$i].Cells["Select"].Value = $false } })
 $browseFolderButton.add_Click({ 
     $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog; 
     if ($folderDialog.ShowDialog() -eq 'OK') { 
@@ -6047,59 +6192,22 @@ $bulkTenantExporterButton.add_Click({
         $bulkConfigGroupBox = New-Object System.Windows.Forms.GroupBox
         $bulkConfigGroupBox.Text = "Configuration"
         $bulkConfigGroupBox.Location = New-Object System.Drawing.Point(15, 110)
-        $bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 180)
-
-        # Number of Tenants
-        $tenantsCountLabel = New-Object System.Windows.Forms.Label
-        $tenantsCountLabel.Text = "Number of Tenants:"
-        $tenantsCountLabel.Location = New-Object System.Drawing.Point(20, 25)
-        $tenantsCountLabel.Size = New-Object System.Drawing.Size(150, 20)
-
-        $tenantsCountNumeric = New-Object System.Windows.Forms.NumericUpDown
-        $tenantsCountNumeric.Location = New-Object System.Drawing.Point(180, 23)
-        $tenantsCountNumeric.Size = New-Object System.Drawing.Size(100, 20)
-        $tenantsCountNumeric.Minimum = 1
-        $tenantsCountNumeric.Maximum = 50
-        $tenantsCountNumeric.Value = 1
-
-        # Investigator Name
-        $bulkInvestigatorLabel = New-Object System.Windows.Forms.Label
-        $bulkInvestigatorLabel.Text = "Investigator Name:"
-        $bulkInvestigatorLabel.Location = New-Object System.Drawing.Point(20, 55)
-        $bulkInvestigatorLabel.Size = New-Object System.Drawing.Size(150, 20)
-
-        $bulkInvestigatorTextBox = New-Object System.Windows.Forms.TextBox
-        $bulkInvestigatorTextBox.Location = New-Object System.Drawing.Point(180, 53)
-        $bulkInvestigatorTextBox.Size = New-Object System.Drawing.Size(200, 20)
-        try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
-        $settings = $null; try { $settings = Get-AppSettings } catch {}
-        if ($settings -and $settings.InvestigatorName) { $bulkInvestigatorTextBox.Text = $settings.InvestigatorName } else { $bulkInvestigatorTextBox.Text = "Security Administrator" }
-
-        # Company Name
-        $bulkCompanyLabel = New-Object System.Windows.Forms.Label
-        $bulkCompanyLabel.Text = "Company Name:"
-        $bulkCompanyLabel.Location = New-Object System.Drawing.Point(20, 85)
-        $bulkCompanyLabel.Size = New-Object System.Drawing.Size(150, 20)
-
-        $bulkCompanyTextBox = New-Object System.Windows.Forms.TextBox
-        $bulkCompanyTextBox.Location = New-Object System.Drawing.Point(180, 83)
-        $bulkCompanyTextBox.Size = New-Object System.Drawing.Size(200, 20)
-        if ($settings -and $settings.CompanyName) { $bulkCompanyTextBox.Text = $settings.CompanyName } else { $bulkCompanyTextBox.Text = "Organization" }
+        $bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 80)
 
         # Days Back
         $bulkDaysLabel = New-Object System.Windows.Forms.Label
         $bulkDaysLabel.Text = "Days Back (Message Trace):"
-        $bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 115)
+        $bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 25)
         $bulkDaysLabel.Size = New-Object System.Drawing.Size(150, 20)
 
         $bulkDaysComboBox = New-Object System.Windows.Forms.ComboBox
-        $bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 113)
+        $bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 23)
         $bulkDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
         $bulkDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
         $bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30"))
         $bulkDaysComboBox.SelectedIndex = 4  # Default to 10 days
 
-        $bulkConfigGroupBox.Controls.AddRange(@($tenantsCountLabel, $tenantsCountNumeric, $bulkInvestigatorLabel, $bulkInvestigatorTextBox, $bulkCompanyLabel, $bulkCompanyTextBox, $bulkDaysLabel, $bulkDaysComboBox))
+        $bulkConfigGroupBox.Controls.AddRange(@($bulkDaysLabel, $bulkDaysComboBox))
 
         # Report Selection section
         $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
@@ -6251,9 +6359,9 @@ $bulkTenantExporterButton.add_Click({
         $bulkStatusTextBox.Size = New-Object System.Drawing.Size(400, 400)
         $bulkStatusTextBox.Font = New-Object System.Drawing.Font('Consolas', 9)
 
-        # Start Export Button
+        # Start Export Button (opens authentication console)
         $bulkStartButton = New-Object System.Windows.Forms.Button
-        $bulkStartButton.Text = "Start Bulk Export"
+        $bulkStartButton.Text = "Open Authentication Console"
         $bulkStartButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
         $bulkStartButton.Location = New-Object System.Drawing.Point(430, 110)
         $bulkStartButton.Size = New-Object System.Drawing.Size(280, 50)
@@ -6271,9 +6379,16 @@ $bulkTenantExporterButton.add_Click({
 
         # Start Export button click handler - Opens Authentication Console
         $bulkStartButton.add_Click({
-            $tenantCount = [int]$tenantsCountNumeric.Value
-            $investigator = if ($bulkInvestigatorTextBox.Text -and $bulkInvestigatorTextBox.Text.Trim().Length -gt 0) { $bulkInvestigatorTextBox.Text } else { 'Security Administrator' }
-            $company = if ($bulkCompanyTextBox.Text -and $bulkCompanyTextBox.Text.Trim().Length -gt 0) { $bulkCompanyTextBox.Text } else { 'Organization' }
+            # Load Investigator Name and Company Name from settings
+            try {
+                Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                $settings = Get-AppSettings
+                $investigator = if ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
+                $company = if ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
+            } catch {
+                $investigator = 'Security Administrator'
+                $company = 'Organization'
+            }
             $days = [int]$bulkDaysComboBox.SelectedItem
 
             # Parse sign-in logs time range
@@ -6387,6 +6502,9 @@ try {
     `$null = New-Item -ItemType Directory -Path `$cacheDir -Force -ErrorAction Stop
     `$env:IDENTITY_SERVICE_CACHE_DIR = `$cacheDir
     `$env:MSAL_CACHE_DIR = `$cacheDir
+    `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+    `$env:MSAL_DISABLE_BROKER = "1"
+    `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
     Write-Status "Using isolated cache directory: `$cacheDir"
     Write-Host "Cache directory: `$cacheDir" -ForegroundColor Gray
     Write-Host ""
@@ -6397,8 +6515,22 @@ try {
     Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
-    Write-Host "Modules imported successfully" -ForegroundColor Green
+    Write-Status "Modules imported successfully"
     Write-Host ""
+    
+    # CRITICAL: Disconnect any existing Graph session before starting
+    # This ensures each tenant starts with a fresh authentication state
+    # Even though each tenant has its own process, WAM might cache credentials globally
+    try {
+        `$existingContext = Get-MgContext -ErrorAction SilentlyContinue
+        if (`$existingContext) {
+            Write-Host "Found existing Graph session - disconnecting to ensure fresh authentication..." -ForegroundColor Yellow
+            Disconnect-MgGraph -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500  # Brief pause to ensure disconnection completes
+        }
+    } catch {
+        # Ignore errors - no session exists or module not loaded yet
+    }
     
     # Load report selections from JSON
     `$reportSelections = @{}
@@ -6427,10 +6559,12 @@ if (Test-Path `$ReportSelectionsFile) {
     `$pollInterval = 500  # milliseconds
     
     Write-Host "Ready! Waiting for Graph Auth command from GUI..." -ForegroundColor Green
+    Write-Status "Ready! Waiting for Graph Auth command from GUI..."
     Write-Host "Command file: `$commandFile" -ForegroundColor Gray
     Write-Host "Polling every `$pollInterval ms for commands..." -ForegroundColor Gray
     Write-Host ""
     
+    Write-Status "Command polling loop started - ready to receive commands"
     `$pollCount = 0
     while (`$true) {
         `$pollCount++
@@ -6456,17 +6590,125 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Status "Graph authentication command received"
                 Write-CommandResponse "GRAPH_AUTH_STARTED"
                 
-                # Clear any existing sessions
-                Write-Status "Clearing existing sessions..."
-                Write-Host "Clearing existing sessions..." -ForegroundColor Cyan
-                try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch {}
+                # Clear any existing sessions and token caches
+                # NOTE: Each tenant runs in its own isolated PowerShell process, so disconnecting only affects
+                # this tenant's session, not other tenants' sessions running in separate processes.
+                Write-Status "Clearing existing sessions and token caches..."
+                Write-Host "Clearing existing sessions and token caches..." -ForegroundColor Cyan
+                
+                # Disconnect Graph session first (only if one exists in this process)
+                # CRITICAL: This must happen BEFORE clearing cache to ensure session is fully released
+                try { 
+                    `$mgContext = Get-MgContext -ErrorAction SilentlyContinue
+                    if (`$mgContext) {
+                        Write-Host "Found existing Graph context - Tenant: `$(`$mgContext.TenantId), Account: `$(`$mgContext.Account)" -ForegroundColor Yellow
+                        Disconnect-MgGraph -ErrorAction SilentlyContinue 
+                        Write-Host "Disconnected existing Graph session for this tenant" -ForegroundColor Gray
+                        # Wait a moment to ensure disconnection completes
+                        Start-Sleep -Milliseconds 500
+                    } else {
+                        Write-Host "No existing Graph session to disconnect" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors - session may not exist
+                }
+                
+                # Clear Graph token cache and reset GraphSession singleton
+                try {
+                    `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                    if (`$graphSession) {
+                        if (`$graphSession.AuthContext) {
+                            `$graphSession.AuthContext.ClearTokenCache()
+                            Write-Host "Cleared Graph token cache" -ForegroundColor Gray
+                        }
+                        # Try to reset the session instance to ensure fresh state
+                        try {
+                            `$graphSession.Reset() | Out-Null
+                            Write-Host "Reset GraphSession instance" -ForegroundColor Gray
+                        } catch {
+                            # Reset() method may not exist in all versions - ignore if not available
+                        }
+                    }
+                } catch {
+                    # Ignore errors clearing token cache
+                }
+                
+                # Clear ALL files in the MSAL cache directory (not just "*cache*" files)
+                # This ensures no cached tokens from previous tenants remain
+                try {
+                    if (`$env:MSAL_CACHE_DIR -and (Test-Path `$env:MSAL_CACHE_DIR)) {
+                        `$allCacheFiles = Get-ChildItem -Path `$env:MSAL_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue
+                        foreach (`$file in `$allCacheFiles) {
+                            Remove-Item `$file.FullName -Force -ErrorAction SilentlyContinue
+                        }
+                        Write-Host "Cleared all files from MSAL cache directory ($(`$allCacheFiles.Count) files)" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors clearing MSAL cache
+                }
+                
+                # Also clear IDENTITY_SERVICE_CACHE_DIR if it exists
+                try {
+                    if (`$env:IDENTITY_SERVICE_CACHE_DIR -and (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
+                        `$allIdentityFiles = Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue
+                        foreach (`$file in `$allIdentityFiles) {
+                            Remove-Item `$file.FullName -Force -ErrorAction SilentlyContinue
+                        }
+                        Write-Host "Cleared all files from Identity cache directory ($(`$allIdentityFiles.Count) files)" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors clearing Identity cache
+                }
                 
                 # Graph Authentication
+                # NOTE: Microsoft Graph Authentication Behavior
+                # Microsoft.Graph.Authentication version 2.33.0+ defaults to using WAM (Web Account Manager) on Windows,
+                # which shows a popup dialog instead of opening the system browser. Unlike Connect-ExchangeOnline which
+                # has a -DisableWAM parameter, Connect-MgGraph does not have this option. Environment variables to disable
+                # WAM are set below, but newer module versions may ignore them. The authentication will still work via
+                # the WAM popup if the browser doesn't open automatically.
+                # TODO: Revisit this implementation if/when Microsoft.Graph.Authentication adds a -DisableWAM parameter
+                #       or provides another mechanism to force system browser authentication.
     Write-Host ""
-                Write-Host "A browser window will open for Microsoft Graph authentication - this may take 10-30 seconds to appear." -ForegroundColor Yellow
-                Write-Host "Please wait for the browser popup and complete the sign-in in your browser window." -ForegroundColor Yellow
+                Write-Host "Starting Microsoft Graph authentication..." -ForegroundColor Yellow
+                Write-Host "Note: A popup may appear instead of your browser (this is a limitation of Microsoft.Graph.Authentication)." -ForegroundColor Yellow
     Write-Host ""
-                Write-Status "Waiting for browser popup to appear (this may take 10-30 seconds)..."
+                Write-Status "Waiting for authentication window to appear (this may take 10-30 seconds)..."
+
+                # Disable broker/WAM so authentication uses the system browser instead of an embedded popup
+                `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+                `$env:MSAL_DISABLE_BROKER = "1"
+                `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+
+                # Ensure the per-client cache directory exists and is completely empty before authenticating
+                # This is critical to prevent reusing tokens from previous tenants
+                if (`$env:MSAL_CACHE_DIR) {
+                    try {
+                        if (-not (Test-Path `$env:MSAL_CACHE_DIR)) {
+                            New-Item -ItemType Directory -Path `$env:MSAL_CACHE_DIR -Force -ErrorAction SilentlyContinue | Out-Null
+                        } else {
+                            # Remove ALL contents (files and subdirectories) to ensure fresh authentication
+                            Get-ChildItem -Path `$env:MSAL_CACHE_DIR -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-Host "Cleared MSAL cache directory contents before authentication" -ForegroundColor Gray
+                        }
+                    } catch {
+                        # Ignore cache cleanup errors to avoid blocking auth
+                    }
+                }
+                
+                # Also clear IDENTITY_SERVICE_CACHE_DIR before authentication
+                if (`$env:IDENTITY_SERVICE_CACHE_DIR) {
+                    try {
+                        if (-not (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
+                            New-Item -ItemType Directory -Path `$env:IDENTITY_SERVICE_CACHE_DIR -Force -ErrorAction SilentlyContinue | Out-Null
+                        } else {
+                            Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-Host "Cleared Identity cache directory contents before authentication" -ForegroundColor Gray
+                        }
+                    } catch {
+                        # Ignore cache cleanup errors to avoid blocking auth
+                    }
+                }
     
     `$scopes = @(
         "AuditLog.Read.All",
@@ -6477,8 +6719,102 @@ if (Test-Path `$ReportSelectionsFile) {
         "Reports.Read.All"
     )
     
-    try {
-                    Connect-MgGraph -Scopes `$scopes -ContextScope Process -ErrorAction Stop
+                try {
+                    # Try to use Azure.Identity directly to bypass WAM, but fall back to standard Connect-MgGraph if not available
+                    `$useAzureIdentity = `$false
+                    try {
+                        # Check if Azure.Identity types are available in already-loaded assemblies
+                        `$identityType = `$null
+                        
+                        # First, try to find the type in loaded assemblies (Microsoft.Graph might have brought it in)
+                        foreach (`$assembly in [System.AppDomain]::CurrentDomain.GetAssemblies()) {
+                            try {
+                                `$identityType = `$assembly.GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                                if (`$identityType -ne `$null) { break }
+                            } catch {}
+                        }
+                        
+                        # If not found, try Type::GetType with assembly qualified name
+                        if (`$null -eq `$identityType) {
+                            `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions, Azure.Identity, Version=1.0.0.0, Culture=neutral, PublicKeyToken=92742159e12e44c8")
+                        }
+                        
+                        # If still not found, try loading from Microsoft.Graph.Authentication module path
+                        if (`$null -eq `$identityType) {
+                            `$mgAuthModule = Get-Module Microsoft.Graph.Authentication -ErrorAction SilentlyContinue
+                            if (`$mgAuthModule) {
+                                `$mgAuthPath = Split-Path `$mgAuthModule.Path
+                                `$identityDll = Join-Path `$mgAuthPath "Azure.Identity.dll"
+                                if (Test-Path `$identityDll) {
+                                    [System.Reflection.Assembly]::LoadFrom(`$identityDll) | Out-Null
+                                    `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                                }
+                            }
+                        }
+                        
+                        # Last resort: try to install/load the module
+                        if (`$null -eq `$identityType) {
+                            if (Get-Module -ListAvailable -Name Azure.Identity -ErrorAction SilentlyContinue) {
+                                Import-Module Azure.Identity -Force -ErrorAction Stop
+                                `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                            } else {
+                                # Try installing with explicit repository
+                                Write-Host "Attempting to install Azure.Identity from PSGallery..." -ForegroundColor Yellow
+                                try {
+                                    Register-PSRepository -Default -ErrorAction SilentlyContinue
+                                    Install-Module -Name Azure.Identity -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
+                                    Import-Module Azure.Identity -Force -ErrorAction Stop
+                                    `$identityType = [Type]::GetType("Azure.Identity.InteractiveBrowserCredentialOptions")
+                                } catch {
+                                    Write-Host "Could not install Azure.Identity: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+                                }
+                            }
+                        }
+                        
+                        if (`$null -ne `$identityType) {
+                            `$useAzureIdentity = `$true
+                            Write-Host "Using Azure.Identity for browser authentication (bypassing WAM)..." -ForegroundColor Cyan
+                            
+                            # Create browser credential options to use system browser (not embedded/WAM)
+                            `$browserOptions = New-Object Azure.Identity.InteractiveBrowserCredentialOptions
+                            `$browserOptions.UseOperatingSystemAccount = `$false
+                            `$browserOptions.TenantId = "organizations"  # Allow any work/school account
+                            
+                            # Create the credential with system browser
+                            `$browserCredential = New-Object Azure.Identity.InteractiveBrowserCredential -ArgumentList `$browserOptions
+                            
+                            # Get token using the browser credential (will open system browser)
+                            Write-Host "Opening browser for authentication..." -ForegroundColor Yellow
+                            `$tokenRequestContext = New-Object Azure.Core.TokenRequestContext -ArgumentList (,[string[]]`$scopes)
+                            `$accessToken = `$browserCredential.GetToken(`$tokenRequestContext, [System.Threading.CancellationToken]::None)
+                            
+                            # Connect to Graph using the access token
+                            `$secureToken = ConvertTo-SecureString -String `$accessToken.Token -AsPlainText -Force
+                            Connect-MgGraph -AccessToken `$secureToken -ErrorAction Stop
+                        }
+                    } catch {
+                        Write-Host "Azure.Identity approach failed: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "Falling back to standard Connect-MgGraph..." -ForegroundColor Yellow
+                        `$useAzureIdentity = `$false
+                    }
+                    
+                    # Fallback to standard Connect-MgGraph if Azure.Identity approach didn't work
+                    # LIMITATION: Microsoft.Graph.Authentication version 2.33.0+ defaults to WAM (Web Account Manager) on Windows.
+                    # Unlike Connect-ExchangeOnline which has a -DisableWAM parameter, Connect-MgGraph does not provide
+                    # this option. Environment variables are set below to attempt disabling WAM, but newer module versions
+                    # may ignore them. The authentication will still function correctly via the WAM popup if the system
+                    # browser doesn't open automatically. This is a known limitation of the Microsoft.Graph.Authentication
+                    # module and not a bug in this script.
+                    # TODO: Revisit this implementation if/when Microsoft.Graph.Authentication adds a -DisableWAM parameter
+                    #       or provides another mechanism to force system browser authentication.
+                    if (-not `$useAzureIdentity) {
+                        # Set environment variables to try to disable WAM (may not work with newer module versions)
+                        `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+                        `$env:MSAL_DISABLE_BROKER = "1"
+                        `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+                        Write-Host "Using standard Connect-MgGraph authentication..." -ForegroundColor Yellow
+                        Connect-MgGraph -Scopes `$scopes -ContextScope Process -NoWelcome -ErrorAction Stop
+                    }
         `$mgContext = Get-MgContext -ErrorAction Stop
                     `$graphAuthenticated = `$true
                     Write-Status "Graph authentication successful! Tenant: `$(`$mgContext.TenantId)"
@@ -6554,11 +6890,181 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Waiting for Generate Reports command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
-            } elseif (`$command -eq "GENERATE_REPORTS") {
+            } elseif (`$command -match "^VALIDATE_USERS") {
+                if (-not `$graphAuthenticated) {
+                    Write-Host "ERROR: Graph authentication must be completed first!" -ForegroundColor Red
+                    Write-CommandResponse "VALIDATE_USERS_FAILED:Graph authentication not completed"
+                    continue
+                }
+                
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "VALIDATE USERS COMMAND RECEIVED" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "User validation command received"
+                Write-CommandResponse "VALIDATE_USERS_STARTED"
+                
+                try {
+                    # Parse search terms from command (format: VALIDATE_USERS|SEARCH_TERMS:term1,term2)
+                    `$searchTerms = @()
+                    if (`$command -match '\|SEARCH_TERMS:(.+)$') {
+                        `$searchTermsJson = `$Matches[1]
+                        try {
+                            `$searchTermsArray = `$searchTermsJson | ConvertFrom-Json -ErrorAction Stop
+                            if (`$searchTermsArray -is [array]) {
+                                `$searchTerms = `$searchTermsArray
+                            } elseif (`$searchTermsArray -is [string]) {
+                                `$searchTerms = @(`$searchTermsArray)
+                            } else {
+                                `$searchTerms = @(`$searchTermsArray)
+                            }
+                        } catch {
+                            # If JSON parsing fails, try splitting as comma-separated string
+                            `$searchTerms = `$searchTermsJson -split ',' | ForEach-Object { `$_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) }
+                        }
+                    } else {
+                        Write-Warning "No search terms found in VALIDATE_USERS command"
+                        Write-CommandResponse "VALIDATE_USERS_FAILED:No search terms provided"
+                        continue
+                    }
+                    
+                    Write-Host "Search terms received: `$(`$searchTerms -join ', ')" -ForegroundColor Cyan
+                    Write-Status "Validating users for search terms: `$(`$searchTerms -join ', ')"
+                    
+                    # Perform user search using improved search logic
+                    `$allFoundUsers = @()
+                    foreach (`$searchTerm in `$searchTerms) {
+                        Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
+                        `$users = @()
+                        try {
+                            # Try server-side filtering first (startsWith) - try multiple case variations
+                            `$users1 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTerm') or startsWith(UserPrincipalName,'`$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$searchTermLower = `$searchTerm.ToLower()
+                            `$searchTermUpper = `$searchTerm.ToUpper()
+                            `$searchTermTitle = (Get-Culture).TextInfo.ToTitleCase(`$searchTermLower)
+                            `$users2 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermLower') or startsWith(UserPrincipalName,'`$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$users3 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermUpper') or startsWith(UserPrincipalName,'`$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$users4 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermTitle') or startsWith(UserPrincipalName,'`$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            `$users = @(`$users1) + @(`$users2) + @(`$users3) + @(`$users4) | Sort-Object UserPrincipalName -Unique
+                            Write-Host "    Found `$(`$users.Count) users with startsWith filter (tried multiple case variations)" -ForegroundColor Gray
+                        } catch {
+                            Write-Host "    startsWith filter failed: `$(`$_.Exception.Message), trying alternatives..." -ForegroundColor Yellow
+                        }
+                        
+                        if (`$users.Count -eq 0) {
+                            # Try alternative search methods
+                            try {
+                                # Try exact match (case-sensitive first, then variations)
+                                `$usersAlt1 = Get-MgUser -Filter "DisplayName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt1 += Get-MgUser -Filter "DisplayName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt1 = `$usersAlt1 | Sort-Object UserPrincipalName -Unique
+                                
+                                `$usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$usersAlt2 = `$usersAlt2 | Sort-Object UserPrincipalName -Unique
+                                
+                                # Try case-insensitive search by getting all users and filtering client-side
+                                Write-Host "    Fetching all users for client-side filtering..." -ForegroundColor Gray
+                                try {
+                                    `$allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
+                                    Write-Host "    Retrieved `$(`$allUsers.Count) total users from tenant" -ForegroundColor Gray
+                                    
+                                    # Use case-insensitive matching with -ilike
+                                    `$searchTermPattern = "*`$searchTerm*"
+                                    `$usersAlt3 = `$allUsers | Where-Object { 
+                                        (`$_.DisplayName -and `$_.DisplayName -ilike `$searchTermPattern) -or 
+                                        (`$_.UserPrincipalName -and `$_.UserPrincipalName -ilike `$searchTermPattern)
+                                    }
+                                    Write-Host "    Client-side filtering: Found `$(`$usersAlt3.Count) users matching '`$searchTerm'" -ForegroundColor Gray
+                                } catch {
+                                    Write-Warning "Failed to retrieve all users for client-side filtering: `$(`$_.Exception.Message)"
+                                    `$usersAlt3 = @()
+                                }
+                                
+                                # Combine all results
+                                `$users = @(`$usersAlt1) + @(`$usersAlt2) + @(`$usersAlt3) | Sort-Object UserPrincipalName -Unique
+                                Write-Host "    Combined alternative searches: Found `$(`$users.Count) users" -ForegroundColor Gray
+                            } catch {
+                                Write-Warning "Could not search for users matching '`$searchTerm': `$(`$_.Exception.Message)"
+                            }
+                        }
+                        if (`$users.Count -gt 0) {
+                            `$allFoundUsers += `$users
+                        }
+                    }
+                    
+                    # Get unique UserPrincipalNames
+                    `$validatedUsers = (`$allFoundUsers | Sort-Object UserPrincipalName -Unique | ForEach-Object { `$_.UserPrincipalName })
+                    
+                    if (`$validatedUsers.Count -gt 0) {
+                        Write-Host "Validation successful: Found `$(`$validatedUsers.Count) user(s)" -ForegroundColor Green
+                        Write-Status "Validation successful: Found `$(`$validatedUsers.Count) user(s)"
+                        `$responseJson = @{
+                            Success = `$true
+                            UserCount = `$validatedUsers.Count
+                            Users = `$validatedUsers
+                        } | ConvertTo-Json -Compress
+                        Write-CommandResponse "VALIDATE_USERS_SUCCESS:`$responseJson"
+                    } else {
+                        Write-Host "Validation completed: No users found matching search terms" -ForegroundColor Yellow
+                        Write-Status "Validation completed: No users found matching search terms"
+                        `$responseJson = @{
+                            Success = `$false
+                            UserCount = 0
+                            Users = @()
+                            Message = "No users found matching the search terms"
+                        } | ConvertTo-Json -Compress
+                        Write-CommandResponse "VALIDATE_USERS_SUCCESS:`$responseJson"
+                    }
+                } catch {
+                    Write-Host "ERROR: User validation failed - `$(`$_.Exception.Message)" -ForegroundColor Red
+                    Write-Status "ERROR: User validation failed - `$(`$_.Exception.Message)"
+                    Write-CommandResponse "VALIDATE_USERS_FAILED:`$(`$_.Exception.Message)"
+                }
+                
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+                
+            } elseif (`$command -match "^GENERATE_REPORTS") {
                 if (-not `$graphAuthenticated -or -not `$exchangeAuthenticated) {
                     Write-Host "ERROR: Both Graph and Exchange authentication must be completed first!" -ForegroundColor Red
                     Write-CommandResponse "GENERATE_REPORTS_FAILED:Authentication not completed"
                     continue
+                }
+                
+                # Parse ticket data from command (format: |TICKET_DATA:{"TicketNumbers":["12345"],"TicketContent":"..."})
+                `$ticketNumbers = @()
+                `$ticketContent = ''
+                # Use a more robust regex that captures everything after TICKET_DATA: until end of string
+                # This handles cases where ticket content might contain special characters
+                if (`$command -match '\|TICKET_DATA:(.+)$') {
+                    try {
+                        `$ticketDataJson = `$Matches[1]
+                        Write-Host "Parsing ticket data JSON: `$ticketDataJson" -ForegroundColor Gray
+                        `$ticketData = `$ticketDataJson | ConvertFrom-Json -ErrorAction Stop
+                        if (`$ticketData.TicketNumbers) {
+                            # Ensure TicketNumbers is always an array
+                            if (`$ticketData.TicketNumbers -is [string]) {
+                                `$ticketNumbers = @(`$ticketData.TicketNumbers)
+                            } elseif (`$ticketData.TicketNumbers -is [array]) {
+                                `$ticketNumbers = `$ticketData.TicketNumbers
+                            } else {
+                                `$ticketNumbers = @(`$ticketData.TicketNumbers)
+                            }
+                        }
+                        if (`$ticketData.TicketContent) {
+                            `$ticketContent = `$ticketData.TicketContent
+                        }
+                        Write-Host "Ticket data parsed successfully: `$(`$ticketNumbers.Count) ticket number(s): `$(`$ticketNumbers -join ', ')" -ForegroundColor Cyan
+                        Write-Status "Ticket data parsed successfully: `$(`$ticketNumbers.Count) ticket number(s): `$(`$ticketNumbers -join ', ')"
+                    } catch {
+                        Write-Warning "Could not parse ticket data from command: `$(`$_.Exception.Message)"
+                        Write-Host "Ticket data JSON that failed to parse: `$ticketDataJson" -ForegroundColor Yellow
+                        Write-Host "Full command was: `$command" -ForegroundColor Yellow
+                        Write-Host "Exception details: `$(`$_.Exception | Out-String)" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "No TICKET_DATA found in command. Command: `$command" -ForegroundColor Gray
                 }
                 
                 Write-Host "==========================================" -ForegroundColor Yellow
@@ -6575,8 +7081,28 @@ if (Test-Path `$ReportSelectionsFile) {
                 # OutputFolder will be automatically determined by ExportUtils using:
                 # Documents\ExchangeOnlineAnalyzer\SecurityInvestigation\{TenantName}\{Timestamp}
                 Write-Status "Generating security investigation report..."
+                Write-Host "Starting report generation..." -ForegroundColor Yellow
+                # Filter ticket content to remove configuration sections
+                if (`$ticketContent -and -not [string]::IsNullOrWhiteSpace(`$ticketContent)) {
+                    try {
+                        Import-Module "`$ScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                        if (Get-Command Filter-TicketContent -ErrorAction SilentlyContinue) {
+                            `$originalLength = `$ticketContent.Length
+                            `$ticketContent = Filter-TicketContent -TicketContent `$ticketContent
+                            Write-Host "Ticket content filtered: `$originalLength -> `$(`$ticketContent.Length) characters" -ForegroundColor Gray
+                        } else {
+                            Write-Warning "Filter-TicketContent function not found, using raw ticket content"
+                        }
+                    } catch {
+                        Write-Warning "Failed to filter ticket content: `$(`$_.Exception.Message). Using raw content."
+                    }
+                }
+                
+                Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers @()
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    Write-Status "Report generation function completed"
+                    Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
                     Write-Status "ERROR: Failed to generate report - `$(`$_.Exception.Message)"
                     Write-Host "ERROR: Failed to generate report - `$(`$_.Exception.Message)" -ForegroundColor Red
@@ -6658,14 +7184,47 @@ if (Test-Path `$ReportSelectionsFile) {
                 try {
                     Disconnect-MgGraph -ErrorAction SilentlyContinue
                 } catch {}
-    try {
-        if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
+                try {
+                    if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
                         Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue
-        }
-    } catch {}
+                    }
+                } catch {}
+                
+                # Clear authentication context and token cache more thoroughly
+                try {
+                    `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                    if (`$graphSession -and `$graphSession.AuthContext) {
+                        `$graphSession.AuthContext.ClearTokenCache()
+                        Write-Host "Cleared Graph token cache" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing token cache
+                }
+                
+                # Also try to clear any MSAL cache
+                try {
+                    `$msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+                    if (`$msalCache -and (Test-Path `$msalCache)) {
+                        Remove-Item `$msalCache -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared MSAL token cache" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing MSAL cache - method may not be available
+                }
+                
+                # Clear Exchange Online token cache
+                try {
+                    `$exoSession = Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" }
+                    if (`$exoSession) {
+                        Remove-PSSession `$exoSession -ErrorAction SilentlyContinue
+                        Write-Host "Cleared Exchange Online sessions" -ForegroundColor Cyan
+                    }
+                } catch {
+                    # Ignore errors clearing Exchange sessions
+                }
     
                 Write-Status "Authentication cancelled and reset"
-                Write-Host "Authentication cancelled and reset. Ready for new authentication attempt." -ForegroundColor Green
+                Write-Host "Authentication cancelled and reset. All token caches cleared. Ready for new authentication attempt." -ForegroundColor Green
                 Write-CommandResponse "CANCEL_AUTH_SUCCESS"
             } elseif (`$command -eq "EXIT") {
                 Write-Host "Exit command received. Closing window..." -ForegroundColor Yellow
@@ -6709,49 +7268,10 @@ if (Test-Path `$ReportSelectionsFile) {
             
             # Store PowerShell processes for each client
             $script:clientProcesses = @{}
-            
-            # Launch PowerShell process for each client immediately (before GUI opens)
-            Write-Host "Launching $tenantCount PowerShell windows..." -ForegroundColor Cyan
-            
-            for ($clientNum = 1; $clientNum -le $tenantCount; $clientNum++) {
-                $statusFile = Join-Path $tempDir "Client${clientNum}_Status.txt"
-                $resultFile = Join-Path $tempDir "Client${clientNum}_Result.txt"
-                
-                # Build process arguments
-                $processArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$workerScriptFile`" -ClientNumber $clientNum -ScriptRoot `"$PSScriptRoot`" -InvestigatorName `"$investigator`" -CompanyName `"$company`" -DaysBack $days -ReportSelectionsFile `"$reportSelectionsFile`" -StatusFile `"$statusFile`" -ResultFile `"$resultFile`" -CommandDir `"$commandDir`""
-
-                try {
-                    # Try PowerShell 7 (pwsh.exe) first, fall back to Windows PowerShell (powershell.exe)
-                    $psExe = "pwsh.exe"
-                    if (-not (Get-Command $psExe -ErrorAction SilentlyContinue)) {
-                        $psExe = "powershell.exe"
-                    }
-
-                    $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Hidden
-                    $script:clientProcesses[$clientNum] = $process
-                    Write-Host "Launched Client $clientNum PowerShell window (PID: $($process.Id))" -ForegroundColor Green
-                    Write-Host "  Command file will be: $(Join-Path $commandDir "Client${clientNum}_Command.txt")" -ForegroundColor Gray
-                    Write-Host "  Response file will be: $(Join-Path $commandDir "Client${clientNum}_Response.txt")" -ForegroundColor Gray
-                    
-                    # Wait a moment for PowerShell session to initialize
-                    Start-Sleep -Seconds 2
-                    
-                    # Verify process is still running
-                    try {
-                        $procCheck = Get-Process -Id $process.Id -ErrorAction Stop
-                        Write-Host "  Process verified running" -ForegroundColor Green
-                    } catch {
-                        Write-Host "  WARNING: Process may have exited immediately!" -ForegroundColor Yellow
-                    }
-                    
-                    # Small delay between launches
-                    Start-Sleep -Milliseconds 500
-                } catch {
-                    Write-Host "Failed to launch Client $clientNum - $($_.Exception.Message)" -ForegroundColor Red
-                }
+            $script:nextClientNumber = 1  # Track next available client number
+            if (-not $script:readinessCheckCount) {
+                $script:readinessCheckCount = @{}
             }
-            
-            Write-Host "All PowerShell windows launched. Opening authentication console..." -ForegroundColor Cyan
             
             # Create Authentication Console Form
             $authConsoleForm = New-Object System.Windows.Forms.Form
@@ -6770,124 +7290,88 @@ if (Test-Path `$ReportSelectionsFile) {
 
             # Instructions
             $authInstructionsLabel = New-Object System.Windows.Forms.Label
-            $authInstructionsLabel.Text = "Authenticate each client sequentially. Complete Graph authentication, then Exchange Online authentication for each client before proceeding to the next."
+            $authInstructionsLabel.Text = "Click 'Add Tenant' to add a new tenant. Authenticate each client sequentially. Complete Graph authentication, then Exchange Online authentication for each client before proceeding to the next."
             $authInstructionsLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
             $authInstructionsLabel.Location = New-Object System.Drawing.Point(15, 55)
             $authInstructionsLabel.Size = New-Object System.Drawing.Size(950, 40)
             $authInstructionsLabel.MaximumSize = New-Object System.Drawing.Size(950, 0)
             $authInstructionsLabel.AutoSize = $true
 
+            # Add Tenant button
+            $addTenantBtn = New-Object System.Windows.Forms.Button
+            $addTenantBtn.Text = "Add Tenant"
+            $addTenantBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+            $addTenantBtn.Location = New-Object System.Drawing.Point(15, 100)
+            $addTenantBtn.Size = New-Object System.Drawing.Size(150, 35)
+            $addTenantBtn.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
+            $addTenantBtn.ForeColor = [System.Drawing.Color]::White
+
             # Create Panel for client authentication rows
-            $authPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-            $authPanel.Location = New-Object System.Drawing.Point(15, 105)
-            $authPanel.Size = New-Object System.Drawing.Size(960, 450)
+            $authPanel = New-Object System.Windows.Forms.Panel
+            $authPanel.Location = New-Object System.Drawing.Point(15, 145)
+            $authPanel.Size = New-Object System.Drawing.Size(960, 410)
             $authPanel.AutoScroll = $true
-            $authPanel.WrapContents = $false
-            $authPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
             $authPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-            $authPanel.Padding = New-Object System.Windows.Forms.Padding(5)
-            $authPanel.add_SizeChanged({
-                $rowWidth = [Math]::Max(100, $authPanel.ClientSize.Width - 20)
-                foreach ($row in $authPanel.Controls) {
-                    if ($row -is [System.Windows.Forms.Panel]) {
-                        $row.Width = $rowWidth
-                    }
-                }
-            })
 
             # Store client authentication state and controls
             $script:clientAuthStates = @{}
             $script:clientAuthControls = @{}
             $script:clientCacheDirs = @{}  # Store cache directories for reconnection
-            $clientRowHeight = 50
-            $clientRowSpacing = 5
+            $script:clientTickets = @{}  # Store ConnectWise ticket content per tenant (keyed by ClientNumber)
+            $script:clientReportFolders = @{}  # Store report output folder paths per tenant (keyed by ClientNumber)
+            $script:clientValidatedUsers = @{}  # Store validated user UPNs per tenant (keyed by ClientNumber)
+            $script:clientSearchTerms = @{}  # Store search terms per tenant when validation can't complete (keyed by ClientNumber)
+            $clientRowHeight = 200  # Increased to accommodate all controls including ticket textbox (80px) and view reports button
+            $clientRowSpacing = 10  # Increased spacing between rows
 
-            # Create rows for each client
-            for ($i = 1; $i -le $tenantCount; $i++) {
-                # Row container keeps spacing consistent regardless of tenant count
-                $rowPanel = New-Object System.Windows.Forms.Panel
-                $rowPanel.Height = $clientRowHeight
-                $rowPanel.Width = $authPanel.ClientSize.Width - 20
-                $rowPanel.Margin = New-Object System.Windows.Forms.Padding(0,0,0,$clientRowSpacing)
-                $rowPanel.Padding = New-Object System.Windows.Forms.Padding(0)
-                
-                # Client label - wider to accommodate longer tenant names
-                $clientLabel = New-Object System.Windows.Forms.Label
-                $clientLabel.Text = "Client $i"
-                $clientLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-                $clientLabel.Location = New-Object System.Drawing.Point(10, 15)
-                $clientLabel.Size = New-Object System.Drawing.Size(250, 20)
-                $clientLabel.AutoEllipsis = $true  # Show ellipsis if text is too long
-
-                # Status label
-                $statusLabel = New-Object System.Windows.Forms.Label
-                $statusLabel.Text = "Not Started"
-                $statusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-                $statusLabel.Location = New-Object System.Drawing.Point(270, 15)
-                $statusLabel.Size = New-Object System.Drawing.Size(200, 20)
-                $statusLabel.ForeColor = [System.Drawing.Color]::Gray
-
-                # Graph Auth button
-                $graphAuthBtn = New-Object System.Windows.Forms.Button
-                $graphAuthBtn.Text = "Graph Auth"
-                $graphAuthBtn.Location = New-Object System.Drawing.Point(480, 10)
-                $graphAuthBtn.Size = New-Object System.Drawing.Size(120, 30)
-                $graphAuthBtn.Enabled = ($i -eq 1)  # Only first client enabled initially
-                $graphAuthBtn.Tag = $i
-
-                # Exchange Online Auth button
-                $exchangeAuthBtn = New-Object System.Windows.Forms.Button
-                $exchangeAuthBtn.Text = "Exchange Online Auth"
-                $exchangeAuthBtn.Location = New-Object System.Drawing.Point(610, 10)
-                $exchangeAuthBtn.Size = New-Object System.Drawing.Size(150, 30)
-                $exchangeAuthBtn.Enabled = $false
-                $exchangeAuthBtn.Tag = $i
-
-                # Reset Auth button
-                $resetAuthBtn = New-Object System.Windows.Forms.Button
-                $resetAuthBtn.Text = "Reset Auth"
-                $resetAuthBtn.Location = New-Object System.Drawing.Point(770, 10)
-                $resetAuthBtn.Size = New-Object System.Drawing.Size(100, 30)
-                $resetAuthBtn.Enabled = $true
-                $resetAuthBtn.Tag = $i
-                $resetAuthBtn.ForeColor = [System.Drawing.Color]::DarkRed
-
-                # Add controls to panel
-                $rowPanel.Controls.AddRange(@($clientLabel, $statusLabel, $graphAuthBtn, $exchangeAuthBtn, $resetAuthBtn))
-                $authPanel.Controls.Add($rowPanel)
-
-                # Store controls and state
-                $script:clientAuthStates[$i] = @{
-                    GraphAuthenticated = $false
-                    ExchangeAuthenticated = $false
-                    GraphContext = $null
-                    TenantId = $null
-                    TenantName = $null
-                    Account = $null
-                }
-                $script:clientAuthControls[$i] = @{
-                    ClientLabel = $clientLabel
-                    StatusLabel = $statusLabel
-                    GraphButton = $graphAuthBtn
-                    ExchangeButton = $exchangeAuthBtn
-                    ResetButton = $resetAuthBtn
-                }
-            }
+            # Add controls to form
+            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $authPanel))
 
             # Close button
             $authCloseBtn = New-Object System.Windows.Forms.Button
             $authCloseBtn.Text = "Close"
             $authCloseBtn.Location = New-Object System.Drawing.Point(880, 570)
             $authCloseBtn.Size = New-Object System.Drawing.Size(100, 40)
+            $authCloseBtn.add_Click({
+                # Stop the status update timer first to prevent it from accessing disposed controls
+                try {
+                    if ($statusUpdateTimer -and $statusUpdateTimer.Enabled) {
+                        $statusUpdateTimer.Stop()
+                    }
+                } catch {}
+                
+                # Send exit command to all active PowerShell processes
+                foreach ($clientNum in $script:clientProcesses.Keys) {
+                    try {
+                        Send-CommandToSession -ClientNumber $clientNum -Command "EXIT" -TimeoutSeconds 5 | Out-Null
+                        Start-Sleep -Milliseconds 500
+                        $proc = $script:clientProcesses[$clientNum]
+                        if ($proc -and -not $proc.HasExited) {
+                            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch {}
+                }
+                
+                # Close the form using DialogResult to properly close modal dialog
+                try {
+                    $authConsoleForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+                } catch {
+                    # Fallback to Close() if DialogResult fails
+                    try {
+                        $authConsoleForm.Close()
+                    } catch {}
+                }
+            })
+            $authConsoleForm.Controls.Add($authCloseBtn)
 
             # Status text box
             $authStatusTextBox = New-Object System.Windows.Forms.TextBox
             $authStatusTextBox.Multiline = $true
             $authStatusTextBox.ReadOnly = $true
             $authStatusTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-            $authStatusTextBox.Location = New-Object System.Drawing.Point(15, 620)
-            $authStatusTextBox.Size = New-Object System.Drawing.Size(965, 30)
-            $authStatusTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+            $authStatusTextBox.Location = New-Object System.Drawing.Point(15, 650)
+            $authStatusTextBox.Size = New-Object System.Drawing.Size(965, 80)
+            $authStatusTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Top
             
             # Store in script scope for closure access
             $script:authStatusTextBox = $authStatusTextBox
@@ -6899,6 +7383,1381 @@ if (Test-Path `$ReportSelectionsFile) {
             $script:company = $company
             $script:days = $days
             $script:reportSelections = $reportSelections
+            $script:workerScriptFile = $workerScriptFile
+            $script:reportSelectionsFile = $reportSelectionsFile
+            $script:authPanel = $authPanel
+
+            # Function to search and validate users
+            function Search-AndValidateUsers {
+                param(
+                    [string]$SearchTerms,
+                    [object]$StatusLabel
+                )
+                
+                if ([string]::IsNullOrWhiteSpace($SearchTerms)) {
+                    return @()
+                }
+                
+                # Parse comma-separated search terms
+                $searchTerms = $SearchTerms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                
+                if ($searchTerms.Count -eq 0) {
+                    return @()
+                }
+                
+                $allFoundUsers = @()
+                
+                # Check if Graph is connected
+                try {
+                    $null = Get-MgContext -ErrorAction Stop
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Please connect to Microsoft Graph first to validate users.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return @()
+                }
+                
+                if ($StatusLabel) {
+                    $StatusLabel.Text = "Searching for users..."
+                }
+                
+                # Search for each term individually and combine results
+                foreach ($searchTerm in $searchTerms) {
+                    Write-Host "Searching for users matching: '$searchTerm'"
+                    
+                    $users = @()
+                    try {
+                        # Try server-side filtering first (startsWith) - case-sensitive but we'll also try case variations
+                        # Microsoft Graph OData filters are case-sensitive, so try both original and lowercase
+                        $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                        $searchTermLower = $searchTerm.ToLower()
+                        $searchTermUpper = $searchTerm.ToUpper()
+                        $searchTermTitle = (Get-Culture).TextInfo.ToTitleCase($searchTermLower)
+                        $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                        $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                        $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                        $users = @($users1) + @($users2) + @($users3) + @($users4) | Sort-Object UserPrincipalName -Unique
+                        Write-Host "  Found $($users.Count) users with startsWith filter (tried multiple case variations)"
+                    } catch {
+                        Write-Host "  startsWith filter failed: $($_.Exception.Message), trying alternatives..."
+                    }
+                    
+                    if ($users.Count -eq 0) {
+                        # Try alternative search methods
+                        try {
+                            # Try exact match (case-sensitive first, then variations)
+                            $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            $usersAlt1 = $usersAlt1 | Sort-Object UserPrincipalName -Unique
+                            Write-Host "  Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
+                            
+                            $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            $usersAlt2 = $usersAlt2 | Sort-Object UserPrincipalName -Unique
+                            Write-Host "  Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
+                            
+                            # Try case-insensitive search by getting all users and filtering client-side
+                            Write-Host "  Fetching all users for client-side filtering..."
+                            try {
+                                $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
+                                Write-Host "  Retrieved $($allUsers.Count) total users from tenant"
+                                
+                                # Use case-insensitive matching with -ilike
+                                $searchTermPattern = "*$searchTerm*"
+                                $usersAlt3 = $allUsers | Where-Object { 
+                                    ($_.DisplayName -and $_.DisplayName -ilike $searchTermPattern) -or 
+                                    ($_.UserPrincipalName -and $_.UserPrincipalName -ilike $searchTermPattern)
+                                }
+                                Write-Host "  Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users matching '$searchTerm'"
+                                
+                                # Show sample matches for debugging
+                                if ($usersAlt3.Count -gt 0 -and $usersAlt3.Count -le 5) {
+                                    Write-Host "  Sample matches:" -ForegroundColor Gray
+                                    foreach ($u in $usersAlt3) {
+                                        Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                                    }
+                                } elseif ($usersAlt3.Count -gt 5) {
+                                    Write-Host "  Sample matches (first 5):" -ForegroundColor Gray
+                                    foreach ($u in ($usersAlt3 | Select-Object -First 5)) {
+                                        Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                                    }
+                                }
+                            } catch {
+                                Write-Host "  Failed to retrieve all users for client-side filtering: $($_.Exception.Message)" -ForegroundColor Yellow
+                                $usersAlt3 = @()
+                            }
+                            
+                            # Combine all results
+                            $users = @($usersAlt1) + @($usersAlt2) + @($usersAlt3) | Sort-Object UserPrincipalName -Unique
+                            Write-Host "  Combined alternative searches: Found $($users.Count) users"
+                        } catch {
+                            Write-Host "  Alternative searches also failed: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    } else {
+                        # Show sample matches for startsWith results too
+                        if ($users.Count -gt 0 -and $users.Count -le 5) {
+                            Write-Host "  Sample matches:" -ForegroundColor Gray
+                            foreach ($u in $users) {
+                                Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                            }
+                        } elseif ($users.Count -gt 5) {
+                            Write-Host "  Sample matches (first 5):" -ForegroundColor Gray
+                            foreach ($u in ($users | Select-Object -First 5)) {
+                                Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
+                            }
+                        }
+                    }
+                    
+                    # Add found users to the collection (will deduplicate later)
+                    if ($users.Count -gt 0) {
+                        $allFoundUsers += $users
+                    }
+                }
+                
+                # Remove duplicates based on UserPrincipalName
+                $uniqueUsers = $allFoundUsers | Sort-Object UserPrincipalName -Unique
+                
+                Write-Host "Total unique users found: $($uniqueUsers.Count)"
+                
+                # Return array of UserPrincipalNames
+                return ($uniqueUsers | ForEach-Object { $_.UserPrincipalName })
+            }
+            
+            # Function to add a new tenant dynamically
+            function Add-NewTenant {
+                param([int]$ClientNumber)
+                
+                # Launch PowerShell process for this client
+                $statusFile = Join-Path $script:tempDir "Client${ClientNumber}_Status.txt"
+                $resultFile = Join-Path $script:tempDir "Client${ClientNumber}_Result.txt"
+                
+                # Build process arguments
+                $processArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$script:workerScriptFile`" -ClientNumber $ClientNumber -ScriptRoot `"$PSScriptRoot`" -InvestigatorName `"$script:investigator`" -CompanyName `"$script:company`" -DaysBack $script:days -ReportSelectionsFile `"$script:reportSelectionsFile`" -StatusFile `"$statusFile`" -ResultFile `"$resultFile`" -CommandDir `"$script:commandDir`""
+
+                try {
+                    # Try PowerShell 7 (pwsh.exe) first, fall back to Windows PowerShell (powershell.exe)
+                    $psExe = "pwsh.exe"
+                    if (-not (Get-Command $psExe -ErrorAction SilentlyContinue)) {
+                        $psExe = "powershell.exe"
+                    }
+
+                    # Use Normal window style so users can see progress
+                    $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Normal
+                    $script:clientProcesses[$ClientNumber] = $process
+                    Write-Host "Launched Client $ClientNumber PowerShell window (PID: $($process.Id))" -ForegroundColor Green
+                    $script:authStatusTextBox.AppendText("Launched Client $ClientNumber PowerShell window (PID: $($process.Id))`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    
+                    # Wait a moment for PowerShell session to initialize
+                    Start-Sleep -Seconds 2
+                    
+                    # Verify process is still running
+                    try {
+                        $procCheck = Get-Process -Id $process.Id -ErrorAction Stop
+                        Write-Host "  Process verified running" -ForegroundColor Green
+                    } catch {
+                        Write-Host "  WARNING: Process may have exited immediately!" -ForegroundColor Yellow
+                        $script:authStatusTextBox.AppendText("WARNING: Client $ClientNumber process may have exited immediately!`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                        return $false
+                    }
+                    
+                    # Start monitoring status file for readiness
+                    $statusFile = Join-Path $script:tempDir "Client${ClientNumber}_Status.txt"
+                    $readinessTimer = New-Object System.Windows.Forms.Timer
+                    $readinessTimer.Interval = 1000  # Check every second
+                    if (-not $script:readinessCheckCount) {
+                        $script:readinessCheckCount = @{}
+                    }
+                    $script:readinessCheckCount[$ClientNumber] = 0
+                    $maxReadinessChecks = 60  # Wait up to 60 seconds for readiness
+                    $capturedClientNum = $ClientNumber
+                    
+                    $readinessTimer.add_Tick({
+                        try {
+                            $clientNum = $capturedClientNum
+                            if (-not $clientNum) {
+                                try { $readinessTimer.Stop(); $readinessTimer.Dispose() } catch {}
+                                return
+                            }
+                            
+                            # Ensure hashtable exists
+                            if (-not $script:readinessCheckCount) {
+                                $script:readinessCheckCount = @{}
+                            }
+                            
+                            # Ensure key exists before accessing
+                            if (-not $script:readinessCheckCount.ContainsKey($clientNum)) {
+                                $script:readinessCheckCount[$clientNum] = 0
+                            }
+                            
+                            $script:readinessCheckCount[$clientNum]++
+                            $checkCount = $script:readinessCheckCount[$clientNum]
+                            
+                            if (-not $script:clientAuthControls -or -not $script:clientAuthControls.ContainsKey($clientNum)) {
+                                try { $readinessTimer.Stop(); $readinessTimer.Dispose() } catch {}
+                                return
+                            }
+                            
+                            $controls = $script:clientAuthControls[$clientNum]
+                            if (-not $controls) {
+                                try { $readinessTimer.Stop(); $readinessTimer.Dispose() } catch {}
+                                return
+                            }
+                            
+                            $statusFilePath = Join-Path $script:tempDir "Client${clientNum}_Status.txt"
+                        
+                        if (Test-Path $statusFilePath) {
+                            try {
+                                $statusLines = Get-Content $statusFilePath -Tail 5 -ErrorAction SilentlyContinue
+                                $readyFound = $false
+                                
+                                foreach ($line in $statusLines) {
+                                    # Check for "Command polling loop started" - this means the loop is actually running
+                                    # Also check for "Ready!" as fallback
+                                    # Status file format: [timestamp] Message
+                                    if ($line -match "Command polling loop started|Ready!.*Waiting for Graph Auth|Modules imported successfully") {
+                                        $readyFound = $true
+                                        break
+                                    }
+                                }
+                                
+                                if ($readyFound) {
+                                    # Wait an additional 2 seconds to ensure the polling loop is fully started and ready
+                                    Start-Sleep -Seconds 2
+                                    
+                                    # Double-check that the worker script is still running
+                                    if ($script:clientProcesses.ContainsKey($clientNum)) {
+                                        $proc = $script:clientProcesses[$clientNum]
+                                        try {
+                                            $procInfo = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+                                            if (-not $procInfo -or $procInfo.HasExited) {
+                                                if ($script:authStatusTextBox) {
+                                                    $script:authStatusTextBox.AppendText("WARNING: Client $clientNum PowerShell process has exited!`r`n")
+                                                    $script:authStatusTextBox.ScrollToCaret()
+                                                }
+                                                try {
+                                                    $readinessTimer.Stop()
+                                                    $readinessTimer.Dispose()
+                                                } catch {}
+                                                return
+                                            }
+                                        } catch {}
+                                    }
+                                    
+                                    # Worker script is ready - enable Graph Auth button
+                                    if ($controls -and $controls.GraphButton) {
+                                        $controls.GraphButton.Enabled = $true
+                                        $controls.GraphButton.Text = "Graph Auth"
+                                    }
+                                    if ($controls -and $controls.StatusLabel) {
+                                        $controls.StatusLabel.Text = "Ready for Graph Auth"
+                                        $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
+                                    }
+                                    if ($script:authStatusTextBox) {
+                                        $script:authStatusTextBox.AppendText("Client $clientNum is ready for authentication (polling loop confirmed running).`r`n")
+                                        $script:authStatusTextBox.ScrollToCaret()
+                                    }
+                                    [System.Windows.Forms.Application]::DoEvents()
+                                    try {
+                                        $readinessTimer.Stop()
+                                        $readinessTimer.Dispose()
+                                    } catch {}
+                                    return
+                                }
+                            } catch {
+                                # Silently ignore errors reading status file
+                            }
+                        }
+                        
+                        # Update status to show we're waiting
+                        if ($checkCount % 5 -eq 0) {
+                            if ($controls -and $controls.StatusLabel) {
+                                $controls.StatusLabel.Text = "Initializing... ($checkCount s)"
+                                [System.Windows.Forms.Application]::DoEvents()
+                            }
+                        }
+                        
+                        # Timeout after max checks
+                        if ($checkCount -ge $maxReadinessChecks) {
+                            if ($controls -and $controls.GraphButton) {
+                                $controls.GraphButton.Enabled = $true
+                                $controls.GraphButton.Text = "Graph Auth"
+                            }
+                            if ($controls -and $controls.StatusLabel) {
+                                $controls.StatusLabel.Text = "Ready (timeout)"
+                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Orange
+                            }
+                            if ($script:authStatusTextBox) {
+                                $script:authStatusTextBox.AppendText("Client $clientNum readiness check timed out, but enabling Graph Auth button anyway.`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                            }
+                            [System.Windows.Forms.Application]::DoEvents()
+                            try {
+                                $readinessTimer.Stop()
+                                $readinessTimer.Dispose()
+                            } catch {}
+                        }
+                        } catch {
+                            # Silently handle any errors in the timer handler to prevent crashes
+                            try {
+                                if ($readinessTimer) {
+                                    $readinessTimer.Stop()
+                                    $readinessTimer.Dispose()
+                                }
+                            } catch {}
+                        }
+                    })
+                    
+                    $readinessTimer.Start()
+                } catch {
+                    $errorMsg = "Failed to launch Client $ClientNumber - $($_.Exception.Message)"
+                    Write-Host $errorMsg -ForegroundColor Red
+                    $script:authStatusTextBox.AppendText("ERROR: $errorMsg`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    return $false
+                }
+                
+                # Create UI row for this client
+                $clientRowHeight = 200  # Increased to accommodate all controls including ticket textbox (80px) and view reports button
+                $clientRowSpacing = 10  # Increased spacing between rows
+                $existingRows = ($script:clientAuthControls.Keys | Measure-Object).Count
+                $yPos = $existingRows * ($clientRowHeight + $clientRowSpacing) + 10
+                
+                # Client label
+                $clientLabel = New-Object System.Windows.Forms.Label
+                $clientLabel.Text = "Client $ClientNumber"
+                $clientLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+                $clientLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 15))
+                $clientLabel.Size = New-Object System.Drawing.Size(250, 20)
+                $clientLabel.AutoEllipsis = $true
+
+                # Status label
+                $statusLabel = New-Object System.Windows.Forms.Label
+                $statusLabel.Text = "Initializing..."
+                $statusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+                $statusLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 15))
+                $statusLabel.Size = New-Object System.Drawing.Size(200, 20)
+                $statusLabel.ForeColor = [System.Drawing.Color]::Gray
+
+                # Warning label (for license issues, etc.)
+                $warningLabel = New-Object System.Windows.Forms.Label
+                $warningLabel.Text = ""
+                $warningLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Bold)
+                $warningLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 35))
+                $warningLabel.Size = New-Object System.Drawing.Size(600, 15)
+                $warningLabel.ForeColor = [System.Drawing.Color]::Orange
+                $warningLabel.Visible = $false
+                $warningLabel.AutoEllipsis = $true
+
+                # Graph Auth button (disabled until worker script is ready)
+                $graphAuthBtn = New-Object System.Windows.Forms.Button
+                $graphAuthBtn.Text = "Graph Auth (Waiting...)"
+                $graphAuthBtn.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
+                $graphAuthBtn.Size = New-Object System.Drawing.Size(120, 30)
+                $graphAuthBtn.Enabled = $false  # Disabled until worker script is ready
+                $graphAuthBtn.Tag = $ClientNumber
+
+                # Exchange Online Auth button
+                $exchangeAuthBtn = New-Object System.Windows.Forms.Button
+                $exchangeAuthBtn.Text = "Exchange Online Auth"
+                $exchangeAuthBtn.Location = New-Object System.Drawing.Point(610, ($yPos + 10))
+                $exchangeAuthBtn.Size = New-Object System.Drawing.Size(150, 30)
+                $exchangeAuthBtn.Enabled = $false
+                $exchangeAuthBtn.Tag = $ClientNumber
+
+                # Remove Tenant button
+                $removeTenantBtn = New-Object System.Windows.Forms.Button
+                $removeTenantBtn.Text = "Remove"
+                $removeTenantBtn.Location = New-Object System.Drawing.Point(770, ($yPos + 10))
+                $removeTenantBtn.Size = New-Object System.Drawing.Size(80, 30)
+                $removeTenantBtn.Enabled = $true
+                $removeTenantBtn.Tag = $ClientNumber
+                $removeTenantBtn.ForeColor = [System.Drawing.Color]::DarkRed
+
+                # Reset Auth button
+                $resetAuthBtn = New-Object System.Windows.Forms.Button
+                $resetAuthBtn.Text = "Reset Auth"
+                $resetAuthBtn.Location = New-Object System.Drawing.Point(860, ($yPos + 10))
+                $resetAuthBtn.Size = New-Object System.Drawing.Size(100, 30)
+                $resetAuthBtn.Enabled = $true
+                $resetAuthBtn.Tag = $ClientNumber
+                $resetAuthBtn.ForeColor = [System.Drawing.Color]::DarkRed
+
+                # User Filtering Checkbox (shown after Graph Auth, on second row)
+                $userFilterCheckBox = New-Object System.Windows.Forms.CheckBox
+                $userFilterCheckBox.Text = "Filter by users"
+                $userFilterCheckBox.Location = New-Object System.Drawing.Point(10, ($yPos + 50))
+                $userFilterCheckBox.Size = New-Object System.Drawing.Size(100, 20)
+                $userFilterCheckBox.Enabled = $false  # Enabled after Graph Auth
+                $userFilterCheckBox.Visible = $false  # Shown after Graph Auth
+                $userFilterCheckBox.Tag = $ClientNumber
+
+                # User Search TextBox
+                $userSearchTextBox = New-Object System.Windows.Forms.TextBox
+                $userSearchTextBox.Location = New-Object System.Drawing.Point(120, ($yPos + 48))
+                $userSearchTextBox.Size = New-Object System.Drawing.Size(200, 20)
+                $userSearchTextBox.Enabled = $false
+                $userSearchTextBox.Visible = $false
+                $userSearchTextBox.Tag = $ClientNumber
+
+                # Validate Users Button
+                $validateUsersBtn = New-Object System.Windows.Forms.Button
+                $validateUsersBtn.Text = "Validate"
+                $validateUsersBtn.Location = New-Object System.Drawing.Point(330, ($yPos + 47))
+                $validateUsersBtn.Size = New-Object System.Drawing.Size(70, 25)
+                $validateUsersBtn.Enabled = $false
+                $validateUsersBtn.Visible = $false
+                $validateUsersBtn.Tag = $ClientNumber
+
+                # User Validation Status Label
+                $userValidationLabel = New-Object System.Windows.Forms.Label
+                $userValidationLabel.Text = ""
+                $userValidationLabel.Location = New-Object System.Drawing.Point(410, ($yPos + 50))
+                $userValidationLabel.Size = New-Object System.Drawing.Size(200, 15)
+                $userValidationLabel.ForeColor = [System.Drawing.Color]::Blue
+                $userValidationLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+                $userValidationLabel.Visible = $false
+
+                # Generate Reports button (shown after Exchange Auth)
+                $generateReportsBtn = New-Object System.Windows.Forms.Button
+                $generateReportsBtn.Text = "Generate Reports"
+                $generateReportsBtn.Location = New-Object System.Drawing.Point(760, ($yPos + 47))
+                $generateReportsBtn.Size = New-Object System.Drawing.Size(140, 25)
+                $generateReportsBtn.Enabled = $false
+                $generateReportsBtn.Visible = $false
+                $generateReportsBtn.Tag = $ClientNumber
+                $generateReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
+                $generateReportsBtn.ForeColor = [System.Drawing.Color]::White
+
+                # ConnectWise Ticket Label
+                $ticketLabel = New-Object System.Windows.Forms.Label
+                $ticketLabel.Text = "ConnectWise Ticket(s):"
+                $ticketLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 75))
+                $ticketLabel.Size = New-Object System.Drawing.Size(150, 20)
+                $ticketLabel.Enabled = $false
+                $ticketLabel.Visible = $false  # Shown after Exchange Auth
+                $ticketLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+
+                # ConnectWise Ticket TextBox (multiline)
+                $ticketTextBox = New-Object System.Windows.Forms.TextBox
+                $ticketTextBox.Multiline = $true
+                $ticketTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+                $ticketTextBox.Location = New-Object System.Drawing.Point(170, ($yPos + 73))
+                $ticketTextBox.Size = New-Object System.Drawing.Size(400, 80)
+                $ticketTextBox.Enabled = $false
+                $ticketTextBox.Visible = $false  # Shown after Exchange Auth
+                $ticketTextBox.Tag = $ClientNumber
+                $ticketTextBox.ShortcutsEnabled = $true
+                $ticketTextBox.AcceptsReturn = $true
+                $ticketTextBox.AcceptsTab = $false
+
+                # View Reports button (shown after report generation completes)
+                $viewReportsBtn = New-Object System.Windows.Forms.Button
+                $viewReportsBtn.Text = "View Reports"
+                $viewReportsBtn.Location = New-Object System.Drawing.Point(760, ($yPos + 160))
+                $viewReportsBtn.Size = New-Object System.Drawing.Size(140, 25)
+                $viewReportsBtn.Enabled = $false
+                $viewReportsBtn.Visible = $false
+                $viewReportsBtn.Tag = $ClientNumber
+                $viewReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
+                $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
+
+                # Ticket Numbers Detected Label
+                $ticketNumbersLabel = New-Object System.Windows.Forms.Label
+                $ticketNumbersLabel.Text = ""
+                $ticketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($yPos + 73))
+                $ticketNumbersLabel.Size = New-Object System.Drawing.Size(200, 15)
+                $ticketNumbersLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+                $ticketNumbersLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+                $ticketNumbersLabel.Visible = $false
+
+                # Add controls to panel
+                $script:authPanel.Controls.AddRange(@($clientLabel, $statusLabel, $warningLabel, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $viewReportsBtn))
+
+                # Store controls and state
+                $script:clientAuthStates[$ClientNumber] = @{
+                    GraphAuthenticated = $false
+                    ExchangeAuthenticated = $false
+                    GraphContext = $null
+                    TenantId = $null
+                    TenantName = $null
+                    Account = $null
+                }
+                $script:clientAuthControls[$ClientNumber] = @{
+                    ClientLabel = $clientLabel
+                    StatusLabel = $statusLabel
+                    WarningLabel = $warningLabel
+                    GraphButton = $graphAuthBtn
+                    ExchangeButton = $exchangeAuthBtn
+                    RemoveButton = $removeTenantBtn
+                    ResetButton = $resetAuthBtn
+                    UserFilterCheckBox = $userFilterCheckBox
+                    UserSearchTextBox = $userSearchTextBox
+                    ValidateUsersButton = $validateUsersBtn
+                    UserValidationLabel = $userValidationLabel
+                    GenerateReportsButton = $generateReportsBtn
+                    TicketLabel = $ticketLabel
+                    TicketTextBox = $ticketTextBox
+                    TicketNumbersLabel = $ticketNumbersLabel
+                    ViewReportsButton = $viewReportsBtn
+                }
+                
+                # View Reports button handler
+                $capturedClientNumForView = $ClientNumber
+                $viewReportsBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNumForView }
+                    
+                    if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                        $reportFolder = $script:clientReportFolders[$clientNum]
+                        if ($reportFolder) {
+                            $reportFolder = $reportFolder.Trim()
+                            if (Test-Path $reportFolder) {
+                                Start-Process explorer.exe -ArgumentList "`"$reportFolder`""
+                            } else {
+                                [System.Windows.Forms.MessageBox]::Show("Report folder not found: $reportFolder", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                            }
+                        } else {
+                            [System.Windows.Forms.MessageBox]::Show("Report folder path is empty for Client $clientNum", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        }
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show("No report folder available for Client $clientNum", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    }
+                })
+                
+                # Add event handler to extract ticket numbers when text changes
+                $capturedClientNumForTicket = $ClientNumber
+                $ticketTextBox.add_TextChanged({
+                    try {
+                        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                        if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
+                            $ticketContent = $this.Text
+                            if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                                $ticketNums = Extract-TicketNumbers -TicketContent $ticketContent
+                                if ($ticketNums -and $ticketNums.Count -gt 0) {
+                                    $ticketNumsStr = ($ticketNums | ForEach-Object { "#$_" }) -join ', '
+                                    $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Text = "Detected: $ticketNumsStr"
+                                    $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Visible = $true
+                                } else {
+                                    $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Text = ""
+                                    $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Visible = $false
+                                }
+                            } else {
+                                $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Text = ""
+                                $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Visible = $false
+                            }
+                        }
+                    } catch {
+                        # Ignore errors
+                    }
+                })
+                
+                # Update panel height to accommodate new row (accounting for user filtering row, warning label, and ticket controls)
+                $newHeight = ($existingRows + 1) * ($clientRowHeight + $clientRowSpacing) + 100  # Extra space for user filtering row, warning label, and ticket controls
+                if ($newHeight -gt 420) {
+                    $script:authPanel.AutoScroll = $true
+                }
+                
+                # Wire up button handlers
+                $capturedClientNum = $ClientNumber
+                
+                # User Filter Checkbox handler
+                $userFilterCheckBox.add_CheckedChanged({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    $controls = $script:clientAuthControls[$clientNum]
+                    if ($controls) {
+                        $controls.UserSearchTextBox.Enabled = $this.Checked
+                        $controls.ValidateUsersButton.Enabled = $this.Checked
+                        if (-not $this.Checked) {
+                            $controls.UserSearchTextBox.Text = ""
+                            $controls.UserValidationLabel.Text = ""
+                            if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                                $script:clientValidatedUsers.Remove($clientNum)
+                            }
+                        }
+                    }
+                })
+                
+                # Validate Users button handler (per tenant)
+                $validateUsersBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    $controls = $script:clientAuthControls[$clientNum]
+                    
+                    if (-not $controls -or [string]::IsNullOrWhiteSpace($controls.UserSearchTextBox.Text)) {
+                        [System.Windows.Forms.MessageBox]::Show("Please enter user search terms.", "No Search Terms", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        return
+                    }
+                    
+                    # Check if Graph is connected for this tenant
+                    if (-not $script:clientAuthStates[$clientNum].GraphAuthenticated) {
+                        [System.Windows.Forms.MessageBox]::Show("Please complete Graph authentication first.", "Not Authenticated", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        return
+                    }
+                    
+                    try {
+                        $this.Enabled = $false
+                        $controls.UserValidationLabel.Text = "Validating..."
+                        $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Blue
+                        [System.Windows.Forms.Application]::DoEvents()
+                        
+                        # Send VALIDATE_USERS command to worker script (which has the Graph context)
+                        $searchTerms = $controls.UserSearchTextBox.Text
+                        $searchTermsArray = ($searchTerms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
+                        
+                        $command = "VALIDATE_USERS|SEARCH_TERMS:$searchTermsJson"
+                        Write-Host "Sending VALIDATE_USERS command to Client $clientNum with search terms: $searchTerms" -ForegroundColor Cyan
+                        $script:authStatusTextBox.AppendText("Client $clientNum : Validating users: $searchTerms`r`n")
+                        
+                        $response = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 60
+                        
+                        # If we got VALIDATE_USERS_STARTED, continue polling for the final result
+                        if ($response -eq "VALIDATE_USERS_STARTED") {
+                            $script:authStatusTextBox.AppendText("Client $clientNum : User validation started. Searching...`r`n")
+                            $script:authStatusTextBox.ScrollToCaret()
+                            [System.Windows.Forms.Application]::DoEvents()
+                            
+                            # Continue polling the response file for the final result
+                            $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                            $startTime = Get-Date
+                            $finalResponse = $null
+                            $pollCount = 0
+                            
+                            while (((Get-Date) - $startTime).TotalSeconds -lt 60) {
+                                $pollCount++
+                                $elapsedSeconds = [int]((Get-Date) - $startTime).TotalSeconds
+                                
+                                # Update status every 5 seconds
+                                if ($pollCount % 25 -eq 0) {
+                                    $statusMsg = "Validating users... (${elapsedSeconds}s elapsed)"
+                                    $controls.UserValidationLabel.Text = $statusMsg
+                                    $script:authStatusTextBox.AppendText("Client ${clientNum}: $statusMsg`r`n")
+                                    $script:authStatusTextBox.ScrollToCaret()
+                                    [System.Windows.Forms.Application]::DoEvents()
+                                }
+                                
+                                if (Test-Path $responseFile) {
+                                    Start-Sleep -Milliseconds 200
+                                    try {
+                                        $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                        # Check if we got a final response (not VALIDATE_USERS_STARTED)
+                                        if ($finalResponse -and $finalResponse -ne "VALIDATE_USERS_STARTED" -and $finalResponse -notmatch "^VALIDATE_USERS_STARTED") {
+                                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Final validation response received`r`n")
+                                            $script:authStatusTextBox.ScrollToCaret()
+                                            [System.Windows.Forms.Application]::DoEvents()
+                                            $response = $finalResponse
+                                            break
+                                        }
+                                    } catch {}
+                                }
+                                Start-Sleep -Milliseconds 200
+                                [System.Windows.Forms.Application]::DoEvents()
+                            }
+                            
+                            if (-not $finalResponse -or $finalResponse -eq "VALIDATE_USERS_STARTED") {
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Timeout waiting for user validation response.`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                $controls.UserValidationLabel.Text = "Validation timeout"
+                                $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                                [System.Windows.Forms.MessageBox]::Show("Timeout waiting for user validation response for Client $clientNum.", "Validation Timeout", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                                return
+                            }
+                        }
+                        
+                        if ($response -match "^VALIDATE_USERS_SUCCESS:(.+)$") {
+                            $responseJson = $Matches[1]
+                            try {
+                                $result = $responseJson | ConvertFrom-Json
+                                
+                                if ($result.Success -and $result.UserCount -gt 0) {
+                                    $validatedUsers = if ($result.Users -is [array]) { $result.Users } else { @($result.Users) }
+                                    $script:clientValidatedUsers[$clientNum] = $validatedUsers
+                                    $controls.UserValidationLabel.Text = "Validated: $($validatedUsers.Count) user(s)"
+                                    $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Green
+                                    $script:authStatusTextBox.AppendText("Client $clientNum : Found $($validatedUsers.Count) user(s)`r`n")
+                                    [System.Windows.Forms.MessageBox]::Show("Found and validated $($validatedUsers.Count) user(s) for Client $clientNum :`n`n$($validatedUsers -join "`n")", "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                                } else {
+                                    if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                                        $script:clientValidatedUsers.Remove($clientNum)
+                                    }
+                                    $controls.UserValidationLabel.Text = "No users found"
+                                    $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                                    $message = if ($result.Message) { $result.Message } else { "No users found matching the search terms." }
+                                    $script:authStatusTextBox.AppendText("Client $clientNum : $message`r`n")
+                                    [System.Windows.Forms.MessageBox]::Show("$message for Client $clientNum.", "No Users Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                                }
+                            } catch {
+                                Write-Host "Failed to parse validation response: $($_.Exception.Message)" -ForegroundColor Red
+                                $controls.UserValidationLabel.Text = "Validation failed"
+                                $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                                [System.Windows.Forms.MessageBox]::Show("Error parsing validation response for Client $clientNum : $($_.Exception.Message)", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                            }
+                        } elseif ($response -match "^VALIDATE_USERS_FAILED:(.+)$") {
+                            $errorMsg = $Matches[1]
+                            Write-Host "Validation failed: $errorMsg" -ForegroundColor Red
+                            if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                                $script:clientValidatedUsers.Remove($clientNum)
+                            }
+                            $controls.UserValidationLabel.Text = "Validation failed"
+                            $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                            $script:authStatusTextBox.AppendText("Client $clientNum : Validation failed - $errorMsg`r`n")
+                            [System.Windows.Forms.MessageBox]::Show("Validation failed for Client $clientNum : $errorMsg", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        } else {
+                            Write-Host "Unexpected response from validation command: $response" -ForegroundColor Yellow
+                            if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                                $script:clientValidatedUsers.Remove($clientNum)
+                            }
+                            $controls.UserValidationLabel.Text = "Validation failed"
+                            $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                            [System.Windows.Forms.MessageBox]::Show("Unexpected response from validation command for Client $clientNum.", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        }
+                    } catch {
+                        if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                            $script:clientValidatedUsers.Remove($clientNum)
+                        }
+                        $controls.UserValidationLabel.Text = "Validation failed"
+                        $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Red
+                        [System.Windows.Forms.MessageBox]::Show("Error validating users for Client $clientNum : $($_.Exception.Message)", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    } finally {
+                        $this.Enabled = $userFilterCheckBox.Checked
+                    }
+                })
+                
+                # Generate Reports button handler
+                $generateReportsBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    
+                    # Check if both authentications are complete
+                    if (-not $script:clientAuthStates[$clientNum].GraphAuthenticated -or -not $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                        [System.Windows.Forms.MessageBox]::Show("Please complete both Graph and Exchange authentication first.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        return
+                    }
+                    
+                    # Check if user filtering is enabled
+                    $controls = $script:clientAuthControls[$clientNum]
+                    if ($controls.UserFilterCheckBox.Checked) {
+                        # Check if users were validated OR if search terms are stored for validation during export
+                        $hasValidatedUsers = $script:clientValidatedUsers.ContainsKey($clientNum) -and $script:clientValidatedUsers[$clientNum].Count -gt 0
+                        $hasSearchTerms = $script:clientSearchTerms.ContainsKey($clientNum) -and -not [string]::IsNullOrWhiteSpace($script:clientSearchTerms[$clientNum])
+                        
+                        Write-Host "Generate Reports: Client $clientNum - HasValidatedUsers: $hasValidatedUsers, HasSearchTerms: $hasSearchTerms" -ForegroundColor Cyan
+                        
+                        if (-not $hasValidatedUsers -and -not $hasSearchTerms) {
+                            Write-Host "Generate Reports: No validated users and no search terms - showing warning dialog" -ForegroundColor Yellow
+                            $result = [System.Windows.Forms.MessageBox]::Show("User filtering is enabled but no users have been validated. Do you want to proceed without filtering?", "No Users Validated", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+                            if ($result -eq [System.Windows.Forms.DialogResult]::No) {
+                                Write-Host "Generate Reports: User clicked No - canceling report generation" -ForegroundColor Yellow
+                                $script:authStatusTextBox.AppendText("Client $clientNum : Report generation canceled. Please validate users or disable filtering.`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                [System.Windows.Forms.Application]::DoEvents()
+                                return  # Exit the function - do not proceed with report generation
+                            }
+                            # User clicked Yes - proceed without filtering
+                            Write-Host "Generate Reports: User clicked Yes - proceeding without user filtering" -ForegroundColor Green
+                        }
+                    }
+                    
+                    # Get ticket content and extract ticket numbers
+                    $ticketContent = $script:clientAuthControls[$clientNum].TicketTextBox.Text
+                    $ticketNumbers = @()
+                    $filteredTicketContent = ''
+                    
+                    if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                        try {
+                            Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                            if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
+                                $ticketNumbers = Extract-TicketNumbers -TicketContent $ticketContent
+                            }
+                            if (Get-Command Filter-TicketContent -ErrorAction SilentlyContinue) {
+                                $filteredTicketContent = Filter-TicketContent -TicketContent $ticketContent
+                            } else {
+                                $filteredTicketContent = $ticketContent
+                            }
+                        } catch {
+                            Write-Warning "Failed to process ticket content: $($_.Exception.Message)"
+                            $filteredTicketContent = $ticketContent
+                        }
+                    }
+                    
+                    # Store ticket data
+                    if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
+                        $script:clientTickets[$clientNum] = @{
+                            Content = $filteredTicketContent
+                            TicketNumbers = $ticketNumbers
+                        }
+                    }
+                    
+                    # Get validated users or search terms
+                    $selectedUsers = @()
+                    if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                        $selectedUsers = $script:clientValidatedUsers[$clientNum]
+                    } elseif ($script:clientSearchTerms.ContainsKey($clientNum)) {
+                        # If search terms exist but not validated, send GENERATE_REPORTS_SEARCH command
+                        $searchTerms = $script:clientSearchTerms[$clientNum]
+                        if (-not [string]::IsNullOrWhiteSpace($searchTerms)) {
+                            # Parse search terms (comma-separated) into array
+                            $searchTermsArray = @()
+                            if ($searchTerms -match ',') {
+                                $searchTermsArray = ($searchTerms -split ',' | ForEach-Object { $_.Trim() }) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                            } else {
+                                $searchTermsArray = @($searchTerms.Trim())
+                            }
+                            # Convert to JSON array for proper parsing (ensure it's always an array, not a string)
+                            $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
+                            # Ensure it's a JSON array (not a string) - if ConvertTo-Json returned a string, wrap it
+                            if ($searchTermsJson -notmatch '^\[') {
+                                $searchTermsJson = "[$searchTermsJson]"
+                            }
+                            $command = "GENERATE_REPORTS_SEARCH:$searchTermsJson"
+                            if ($ticketNumbers.Count -gt 0) {
+                                # Ensure ticketNumbers is always an array for JSON serialization
+                                $ticketNumsArray = if ($ticketNumbers -is [array]) { $ticketNumbers } else { @($ticketNumbers) }
+                                $ticketDataJson = @{
+                                    TicketNumbers = $ticketNumsArray
+                                    TicketContent = $filteredTicketContent
+                                } | ConvertTo-Json -Compress
+                                $command += "|TICKET_DATA:$ticketDataJson"
+                            }
+                            Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 10 | Out-Null
+                            $script:authStatusTextBox.AppendText("Client $($clientNum): Generating reports with user search and ticket data...`r`n")
+                            $script:authStatusTextBox.ScrollToCaret()
+                            [System.Windows.Forms.Application]::DoEvents()
+                            return
+                        }
+                    }
+                    
+                    # Build GENERATE_REPORTS command
+                    $command = "GENERATE_REPORTS"
+                    if ($selectedUsers.Count -gt 0) {
+                        $usersJson = ($selectedUsers | ConvertTo-Json -Compress)
+                        $command += "|SelectedUsers:$usersJson"
+                    }
+                    if ($ticketNumbers.Count -gt 0) {
+                        # Ensure ticketNumbers is always an array for JSON serialization
+                        $ticketNumsArray = if ($ticketNumbers -is [array]) { $ticketNumbers } else { @($ticketNumbers) }
+                        $ticketDataJson = @{
+                            TicketNumbers = $ticketNumsArray
+                            TicketContent = $filteredTicketContent
+                        } | ConvertTo-Json -Compress
+                        $command += "|TICKET_DATA:$ticketDataJson"
+                    }
+                    
+                    # Send command to worker script
+                    $this.Enabled = $false
+                    $this.Text = "Generating..."
+                    $script:authStatusTextBox.AppendText("Client $($clientNum): Sending generate reports command...`r`n")
+                    if ($ticketNumbers.Count -gt 0) {
+                        $script:authStatusTextBox.AppendText("Client $($clientNum): Ticket numbers detected: $(($ticketNumbers | ForEach-Object { "#$_" }) -join ', ')`r`n")
+                    }
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    
+                    # Use longer timeout for report generation (reports can take several minutes, but we just need GENERATE_REPORTS_STARTED response)
+                    $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 10
+                    
+                    if ($reportResponse -like "GENERATE_REPORTS_SUCCESS:*") {
+                        $outputPath = ($reportResponse -replace "GENERATE_REPORTS_SUCCESS:", "").Trim()
+                        $script:clientReportFolders[$clientNum] = $outputPath
+                        if ($script:clientAuthControls[$clientNum].ViewReportsButton) {
+                            $script:clientAuthControls[$clientNum].ViewReportsButton.Visible = $true
+                            $script:clientAuthControls[$clientNum].ViewReportsButton.Enabled = $true
+                        }
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Complete"
+                        $script:authStatusTextBox.AppendText("Client $clientNum report generation successful! Output: $outputPath`r`n")
+                    } elseif ($reportResponse -like "GENERATE_REPORTS_STARTED*") {
+                        $script:authStatusTextBox.AppendText("Client $clientNum report generation started (running in background).`r`n")
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Generating Reports..."
+                    } else {
+                        $script:authStatusTextBox.AppendText("Client $clientNum report generation failed or timeout: $reportResponse`r`n")
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Report Failed"
+                        $this.Enabled = $true
+                        $this.Text = "Generate Reports"
+                    }
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                })
+                
+                # Graph Auth button handler
+                $graphAuthBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    if ($script:authStatusTextBox) {
+                        $script:authStatusTextBox.AppendText("Sending Graph authentication command to Client $clientNum PowerShell session...`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                    }
+                    $this.Enabled = $false
+                    $this.Text = "Sending Command..."
+                    
+                    if ($script:clientProcesses.ContainsKey($clientNum)) {
+                        $proc = $script:clientProcesses[$clientNum]
+                        try {
+                            $procInfo = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+                            if (-not $procInfo -or $procInfo.HasExited) {
+                                $script:authStatusTextBox.AppendText("ERROR: Client $clientNum PowerShell process is not running!`r`n")
+                                $this.Enabled = $true
+                                $this.Text = "Graph Auth"
+                                return
+                            }
+                        } catch {
+                            $script:authStatusTextBox.AppendText("ERROR: Could not verify Client $clientNum PowerShell process!`r`n")
+                            $this.Enabled = $true
+                            $this.Text = "Graph Auth"
+                            return
+                        }
+                    } else {
+                        $script:authStatusTextBox.AppendText("ERROR: Client $clientNum PowerShell process not found!`r`n")
+                        $this.Enabled = $true
+                        $this.Text = "Graph Auth"
+                        return
+                    }
+                    
+                    # Verify command directory exists
+                    if (-not (Test-Path $script:commandDir)) {
+                        $script:authStatusTextBox.AppendText("ERROR: Command directory does not exist: $script:commandDir`r`n")
+                        $this.Enabled = $true
+                        $this.Text = "Graph Auth"
+                        return
+                    }
+                    
+                    # Verify command file path
+                    $commandFile = Join-Path $script:commandDir "Client${clientNum}_Command.txt"
+                    $script:authStatusTextBox.AppendText("Client ${clientNum}: Command file will be: $commandFile`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    
+                    $response = Send-CommandToSession -ClientNumber $clientNum -Command "GRAPH_AUTH" -TimeoutSeconds 60
+                    
+                    # Check if Send-CommandToSession returned false (error writing command file)
+                    if ($response -eq $false) {
+                        $script:authStatusTextBox.AppendText("ERROR: Failed to send command to Client $clientNum. Check the status messages above.`r`n")
+                        $this.Enabled = $true
+                        $this.Text = "Graph Auth"
+                        return
+                    }
+                    
+                    # If response is null or empty, check the response file directly (might have been written after timeout)
+                    if (-not $response) {
+                        $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                        $script:authStatusTextBox.AppendText("Client ${clientNum}: No immediate response, checking response file: $responseFile`r`n")
+                        if (Test-Path $responseFile) {
+                            try {
+                                $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Read response from file: $response`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                [System.Windows.Forms.Application]::DoEvents()
+                            } catch {
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Could not read response file: $($_.Exception.Message)`r`n")
+                            }
+                        } else {
+                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Response file does not exist. Checking if command file exists...`r`n")
+                            if (Test-Path $commandFile) {
+                                $cmdContent = Get-Content $commandFile -Raw -ErrorAction SilentlyContinue
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Command file still exists with content: '$cmdContent'`r`n")
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Worker script may not be polling. Check PowerShell window.`r`n")
+                            } else {
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Command file was removed (worker script should have received it).`r`n")
+                            }
+                        }
+                    }
+                    
+                    # If we got GRAPH_AUTH_STARTED, continue polling for the final result
+                    if ($response -eq "GRAPH_AUTH_STARTED") {
+                        $script:authStatusTextBox.AppendText("Client $clientNum Graph authentication started. Waiting for browser popup (may take 10-30 seconds)...`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                        
+                        # Update status label
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Waiting for browser popup..."
+                        $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
+                        
+                        # Continue polling the response file for the final result
+                        $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                        $startTime = Get-Date
+                        $finalResponse = $null
+                        $pollCount = 0
+                        
+                        while (((Get-Date) - $startTime).TotalSeconds -lt 300) {
+                            $pollCount++
+                            $elapsedSeconds = [int]((Get-Date) - $startTime).TotalSeconds
+                            
+                            # Update status every 10 seconds
+                            if ($pollCount % 50 -eq 0) {
+                                $statusMsg = "Waiting for browser popup... (${elapsedSeconds}s elapsed)"
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: $statusMsg`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                $script:clientAuthControls[$clientNum].StatusLabel.Text = $statusMsg
+                                [System.Windows.Forms.Application]::DoEvents()
+                            }
+                            
+                            if (Test-Path $responseFile) {
+                                Start-Sleep -Milliseconds 200
+                                try {
+                                    $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                    # Check if we got a final response (not GRAPH_AUTH_STARTED)
+                                    if ($finalResponse -and $finalResponse -ne "GRAPH_AUTH_STARTED" -and $finalResponse -notmatch "^GRAPH_AUTH_STARTED") {
+                                        $script:authStatusTextBox.AppendText("Client ${clientNum}: Final response received: $finalResponse`r`n")
+                                        $script:authStatusTextBox.ScrollToCaret()
+                                        [System.Windows.Forms.Application]::DoEvents()
+                                        $response = $finalResponse
+                                        break
+                                    }
+                                } catch {}
+                            }
+                            Start-Sleep -Milliseconds 200
+                            [System.Windows.Forms.Application]::DoEvents()
+                        }
+                        
+                        if (-not $finalResponse -or $finalResponse -eq "GRAPH_AUTH_STARTED") {
+                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Timeout waiting for Graph authentication. The browser popup may not have appeared.`r`n")
+                            $script:authStatusTextBox.ScrollToCaret()
+                            $script:clientAuthControls[$clientNum].StatusLabel.Text = "Timeout - Use Reset Auth"
+                            $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Red
+                            $this.Enabled = $true
+                            $this.Text = "Graph Auth"
+                            [System.Windows.Forms.Application]::DoEvents()
+                            return
+                        }
+                    }
+                    
+                    if ($response -like "GRAPH_AUTH_SUCCESS:*") {
+                        $tenantName = $response -replace "GRAPH_AUTH_SUCCESS:", ""
+                        $script:clientAuthStates[$clientNum].GraphAuthenticated = $true
+                        $script:clientAuthStates[$clientNum].TenantName = $tenantName
+                        $script:clientAuthControls[$clientNum].ClientLabel.Text = "Client $clientNum - $tenantName"
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph Auth Complete - Ready for Exchange"
+                        $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
+                        $script:clientAuthControls[$clientNum].ExchangeButton.Enabled = $true
+                        $this.Text = "Graph Auth ✓"
+                        
+                        # Show user filtering controls after Graph Auth
+                        $script:clientAuthControls[$clientNum].UserFilterCheckBox.Visible = $true
+                        $script:clientAuthControls[$clientNum].UserFilterCheckBox.Enabled = $true
+                        $script:clientAuthControls[$clientNum].UserSearchTextBox.Visible = $true
+                        $script:clientAuthControls[$clientNum].ValidateUsersButton.Visible = $true
+                        $script:clientAuthControls[$clientNum].UserValidationLabel.Visible = $true
+                        
+                        $script:authStatusTextBox.AppendText("Client $clientNum Graph authentication successful! Tenant: $tenantName`r`n")
+                        $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online Auth button is now enabled. Click it to proceed.`r`n")
+                    } elseif ($response -like "GRAPH_AUTH_FAILED:*") {
+                        $errorMsg = $response -replace "GRAPH_AUTH_FAILED:", ""
+                        $this.Enabled = $true
+                        $this.Text = "Graph Auth"
+                        $script:authStatusTextBox.AppendText("Client $clientNum Graph authentication failed: $errorMsg`r`n")
+                    } else {
+                        $this.Enabled = $true
+                        $this.Text = "Graph Auth"
+                        $script:authStatusTextBox.AppendText("Client $clientNum Graph authentication failed or timeout. Response: $response`r`n")
+                        $script:authStatusTextBox.AppendText("Client $clientNum Check the PowerShell window for details.`r`n")
+                    }
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                })
+                
+                # Exchange Auth button handler
+                $exchangeAuthBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    if ($script:authStatusTextBox) {
+                        $script:authStatusTextBox.AppendText("Sending Exchange Online authentication command to Client $clientNum PowerShell session...`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                    }
+                    $this.Enabled = $false
+                    $this.Text = "Sending Command..."
+                    
+                    $response = Send-CommandToSession -ClientNumber $clientNum -Command "EXCHANGE_AUTH" -TimeoutSeconds 30
+                    
+                    # If response is null or empty, check the response file directly
+                    if (-not $response) {
+                        $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                        if (Test-Path $responseFile) {
+                            try {
+                                $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Read Exchange auth response from file: $response`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                [System.Windows.Forms.Application]::DoEvents()
+                            } catch {
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Could not read response file: $($_.Exception.Message)`r`n")
+                            }
+                        }
+                    }
+                    
+                    # If we got EXCHANGE_AUTH_STARTED, continue polling for the final result
+                    if ($response -eq "EXCHANGE_AUTH_STARTED") {
+                        $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication started. Waiting for browser popup...`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                        
+                        # Update status label
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Waiting for browser popup..."
+                        $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
+                        
+                        # Continue polling the response file for the final result
+                        $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                        $startTime = Get-Date
+                        $finalResponse = $null
+                        $pollCount = 0
+                        
+                        while (((Get-Date) - $startTime).TotalSeconds -lt 300) {
+                            $pollCount++
+                            $elapsedSeconds = [int]((Get-Date) - $startTime).TotalSeconds
+                            
+                            if ($pollCount % 50 -eq 0) {
+                                $statusMsg = "Waiting for browser popup... (${elapsedSeconds}s elapsed)"
+                                $script:authStatusTextBox.AppendText("Client ${clientNum}: $statusMsg`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                $script:clientAuthControls[$clientNum].StatusLabel.Text = $statusMsg
+                                [System.Windows.Forms.Application]::DoEvents()
+                            }
+                            
+                            if (Test-Path $responseFile) {
+                                Start-Sleep -Milliseconds 200
+                                try {
+                                    $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                    if ($finalResponse -and $finalResponse -ne "EXCHANGE_AUTH_STARTED" -and $finalResponse -notmatch "^EXCHANGE_AUTH_STARTED") {
+                                        $script:authStatusTextBox.AppendText("Client ${clientNum}: Final Exchange auth response: $finalResponse`r`n")
+                                        $script:authStatusTextBox.ScrollToCaret()
+                                        [System.Windows.Forms.Application]::DoEvents()
+                                        $response = $finalResponse
+                                        break
+                                    }
+                                } catch {}
+                            }
+                            Start-Sleep -Milliseconds 200
+                            [System.Windows.Forms.Application]::DoEvents()
+                        }
+                        
+                        if (-not $finalResponse -or $finalResponse -eq "EXCHANGE_AUTH_STARTED") {
+                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Timeout waiting for Exchange authentication.`r`n")
+                            $script:authStatusTextBox.ScrollToCaret()
+                            $script:clientAuthControls[$clientNum].StatusLabel.Text = "Timeout - Use Reset Auth"
+                            $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Red
+                            $this.Enabled = $true
+                            $this.Text = "Exchange Online Auth"
+                            [System.Windows.Forms.Application]::DoEvents()
+                            return
+                        }
+                    }
+                    
+                    if ($response -like "EXCHANGE_AUTH_SUCCESS*") {
+                        $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $true
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Exchange Auth Complete - Ready to Generate Reports"
+                        $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Green
+                        $this.Text = "Exchange Auth ✓"
+                        $this.Enabled = $false
+                        $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication successful!`r`n")
+                        
+                        # Show ticket controls and Generate Reports button
+                        $script:clientAuthControls[$clientNum].TicketLabel.Visible = $true
+                        $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
+                        $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
+                        $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
+                        $script:clientAuthControls[$clientNum].GenerateReportsButton.Visible = $true
+                        $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $true
+                        
+                        $script:authStatusTextBox.AppendText("Client $clientNum is ready to generate reports. Configure user filtering and tickets if needed, then click Generate Reports.`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                    } elseif ($response -like "EXCHANGE_AUTH_FAILED:*") {
+                        $errorMsg = $response -replace "EXCHANGE_AUTH_FAILED:", ""
+                        $this.Enabled = $true
+                        $this.Text = "Exchange Online Auth"
+                        $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication failed: $errorMsg`r`n")
+                    } else {
+                        $this.Enabled = $true
+                        $this.Text = "Exchange Online Auth"
+                        $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication failed or timeout. Response: $response`r`n")
+                        $script:authStatusTextBox.AppendText("Client $clientNum Check the PowerShell window for details.`r`n")
+                    }
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                })
+                
+                # Reset Auth button handler
+                $resetAuthBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    $script:authStatusTextBox.AppendText("Resetting authentication for Client $clientNum...`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    
+                    # Send CANCEL_AUTH command to worker script to clear sessions and token caches
+                    Send-CommandToSession -ClientNumber $clientNum -Command "CANCEL_AUTH" -TimeoutSeconds 30 | Out-Null
+                    
+                    # Clear all tenant information from state
+                    $script:clientAuthStates[$clientNum].GraphAuthenticated = $false
+                    $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $false
+                    $script:clientAuthStates[$clientNum].TenantName = $null
+                    $script:clientAuthStates[$clientNum].TenantId = $null
+                    $script:clientAuthStates[$clientNum].Account = $null
+                    $script:clientAuthStates[$clientNum].GraphContext = $null
+                    
+                    # Hide ticket controls
+                    $script:clientAuthControls[$clientNum].TicketLabel.Visible = $false
+                    $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $false
+                    $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $false
+                    $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $false
+                    $script:clientAuthControls[$clientNum].TicketTextBox.Text = ""
+                    $script:clientAuthControls[$clientNum].TicketNumbersLabel.Visible = $false
+                    $script:clientAuthControls[$clientNum].TicketNumbersLabel.Text = ""
+                    
+                    # Hide View Reports button
+                    $script:clientAuthControls[$clientNum].ViewReportsButton.Visible = $false
+                    $script:clientAuthControls[$clientNum].ViewReportsButton.Enabled = $false
+                    
+                    # Clear report folder for this tenant
+                    if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                        $script:clientReportFolders.Remove($clientNum)
+                    }
+                    
+                    # Clear ticket data for this tenant
+                    if ($script:clientTickets.ContainsKey($clientNum)) {
+                        $script:clientTickets.Remove($clientNum)
+                    }
+                    
+                    # Clear cache directory for this tenant if it exists
+                    if ($script:clientCacheDirs -and $script:clientCacheDirs.ContainsKey($clientNum)) {
+                        $cacheDir = $script:clientCacheDirs[$clientNum]
+                        if ($cacheDir -and (Test-Path $cacheDir)) {
+                            try {
+                                Remove-Item -Path $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+                                $script:authStatusTextBox.AppendText("Cleared cache directory for Client $clientNum`r`n")
+                            } catch {
+                                # Ignore errors clearing cache directory
+                            }
+                        }
+                        $script:clientCacheDirs.Remove($clientNum)
+                    }
+                    
+                    # Reset UI controls
+                    $script:clientAuthControls[$clientNum].ClientLabel.Text = "Client $clientNum"
+                    $script:clientAuthControls[$clientNum].StatusLabel.Text = "Ready for Graph Auth"
+                    $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Blue
+                    $script:clientAuthControls[$clientNum].GraphButton.Enabled = $true
+                    $script:clientAuthControls[$clientNum].GraphButton.Text = "Graph Auth"
+                    $script:clientAuthControls[$clientNum].ExchangeButton.Enabled = $false
+                    $script:clientAuthControls[$clientNum].ExchangeButton.Text = "Exchange Online Auth"
+                    
+                    $script:authStatusTextBox.AppendText("Client $clientNum authentication reset complete. Ready for full authentication.`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                })
+                
+                # Remove Tenant button handler
+                $removeTenantBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    
+                    $result = [System.Windows.Forms.MessageBox]::Show("Are you sure you want to remove Client $clientNum? This will close the PowerShell window and remove it from the list.", "Confirm Removal", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+                    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+                        # Send exit command to PowerShell process
+                        if ($script:clientProcesses.ContainsKey($clientNum)) {
+                            try {
+                                Send-CommandToSession -ClientNumber $clientNum -Command "EXIT" -TimeoutSeconds 5 | Out-Null
+                                Start-Sleep -Seconds 1
+                                $proc = $script:clientProcesses[$clientNum]
+                                if (-not $proc.HasExited) {
+                                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                                }
+                            } catch {}
+                            $script:clientProcesses.Remove($clientNum)
+                        }
+                        
+                        # Remove controls from panel
+                        $controls = $script:clientAuthControls[$clientNum]
+                        $script:authPanel.Controls.Remove($controls.ClientLabel)
+                        $script:authPanel.Controls.Remove($controls.StatusLabel)
+                        $script:authPanel.Controls.Remove($controls.WarningLabel)
+                        $script:authPanel.Controls.Remove($controls.GraphButton)
+                        $script:authPanel.Controls.Remove($controls.ExchangeButton)
+                        $script:authPanel.Controls.Remove($controls.RemoveButton)
+                        $script:authPanel.Controls.Remove($controls.ResetButton)
+                        $script:authPanel.Controls.Remove($controls.UserFilterCheckBox)
+                        $script:authPanel.Controls.Remove($controls.UserSearchTextBox)
+                        $script:authPanel.Controls.Remove($controls.ValidateUsersButton)
+                        $script:authPanel.Controls.Remove($controls.UserValidationLabel)
+                        $script:authPanel.Controls.Remove($controls.GenerateReportsButton)
+                        $script:authPanel.Controls.Remove($controls.TicketLabel)
+                        $script:authPanel.Controls.Remove($controls.TicketTextBox)
+                        $script:authPanel.Controls.Remove($controls.TicketNumbersLabel)
+                        $script:authPanel.Controls.Remove($controls.ViewReportsButton)
+                        
+                        # Remove from state dictionaries
+                        $script:clientAuthStates.Remove($clientNum)
+                        $script:clientAuthControls.Remove($clientNum)
+                        if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
+                            $script:clientValidatedUsers.Remove($clientNum)
+                        }
+                        if ($script:clientSearchTerms.ContainsKey($clientNum)) {
+                            $script:clientSearchTerms.Remove($clientNum)
+                        }
+                        if ($script:clientTickets.ContainsKey($clientNum)) {
+                            $script:clientTickets.Remove($clientNum)
+                        }
+                        if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                            $script:clientReportFolders.Remove($clientNum)
+                        }
+                        
+                        # Recalculate positions for remaining rows
+                        $rowIndex = 0
+                        foreach ($key in ($script:clientAuthControls.Keys | Sort-Object)) {
+                            $yPos = $rowIndex * ($clientRowHeight + $clientRowSpacing) + 10
+                            $controls = $script:clientAuthControls[$key]
+                            $controls.ClientLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 15))
+                            $controls.StatusLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 15))
+                            $controls.WarningLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 35))
+                            $controls.GraphButton.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
+                            $controls.ExchangeButton.Location = New-Object System.Drawing.Point(610, ($yPos + 10))
+                            $controls.RemoveButton.Location = New-Object System.Drawing.Point(760, ($yPos + 10))
+                            $controls.ResetButton.Location = New-Object System.Drawing.Point(840, ($yPos + 10))
+                            # Update user filtering controls
+                            if ($controls.UserFilterCheckBox) {
+                                $controls.UserFilterCheckBox.Location = New-Object System.Drawing.Point(10, ($yPos + 50))
+                                $controls.UserSearchTextBox.Location = New-Object System.Drawing.Point(120, ($yPos + 48))
+                                $controls.ValidateUsersButton.Location = New-Object System.Drawing.Point(330, ($yPos + 47))
+                                $controls.UserValidationLabel.Location = New-Object System.Drawing.Point(410, ($yPos + 50))
+                            }
+                            # Update ticket controls
+                            if ($controls.TicketLabel) {
+                                $controls.TicketLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 75))
+                                $controls.TicketTextBox.Location = New-Object System.Drawing.Point(170, ($yPos + 73))
+                                $controls.TicketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($yPos + 73))
+                            }
+                            # Update action buttons
+                            if ($controls.GenerateReportsButton) {
+                                $controls.GenerateReportsButton.Location = New-Object System.Drawing.Point(760, ($yPos + 47))
+                            }
+                            if ($controls.ViewReportsButton) {
+                                $controls.ViewReportsButton.Location = New-Object System.Drawing.Point(760, ($yPos + 160))
+                            }
+                            $rowIndex++
+                        }
+                        
+                        $script:authStatusTextBox.AppendText("Client $clientNum removed.`r`n")
+                        $script:authStatusTextBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                    }
+                })
+                
+                return $true
+            }
+
+            # Add Tenant button click handler
+            $addTenantBtn.add_Click({
+                $newClientNum = $script:nextClientNumber
+                if (Add-NewTenant -ClientNumber $newClientNum) {
+                    $script:nextClientNumber++
+                    $script:authStatusTextBox.AppendText("Added new tenant: Client $newClientNum`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
+            })
 
             # Function to send command to PowerShell session and wait for response
             function Send-CommandToSession {
@@ -6980,607 +8839,135 @@ if (Test-Path `$ReportSelectionsFile) {
                 return $null
             }
 
-            # Function to update button states
-            function Update-AuthButtonStates {
-                param([int]$currentClient)
-                
-                for ($i = 1; $i -le $tenantCount; $i++) {
-                    $controls = $script:clientAuthControls[$i]
-                    $state = $script:clientAuthStates[$i]
-                    
-                    if ($i -lt $currentClient) {
-                        # Previous clients - both buttons disabled (already done)
-                        $controls.GraphButton.Enabled = $false
-                        $controls.ExchangeButton.Enabled = $false
-                        $controls.StatusLabel.Text = "Complete"
-                        $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Green
-                    }
-                    elseif ($i -eq $currentClient) {
-                        # Current client - Graph done, Exchange enabled
-                        if ($state.GraphAuthenticated) {
-                            $controls.GraphButton.Enabled = $false
-                            $controls.ExchangeButton.Enabled = $true
-                            $controls.StatusLabel.Text = "Graph Auth Complete"
-                            $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Orange
-                        } else {
-                            $controls.GraphButton.Enabled = $true
-                            $controls.ExchangeButton.Enabled = $false
-                            $controls.StatusLabel.Text = "Ready for Graph Auth"
-                            $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                        }
-                    }
-                    else {
-                        # Future clients - both disabled
-                        $controls.GraphButton.Enabled = $false
-                        $controls.ExchangeButton.Enabled = $false
-                        $controls.StatusLabel.Text = "Waiting..."
-                        $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Gray
-                    }
-                }
-            }
-
-            # Graph Auth button handler
-            foreach ($clientNum in 1..$tenantCount) {
-                $graphBtn = $script:clientAuthControls[$clientNum].GraphButton
-                # Capture clientNum in closure to avoid issues
-                $capturedClientNum = $clientNum
-                $graphBtn.add_Click({
-                    try {
-                        $clientNum = $this.Tag
-                        if (-not $clientNum) {
-                            # Fallback to captured value if Tag is missing
-                            $clientNum = $capturedClientNum
-                        }
-                        
-                        if (-not $clientNum) {
-                            [System.Windows.Forms.MessageBox]::Show("ERROR: Client number not found in button", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                            return
-                        }
-                        
-                        # Immediate feedback test - use script scope variable
-                        Write-Host "=== BUTTON CLICKED FOR CLIENT $clientNum ===" -ForegroundColor Green
-                        if ($script:authStatusTextBox) {
-                            $script:authStatusTextBox.AppendText("=== BUTTON CLICKED FOR CLIENT $clientNum ===`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.Application]::DoEvents()
-                                                } else {
-                            Write-Host "ERROR: authStatusTextBox not accessible" -ForegroundColor Red
-                            [System.Windows.Forms.MessageBox]::Show("ERROR: authStatusTextBox not accessible", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                            return
-                        }
-                        
-                        Write-Host "Step 1: Disabling button..." -ForegroundColor Cyan
-                        $this.Enabled = $false
-                        $this.Text = "Sending Command..."
-                        Write-Host "Step 2: Updating status text..." -ForegroundColor Cyan
-                        $script:authStatusTextBox.AppendText("Sending Graph authentication command to Client $clientNum PowerShell session...`r`n")
-                        $script:authStatusTextBox.ScrollToCaret()
-                        [System.Windows.Forms.Application]::DoEvents()
-                        
-                        Write-Host "Step 3: Verifying Send-CommandToSession function..." -ForegroundColor Cyan
-                        # Verify Send-CommandToSession function exists
-                        if (-not (Get-Command Send-CommandToSession -ErrorAction SilentlyContinue)) {
-                            $errorMsg = "Send-CommandToSession function not found"
-                            Write-Host "ERROR: $errorMsg" -ForegroundColor Red
-                            $script:authStatusTextBox.AppendText("ERROR: $errorMsg`r`n")
-                            throw $errorMsg
-                        }
-                        Write-Host "Send-CommandToSession function found" -ForegroundColor Green
-                        
-                        Write-Host "Step 4: Verifying command directory..." -ForegroundColor Cyan
-                        # Verify command directory exists
-                        if (-not (Test-Path $script:commandDir)) {
-                            $errorMsg = "Command directory does not exist: $script:commandDir"
-                            Write-Host "ERROR: $errorMsg" -ForegroundColor Red
-                            $script:authStatusTextBox.AppendText("ERROR: $errorMsg`r`n")
-                            throw $errorMsg
-                        }
-                        Write-Host "Command directory exists: $script:commandDir" -ForegroundColor Green
-                        
-                        Write-Host "Step 5: Calling Send-CommandToSession..." -ForegroundColor Cyan
-                        $script:authStatusTextBox.AppendText("Calling Send-CommandToSession function...`r`n")
-                        $script:authStatusTextBox.ScrollToCaret()
-                        [System.Windows.Forms.Application]::DoEvents()
-                        
-                        # Check if PowerShell process is still running
-                        if ($script:clientProcesses.ContainsKey($clientNum)) {
-                            $proc = $script:clientProcesses[$clientNum]
-                            try {
-                                $procInfo = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
-                                if (-not $procInfo -or $procInfo.HasExited) {
-                                    throw "PowerShell process for Client $clientNum has exited (PID: $($proc.Id))"
-                                }
-                                Write-Host "PowerShell process is running (PID: $($proc.Id))" -ForegroundColor Green
-                            } catch {
-                                $errorMsg = "PowerShell process for Client $clientNum is not running: $($_.Exception.Message)"
-                                Write-Host "ERROR: $errorMsg" -ForegroundColor Red
-                                throw $errorMsg
-                                            }
-                                        } else {
-                            throw "PowerShell process for Client $clientNum not found in clientProcesses"
-                        }
-                        
-                        # Send command to PowerShell session
-                        Write-Host "Executing: Send-CommandToSession -ClientNumber $clientNum -Command 'GRAPH_AUTH' -TimeoutSeconds 300" -ForegroundColor Magenta
-                        $script:authStatusTextBox.AppendText("Sending command to PowerShell session...`r`n")
-                        $script:authStatusTextBox.ScrollToCaret()
-                        [System.Windows.Forms.Application]::DoEvents()
-                        
-                        $response = Send-CommandToSession -ClientNumber $clientNum -Command "GRAPH_AUTH" -TimeoutSeconds 300
-                        
-                        Write-Host "Step 6: Received initial response: $response" -ForegroundColor Yellow
-                        $script:authStatusTextBox.AppendText("Received initial response: $response`r`n")
-                        $script:authStatusTextBox.ScrollToCaret()
-                        [System.Windows.Forms.Application]::DoEvents()
-                        
-                        # If we got GRAPH_AUTH_STARTED, continue polling for the final result
-                        if ($response -eq "GRAPH_AUTH_STARTED") {
-                            Write-Host "Graph authentication started, waiting for browser popup..." -ForegroundColor Cyan
-                            $script:authStatusTextBox.AppendText("Graph authentication started. Waiting for browser popup (may take 10-30 seconds)...`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.Application]::DoEvents()
-                            
-                            # Update status label to show waiting for popup
-                            $controls = $script:clientAuthControls[$clientNum]
-                            $controls.StatusLabel.Text = "Waiting for browser popup..."
-                            $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Orange
-                            
-                            # Continue polling the response file for the final result
-                            $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
-                            $startTime = Get-Date
-                            $finalResponse = $null
-                            $pollCount = 0
-                            
-                            while (((Get-Date) - $startTime).TotalSeconds -lt 300) {
-                                $pollCount++
-                                $elapsedSeconds = [int]((Get-Date) - $startTime).TotalSeconds
-                                
-                                # Update status every 10 seconds with elapsed time
-                                if ($pollCount % 50 -eq 0) {
-                                    $statusMsg = "Waiting for browser popup... (${elapsedSeconds}s elapsed)"
-                                    Write-Host "Still waiting for Graph authentication - browser popup may take time to appear... (${elapsedSeconds}s)" -ForegroundColor Gray
-                                    $script:authStatusTextBox.AppendText("Client ${clientNum}: $statusMsg`r`n")
-                                    $script:authStatusTextBox.ScrollToCaret()
-                                    $controls.StatusLabel.Text = $statusMsg
-                                    [System.Windows.Forms.Application]::DoEvents()
-                                }
-                                
-                                if (Test-Path $responseFile) {
-                                    Start-Sleep -Milliseconds 200
-                                    try {
-                                        $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
-                                        # Check if we got a final response (not GRAPH_AUTH_STARTED)
-                                        if ($finalResponse -and $finalResponse -ne "GRAPH_AUTH_STARTED" -and $finalResponse -notmatch "^GRAPH_AUTH_STARTED") {
-                                            Write-Host "Received final response: $finalResponse" -ForegroundColor Green
-                                            $script:authStatusTextBox.AppendText("Final response: $finalResponse`r`n")
-                                            $script:authStatusTextBox.ScrollToCaret()
-                                            [System.Windows.Forms.Application]::DoEvents()
-                                            $response = $finalResponse
-                                            break
-                                        }
-                                    } catch {}
-                                }
-                                Start-Sleep -Milliseconds 200
-                                [System.Windows.Forms.Application]::DoEvents()
-                            }
-                            
-                            if (-not $finalResponse -or $finalResponse -eq "GRAPH_AUTH_STARTED") {
-                                Write-Host "Timeout waiting for Graph authentication (5 minutes elapsed)" -ForegroundColor Red
-                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Timeout waiting for Graph authentication. The browser popup may not have appeared. You can use 'Reset Auth' to retry.`r`n")
-                                $script:authStatusTextBox.ScrollToCaret()
-                                $controls.StatusLabel.Text = "Timeout - Use Reset Auth"
-                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Red
-                                [System.Windows.Forms.Application]::DoEvents()
-                            }
-                        }
-                        
-                        if ($response -match "GRAPH_AUTH_SUCCESS:(.+)") {
-                            $tenantName = $matches[1]
-                            $script:clientAuthStates[$clientNum].GraphAuthenticated = $true
-                            $script:clientAuthStates[$clientNum].TenantName = $tenantName
-                            
-                            # Update client label with tenant name
-                            $controls = $script:clientAuthControls[$clientNum]
-                            $controls.ClientLabel.Text = $tenantName
-                            
-                            $this.Text = "Graph Auth ✓"
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Graph authentication successful! Tenant: $tenantName`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            
-                            # Enable Exchange auth button for this client
-                            Update-AuthButtonStates -currentClient $clientNum
-                        } elseif ($response -match "GRAPH_AUTH_FAILED:(.+)") {
-                                            $errorMsg = $matches[1]
-                            $this.Enabled = $true
-                            $this.Text = "Graph Auth"
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Graph authentication failed - $errorMsg`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.MessageBox]::Show("Graph authentication failed for Client ${clientNum}: $errorMsg", "Authentication Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                                        } else {
-                            $this.Enabled = $true
-                            $this.Text = "Graph Auth"
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: No response or timeout from PowerShell session`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.MessageBox]::Show("No response from Client ${clientNum} PowerShell session. Please check the PowerShell window.", "Communication Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                        }
-                    } catch {
-                        # Outer catch for handler setup errors
-                        $errorMsg = $_.Exception.Message
-                        $errorDetails = $_.Exception | Out-String
-                        Write-Host "ERROR in button handler: $errorMsg" -ForegroundColor Red
-                        Write-Host "Error details: $errorDetails" -ForegroundColor Red
-                        [System.Windows.Forms.MessageBox]::Show("Critical error in button handler: $errorMsg`n`nDetails: $errorDetails", "Critical Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                    }
-                })
-            }
-
-            # Exchange Online Auth button handler
-            foreach ($clientNum in 1..$tenantCount) {
-                $exchangeBtn = $script:clientAuthControls[$clientNum].ExchangeButton
-                # Capture clientNum in closure to avoid issues
-                $capturedClientNum = $clientNum
-                $exchangeBtn.add_Click({
-                    $clientNum = $this.Tag
-                    if (-not $clientNum) {
-                        # Fallback to captured value if Tag is missing
-                        $clientNum = $capturedClientNum
-                    }
-                    
-                    if (-not $clientNum) {
-                        [System.Windows.Forms.MessageBox]::Show("ERROR: Client number not found in button", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                        return
-                    }
-                    
-                    # Prevent multiple clicks
-                    if (-not $this.Enabled) {
-                        Write-Host "Exchange Auth button for Client $clientNum is already processing, ignoring click" -ForegroundColor Yellow
-                        return
-                    }
-                    
-                    # Check if already authenticated
-                    if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                        Write-Host "Client $clientNum Exchange authentication already completed, ignoring click" -ForegroundColor Yellow
-                        return
-                    }
-                    
-                    $this.Enabled = $false
-                    $this.Text = "Sending Command..."
-                    $script:authStatusTextBox.AppendText("Sending Exchange Online authentication command to Client $clientNum PowerShell session...`r`n")
-                    [System.Windows.Forms.Application]::DoEvents()
-                    
-                    try {
-                        # Send command to PowerShell session
-                        $response = Send-CommandToSession -ClientNumber $clientNum -Command "EXCHANGE_AUTH" -TimeoutSeconds 300
-                        
-                        # If we got EXCHANGE_AUTH_STARTED, continue polling for the final result
-                        if ($response -eq "EXCHANGE_AUTH_STARTED") {
-                            Write-Host "Exchange authentication started, waiting for browser popup..." -ForegroundColor Cyan
-                            $script:authStatusTextBox.AppendText("Exchange Online authentication started. Waiting for browser popup (may take 10-30 seconds)...`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.Application]::DoEvents()
-                            
-                            # Update status label to show waiting for popup
-                            $controls = $script:clientAuthControls[$clientNum]
-                            $controls.StatusLabel.Text = "Waiting for browser popup..."
-                            $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Orange
-                            
-                            # Continue polling the response file for the final result
-                            $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
-                            $startTime = Get-Date
-                            $finalResponse = $null
-                            $pollCount = 0
-                            
-                            while (((Get-Date) - $startTime).TotalSeconds -lt 300) {
-                                $pollCount++
-                                $elapsedSeconds = [int]((Get-Date) - $startTime).TotalSeconds
-                                
-                                # Update status every 10 seconds with elapsed time
-                                if ($pollCount % 50 -eq 0) {
-                                    $statusMsg = "Waiting for browser popup... (${elapsedSeconds}s elapsed)"
-                                    Write-Host "Still waiting for Exchange authentication - browser popup may take time to appear... (${elapsedSeconds}s)" -ForegroundColor Gray
-                                    $script:authStatusTextBox.AppendText("Client ${clientNum}: $statusMsg`r`n")
-                                    $script:authStatusTextBox.ScrollToCaret()
-                                    $controls.StatusLabel.Text = $statusMsg
-                                    [System.Windows.Forms.Application]::DoEvents()
-                                }
-                                
-                                if (Test-Path $responseFile) {
-                                    Start-Sleep -Milliseconds 200
-                                    try {
-                                        $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
-                                        # Check if we got a final response (not EXCHANGE_AUTH_STARTED)
-                                        if ($finalResponse -and $finalResponse -ne "EXCHANGE_AUTH_STARTED" -and $finalResponse -notmatch "^EXCHANGE_AUTH_STARTED") {
-                                            Write-Host "Received final Exchange auth response: $finalResponse" -ForegroundColor Green
-                                            $script:authStatusTextBox.AppendText("Final Exchange auth response: $finalResponse`r`n")
-                                            $script:authStatusTextBox.ScrollToCaret()
-                                            [System.Windows.Forms.Application]::DoEvents()
-                                            $response = $finalResponse
-                                            # Clear the response file after reading to prevent re-reading
-                                            Remove-Item $responseFile -Force -ErrorAction SilentlyContinue
-                                            break
-                                        }
-                                    } catch {}
-                                }
-                                Start-Sleep -Milliseconds 200
-                                [System.Windows.Forms.Application]::DoEvents()
-                            }
-                            
-                            if (-not $finalResponse -or $finalResponse -eq "EXCHANGE_AUTH_STARTED") {
-                                Write-Host "Timeout waiting for Exchange authentication (5 minutes elapsed)" -ForegroundColor Red
-                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Timeout waiting for Exchange authentication. The browser popup may not have appeared. You can use 'Reset Auth' to retry.`r`n")
-                                $script:authStatusTextBox.ScrollToCaret()
-                                $controls.StatusLabel.Text = "Timeout - Use Reset Auth"
-                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Red
-                                [System.Windows.Forms.Application]::DoEvents()
-                            }
-                        }
-                        
-                        if ($response -match "EXCHANGE_AUTH_SUCCESS") {
-                            # Double-check we're not already authenticated (prevent duplicate processing)
-                            if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                                Write-Host "Exchange authentication already completed for Client $clientNum, skipping duplicate processing" -ForegroundColor Yellow
-                                return
-                            }
-                            
-                            $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $true
-                            $this.Text = "Exchange Auth ✓"
-                            $this.Enabled = $false  # Keep button disabled after success
-                            $tenantName = if ($script:clientAuthStates[$clientNum].TenantName) { " ($($script:clientAuthStates[$clientNum].TenantName))" } else { "" }
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Exchange Online authentication successful!$tenantName`r`n")
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Sending report generation command (will run in background)...`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                    [System.Windows.Forms.Application]::DoEvents()
-                    
-                            # Update status label to show reports are starting
-                            $controls = $script:clientAuthControls[$clientNum]
-                            $controls.StatusLabel.Text = "Generating Reports..."
-                            $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                            
-                            # Small delay before sending GENERATE_REPORTS to ensure response file is cleared
-                            Start-Sleep -Milliseconds 500
-                            
-                            # Send generate reports command asynchronously (don't wait for response)
-                            # Use a background job to send the command without blocking
-                            $commandFile = Join-Path $script:commandDir "Client${clientNum}_Command.txt"
-                            $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
-                            
-                            # Clear old response file
-                            if (Test-Path $responseFile) {
-                                Remove-Item $responseFile -Force -ErrorAction SilentlyContinue
-                            }
-                            
-                            # Write GENERATE_REPORTS command file
-                            try {
-                                "GENERATE_REPORTS" | Out-File -FilePath $commandFile -Encoding UTF8 -Force
-                                Write-Host "Sent GENERATE_REPORTS command to Client $clientNum (running in background)" -ForegroundColor Cyan
-                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Report generation started in background`r`n")
-                                $script:authStatusTextBox.ScrollToCaret()
-                                [System.Windows.Forms.Application]::DoEvents()
-                            } catch {
-                                Write-Host "Failed to send GENERATE_REPORTS command: $($_.Exception.Message)" -ForegroundColor Red
-                                $controls.StatusLabel.Text = "Command Failed"
-                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Red
-                            }
-                            
-                            # Set up a background timer/job to check report status periodically (optional - can be done later)
-                            # For now, just let it run in the background and update status when we check later
-                            
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.Application]::DoEvents()
-                            
-                            # Enable next client's Graph auth button immediately (don't wait for reports)
-                            if ($clientNum -lt $tenantCount) {
-                                Write-Host "Enabling Graph Auth button for Client $($clientNum + 1)" -ForegroundColor Green
-                                Update-AuthButtonStates -currentClient ($clientNum + 1)
-                            } else {
-                                Write-Host "All clients authenticated" -ForegroundColor Green
-                                Update-AuthButtonStates -currentClient $clientNum
-                            }
-                        } elseif ($response -match "EXCHANGE_AUTH_FAILED:(.+)") {
-                            $errorMsg = $matches[1]
-                            $this.Enabled = $true
-                            $this.Text = "Exchange Online Auth"
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Exchange Online authentication failed - $errorMsg`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.MessageBox]::Show("Exchange Online authentication failed for Client ${clientNum}: $errorMsg", "Authentication Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                        } else {
-                            $this.Enabled = $true
-                            $this.Text = "Exchange Online Auth"
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: No response or timeout from PowerShell session`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.MessageBox]::Show("No response from Client ${clientNum} PowerShell session. Please check the PowerShell window.", "Communication Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                            }
-                        } catch {
-                        $this.Enabled = $true
-                        $this.Text = "Exchange Online Auth"
-                        $errorMsg = $_.Exception.Message
-                        $script:authStatusTextBox.AppendText("Client ${clientNum}: Error sending command - $errorMsg`r`n")
-                        $script:authStatusTextBox.ScrollToCaret()
-                        [System.Windows.Forms.MessageBox]::Show("Error communicating with Client ${clientNum} PowerShell session: $errorMsg", "Communication Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                    }
-                })
-            }
-
-            # Reset Auth button handler
-            foreach ($clientNum in 1..$tenantCount) {
-                $resetBtn = $script:clientAuthControls[$clientNum].ResetButton
-                $capturedClientNum = $clientNum
-                $resetBtn.add_Click({
-                    $clientNum = $this.Tag
-                    if (-not $clientNum) {
-                        $clientNum = $capturedClientNum
-                    }
-                    
-                    if (-not $clientNum) {
-                        [System.Windows.Forms.MessageBox]::Show("ERROR: Client number not found in button", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                        return
-                    }
-                    
-                    # Confirm reset
-                    $result = [System.Windows.Forms.MessageBox]::Show(
-                        "Reset authentication for Client ${clientNum}?`n`nThis will cancel any ongoing authentication and reset the state, allowing you to retry.",
-                        "Reset Authentication",
-                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                        [System.Windows.Forms.MessageBoxIcon]::Question
-                    )
-                    
-                    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-                        try {
-                            $this.Enabled = $false
-                            $this.Text = "Resetting..."
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Sending cancel authentication command...`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.Application]::DoEvents()
-                            
-                            # Send CANCEL_AUTH command
-                            $commandFile = Join-Path $script:commandDir "Client${clientNum}_Command.txt"
-                            $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
-                            
-                            # Clear old response file
-                            if (Test-Path $responseFile) {
-                                Remove-Item $responseFile -Force -ErrorAction SilentlyContinue
-                            }
-                            
-                            # Send CANCEL_AUTH command
-                            "CANCEL_AUTH" | Out-File -FilePath $commandFile -Encoding UTF8 -Force
-                            
-                            # Wait for response (with timeout)
-                            $startTime = Get-Date
-                            $response = $null
-                            while (((Get-Date) - $startTime).TotalSeconds -lt 10) {
-                                if (Test-Path $responseFile) {
-                                    Start-Sleep -Milliseconds 200
-                                    try {
-                                        $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
-                                        if ($response -and $response -match "CANCEL_AUTH") {
-                                            break
-                                        }
-                                    } catch {}
-                                }
-                                Start-Sleep -Milliseconds 200
-                                [System.Windows.Forms.Application]::DoEvents()
-                            }
-                            
-                            # Reset GUI state
-                            $script:clientAuthStates[$clientNum].GraphAuthenticated = $false
-                            $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $false
-                            $script:clientAuthStates[$clientNum].TenantName = $null
-                            
-                            $controls = $script:clientAuthControls[$clientNum]
-                            $controls.GraphButton.Enabled = $true
-                            $controls.GraphButton.Text = "Graph Auth"
-                            $controls.ExchangeButton.Enabled = $false
-                            $controls.ExchangeButton.Text = "Exchange Online Auth"
-                            $controls.StatusLabel.Text = "Ready"
-                            $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Gray
-                            
-                            # Reset client label if it was changed
-                            if ($controls.ClientLabel.Text -ne "Client $clientNum") {
-                                $controls.ClientLabel.Text = "Client $clientNum"
-                            }
-                            
-                            $this.Enabled = $true
-                            $this.Text = "Reset Auth"
-                            
-                            if ($response -match "CANCEL_AUTH_SUCCESS") {
-                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Authentication reset successfully. Ready for retry.`r`n")
-            } else {
-                                $script:authStatusTextBox.AppendText("Client ${clientNum}: Reset command sent (may have timed out, but state reset locally).`r`n")
-                            }
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.Application]::DoEvents()
-                            
-                            # Update button states based on current client
-                            $currentClient = 1
-                            foreach ($c in 1..$tenantCount) {
-                                if ($script:clientAuthStates[$c].GraphAuthenticated -and $script:clientAuthStates[$c].ExchangeAuthenticated) {
-                                    $currentClient = $c + 1
-                                } else {
-                                    break
-                                }
-                            }
-                            Update-AuthButtonStates -currentClient $currentClient
-                            
-                        } catch {
-                            $this.Enabled = $true
-                            $this.Text = "Reset Auth"
-                            $errorMsg = $_.Exception.Message
-                            $script:authStatusTextBox.AppendText("Client ${clientNum}: Error resetting authentication - $errorMsg`r`n")
-                            $script:authStatusTextBox.ScrollToCaret()
-                            [System.Windows.Forms.MessageBox]::Show("Error resetting authentication for Client ${clientNum}: $errorMsg", "Reset Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                        }
-                    }
-                })
-            }
-
-            # Start Reports button handler - REMOVED (reports launch automatically after Exchange auth)
-            # Reports now launch immediately after Exchange Online authentication completes for each client
-
-            # Close button handler
-            $authCloseBtn.add_Click({
-                # Send EXIT command to all PowerShell sessions
-                foreach ($clientNum in 1..$tenantCount) {
-                    if ($script:clientProcesses.ContainsKey($clientNum)) {
-                        try {
-                            $commandFile = Join-Path $script:commandDir "Client${clientNum}_Command.txt"
-                            "EXIT" | Out-File -FilePath $commandFile -Encoding UTF8 -Force
-                        } catch {}
-                    }
-                }
-                $authConsoleForm.Close()
-            })
-
-            # Initialize button states
-            Update-AuthButtonStates -currentClient 1
+            # Old button handlers removed - now handled dynamically in Add-NewTenant function
 
             # Timer to periodically update status from status files
             $statusUpdateTimer = New-Object System.Windows.Forms.Timer
             $statusUpdateTimer.Interval = 2000  # Update every 2 seconds
             $statusUpdateTimer.add_Tick({
-                foreach ($clientNum in 1..$tenantCount) {
-                    $statusFile = Join-Path $script:tempDir "Client${clientNum}_Status.txt"
-                    if (Test-Path $statusFile) {
+                try {
+                    # Check if form is still valid before processing
+                    if (-not $authConsoleForm -or $authConsoleForm.IsDisposed) {
+                        if ($statusUpdateTimer) {
+                            $statusUpdateTimer.Stop()
+                        }
+                        return
+                    }
+                    
+                    foreach ($clientNum in $script:clientAuthControls.Keys) {
                         try {
-                            # Read last few lines of status file
-                            $statusLines = Get-Content $statusFile -Tail 3 -ErrorAction SilentlyContinue
-                            if ($statusLines) {
-                                $latestStatus = $statusLines | Select-Object -Last 1
-                                # Extract just the message part (after timestamp)
-                                if ($latestStatus -match '\]\s+(.+)') {
-                                    $statusMessage = $matches[1]
-                                    $controls = $script:clientAuthControls[$clientNum]
-                                    if ($controls) {
-                                        # Only update if status has changed to avoid flickering
-                                        if ($controls.StatusLabel.Text -ne $statusMessage) {
-                                            # Update status label with latest message
-                                            $controls.StatusLabel.Text = $statusMessage
+                            $statusFile = Join-Path $script:tempDir "Client${clientNum}_Status.txt"
+                            if (Test-Path $statusFile) {
+                                # Read last few lines of status file (read more to catch warnings)
+                                $statusLines = Get-Content $statusFile -Tail 15 -ErrorAction SilentlyContinue
+                                if ($statusLines) {
+                                    $latestStatus = $statusLines | Select-Object -Last 1
+                                    # Extract just the message part (after timestamp)
+                                    if ($latestStatus -match '\]\s+(.+)') {
+                                        $statusMessage = $matches[1]
+                                        $controls = $script:clientAuthControls[$clientNum]
+                                        if ($controls -and $controls.StatusLabel -and -not $controls.StatusLabel.IsDisposed) {
+                                            # Check for sign-in logs license warning in status file
+                                            $signInLogsWarning = $false
+                                            $warningText = ""
+                                            foreach ($line in $statusLines) {
+                                                if ($line -match 'License required.*Sign-in logs|Azure AD Premium.*Sign-in logs|Sign-in logs require.*Premium|free tenants.*limited.*7 days|WARNING.*License required.*Sign-in') {
+                                                    $signInLogsWarning = $true
+                                                    # Extract the warning message
+                                                    if ($line -match '\]\s+(.+)') {
+                                                        $warningText = $matches[1]
+                                                    } else {
+                                                        $warningText = "Sign-in logs require Azure AD Premium license - pull manually"
+                                                    }
+                                                    break
+                                                }
+                                            }
                                             
-                                            # Color code based on status
-                                            if ($statusMessage -match 'successful|complete|SUCCESS|authenticated') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Green
-                                            } elseif ($statusMessage -match 'error|failed|ERROR|FAILED') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Red
-                                            } elseif ($statusMessage -match 'generating|processing|running|starting') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                                            } elseif ($statusMessage -match 'waiting|polling') {
-                                                $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                                            # Show/hide warning label based on license warning
+                                            if ($signInLogsWarning -and $controls.WarningLabel -and -not $controls.WarningLabel.IsDisposed) {
+                                                try {
+                                                    if (-not $controls.WarningLabel.Visible -or $controls.WarningLabel.Text -ne "⚠ WARNING: $warningText") {
+                                                        $controls.WarningLabel.Text = "⚠ WARNING: Sign-in logs require Azure AD Premium license - pull manually"
+                                                        $controls.WarningLabel.ForeColor = [System.Drawing.Color]::Orange
+                                                        $controls.WarningLabel.Visible = $true
+                                                    }
+                                                } catch {}
+                                            }
+                                            
+                                            # Check for report generation completion
+                                            $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                                            if (Test-Path $responseFile) {
+                                                try {
+                                                    $responseContent = Get-Content $responseFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { $_.Trim() }
+                                                    if ($responseContent -match '^GENERATE_REPORTS_SUCCESS:(.+)$') {
+                                                        $reportFolder = $matches[1].Trim()
+                                                        if (-not [string]::IsNullOrWhiteSpace($reportFolder) -and (Test-Path $reportFolder)) {
+                                                            # Store report folder and show View Reports button
+                                                            $script:clientReportFolders[$clientNum] = $reportFolder
+                                                            if ($controls.ViewReportsButton -and -not $controls.ViewReportsButton.IsDisposed) {
+                                                                $controls.ViewReportsButton.Visible = $true
+                                                                $controls.ViewReportsButton.Enabled = $true
+                                                            }
+                                                        }
+                                                    }
+                                                } catch {
+                                                    # Ignore errors reading response file
+                                                }
+                                            }
+                                            
+                                            # Only update if status has changed to avoid flickering
+                                            if ($controls.StatusLabel.Text -ne $statusMessage) {
+                                                # Update status label with latest message
+                                                $controls.StatusLabel.Text = $statusMessage
+                                                
+                                                # Color code based on status
+                                                if ($statusMessage -match 'successful|complete|SUCCESS|authenticated') {
+                                                    $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Green
+                                                } elseif ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                                    $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Red
+                                                } elseif ($statusMessage -match 'generating|processing|running|starting') {
+                                                    $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
+                                                } elseif ($statusMessage -match 'Ready!|Waiting for Graph Auth') {
+                                                    $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
+                                                } elseif ($statusMessage -match 'waiting|polling') {
+                                                    $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         } catch {
-                            # Silently ignore errors reading status file
+                            # Silently ignore errors for individual clients
                         }
                     }
+                } catch {
+                    # Stop timer if any error occurs
+                    try {
+                        if ($statusUpdateTimer) {
+                            $statusUpdateTimer.Stop()
+                        }
+                    } catch {}
                 }
             })
             $statusUpdateTimer.Start()
 
             # Stop timer when form closes
             $authConsoleForm.add_FormClosed({
-                $statusUpdateTimer.Stop()
-                $statusUpdateTimer.Dispose()
+                try {
+                    if ($statusUpdateTimer) {
+                        if ($statusUpdateTimer.Enabled) {
+                            $statusUpdateTimer.Stop()
+                        }
+                        # Small delay to ensure timer stops processing
+                        Start-Sleep -Milliseconds 100
+                        if ($statusUpdateTimer) {
+                            $statusUpdateTimer.Dispose()
+                        }
+                    }
+                } catch {
+                    # Silently ignore disposal errors
+                }
             })
 
             # View Status Files button (for debugging)
@@ -7589,7 +8976,7 @@ if (Test-Path `$ReportSelectionsFile) {
             $viewStatusBtn.Location = New-Object System.Drawing.Point(15, 570)
             $viewStatusBtn.Size = New-Object System.Drawing.Size(150, 30)
             $viewStatusBtn.add_Click({
-                foreach ($clientNum in 1..$tenantCount) {
+                foreach ($clientNum in $script:clientAuthControls.Keys) {
                     $statusFile = Join-Path $script:tempDir "Client${clientNum}_Status.txt"
                     if (Test-Path $statusFile) {
                         try {
@@ -7610,6 +8997,12 @@ if (Test-Path `$ReportSelectionsFile) {
             
             # Show authentication console
             $authConsoleForm.ShowDialog() | Out-Null
+            
+            # When authentication console closes, show the bulk form again
+            # Use Show() instead of ShowDialog() since the form was already shown modally
+            if (-not $bulkForm.Visible) {
+                $bulkForm.Show()
+            }
         })
 
         # Close button handler
@@ -9936,3 +11329,4 @@ function New-PatternPassword {
     
     return $password
 }
+

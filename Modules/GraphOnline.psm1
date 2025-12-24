@@ -164,17 +164,33 @@ function Connect-GraphService {
             # Ignore errors clearing MSAL cache - method may not be available
         }
 
+        # Disable broker/WAM so Connect-MgGraph uses the system browser instead of an embedded popup
+        $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+        $env:MSAL_DISABLE_BROKER = "1"
+        $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+
+        # Ensure the cache directory is empty before starting a new auth flow
+        if ($env:MSAL_CACHE_DIR) {
+            try {
+                if (-not (Test-Path $env:MSAL_CACHE_DIR)) {
+                    New-Item -ItemType Directory -Path $env:MSAL_CACHE_DIR -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Get-ChildItem -Path $env:MSAL_CACHE_DIR -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            } catch {
+                # Ignore cache cleanup errors to avoid blocking auth
+            }
+        }
+
         # Connect to Graph with improved error handling
-        # Note: The device sign-in prompt cannot be bypassed with interactive authentication
-        # Users should select "No, this app only" to avoid device registration
+        # With broker disabled above, this will use interactive browser auth and automatically open the browser
         try {
-            $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
+            $global:graphConnection = Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
         } catch {
             $msg = $_.Exception.Message
-            # Retry without -ForceRefresh if not supported by module
-            if ($msg -match "parameter name 'ForceRefresh'|matches parameter name 'ForceRefresh'|ForceRefresh") {
+            # Retry if there was a parameter issue
+            if ($msg -match "parameter name|matches parameter name") {
                 try {
-                    $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop
+                    $global:graphConnection = Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
                 } catch {
                     throw
                 }
