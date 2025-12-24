@@ -589,6 +589,20 @@ try {
     Write-Status "Modules imported successfully"
     Write-Host ""
     
+    # CRITICAL: Disconnect any existing Graph session before starting
+    # This ensures each tenant starts with a fresh authentication state
+    # Even though each tenant has its own process, WAM might cache credentials globally
+    try {
+        `$existingContext = Get-MgContext -ErrorAction SilentlyContinue
+        if (`$existingContext) {
+            Write-Host "Found existing Graph session - disconnecting to ensure fresh authentication..." -ForegroundColor Yellow
+            Disconnect-MgGraph -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500  # Brief pause to ensure disconnection completes
+        }
+    } catch {
+        # Ignore errors - no session exists or module not loaded yet
+    }
+    
     # Load report selections from JSON
     `$reportSelections = @{}
     if (Test-Path `$ReportSelectionsFile) {
@@ -654,11 +668,15 @@ try {
                 Write-Host "Clearing existing sessions and token caches..." -ForegroundColor Cyan
                 
                 # Disconnect Graph session first (only if one exists in this process)
+                # CRITICAL: This must happen BEFORE clearing cache to ensure session is fully released
                 try { 
                     `$mgContext = Get-MgContext -ErrorAction SilentlyContinue
                     if (`$mgContext) {
+                        Write-Host "Found existing Graph context - Tenant: `$(`$mgContext.TenantId), Account: `$(`$mgContext.Account)" -ForegroundColor Yellow
                         Disconnect-MgGraph -ErrorAction SilentlyContinue 
                         Write-Host "Disconnected existing Graph session for this tenant" -ForegroundColor Gray
+                        # Wait a moment to ensure disconnection completes
+                        Start-Sleep -Milliseconds 500
                     } else {
                         Write-Host "No existing Graph session to disconnect" -ForegroundColor Gray
                     }
@@ -666,12 +684,21 @@ try {
                     # Ignore errors - session may not exist
                 }
                 
-                # Clear Graph token cache
+                # Clear Graph token cache and reset GraphSession singleton
                 try {
                     `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
-                    if (`$graphSession -and `$graphSession.AuthContext) {
-                        `$graphSession.AuthContext.ClearTokenCache()
-                        Write-Host "Cleared Graph token cache" -ForegroundColor Gray
+                    if (`$graphSession) {
+                        if (`$graphSession.AuthContext) {
+                            `$graphSession.AuthContext.ClearTokenCache()
+                            Write-Host "Cleared Graph token cache" -ForegroundColor Gray
+                        }
+                        # Try to reset the session instance to ensure fresh state
+                        try {
+                            `$graphSession.Reset() | Out-Null
+                            Write-Host "Reset GraphSession instance" -ForegroundColor Gray
+                        } catch {
+                            # Reset() method may not exist in all versions - ignore if not available
+                        }
                     }
                 } catch {
                     # Ignore errors clearing token cache
