@@ -7368,7 +7368,6 @@ if (Test-Path `$ReportSelectionsFile) {
             $clientRowHeight = 200  # Increased to accommodate all controls including ticket textbox (80px) and view reports button
             $clientRowSpacing = 10  # Increased spacing between rows
 
-<<<<<<< HEAD
             # Create rows for each client
             for ($i = 1; $i -le $tenantCount; $i++) {
                 # Row container keeps spacing consistent regardless of tenant count
