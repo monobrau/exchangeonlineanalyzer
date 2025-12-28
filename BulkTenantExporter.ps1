@@ -834,7 +834,31 @@ try {
                     
                     Write-Status "Tenant identified as: `$tenantDisplayName"
                     Write-Host "Tenant: `$tenantDisplayName" -ForegroundColor Cyan
-                    Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName"
+
+                    # Query all verified domains for the tenant
+                    `$verifiedDomains = @()
+                    try {
+                        Write-Host "Querying tenant domains..." -ForegroundColor Gray
+                        `$domainsResponse = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/domains" -ErrorAction Stop
+                        if (`$domainsResponse -and `$domainsResponse.value) {
+                            `$verifiedDomains = `$domainsResponse.value |
+                                               Where-Object { `$_.isVerified -eq `$true } |
+                                               ForEach-Object { `$_.id }
+                            Write-Host "Found `$(`$verifiedDomains.Count) verified domain(s): `$(`$verifiedDomains -join ', ')" -ForegroundColor Cyan
+                        }
+                    } catch {
+                        Write-Host "Warning: Failed to query tenant domains: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "Falling back to tenant name as primary domain" -ForegroundColor Yellow
+                    }
+
+                    # Build response with tenant name and domains
+                    if (`$verifiedDomains -and `$verifiedDomains.Count -gt 0) {
+                        `$domainsString = `$verifiedDomains -join ','
+                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName|DOMAINS:`$domainsString"
+                    } else {
+                        # Fallback: just return tenant name without domains
+                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName"
+                    }
                 } catch {
                     Write-Status "ERROR: Graph authentication failed - `$(`$_.Exception.Message)"
                     Write-Host "ERROR: Graph authentication failed - `$(`$_.Exception.Message)" -ForegroundColor Red
@@ -2076,6 +2100,7 @@ try {
             GraphContext = $null
             TenantId = $null
             TenantName = $null
+            TenantDomains = @()  # All verified domains for the tenant
             Account = $null
             IsExpanded = $true  # Start expanded so user can interact with fields
         }
@@ -2591,9 +2616,29 @@ try {
             }
             
             if ($response -like "GRAPH_AUTH_SUCCESS:*") {
-                $tenantName = $response -replace "GRAPH_AUTH_SUCCESS:", ""
+                # Parse tenant name and domains from response
+                # Format: "GRAPH_AUTH_SUCCESS:tenantName" or "GRAPH_AUTH_SUCCESS:tenantName|DOMAINS:domain1,domain2,domain3"
+                $responseParts = ($response -replace "^GRAPH_AUTH_SUCCESS:", "") -split '\|'
+                $tenantName = $responseParts[0]
+
+                # Parse domains if present
+                $tenantDomains = @()
+                foreach ($part in $responseParts) {
+                    if ($part -like "DOMAINS:*") {
+                        $domainsStr = $part -replace "^DOMAINS:", ""
+                        $tenantDomains = $domainsStr -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                    }
+                }
+
+                # Fallback: if no domains returned, use tenant name as domain
+                if ($tenantDomains.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($tenantName)) {
+                    $tenantDomains = @($tenantName)
+                }
+
+                # Store in state
                 $script:clientAuthStates[$clientNum].GraphAuthenticated = $true
                 $script:clientAuthStates[$clientNum].TenantName = $tenantName
+                $script:clientAuthStates[$clientNum].TenantDomains = $tenantDomains
                 $script:clientAuthControls[$clientNum].ClientLabel.Text = "Client $clientNum - $tenantName"
                 $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph Auth Complete - Ready for Exchange"
                 $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange

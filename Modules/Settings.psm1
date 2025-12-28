@@ -1610,7 +1610,79 @@ function Filter-TicketContent {
     return $result.Trim()
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent
+function Extract-EmailsFromTicket {
+    <#
+    .SYNOPSIS
+        Extracts email addresses from ticket content and optionally filters by tenant domains.
+
+    .DESCRIPTION
+        Parses ticket content to find all email addresses using regex pattern matching.
+        If tenant domains are provided, filters to only include emails from those domains.
+        This is used to auto-populate user search fields in the bulk exporter auth console.
+
+    .PARAMETER TicketContent
+        The raw ticket content text to extract emails from.
+
+    .PARAMETER TenantDomains
+        Optional array of domain names to filter by. Only emails from these domains will be returned.
+        Supports both exact matches and subdomain matches.
+
+    .EXAMPLE
+        Extract-EmailsFromTicket -TicketContent $ticketText -TenantDomains @('contoso.com', 'contoso.onmicrosoft.com')
+
+    .OUTPUTS
+        Array of unique email addresses (lowercased and trimmed)
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TicketContent,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$TenantDomains
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        return @()
+    }
+
+    # Extract all email addresses using regex
+    # Pattern matches: word chars + @ + domain with TLD
+    $emailPattern = '\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
+    $allEmails = [regex]::Matches($TicketContent, $emailPattern) |
+                 ForEach-Object { $_.Value.ToLower().Trim() } |
+                 Select-Object -Unique
+
+    # If no tenant domains specified, return all emails
+    if (-not $TenantDomains -or $TenantDomains.Count -eq 0) {
+        return $allEmails
+    }
+
+    # Filter to ONLY include emails from tenant domains
+    $tenantEmails = @()
+    foreach ($email in $allEmails) {
+        # Extract domain from email (part after @)
+        if ($email -match '@(.+)$') {
+            $emailDomain = $matches[1].ToLower()
+
+            # Check against each tenant domain
+            foreach ($tenantDomain in $TenantDomains) {
+                $tenantDomainLower = $tenantDomain.ToLower()
+
+                # Exact match or subdomain match
+                # e.g., "contoso.com" matches "contoso.com" and "mail.contoso.com"
+                if ($emailDomain -eq $tenantDomainLower -or
+                    $emailDomain.EndsWith(".$tenantDomainLower")) {
+                    $tenantEmails += $email
+                    break  # Found a match, no need to check other domains
+                }
+            }
+        }
+    }
+
+    return $tenantEmails
+}
+
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket
 
 
 
