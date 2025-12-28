@@ -2042,6 +2042,17 @@ try {
         $ticketNumbersLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
         $ticketNumbersLabel.Visible = $false
 
+        # Extract Emails Button
+        $extractEmailsBtn = New-Object System.Windows.Forms.Button
+        $extractEmailsBtn.Text = "Extract Emails from Ticket"
+        $extractEmailsBtn.Location = New-Object System.Drawing.Point(580, ($yPos + 95))
+        $extractEmailsBtn.Size = New-Object System.Drawing.Size(170, 25)
+        $extractEmailsBtn.Enabled = $false
+        $extractEmailsBtn.Visible = $false
+        $extractEmailsBtn.Tag = $ClientNumber
+        $extractEmailsBtn.BackColor = [System.Drawing.Color]::FromArgb(94, 53, 177)
+        $extractEmailsBtn.ForeColor = [System.Drawing.Color]::White
+
         # Exchange Online Auth button
         $exchangeAuthBtn = New-Object System.Windows.Forms.Button
         $exchangeAuthBtn.Text = "Exchange Online Auth"
@@ -2091,7 +2102,7 @@ try {
         $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
 
         # Add controls to panel
-        $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $viewReportsBtn))
+        $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $viewReportsBtn))
 
         # Store controls and state
         $script:clientAuthStates[$ClientNumber] = @{
@@ -2126,15 +2137,16 @@ try {
             TicketLabel = $ticketLabel
             TicketTextBox = $ticketTextBox
             TicketNumbersLabel = $ticketNumbersLabel
+            ExtractEmailsButton = $extractEmailsBtn
             ViewReportsButton = $viewReportsBtn
         }
-        
+
         # View Reports button handler
         $capturedClientNumForView = $ClientNumber
         $viewReportsBtn.add_Click({
             $clientNum = $this.Tag
             if (-not $clientNum) { $clientNum = $capturedClientNumForView }
-            
+
             if ($script:clientReportFolders.ContainsKey($clientNum)) {
                 $reportFolder = $script:clientReportFolders[$clientNum]
                 if ($reportFolder) {
@@ -2151,7 +2163,79 @@ try {
                 [System.Windows.Forms.MessageBox]::Show("No report folder available for Client $clientNum", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
             }
         })
-        
+
+        # Extract Emails button handler
+        $capturedClientNumForExtract = $ClientNumber
+        $extractEmailsBtn.add_Click({
+            $clientNum = $this.Tag
+            if (-not $clientNum) { $clientNum = $capturedClientNumForExtract }
+
+            # Call the extraction function (without the prerequisites check for empty field)
+            $controls = $script:clientAuthControls[$clientNum]
+            $state = $script:clientAuthStates[$clientNum]
+
+            # Check prerequisites (but allow populating even if field has content)
+            if (-not $state.GraphAuthenticated -or -not $state.ExchangeAuthenticated) {
+                [System.Windows.Forms.MessageBox]::Show("Both Graph and Exchange authentication must be complete before extracting emails.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+
+            if (-not $script:clientTickets.ContainsKey($clientNum)) {
+                [System.Windows.Forms.MessageBox]::Show("Please paste ticket content first.", "No Ticket Content", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+            $ticketData = $script:clientTickets[$clientNum]
+            if (-not $ticketData -or [string]::IsNullOrWhiteSpace($ticketData.Content)) {
+                [System.Windows.Forms.MessageBox]::Show("Please paste ticket content first.", "No Ticket Content", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+
+            if (-not $state.TenantDomains -or $state.TenantDomains.Count -eq 0) {
+                [System.Windows.Forms.MessageBox]::Show("No tenant domains found. Please ensure Graph authentication completed successfully.", "No Tenant Domains", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+
+            # Import Settings module to access Extract-EmailsFromTicket
+            try {
+                Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show("Failed to load Settings module: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                return
+            }
+
+            # Extract emails from ticket content
+            $emails = @()
+            try {
+                if (Get-Command Extract-EmailsFromTicket -ErrorAction SilentlyContinue) {
+                    $emails = Extract-EmailsFromTicket -TicketContent $ticketData.Content -TenantDomains $state.TenantDomains
+                }
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show("Failed to extract emails from ticket: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                return
+            }
+
+            if (-not $emails -or $emails.Count -eq 0) {
+                [System.Windows.Forms.MessageBox]::Show("No emails matching tenant domains found in ticket content.`n`nTenant domains: $($state.TenantDomains -join ', ')", "No Emails Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                return
+            }
+
+            # Populate user search textbox
+            $emailsText = $emails -join '; '
+            $controls.UserSearchTextBox.Text = $emailsText
+
+            # Show visual feedback
+            $controls.UserValidationLabel.Text = "Extracted $($emails.Count) email(s) from ticket"
+            $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Blue
+            $controls.UserValidationLabel.Visible = $true
+
+            # Auto-validate
+            try {
+                $controls.ValidateUsersButton.PerformClick()
+            } catch {
+                Write-Host "Warning: Auto-validation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        })
+
         # Add event handler to extract ticket numbers when text changes
         $capturedClientNum = $ClientNumber
         $ticketTextBox.add_TextChanged({
@@ -2172,6 +2256,17 @@ try {
                     } else {
                         $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Text = ""
                         $script:clientAuthControls[$capturedClientNum].TicketNumbersLabel.Visible = $false
+                    }
+                }
+
+                # Enable Extract Emails button if both auths complete and ticket has content
+                $ticketContent = $this.Text
+                if ($script:clientAuthStates.ContainsKey($capturedClientNum)) {
+                    $state = $script:clientAuthStates[$capturedClientNum]
+                    if ($state.GraphAuthenticated -and $state.ExchangeAuthenticated -and
+                        -not [string]::IsNullOrWhiteSpace($ticketContent) -and
+                        $script:clientAuthControls[$capturedClientNum].ExtractEmailsButton) {
+                        $script:clientAuthControls[$capturedClientNum].ExtractEmailsButton.Enabled = $true
                     }
                 }
 
@@ -2774,6 +2869,14 @@ try {
                 $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
                 $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
                 $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
+
+                # Show Extract Emails button (enable when ticket content exists)
+                $script:clientAuthControls[$clientNum].ExtractEmailsButton.Visible = $true
+                if ($script:clientTickets.ContainsKey($clientNum) -and
+                    $script:clientTickets[$clientNum] -and
+                    -not [string]::IsNullOrWhiteSpace($script:clientTickets[$clientNum].Content)) {
+                    $script:clientAuthControls[$clientNum].ExtractEmailsButton.Enabled = $true
+                }
 
                 # Attempt auto-population of emails from ticket (both auths now complete)
                 Attempt-AutoPopulateEmails -ClientNumber $clientNum
