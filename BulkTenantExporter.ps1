@@ -2192,22 +2192,19 @@ try {
             $clientNum = $this.Tag
             if (-not $clientNum) { $clientNum = $capturedClientNumForExtract }
 
-            # Call the extraction function (without the prerequisites check for empty field)
+            # Get controls and state
             $controls = $script:clientAuthControls[$clientNum]
             $state = $script:clientAuthStates[$clientNum]
 
-            # Check prerequisites (but allow populating even if field has content)
+            # Check prerequisites
             if (-not $state.GraphAuthenticated -or -not $state.ExchangeAuthenticated) {
                 [System.Windows.Forms.MessageBox]::Show("Both Graph and Exchange authentication must be complete before extracting emails.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                 return
             }
 
-            if (-not $script:clientTickets.ContainsKey($clientNum)) {
-                [System.Windows.Forms.MessageBox]::Show("Please paste ticket content first.", "No Ticket Content", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                return
-            }
-            $ticketData = $script:clientTickets[$clientNum]
-            if (-not $ticketData -or [string]::IsNullOrWhiteSpace($ticketData.Content)) {
+            # Read ticket content directly from the textbox
+            $ticketContent = $controls.TicketTextBox.Text
+            if ([string]::IsNullOrWhiteSpace($ticketContent)) {
                 [System.Windows.Forms.MessageBox]::Show("Please paste ticket content first.", "No Ticket Content", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                 return
             }
@@ -2229,7 +2226,7 @@ try {
             $emails = @()
             try {
                 if (Get-Command Extract-EmailsFromTicket -ErrorAction SilentlyContinue) {
-                    $emails = Extract-EmailsFromTicket -TicketContent $ticketData.Content -TenantDomains $state.TenantDomains
+                    $emails = Extract-EmailsFromTicket -TicketContent $ticketContent -TenantDomains $state.TenantDomains
                 }
             } catch {
                 [System.Windows.Forms.MessageBox]::Show("Failed to extract emails from ticket: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
