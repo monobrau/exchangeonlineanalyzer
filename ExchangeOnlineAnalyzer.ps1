@@ -8435,7 +8435,13 @@ if (Test-Path `$ReportSelectionsFile) {
                     
                     # Use longer timeout for report generation (reports can take several minutes, but we just need GENERATE_REPORTS_STARTED response)
                     $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 10
-                    
+
+                    # Auto-minimize when report generation starts
+                    if ($script:clientAuthStates[$clientNum].IsExpanded) {
+                        $script:clientAuthStates[$clientNum].IsExpanded = $false
+                        $controls.ToggleButton.PerformClick()
+                    }
+
                     if ($reportResponse -like "GENERATE_REPORTS_SUCCESS:*") {
                         $outputPath = ($reportResponse -replace "GENERATE_REPORTS_SUCCESS:", "").Trim()
                         $script:clientReportFolders[$clientNum] = $outputPath
@@ -8847,9 +8853,15 @@ if (Test-Path `$ReportSelectionsFile) {
                         
                         # Remove controls from panel
                         $controls = $script:clientAuthControls[$clientNum]
+                        $script:authPanel.Controls.Remove($controls.BorderPanel)
+                        $script:authPanel.Controls.Remove($controls.ToggleButton)
                         $script:authPanel.Controls.Remove($controls.ClientLabel)
                         $script:authPanel.Controls.Remove($controls.StatusLabel)
                         $script:authPanel.Controls.Remove($controls.WarningLabel)
+                        $script:authPanel.Controls.Remove($controls.GraphStatusLabel)
+                        $script:authPanel.Controls.Remove($controls.ExchangeStatusLabel)
+                        $script:authPanel.Controls.Remove($controls.OpenReportsButton)
+                        $script:authPanel.Controls.Remove($controls.RemoveMinimizedButton)
                         $script:authPanel.Controls.Remove($controls.GraphButton)
                         $script:authPanel.Controls.Remove($controls.ExchangeButton)
                         $script:authPanel.Controls.Remove($controls.RemoveButton)
@@ -8880,40 +8892,8 @@ if (Test-Path `$ReportSelectionsFile) {
                             $script:clientReportFolders.Remove($clientNum)
                         }
                         
-                        # Recalculate positions for remaining rows
-                        $rowIndex = 0
-                        foreach ($key in ($script:clientAuthControls.Keys | Sort-Object)) {
-                            $yPos = $rowIndex * ($clientRowHeight + $clientRowSpacing) + 10
-                            $controls = $script:clientAuthControls[$key]
-                            $controls.ClientLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 15))
-                            $controls.StatusLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 15))
-                            $controls.WarningLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 35))
-                            $controls.GraphButton.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
-                            $controls.ExchangeButton.Location = New-Object System.Drawing.Point(610, ($yPos + 10))
-                            $controls.RemoveButton.Location = New-Object System.Drawing.Point(760, ($yPos + 10))
-                            $controls.ResetButton.Location = New-Object System.Drawing.Point(840, ($yPos + 10))
-                            # Update user filtering controls
-                            if ($controls.UserFilterCheckBox) {
-                                $controls.UserFilterCheckBox.Location = New-Object System.Drawing.Point(10, ($yPos + 50))
-                                $controls.UserSearchTextBox.Location = New-Object System.Drawing.Point(120, ($yPos + 48))
-                                $controls.ValidateUsersButton.Location = New-Object System.Drawing.Point(330, ($yPos + 47))
-                                $controls.UserValidationLabel.Location = New-Object System.Drawing.Point(410, ($yPos + 50))
-                            }
-                            # Update ticket controls
-                            if ($controls.TicketLabel) {
-                                $controls.TicketLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 75))
-                                $controls.TicketTextBox.Location = New-Object System.Drawing.Point(170, ($yPos + 73))
-                                $controls.TicketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($yPos + 73))
-                            }
-                            # Update action buttons
-                            if ($controls.GenerateReportsButton) {
-                                $controls.GenerateReportsButton.Location = New-Object System.Drawing.Point(760, ($yPos + 47))
-                            }
-                            if ($controls.ViewReportsButton) {
-                                $controls.ViewReportsButton.Location = New-Object System.Drawing.Point(760, ($yPos + 160))
-                            }
-                            $rowIndex++
-                        }
+                        # Recalculate positions for remaining tenants
+                        Update-TenantPositions
                         
                         $script:authStatusTextBox.AppendText("Client $clientNum removed.`r`n")
                         $script:authStatusTextBox.ScrollToCaret()
@@ -9110,11 +9090,65 @@ if (Test-Path `$ReportSelectionsFile) {
                                                                 $controls.ViewReportsButton.Visible = $true
                                                                 $controls.ViewReportsButton.Enabled = $true
                                                             }
+                                                            # Also enable Open Reports button in minimized view
+                                                            if ($controls.OpenReportsButton -and -not $controls.OpenReportsButton.IsDisposed) {
+                                                                $controls.OpenReportsButton.Enabled = $true
+                                                            }
                                                         }
                                                     }
                                                 } catch {
                                                     # Ignore errors reading response file
                                                 }
+                                            }
+
+                                            # Update Graph/Exchange status indicators for minimized view
+                                            if ($controls.GraphStatusLabel -and -not $controls.GraphStatusLabel.IsDisposed) {
+                                                if ($script:clientAuthStates[$clientNum].GraphAuthenticated) {
+                                                    $controls.GraphStatusLabel.Text = "Graph: ✓"
+                                                    $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Green
+                                                } else {
+                                                    $controls.GraphStatusLabel.Text = "Graph: ○"
+                                                    $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                                                }
+                                            }
+
+                                            if ($controls.ExchangeStatusLabel -and -not $controls.ExchangeStatusLabel.IsDisposed) {
+                                                if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                                                    $controls.ExchangeStatusLabel.Text = "Exchange: ✓"
+                                                    $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Green
+                                                } else {
+                                                    $controls.ExchangeStatusLabel.Text = "Exchange: ○"
+                                                    $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                                                }
+                                            }
+
+                                            # Update border panel color based on overall status
+                                            if ($controls.BorderPanel -and -not $controls.BorderPanel.IsDisposed) {
+                                                $borderColor = [System.Drawing.Color]::Gray  # Default: Not started
+
+                                                if ($script:clientAuthStates[$clientNum].GraphAuthenticated -and $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                                                    # Both auths complete
+                                                    if ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                                        $borderColor = [System.Drawing.Color]::Red  # Error state
+                                                    } elseif ($statusMessage -match 'generating|processing|running|starting') {
+                                                        $borderColor = [System.Drawing.Color]::Orange  # Processing
+                                                    } elseif ($statusMessage -match 'successful|complete|SUCCESS') {
+                                                        $borderColor = [System.Drawing.Color]::Green  # Complete
+                                                    } else {
+                                                        $borderColor = [System.Drawing.Color]::Green  # Both auths done
+                                                    }
+                                                } elseif ($script:clientAuthStates[$clientNum].GraphAuthenticated -or $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                                                    # Partial auth
+                                                    if ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                                        $borderColor = [System.Drawing.Color]::Red  # Error state
+                                                    } else {
+                                                        $borderColor = [System.Drawing.Color]::Orange  # Partial auth or processing
+                                                    }
+                                                } elseif ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                                    $borderColor = [System.Drawing.Color]::Red  # Error state
+                                                }
+
+                                                $controls.BorderPanel.BackColor = $borderColor
                                             }
                                             
                                             # Only update if status has changed to avoid flickering
