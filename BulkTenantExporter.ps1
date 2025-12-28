@@ -805,6 +805,29 @@ try {
                     # Ignore errors
                 }
 
+                # Clear Windows WAM (Web Account Manager) token cache
+                # This helps prevent reusing cached credentials from previous sessions
+                try {
+                    `$wamCache = Join-Path `$env:LOCALAPPDATA "Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Cache"
+                    if (Test-Path `$wamCache) {
+                        Get-ChildItem -Path `$wamCache -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared WAM token broker cache" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors - WAM cache may not exist or may be in use
+                }
+
+                # Also try alternative WAM cache location
+                try {
+                    `$wamCache2 = Join-Path `$env:LOCALAPPDATA "Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\LocalState"
+                    if (Test-Path `$wamCache2) {
+                        Get-ChildItem -Path `$wamCache2 -Recurse -File -Filter "*.dat" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared WAM local state cache" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors
+                }
+
                 `$scopes = @(
                     "AuditLog.Read.All",
                     "User.Read.All",
