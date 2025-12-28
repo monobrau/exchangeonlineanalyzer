@@ -782,7 +782,29 @@ try {
                         # Ignore cache cleanup errors to avoid blocking auth
                     }
                 }
-    
+
+                # Clear default MSAL cache location in user profile (in addition to custom cache dir)
+                try {
+                    `$defaultMsalCache = Join-Path `$env:LOCALAPPDATA ".IdentityService"
+                    if (Test-Path `$defaultMsalCache) {
+                        Get-ChildItem -Path `$defaultMsalCache -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared default IdentityService cache in user profile" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors
+                }
+
+                # Clear Microsoft.Graph module's own cache
+                try {
+                    `$graphModuleCache = Join-Path `$env:LOCALAPPDATA "Microsoft\Graph"
+                    if (Test-Path `$graphModuleCache) {
+                        Get-ChildItem -Path `$graphModuleCache -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared Microsoft Graph module cache" -ForegroundColor Gray
+                    }
+                } catch {
+                    # Ignore errors
+                }
+
                 `$scopes = @(
                     "AuditLog.Read.All",
                     "User.Read.All",
@@ -791,7 +813,7 @@ try {
                     "Application.Read.All",
                     "Reports.Read.All"
                 )
-    
+
                 try {
                     # Use standard Connect-MgGraph authentication
                     # LIMITATION: Microsoft.Graph.Authentication version 2.33.0+ defaults to WAM (Web Account Manager) on Windows.
