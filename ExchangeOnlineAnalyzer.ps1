@@ -7969,7 +7969,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 $userValidationLabel = New-Object System.Windows.Forms.Label
                 $userValidationLabel.Text = ""
                 $userValidationLabel.Location = New-Object System.Drawing.Point(410, ($yPos + 50))
-                $userValidationLabel.Size = New-Object System.Drawing.Size(200, 15)
+                $userValidationLabel.Size = New-Object System.Drawing.Size(160, 15)
                 $userValidationLabel.ForeColor = [System.Drawing.Color]::Blue
                 $userValidationLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
                 $userValidationLabel.Visible = $false
@@ -8177,15 +8177,36 @@ if (Test-Path `$ReportSelectionsFile) {
                 $capturedClientNumForTicket = $ClientNumber
                 $ticketTextBox.add_TextChanged({
                     try {
+                        $ticketContent = $this.Text
+
+                        # Store ticket content in clientTickets hashtable
+                        if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                            if (-not $script:clientTickets) {
+                                $script:clientTickets = @{}
+                            }
+                            $script:clientTickets[$capturedClientNumForTicket] = @{
+                                Content = $ticketContent
+                                Numbers = @()
+                            }
+                        } else {
+                            # Clear ticket data if content is empty
+                            if ($script:clientTickets -and $script:clientTickets.ContainsKey($capturedClientNumForTicket)) {
+                                $script:clientTickets.Remove($capturedClientNumForTicket)
+                            }
+                        }
+
                         Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
                         if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
-                            $ticketContent = $this.Text
                             if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
                                 $ticketNums = Extract-TicketNumbers -TicketContent $ticketContent
                                 if ($ticketNums -and $ticketNums.Count -gt 0) {
                                     $ticketNumsStr = ($ticketNums | ForEach-Object { "#$_" }) -join ', '
                                     $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Text = "Detected: $ticketNumsStr"
                                     $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Visible = $true
+                                    # Store ticket numbers in hashtable
+                                    if ($script:clientTickets.ContainsKey($capturedClientNumForTicket)) {
+                                        $script:clientTickets[$capturedClientNumForTicket].Numbers = $ticketNums
+                                    }
                                 } else {
                                     $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Text = ""
                                     $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Visible = $false
