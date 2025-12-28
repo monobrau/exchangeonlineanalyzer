@@ -838,21 +838,22 @@ try {
                 )
 
                 try {
-                    # Use standard Connect-MgGraph authentication
-                    # LIMITATION: Microsoft.Graph.Authentication version 2.33.0+ defaults to WAM (Web Account Manager) on Windows.
-                    # Unlike Connect-ExchangeOnline which has a -DisableWAM parameter, Connect-MgGraph does not provide
-                    # this option. Environment variables are set below to attempt disabling WAM, but newer module versions
-                    # may ignore them. The authentication will still function correctly via the WAM popup if the system
-                    # browser doesn't open automatically. This is a known limitation of the Microsoft.Graph.Authentication
-                    # module and not a bug in this script.
-                    # TODO: Revisit this implementation if/when Microsoft.Graph.Authentication adds a -DisableWAM parameter
-                    #       or provides another mechanism to force system browser authentication.
-                    # Set environment variables to try to disable WAM (may not work with newer module versions)
-                    `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
-                    `$env:MSAL_DISABLE_BROKER = "1"
-                    `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+                    # Use Device Code authentication to bypass WAM and ensure fresh authentication
+                    # Device Code flow requires user to visit a URL and enter a code, but it guarantees
+                    # no cached credentials are reused. This is the most reliable way to prevent
+                    # accidentally authenticating to the wrong tenant.
+                    Write-Host ""
+                    Write-Host "========================================" -ForegroundColor Cyan
+                    Write-Host "DEVICE CODE AUTHENTICATION" -ForegroundColor Cyan
+                    Write-Host "========================================" -ForegroundColor Cyan
+                    Write-Host "To prevent reusing cached credentials, we use Device Code authentication." -ForegroundColor Yellow
+                    Write-Host "You will see a code and a URL. Follow these steps:" -ForegroundColor Yellow
+                    Write-Host "  1. Copy the code that will be displayed" -ForegroundColor White
+                    Write-Host "  2. Open your browser and go to: https://microsoft.com/devicelogin" -ForegroundColor White
+                    Write-Host "  3. Paste the code and sign in with the CORRECT tenant account" -ForegroundColor White
+                    Write-Host ""
                     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
-                    Connect-MgGraph -Scopes `$scopes -ContextScope Process -NoWelcome -ErrorAction Stop
+                    Connect-MgGraph -Scopes `$scopes -UseDeviceCode -ContextScope Process -NoWelcome -ErrorAction Stop
                     `$mgContext = Get-MgContext -ErrorAction Stop
                     `$graphAuthenticated = `$true
                     Write-Status "Graph authentication successful! Tenant: `$(`$mgContext.TenantId)"
