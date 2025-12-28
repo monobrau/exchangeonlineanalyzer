@@ -8012,6 +8012,9 @@ if (Test-Path `$ReportSelectionsFile) {
                                 $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Visible = $false
                             }
                         }
+
+                        # Attempt auto-population of emails from ticket (if conditions are met)
+                        Attempt-AutoPopulateEmails -ClientNumber $capturedClientNumForTicket
                     } catch {
                         # Ignore errors
                     }
@@ -8746,6 +8749,9 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:authStatusTextBox.AppendText("Client $clientNum is ready to generate reports. Configure user filtering and tickets if needed, then click Generate Reports.`r`n")
                         $script:authStatusTextBox.ScrollToCaret()
                         [System.Windows.Forms.Application]::DoEvents()
+
+                        # Attempt auto-population of emails from ticket (both auths now complete)
+                        Attempt-AutoPopulateEmails -ClientNumber $clientNum
                     } elseif ($response -like "EXCHANGE_AUTH_FAILED:*") {
                         $errorMsg = $response -replace "EXCHANGE_AUTH_FAILED:", ""
                         $this.Enabled = $true
