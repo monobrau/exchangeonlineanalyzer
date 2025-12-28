@@ -8960,13 +8960,9 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:clientAuthControls[$clientNum].GenerateReportsButton.Visible = $true
                         $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $true
 
-                        # Show Extract Emails button (enable when ticket content exists)
+                        # Show and enable Extract Emails button (both auths now complete)
                         $script:clientAuthControls[$clientNum].ExtractEmailsButton.Visible = $true
-                        if ($script:clientTickets.ContainsKey($clientNum) -and
-                            $script:clientTickets[$clientNum] -and
-                            -not [string]::IsNullOrWhiteSpace($script:clientTickets[$clientNum].Content)) {
-                            $script:clientAuthControls[$clientNum].ExtractEmailsButton.Enabled = $true
-                        }
+                        $script:clientAuthControls[$clientNum].ExtractEmailsButton.Enabled = $true
 
                         $script:authStatusTextBox.AppendText("Client $clientNum is ready to generate reports. Configure user filtering and tickets if needed, then click Generate Reports.`r`n")
                         $script:authStatusTextBox.ScrollToCaret()

@@ -2870,13 +2870,9 @@ try {
                 $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
                 $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
 
-                # Show Extract Emails button (enable when ticket content exists)
+                # Show and enable Extract Emails button (both auths now complete)
                 $script:clientAuthControls[$clientNum].ExtractEmailsButton.Visible = $true
-                if ($script:clientTickets.ContainsKey($clientNum) -and
-                    $script:clientTickets[$clientNum] -and
-                    -not [string]::IsNullOrWhiteSpace($script:clientTickets[$clientNum].Content)) {
-                    $script:clientAuthControls[$clientNum].ExtractEmailsButton.Enabled = $true
-                }
+                $script:clientAuthControls[$clientNum].ExtractEmailsButton.Enabled = $true
 
                 # Attempt auto-population of emails from ticket (both auths now complete)
                 Attempt-AutoPopulateEmails -ClientNumber $clientNum
