@@ -2042,10 +2042,10 @@ try {
         $ticketNumbersLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
         $ticketNumbersLabel.Visible = $false
 
-        # Extract Emails Button
+        # Extract Emails Button (to the left of Generate Reports button)
         $extractEmailsBtn = New-Object System.Windows.Forms.Button
         $extractEmailsBtn.Text = "Extract Emails from Ticket"
-        $extractEmailsBtn.Location = New-Object System.Drawing.Point(580, ($yPos + 95))
+        $extractEmailsBtn.Location = New-Object System.Drawing.Point(580, ($yPos + 47))
         $extractEmailsBtn.Size = New-Object System.Drawing.Size(170, 25)
         $extractEmailsBtn.Enabled = $false
         $extractEmailsBtn.Visible = $false
