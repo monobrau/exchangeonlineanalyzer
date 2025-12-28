@@ -7233,6 +7233,24 @@ if (Test-Path `$ReportSelectionsFile) {
             $addTenantBtn.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
             $addTenantBtn.ForeColor = [System.Drawing.Color]::White
 
+            # Expand All button
+            $expandAllBtn = New-Object System.Windows.Forms.Button
+            $expandAllBtn.Text = "Expand All"
+            $expandAllBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+            $expandAllBtn.Location = New-Object System.Drawing.Point(175, 100)
+            $expandAllBtn.Size = New-Object System.Drawing.Size(100, 35)
+            $expandAllBtn.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
+            $expandAllBtn.ForeColor = [System.Drawing.Color]::White
+
+            # Collapse All button
+            $collapseAllBtn = New-Object System.Windows.Forms.Button
+            $collapseAllBtn.Text = "Collapse All"
+            $collapseAllBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+            $collapseAllBtn.Location = New-Object System.Drawing.Point(285, 100)
+            $collapseAllBtn.Size = New-Object System.Drawing.Size(100, 35)
+            $collapseAllBtn.BackColor = [System.Drawing.Color]::FromArgb(156, 39, 176)
+            $collapseAllBtn.ForeColor = [System.Drawing.Color]::White
+
             # Create Panel for client authentication rows
             $authPanel = New-Object System.Windows.Forms.Panel
             $authPanel.Location = New-Object System.Drawing.Point(15, 145)
@@ -7252,7 +7270,7 @@ if (Test-Path `$ReportSelectionsFile) {
             $clientRowSpacing = 10  # Increased spacing between rows
 
             # Add controls to form
-            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $authPanel))
+            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $authPanel))
 
             # Close button
             $authCloseBtn = New-Object System.Windows.Forms.Button
@@ -7447,7 +7465,63 @@ if (Test-Path `$ReportSelectionsFile) {
                 # Return array of UserPrincipalNames
                 return ($uniqueUsers | ForEach-Object { $_.UserPrincipalName })
             }
-            
+
+            # Function to update tenant positions after minimize/expand
+            function Update-TenantPositions {
+                $clientRowSpacing = 10
+                $minimizedHeight = 50
+                $expandedHeight = 200
+                $currentY = 10
+
+                # Sort client numbers to maintain order
+                $sortedClientNums = $script:clientAuthControls.Keys | Sort-Object
+
+                foreach ($clientNum in $sortedClientNums) {
+                    $controls = $script:clientAuthControls[$clientNum]
+                    if (-not $controls) { continue }
+
+                    # Determine height based on expanded state
+                    $isExpanded = $script:clientAuthStates[$clientNum].IsExpanded
+                    $rowHeight = if ($isExpanded) { $expandedHeight } else { $minimizedHeight }
+
+                    # Update Y position for all controls in this tenant
+                    $controls.BorderPanel.Location = New-Object System.Drawing.Point(0, $currentY)
+                    $controls.BorderPanel.Height = $rowHeight
+
+                    $controls.ToggleButton.Location = New-Object System.Drawing.Point(10, ($currentY + 10))
+                    $controls.ClientLabel.Location = New-Object System.Drawing.Point(50, ($currentY + 15))
+                    $controls.StatusLabel.Location = New-Object System.Drawing.Point(270, ($currentY + 15))
+                    $controls.WarningLabel.Location = New-Object System.Drawing.Point(270, ($currentY + 35))
+
+                    # Minimized view controls
+                    $controls.GraphStatusLabel.Location = New-Object System.Drawing.Point(480, ($currentY + 15))
+                    $controls.ExchangeStatusLabel.Location = New-Object System.Drawing.Point(590, ($currentY + 15))
+                    $controls.OpenReportsButton.Location = New-Object System.Drawing.Point(720, ($currentY + 10))
+                    $controls.RemoveMinimizedButton.Location = New-Object System.Drawing.Point(850, ($currentY + 10))
+
+                    # Expanded view controls
+                    $controls.GraphButton.Location = New-Object System.Drawing.Point(480, ($currentY + 10))
+                    $controls.ExchangeButton.Location = New-Object System.Drawing.Point(610, ($currentY + 10))
+                    $controls.RemoveButton.Location = New-Object System.Drawing.Point(770, ($currentY + 10))
+                    $controls.ResetButton.Location = New-Object System.Drawing.Point(860, ($currentY + 10))
+
+                    $controls.UserFilterCheckBox.Location = New-Object System.Drawing.Point(10, ($currentY + 50))
+                    $controls.UserSearchTextBox.Location = New-Object System.Drawing.Point(120, ($currentY + 48))
+                    $controls.ValidateUsersButton.Location = New-Object System.Drawing.Point(330, ($currentY + 47))
+                    $controls.UserValidationLabel.Location = New-Object System.Drawing.Point(410, ($currentY + 50))
+
+                    $controls.TicketLabel.Location = New-Object System.Drawing.Point(10, ($currentY + 75))
+                    $controls.TicketTextBox.Location = New-Object System.Drawing.Point(170, ($currentY + 73))
+                    $controls.TicketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($currentY + 73))
+
+                    $controls.GenerateReportsButton.Location = New-Object System.Drawing.Point(770, ($currentY + 47))
+                    $controls.ViewReportsButton.Location = New-Object System.Drawing.Point(770, ($currentY + 160))
+
+                    # Move to next position
+                    $currentY += $rowHeight + $clientRowSpacing
+                }
+            }
+
             # Function to add a new tenant dynamically
             function Add-NewTenant {
                 param([int]$ClientNumber)
@@ -7656,8 +7730,8 @@ if (Test-Path `$ReportSelectionsFile) {
                 $clientLabel = New-Object System.Windows.Forms.Label
                 $clientLabel.Text = "Client $ClientNumber"
                 $clientLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-                $clientLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 15))
-                $clientLabel.Size = New-Object System.Drawing.Size(250, 20)
+                $clientLabel.Location = New-Object System.Drawing.Point(50, ($yPos + 15))
+                $clientLabel.Size = New-Object System.Drawing.Size(210, 20)
                 $clientLabel.AutoEllipsis = $true
 
                 # Status label
@@ -7677,6 +7751,61 @@ if (Test-Path `$ReportSelectionsFile) {
                 $warningLabel.ForeColor = [System.Drawing.Color]::Orange
                 $warningLabel.Visible = $false
                 $warningLabel.AutoEllipsis = $true
+
+                # Border panel for status indication (color-coded left border)
+                $borderPanel = New-Object System.Windows.Forms.Panel
+                $borderPanel.Location = New-Object System.Drawing.Point(0, $yPos)
+                $borderPanel.Size = New-Object System.Drawing.Size(5, $clientRowHeight)
+                $borderPanel.BackColor = [System.Drawing.Color]::Gray  # Default: Not started
+
+                # Toggle button (▼ for expanded, ▶ for minimized)
+                $toggleBtn = New-Object System.Windows.Forms.Button
+                $toggleBtn.Text = "▼"
+                $toggleBtn.Location = New-Object System.Drawing.Point(10, ($yPos + 10))
+                $toggleBtn.Size = New-Object System.Drawing.Size(30, 30)
+                $toggleBtn.Tag = $ClientNumber
+                $toggleBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+                $toggleBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+
+                # Graph Status Indicator (for minimized view)
+                $graphStatusLabel = New-Object System.Windows.Forms.Label
+                $graphStatusLabel.Text = "Graph: ○"
+                $graphStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+                $graphStatusLabel.Location = New-Object System.Drawing.Point(480, ($yPos + 15))
+                $graphStatusLabel.Size = New-Object System.Drawing.Size(100, 20)
+                $graphStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                $graphStatusLabel.Visible = $false  # Only visible when minimized
+
+                # Exchange Status Indicator (for minimized view)
+                $exchangeStatusLabel = New-Object System.Windows.Forms.Label
+                $exchangeStatusLabel.Text = "Exchange: ○"
+                $exchangeStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+                $exchangeStatusLabel.Location = New-Object System.Drawing.Point(590, ($yPos + 15))
+                $exchangeStatusLabel.Size = New-Object System.Drawing.Size(120, 20)
+                $exchangeStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                $exchangeStatusLabel.Visible = $false  # Only visible when minimized
+
+                # Open Reports button (for minimized view)
+                $openReportsBtn = New-Object System.Windows.Forms.Button
+                $openReportsBtn.Text = "Open Reports"
+                $openReportsBtn.Location = New-Object System.Drawing.Point(720, ($yPos + 10))
+                $openReportsBtn.Size = New-Object System.Drawing.Size(120, 30)
+                $openReportsBtn.Enabled = $false
+                $openReportsBtn.Visible = $false  # Only visible when minimized and reports exist
+                $openReportsBtn.Tag = $ClientNumber
+                $openReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
+                $openReportsBtn.ForeColor = [System.Drawing.Color]::White
+
+                # Remove button (for minimized view)
+                $removeMinimizedBtn = New-Object System.Windows.Forms.Button
+                $removeMinimizedBtn.Text = "×"
+                $removeMinimizedBtn.Location = New-Object System.Drawing.Point(850, ($yPos + 10))
+                $removeMinimizedBtn.Size = New-Object System.Drawing.Size(30, 30)
+                $removeMinimizedBtn.Enabled = $true
+                $removeMinimizedBtn.Visible = $false  # Only visible when minimized
+                $removeMinimizedBtn.Tag = $ClientNumber
+                $removeMinimizedBtn.ForeColor = [System.Drawing.Color]::DarkRed
+                $removeMinimizedBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 
                 # Graph Auth button (disabled until worker script is ready)
                 $graphAuthBtn = New-Object System.Windows.Forms.Button
@@ -7801,7 +7930,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 $ticketNumbersLabel.Visible = $false
 
                 # Add controls to panel
-                $script:authPanel.Controls.AddRange(@($clientLabel, $statusLabel, $warningLabel, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $viewReportsBtn))
+                $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $viewReportsBtn))
 
                 # Store controls and state
                 $script:clientAuthStates[$ClientNumber] = @{
@@ -7811,11 +7940,18 @@ if (Test-Path `$ReportSelectionsFile) {
                     TenantId = $null
                     TenantName = $null
                     Account = $null
+                    IsExpanded = $true  # Start expanded so user can interact with fields
                 }
                 $script:clientAuthControls[$ClientNumber] = @{
+                    BorderPanel = $borderPanel
+                    ToggleButton = $toggleBtn
                     ClientLabel = $clientLabel
                     StatusLabel = $statusLabel
                     WarningLabel = $warningLabel
+                    GraphStatusLabel = $graphStatusLabel
+                    ExchangeStatusLabel = $exchangeStatusLabel
+                    OpenReportsButton = $openReportsBtn
+                    RemoveMinimizedButton = $removeMinimizedBtn
                     GraphButton = $graphAuthBtn
                     ExchangeButton = $exchangeAuthBtn
                     RemoveButton = $removeTenantBtn
@@ -7880,7 +8016,120 @@ if (Test-Path `$ReportSelectionsFile) {
                         # Ignore errors
                     }
                 })
-                
+
+                # Toggle button handler (minimize/expand tenant display)
+                $toggleBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+
+                    # Toggle the expanded state
+                    $script:clientAuthStates[$clientNum].IsExpanded = -not $script:clientAuthStates[$clientNum].IsExpanded
+                    $isExpanded = $script:clientAuthStates[$clientNum].IsExpanded
+
+                    # Get controls
+                    $controls = $script:clientAuthControls[$clientNum]
+                    if (-not $controls) { return }
+
+                    # Update toggle button text
+                    $this.Text = if ($isExpanded) { "▼" } else { "▶" }
+
+                    # Calculate heights
+                    $minimizedHeight = 50
+                    $expandedHeight = 200
+
+                    # Show/hide controls based on state
+                    if ($isExpanded) {
+                        # Expanded view - hide minimized controls, show expanded controls
+                        $controls.GraphStatusLabel.Visible = $false
+                        $controls.ExchangeStatusLabel.Visible = $false
+                        $controls.OpenReportsButton.Visible = $false
+                        $controls.RemoveMinimizedButton.Visible = $false
+
+                        # Show expanded controls
+                        $controls.GraphButton.Visible = $true
+                        $controls.ExchangeButton.Visible = $true
+                        $controls.RemoveButton.Visible = $true
+                        $controls.ResetButton.Visible = $true
+
+                        # Show controls based on auth state
+                        if ($script:clientAuthStates[$clientNum].GraphAuthenticated) {
+                            $controls.UserFilterCheckBox.Visible = $true
+                            $controls.UserSearchTextBox.Visible = $true
+                            $controls.ValidateUsersButton.Visible = $true
+                        }
+
+                        if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                            $controls.TicketLabel.Visible = $true
+                            $controls.TicketTextBox.Visible = $true
+                            $controls.GenerateReportsButton.Visible = $true
+                        }
+
+                        # Show View Reports if available
+                        if ($script:clientReportFolders.ContainsKey($clientNum) -and $script:clientReportFolders[$clientNum]) {
+                            $controls.ViewReportsButton.Visible = $true
+                        }
+                    } else {
+                        # Minimized view - show minimized controls, hide expanded controls
+                        $controls.GraphStatusLabel.Visible = $true
+                        $controls.ExchangeStatusLabel.Visible = $true
+                        $controls.RemoveMinimizedButton.Visible = $true
+
+                        # Show Open Reports if available
+                        if ($script:clientReportFolders.ContainsKey($clientNum) -and $script:clientReportFolders[$clientNum]) {
+                            $controls.OpenReportsButton.Visible = $true
+                            $controls.OpenReportsButton.Enabled = $true
+                        }
+
+                        # Hide expanded controls
+                        $controls.GraphButton.Visible = $false
+                        $controls.ExchangeButton.Visible = $false
+                        $controls.RemoveButton.Visible = $false
+                        $controls.ResetButton.Visible = $false
+                        $controls.UserFilterCheckBox.Visible = $false
+                        $controls.UserSearchTextBox.Visible = $false
+                        $controls.ValidateUsersButton.Visible = $false
+                        $controls.UserValidationLabel.Visible = $false
+                        $controls.TicketLabel.Visible = $false
+                        $controls.TicketTextBox.Visible = $false
+                        $controls.TicketNumbersLabel.Visible = $false
+                        $controls.GenerateReportsButton.Visible = $false
+                        $controls.ViewReportsButton.Visible = $false
+                        $controls.WarningLabel.Visible = $false
+                    }
+
+                    # Update border panel height
+                    $newHeight = if ($isExpanded) { $expandedHeight } else { $minimizedHeight }
+                    $controls.BorderPanel.Height = $newHeight
+
+                    # Recalculate positions of all tenants
+                    Update-TenantPositions
+                })
+
+                # Open Reports button handler (minimized view)
+                $openReportsBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNumForView }
+
+                    if ($script:clientReportFolders.ContainsKey($clientNum)) {
+                        $reportFolder = $script:clientReportFolders[$clientNum]
+                        if ($reportFolder -and (Test-Path $reportFolder)) {
+                            Start-Process explorer.exe -ArgumentList "`"$reportFolder`""
+                        }
+                    }
+                })
+
+                # Remove Minimized button handler
+                $removeMinimizedBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+
+                    # Use the same logic as the regular remove button
+                    $controls = $script:clientAuthControls[$clientNum]
+                    if ($controls -and $controls.RemoveButton) {
+                        $controls.RemoveButton.PerformClick()
+                    }
+                })
+
                 # Update panel height to accommodate new row (accounting for user filtering row, warning label, and ticket controls)
                 $newHeight = ($existingRows + 1) * ($clientRowHeight + $clientRowSpacing) + 100  # Extra space for user filtering row, warning label, and ticket controls
                 if ($newHeight -gt 420) {
@@ -8683,6 +8932,32 @@ if (Test-Path `$ReportSelectionsFile) {
                     $script:authStatusTextBox.AppendText("Added new tenant: Client $newClientNum`r`n")
                     $script:authStatusTextBox.ScrollToCaret()
                     [System.Windows.Forms.Application]::DoEvents()
+                }
+            })
+
+            # Expand All button click handler
+            $expandAllBtn.add_Click({
+                foreach ($clientNum in $script:clientAuthControls.Keys) {
+                    if (-not $script:clientAuthStates[$clientNum].IsExpanded) {
+                        $script:clientAuthStates[$clientNum].IsExpanded = $true
+                        $controls = $script:clientAuthControls[$clientNum]
+                        if ($controls -and $controls.ToggleButton) {
+                            $controls.ToggleButton.PerformClick()
+                        }
+                    }
+                }
+            })
+
+            # Collapse All button click handler
+            $collapseAllBtn.add_Click({
+                foreach ($clientNum in $script:clientAuthControls.Keys) {
+                    if ($script:clientAuthStates[$clientNum].IsExpanded) {
+                        $script:clientAuthStates[$clientNum].IsExpanded = $false
+                        $controls = $script:clientAuthControls[$clientNum]
+                        if ($controls -and $controls.ToggleButton) {
+                            $controls.ToggleButton.PerformClick()
+                        }
+                    }
                 }
             })
 
