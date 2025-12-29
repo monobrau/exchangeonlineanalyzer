@@ -5610,7 +5610,7 @@ $securityInvestigationButton.add_Click({
         $daysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
         $daysComboBox = New-Object System.Windows.Forms.ComboBox
-        $daysComboBox.Items.AddRange(@("1", "3", "7", "10", "30"))
+        $daysComboBox.Items.AddRange(@("1", "3", "7", "10", "30", "45", "60", "90"))
         $daysComboBox.SelectedItem = "10"
         $daysComboBox.Location = New-Object System.Drawing.Point(145, 87)
         $daysComboBox.Size = New-Object System.Drawing.Size(80, 20)
@@ -5850,6 +5850,7 @@ $securityInvestigationButton.add_Click({
                     IncludeAppRegistrations = $appRegistrationsCheckBox.Checked
                     IncludeSignInLogs = $signInLogsCheckBox.Checked
                     SignInLogsDaysBack = $signInLogsDays
+                    MessageTraceDaysBack = $days
                 }
 
                 # Validate at least one report is selected
@@ -5882,7 +5883,7 @@ $securityInvestigationButton.add_Click({
                 }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -SelectedUsers $selectedUsers
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -6209,7 +6210,7 @@ $bulkTenantExporterButton.add_Click({
         $bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 23)
         $bulkDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
         $bulkDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-        $bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30"))
+        $bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30", "45", "60", "90"))
         $bulkDaysComboBox.SelectedIndex = 4  # Default to 10 days
 
         $bulkConfigGroupBox.Controls.AddRange(@($bulkDaysLabel, $bulkDaysComboBox))
@@ -6240,7 +6241,7 @@ $bulkTenantExporterButton.add_Click({
 
         # Checkboxes for each report type
         $bulkMessageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
-        $bulkMessageTraceCheckBox.Text = "Message Trace (last 10 days)"
+        $bulkMessageTraceCheckBox.Text = "Message Trace"
         $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(10, 40)
         $bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMessageTraceCheckBox.Checked = $true
@@ -6404,6 +6405,7 @@ $bulkTenantExporterButton.add_Click({
             elseif ($selectedRange -eq "30 days") { $signInLogsDays = 30 }
 
             # Get report selections from checkboxes
+            $days = [int]$bulkDaysComboBox.SelectedItem
             $reportSelections = @{
                 IncludeMessageTrace = $bulkMessageTraceCheckBox.Checked
                 IncludeInboxRules = $bulkInboxRulesCheckBox.Checked
@@ -6415,6 +6417,7 @@ $bulkTenantExporterButton.add_Click({
                 IncludeAppRegistrations = $bulkAppRegistrationsCheckBox.Checked
                 IncludeSignInLogs = $bulkSignInLogsCheckBox.Checked
                 SignInLogsDaysBack = $signInLogsDays
+                MessageTraceDaysBack = $days
             }
 
             # Validate at least one report is selected
@@ -6552,6 +6555,7 @@ if (Test-Path `$ReportSelectionsFile) {
             IncludeAppRegistrations = if (`$null -ne `$jsonObj.IncludeAppRegistrations) { `$jsonObj.IncludeAppRegistrations } else { `$false }
             IncludeSignInLogs = if (`$null -ne `$jsonObj.IncludeSignInLogs) { `$jsonObj.IncludeSignInLogs } else { `$false }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
+            MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
     }
     
@@ -7096,7 +7100,8 @@ if (Test-Path `$ReportSelectionsFile) {
                 
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {

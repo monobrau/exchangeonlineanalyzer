@@ -264,7 +264,7 @@ $bulkDaysComboBox = New-Object System.Windows.Forms.ComboBox
 $bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 23)
 $bulkDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
 $bulkDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-$bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30"))
+$bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30", "45", "60", "90"))
 $bulkDaysComboBox.SelectedIndex = 4  # Default to 10 days
 
 $bulkConfigGroupBox.Controls.AddRange(@($bulkDaysLabel, $bulkDaysComboBox))
@@ -295,7 +295,7 @@ $bulkDeselectAllBtn.Size = New-Object System.Drawing.Size(90, 25)
 
 # Checkboxes for each report type
 $bulkMessageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkMessageTraceCheckBox.Text = "Message Trace (last 10 days)"
+$bulkMessageTraceCheckBox.Text = "Message Trace"
 $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(10, 40)
 $bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMessageTraceCheckBox.Checked = $true
@@ -467,6 +467,7 @@ $bulkStartButton.add_Click({
     elseif ($selectedRange -eq "30 days") { $signInLogsDays = 30 }
 
     # Get report selections from checkboxes
+    $days = [int]$bulkDaysComboBox.SelectedItem
     $reportSelections = @{
         IncludeMessageTrace = $bulkMessageTraceCheckBox.Checked
         IncludeInboxRules = $bulkInboxRulesCheckBox.Checked
@@ -478,6 +479,7 @@ $bulkStartButton.add_Click({
         IncludeAppRegistrations = $bulkAppRegistrationsCheckBox.Checked
         IncludeSignInLogs = $bulkSignInLogsCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
+        MessageTraceDaysBack = $days
     }
 
     # Validate at least one report is selected
@@ -618,6 +620,7 @@ try {
             IncludeAppRegistrations = if (`$null -ne `$jsonObj.IncludeAppRegistrations) { `$jsonObj.IncludeAppRegistrations } else { `$false }
             IncludeSignInLogs = if (`$null -ne `$jsonObj.IncludeSignInLogs) { `$jsonObj.IncludeSignInLogs } else { `$false }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
+            MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
     }
     
@@ -1289,7 +1292,8 @@ try {
                 
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {

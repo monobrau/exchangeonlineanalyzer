@@ -331,6 +331,8 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [int]$SignInLogsDaysBack = 7,
         [Parameter(Mandatory=$false)]
+        [int]$MessageTraceDaysBack = 10,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @(),
         [Parameter(Mandatory=$false)]
         [string[]]$TicketNumbers = @(),
@@ -440,10 +442,10 @@ function New-SecurityInvestigationReport {
     if ($exchangeConnected) {
         try {
             if ($IncludeMessageTrace) {
-                $statusMsg = "Collecting message trace data (last $DaysBack days)..."
+                $statusMsg = "Collecting message trace data (last $MessageTraceDaysBack days)..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack 10 -SelectedUsers $SelectedUsers # always 10 days per requirement
+                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
                 Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
             }
 
@@ -1051,9 +1053,9 @@ function Get-ExchangeMessageTrace {
     )
 
     try {
-        Write-Host "Collecting message trace data..." -ForegroundColor Yellow
+        Write-Host "Collecting message trace data (last $DaysBack days)..." -ForegroundColor Yellow
         $end = (Get-Date).ToUniversalTime()
-        $start = $end.AddDays(-10).Date # always 10 full days; start at 00:00Z
+        $start = $end.AddDays(-$DaysBack).Date # start at 00:00Z
 
         $results = New-Object System.Collections.Generic.List[object]
 
@@ -1070,7 +1072,7 @@ function Get-ExchangeMessageTrace {
             # Query message trace for each selected user (server-side filtering)
             foreach ($upn in $selectedUserList) {
                 # Chunk by day to avoid server-side caps
-                for ($d = 0; $d -lt 10; $d++) {
+                for ($d = 0; $d -lt $DaysBack; $d++) {
                     $winStart = $start.AddDays($d)
                     $winEnd   = $winStart.AddDays(1)
 
@@ -1165,7 +1167,7 @@ function Get-ExchangeMessageTrace {
         } else {
             # No selection - get all message traces
             # Chunk by day to avoid server-side caps; try paged in each window
-            for ($d = 0; $d -lt 10; $d++) {
+            for ($d = 0; $d -lt $DaysBack; $d++) {
                 $winStart = $start.AddDays($d)
                 $winEnd   = $winStart.AddDays(1)
 
