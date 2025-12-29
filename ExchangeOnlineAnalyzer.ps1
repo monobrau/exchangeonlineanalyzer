@@ -9206,9 +9206,9 @@ if (Test-Path `$ReportSelectionsFile) {
             $expandAllBtn.add_Click({
                 foreach ($clientNum in $script:clientAuthControls.Keys) {
                     if (-not $script:clientAuthStates[$clientNum].IsExpanded) {
-                        $script:clientAuthStates[$clientNum].IsExpanded = $true
                         $controls = $script:clientAuthControls[$clientNum]
                         if ($controls -and $controls.ToggleButton) {
+                            # Don't set IsExpanded first - let the toggle button handler toggle it
                             $controls.ToggleButton.PerformClick()
                         }
                     }
@@ -9219,9 +9219,9 @@ if (Test-Path `$ReportSelectionsFile) {
             $collapseAllBtn.add_Click({
                 foreach ($clientNum in $script:clientAuthControls.Keys) {
                     if ($script:clientAuthStates[$clientNum].IsExpanded) {
-                        $script:clientAuthStates[$clientNum].IsExpanded = $false
                         $controls = $script:clientAuthControls[$clientNum]
                         if ($controls -and $controls.ToggleButton) {
+                            # Don't set IsExpanded first - let the toggle button handler toggle it
                             $controls.ToggleButton.PerformClick()
                         }
                     }
