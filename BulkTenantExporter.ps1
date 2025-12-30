@@ -2384,6 +2384,8 @@ try {
                 $controls.RemoveMinimizedButton.Visible = $false
 
                 # Show expanded controls
+                $controls.StatusLabel.Visible = $true
+                $controls.WarningLabel.Visible = $true
                 $controls.GraphButton.Visible = $true
                 $controls.ExchangeButton.Visible = $true
                 $controls.RemoveButton.Visible = $true
@@ -2400,6 +2402,7 @@ try {
                     $controls.TicketLabel.Visible = $true
                     $controls.TicketTextBox.Visible = $true
                     $controls.GenerateReportsButton.Visible = $true
+                    $controls.ExtractEmailsButton.Visible = $true
                 }
 
                 # Show View Reports if available
@@ -2418,7 +2421,9 @@ try {
                     $controls.OpenReportsButton.Enabled = $true
                 }
 
-                # Hide expanded controls
+                # Hide ALL expanded controls
+                $controls.StatusLabel.Visible = $false
+                $controls.WarningLabel.Visible = $false
                 $controls.GraphButton.Visible = $false
                 $controls.ExchangeButton.Visible = $false
                 $controls.RemoveButton.Visible = $false
@@ -2430,9 +2435,9 @@ try {
                 $controls.TicketLabel.Visible = $false
                 $controls.TicketTextBox.Visible = $false
                 $controls.TicketNumbersLabel.Visible = $false
+                $controls.ExtractEmailsButton.Visible = $false
                 $controls.GenerateReportsButton.Visible = $false
                 $controls.ViewReportsButton.Visible = $false
-                $controls.WarningLabel.Visible = $false
             }
 
             # Update border panel height
