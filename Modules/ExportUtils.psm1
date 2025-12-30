@@ -329,6 +329,8 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeSignInLogs = $false,
         [Parameter(Mandatory=$false)]
+        [bool]$IncludeMfaCoverage = $false,
+        [Parameter(Mandatory=$false)]
         [int]$SignInLogsDaysBack = 7,
         [Parameter(Mandatory=$false)]
         [int]$MessageTraceDaysBack = 10,
@@ -540,17 +542,24 @@ function New-SecurityInvestigationReport {
     # MFA Coverage and User Security Groups
     if ($graphConnected) {
         try {
-            $statusMsg = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..."
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-            Write-Host $statusMsg -ForegroundColor Cyan
-            $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
-            Write-Host "MFA coverage evaluation complete" -ForegroundColor Green
+            # Only evaluate MFA coverage if explicitly requested
+            if ($IncludeMfaCoverage) {
+                $statusMsg = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
+                $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
+                Write-Host "MFA coverage evaluation complete" -ForegroundColor Green
 
-            $statusMsg = "Collecting user security groups and roles..."
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-            Write-Host $statusMsg -ForegroundColor Cyan
-            $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
-            Write-Host "Collected security groups data for $($report.UserSecurityGroups.Users.Count) users" -ForegroundColor Green
+                # User security groups are only needed when MFA coverage is selected (used in unified export)
+                $statusMsg = "Collecting user security groups and roles..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
+                $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
+                Write-Host "Collected security groups data for $($report.UserSecurityGroups.Count) users" -ForegroundColor Green
+            } else {
+                $report.MfaCoverage = $null
+                $report.UserSecurityGroups = $null
+            }
         } catch {
             Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
         }

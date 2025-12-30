@@ -348,13 +348,19 @@ $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 240)
 $bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSignInLogsCheckBox.Checked = $true
 
+$bulkMfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkMfaCoverageCheckBox.Text = "MFA Coverage"
+$bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 265)
+$bulkMfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkMfaCoverageCheckBox.Checked = $true
+
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
 $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
-$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 265)
+$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 290)
 $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
 $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
-$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 263)
+$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 288)
 $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
 $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
@@ -376,6 +382,7 @@ $bulkSelectAllBtn.add_Click({
     $bulkCaPoliciesCheckBox.Checked = $true
     $bulkAppRegistrationsCheckBox.Checked = $true
     $bulkSignInLogsCheckBox.Checked = $true
+    $bulkMfaCoverageCheckBox.Checked = $true
 })
 
 # Deselect All button click handler
@@ -389,6 +396,7 @@ $bulkDeselectAllBtn.add_Click({
     $bulkCaPoliciesCheckBox.Checked = $false
     $bulkAppRegistrationsCheckBox.Checked = $false
     $bulkSignInLogsCheckBox.Checked = $false
+    $bulkMfaCoverageCheckBox.Checked = $false
 })
 
 # Add all controls to scrollable panel
@@ -397,7 +405,8 @@ $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkMessageTraceCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
     $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox, $bulkAuditLogsCheckBox,
     $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
-    $bulkSignInLogsCheckBox, $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
+    $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox,
+    $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
 ))
 
 # Add scrollable panel to GroupBox
@@ -478,6 +487,7 @@ $bulkStartButton.add_Click({
         IncludeConditionalAccessPolicies = $bulkCaPoliciesCheckBox.Checked
         IncludeAppRegistrations = $bulkAppRegistrationsCheckBox.Checked
         IncludeSignInLogs = $bulkSignInLogsCheckBox.Checked
+        IncludeMfaCoverage = $bulkMfaCoverageCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days
     }
@@ -619,6 +629,7 @@ try {
             IncludeConditionalAccessPolicies = if (`$null -ne `$jsonObj.IncludeConditionalAccessPolicies) { `$jsonObj.IncludeConditionalAccessPolicies } else { `$false }
             IncludeAppRegistrations = if (`$null -ne `$jsonObj.IncludeAppRegistrations) { `$jsonObj.IncludeAppRegistrations } else { `$false }
             IncludeSignInLogs = if (`$null -ne `$jsonObj.IncludeSignInLogs) { `$jsonObj.IncludeSignInLogs } else { `$false }
+            IncludeMfaCoverage = if (`$null -ne `$jsonObj.IncludeMfaCoverage -and `$jsonObj.IncludeMfaCoverage -ne "") { [bool]`$jsonObj.IncludeMfaCoverage } else { `$false }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
@@ -1293,7 +1304,7 @@ try {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {

@@ -5703,6 +5703,12 @@ $securityInvestigationButton.add_Click({
         $signInLogsCheckBox.Size = New-Object System.Drawing.Size(200, 20)
         $signInLogsCheckBox.Checked = $false
 
+        $mfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
+        $mfaCoverageCheckBox.Text = "MFA Coverage"
+        $mfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 265)
+        $mfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $mfaCoverageCheckBox.Checked = $true
+
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
         $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 242)
@@ -5733,6 +5739,7 @@ $securityInvestigationButton.add_Click({
             $caPoliciesCheckBox.Checked = $true
             $appRegistrationsCheckBox.Checked = $true
             $signInLogsCheckBox.Checked = $true
+            $mfaCoverageCheckBox.Checked = $true
         })
 
         # Deselect All button click handler
@@ -5746,6 +5753,7 @@ $securityInvestigationButton.add_Click({
             $caPoliciesCheckBox.Checked = $false
             $appRegistrationsCheckBox.Checked = $false
             $signInLogsCheckBox.Checked = $false
+            $mfaCoverageCheckBox.Checked = $false
         })
 
         # Add all controls to scrollable panel
@@ -5754,7 +5762,8 @@ $securityInvestigationButton.add_Click({
             $messageTraceCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
             $mailFlowCheckBox, $mailboxForwardingCheckBox, $auditLogsCheckBox,
             $caPoliciesCheckBox, $appRegistrationsCheckBox,
-            $signInLogsCheckBox, $signInLogsDaysLabel, $signInLogsDaysComboBox
+            $signInLogsCheckBox, $mfaCoverageCheckBox,
+            $signInLogsDaysLabel, $signInLogsDaysComboBox
         ))
         
         # Add scrollable panel to GroupBox
@@ -5849,6 +5858,7 @@ $securityInvestigationButton.add_Click({
                     IncludeConditionalAccessPolicies = $caPoliciesCheckBox.Checked
                     IncludeAppRegistrations = $appRegistrationsCheckBox.Checked
                     IncludeSignInLogs = $signInLogsCheckBox.Checked
+                    IncludeMfaCoverage = $mfaCoverageCheckBox.Checked
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -5883,7 +5893,7 @@ $securityInvestigationButton.add_Click({
                 }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -6294,13 +6304,19 @@ $bulkTenantExporterButton.add_Click({
         $bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkSignInLogsCheckBox.Checked = $true
 
+        $bulkMfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkMfaCoverageCheckBox.Text = "MFA Coverage"
+        $bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 265)
+        $bulkMfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkMfaCoverageCheckBox.Checked = $true
+
         $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
-        $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 265)
+        $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 290)
         $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
         $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
-        $bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 263)
+        $bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 288)
         $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
         $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
         $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
@@ -6322,6 +6338,7 @@ $bulkTenantExporterButton.add_Click({
             $bulkCaPoliciesCheckBox.Checked = $true
             $bulkAppRegistrationsCheckBox.Checked = $true
             $bulkSignInLogsCheckBox.Checked = $true
+            $bulkMfaCoverageCheckBox.Checked = $true
         })
 
         # Deselect All button click handler
@@ -6335,6 +6352,7 @@ $bulkTenantExporterButton.add_Click({
             $bulkCaPoliciesCheckBox.Checked = $false
             $bulkAppRegistrationsCheckBox.Checked = $false
             $bulkSignInLogsCheckBox.Checked = $false
+            $bulkMfaCoverageCheckBox.Checked = $false
         })
 
         # Add all controls to scrollable panel
@@ -6343,7 +6361,8 @@ $bulkTenantExporterButton.add_Click({
             $bulkMessageTraceCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
             $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox, $bulkAuditLogsCheckBox,
             $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
-            $bulkSignInLogsCheckBox, $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
+            $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox,
+            $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
         ))
         
         # Add scrollable panel to GroupBox
@@ -6416,6 +6435,7 @@ $bulkTenantExporterButton.add_Click({
                 IncludeConditionalAccessPolicies = $bulkCaPoliciesCheckBox.Checked
                 IncludeAppRegistrations = $bulkAppRegistrationsCheckBox.Checked
                 IncludeSignInLogs = $bulkSignInLogsCheckBox.Checked
+                IncludeMfaCoverage = $bulkMfaCoverageCheckBox.Checked
                 SignInLogsDaysBack = $signInLogsDays
                 MessageTraceDaysBack = $days
             }
@@ -6554,6 +6574,7 @@ if (Test-Path `$ReportSelectionsFile) {
             IncludeConditionalAccessPolicies = if (`$null -ne `$jsonObj.IncludeConditionalAccessPolicies) { `$jsonObj.IncludeConditionalAccessPolicies } else { `$false }
             IncludeAppRegistrations = if (`$null -ne `$jsonObj.IncludeAppRegistrations) { `$jsonObj.IncludeAppRegistrations } else { `$false }
             IncludeSignInLogs = if (`$null -ne `$jsonObj.IncludeSignInLogs) { `$jsonObj.IncludeSignInLogs } else { `$false }
+            IncludeMfaCoverage = if (`$null -ne `$jsonObj.IncludeMfaCoverage -and `$jsonObj.IncludeMfaCoverage -ne "") { [bool]`$jsonObj.IncludeMfaCoverage } else { `$false }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
@@ -7101,7 +7122,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
