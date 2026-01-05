@@ -2,7 +2,7 @@
 
 A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox rules, managing user accounts, monitoring security configurations, and investigating Entra ID (Azure AD) accounts. This tool provides administrators with powerful capabilities to detect suspicious inbox rules, manage user access, export detailed reports, and perform comprehensive Entra ID investigations.
 
-## 🔧 **Version 8.2 - Now Available!**
+## 🔧 **Version 8.3 - Now Available!**
 **✅ Sign-in Logs Collection** - Added sign-in logs export to Security Investigation Report with time range selector (1/7/30 days)
 **✅ Security Analysis Module** - New module for risky user detection, Conditional Access policy analysis, and app registration audit
 **✅ Enhanced Security Investigation** - User selection filtering for targeted reports, improved grid displays, and better UI organization
@@ -12,7 +12,7 @@ A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox ru
 ![Exchange Online](https://img.shields.io/badge/Exchange-Online-orange)
 ![Microsoft Graph](https://img.shields.io/badge/Microsoft-Graph-green)
 ![Entra ID](https://img.shields.io/badge/Entra-ID-purple)
-![Version](https://img.shields.io/badge/Version-8.1-blue)
+![Version](https://img.shields.io/badge/Version-8.3-blue)
 
 ## 🚀 Entra Portal Shortcuts (v8.1)
 
@@ -361,7 +361,18 @@ Enable verbose output by modifying the script's debug settings or checking conso
 
 ## 📝 Version History
 
-### v8.1 (Current)
+### v8.3 (Current)
+- ✅ **Client Auth Console Improvements**: Enhanced minimizable tenant display with proper visual item hiding
+- ✅ **MFA Coverage Enhancement**: Made MFA coverage optional and selected by default; fixed user security groups collection
+- ✅ **Extended Email Trace Support**: Added support for up to 90 days of email traces in bulk exporters
+- ✅ **Authentication Console Fixes**: Fixed collapse/expand all buttons and improved tenant display
+- ✅ **Email Extraction Features**: Added Extract Emails button to bulk exporters with domain discovery
+- ✅ **Authentication Improvements**: Enhanced cache clearing and session management to prevent tenant reuse
+- ✅ **Ticket Integration**: Improved ticket content storage, button positioning, and email extraction
+- ✅ **Settings Improvements**: Updated settings GUI tooltips and default AppData location handling
+- ✅ **Code Quality**: Various bug fixes and stability improvements
+
+### v8.1
 - ✅ **Standalone Bulk Tenant Exporter**: New `BulkTenantExporter.ps1` script for independent bulk operations
 - ✅ **Dynamic Tenant Management**: Add tenants on-the-fly in bulk exporter (no fixed count)
 - ✅ **Per-Tenant User Filtering**: Filter reports by specific users per tenant with server-side filtering

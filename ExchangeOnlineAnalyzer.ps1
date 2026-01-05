@@ -15,7 +15,7 @@ Features:
 - XLSX report generation with advanced formatting
 
 .NOTES
-Version: 8.1
+Version: 8.3
 Requires: PowerShell 5.1+, ExchangeOnlineManagement, Microsoft.Graph modules, Microsoft Excel
 Permissions: Exchange administrative privileges and Microsoft Graph permissions
 
