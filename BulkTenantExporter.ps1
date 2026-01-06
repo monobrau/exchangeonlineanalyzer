@@ -1654,6 +1654,7 @@ try {
             $controls.TicketTextBox.Location = New-Object System.Drawing.Point(170, ($currentY + 73))
             $controls.TicketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($currentY + 73))
 
+            $controls.ExtractEmailsButton.Location = New-Object System.Drawing.Point(580, ($currentY + 47))
             $controls.GenerateReportsButton.Location = New-Object System.Drawing.Point(760, ($currentY + 47))
             $controls.ViewReportsButton.Location = New-Object System.Drawing.Point(760, ($currentY + 160))
 
@@ -1718,7 +1719,7 @@ try {
         }
 
         # Populate user search textbox
-        $emailsText = $emails -join '; '
+        $emailsText = $emails -join ', '
         $controls.UserSearchTextBox.Text = $emailsText
 
         # Show visual feedback
@@ -1761,8 +1762,8 @@ try {
                 $psExe = "powershell.exe"
             }
 
-            # Use Normal window style so users can see progress
-            $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Normal
+            # Use Hidden window style - windows are hidden unless debugging is needed
+            $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Hidden
             $script:clientProcesses[$ClientNumber] = $process
             Write-Host "Launched Client $ClientNumber PowerShell window (PID: $($process.Id))" -ForegroundColor Green
             $script:authStatusTextBox.AppendText("Launched Client $ClientNumber PowerShell window (PID: $($process.Id))`r`n")
@@ -2278,7 +2279,7 @@ try {
             }
 
             # Populate user search textbox
-            $emailsText = $emails -join '; '
+            $emailsText = $emails -join ', '
             $controls.UserSearchTextBox.Text = $emailsText
 
             # Show visual feedback
@@ -3339,6 +3340,7 @@ try {
                 $script:authPanel.Controls.Remove($controls.TicketLabel)
                 $script:authPanel.Controls.Remove($controls.TicketTextBox)
                 $script:authPanel.Controls.Remove($controls.TicketNumbersLabel)
+                $script:authPanel.Controls.Remove($controls.ExtractEmailsButton)
                 $script:authPanel.Controls.Remove($controls.ViewReportsButton)
                 
                 # Remove from state dictionaries
