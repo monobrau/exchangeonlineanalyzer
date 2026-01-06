@@ -223,58 +223,12 @@ function Connect-GraphService {
             }
         }
 
-        # Import required Microsoft Graph modules after connection
-        $modulesToImport = @(
-            "Microsoft.Graph.Authentication",
-            "Microsoft.Graph.Users",
-            "Microsoft.Graph.Users.Actions",
-            "Microsoft.Graph.Identity.SignIns",
-            "Microsoft.Graph.Reports"
-        )
-
-        foreach ($module in $modulesToImport) {
-            try {
-                if (Get-Module -ListAvailable -Name $module) {
-                    Import-Module $module -ErrorAction Stop
-                    Write-Host "Successfully imported module: $module" -ForegroundColor Green
-                } else {
-                    Write-Warning "Module $module not available. Installing..."
-                    Install-Module -Name $module -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
-                    Import-Module $module -ErrorAction Stop
-                    Write-Host "Installed and imported module: $module" -ForegroundColor Green
-                }
-            } catch {
-                Write-Error "Failed to import module $module`: $($_.Exception.Message)"
-                if ($statusLabel) { $statusLabel.Text = "Warning: Failed to import $module" }
-            }
-        }
-
-        # Verify that required functions are available
-        $requiredFunctions = @(
-            "Update-MgUser",
-            "Revoke-MgUserSignInSession",
-            "Get-MgUser",
-            "Get-MgContext",
-            "Get-MgAuditLogDirectoryAudit",
-            "Get-MgAuditLogSignIn"
-        )
-
-        $missingFunctions = @()
-        foreach ($function in $requiredFunctions) {
-            if (-not (Get-Command $function -ErrorAction SilentlyContinue)) {
-                $missingFunctions += $function
-            }
-        }
-
-        if ($missingFunctions.Count -gt 0) {
-            Write-Warning "Some required Microsoft Graph functions are not available: $($missingFunctions -join ', ')"
-            if ($statusLabel) { $statusLabel.Text = "Warning: Missing functions: $($missingFunctions -join ', ')" }
-        } else {
-            Write-Host "All required Microsoft Graph functions are available." -ForegroundColor Green
-        }
+        # Note: Modules will be imported on-demand when functions are called, not here
+        # This improves connection speed and reduces unnecessary module loading
+        Write-Host "Microsoft Graph connected. Modules will be imported as needed." -ForegroundColor Green
 
         $global:graphConnectionAttempted = $true
-        if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph and modules loaded." }
+        if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph. Modules will load as needed." }
         return $true
     } catch {
         $ex = $_.Exception
@@ -304,4 +258,93 @@ function Connect-GraphService {
     }
 }
 
-Export-ModuleMember -Function Test-GraphModules,Install-GraphModules,Fix-GraphModuleConflicts,Connect-GraphService 
+# Function to import Graph modules on-demand when needed
+function Import-GraphModulesOnDemand {
+    param(
+        [string[]]$ModuleNames
+    )
+    
+    $imported = @()
+    $failed = @()
+    
+    foreach ($moduleName in $ModuleNames) {
+        # Check if module is already imported
+        if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
+            continue  # Already imported, skip
+        }
+        
+        try {
+            # Check if module is available
+            if (Get-Module -ListAvailable -Name $moduleName -ErrorAction SilentlyContinue) {
+                Import-Module $moduleName -ErrorAction Stop -Force
+                $imported += $moduleName
+                Write-Verbose "Imported module: $moduleName"
+            } else {
+                Write-Warning "Module $moduleName not available. It may need to be installed."
+                $failed += $moduleName
+            }
+        } catch {
+            Write-Warning "Failed to import module $moduleName`: $($_.Exception.Message)"
+            $failed += $moduleName
+        }
+    }
+    
+    return @{
+        Imported = $imported
+        Failed = $failed
+    }
+}
+
+# Function to ensure required Graph cmdlets are available (imports modules if needed)
+function Ensure-GraphCmdletsAvailable {
+    param(
+        [string[]]$CmdletNames
+    )
+    
+    $missingCmdlets = @()
+    $modulesToImport = @()
+    
+    # Check which cmdlets are missing and determine which modules are needed
+    foreach ($cmdletName in $CmdletNames) {
+        if (-not (Get-Command $cmdletName -ErrorAction SilentlyContinue)) {
+            $missingCmdlets += $cmdletName
+            
+            # Map cmdlets to their modules
+            switch -Wildcard ($cmdletName) {
+                "Get-MgUser" { $modulesToImport += "Microsoft.Graph.Users" }
+                "Update-MgUser" { $modulesToImport += "Microsoft.Graph.Users" }
+                "Revoke-MgUserSignInSession" { $modulesToImport += "Microsoft.Graph.Users.Actions" }
+                "Get-MgContext" { $modulesToImport += "Microsoft.Graph.Authentication" }
+                "Get-MgAuditLog*" { $modulesToImport += "Microsoft.Graph.Reports" }
+                "Get-MgAuditLogSignIn" { $modulesToImport += "Microsoft.Graph.Reports" }
+                "Get-MgAuditLogDirectoryAudit" { $modulesToImport += "Microsoft.Graph.Reports" }
+            }
+        }
+    }
+    
+    # Remove duplicates
+    $modulesToImport = $modulesToImport | Select-Object -Unique
+    
+    # Import modules if needed
+    if ($modulesToImport.Count -gt 0) {
+        $result = Import-GraphModulesOnDemand -ModuleNames $modulesToImport
+        if ($result.Failed.Count -gt 0) {
+            Write-Warning "Some modules failed to import: $($result.Failed -join ', ')"
+        }
+    }
+    
+    # Check again for missing cmdlets
+    $stillMissing = @()
+    foreach ($cmdletName in $CmdletNames) {
+        if (-not (Get-Command $cmdletName -ErrorAction SilentlyContinue)) {
+            $stillMissing += $cmdletName
+        }
+    }
+    
+    return @{
+        AllAvailable = ($stillMissing.Count -eq 0)
+        Missing = $stillMissing
+    }
+}
+
+Export-ModuleMember -Function Test-GraphModules,Install-GraphModules,Fix-GraphModuleConflicts,Connect-GraphService,Import-GraphModulesOnDemand,Ensure-GraphCmdletsAvailable 

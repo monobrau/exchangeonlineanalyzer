@@ -3082,6 +3082,16 @@ $exchangeSearchTextBox.Width = 200
 $exchangeSearchTextBox.Height = 20
 $exchangeSearchTextBox.PlaceholderText = "Type to filter mailboxes..."
 
+# Debounce timer for search text box to avoid searching on every keystroke
+$script:exchangeSearchTimer = New-Object System.Windows.Forms.Timer
+$script:exchangeSearchTimer.Interval = 400  # Wait 400ms after user stops typing
+$script:exchangeSearchTimer.add_Tick({
+    $script:exchangeSearchTimer.Stop()
+    if ($exchangeSearchTextBox -and -not $exchangeSearchTextBox.IsDisposed) {
+        Filter-ExchangeGrid -searchText $exchangeSearchTextBox.Text
+    }
+})
+
 
 # Function to filter Exchange grid
 function Filter-ExchangeGrid {
@@ -3089,14 +3099,35 @@ function Filter-ExchangeGrid {
     $userMailboxGrid.Rows.Clear()
     
     # Get the original mailbox data from the script variable
-    if (-not $script:allLoadedMailboxes) {
+    if (-not $script:allLoadedMailboxes -or $script:allLoadedMailboxes.Count -eq 0) {
+        # Show helpful message if user tries to search but no mailboxes are loaded
+        if (-not [string]::IsNullOrWhiteSpace($searchText)) {
+            $statusLabel.Text = "No mailboxes loaded. Please use 'Load All Mailboxes' or 'Search Mailboxes' button first."
+        }
         return
     }
     
+    # Normalize search text for case-insensitive matching
+    $searchTextLower = if ($searchText) { $searchText.ToLower() } else { "" }
+    $matchedCount = 0
+    
     foreach ($mbx in $script:allLoadedMailboxes) {
-        if ([string]::IsNullOrWhiteSpace($searchText) -or 
-            $mbx.UserPrincipalName -like "*$searchText*" -or 
-            $mbx.DisplayName -like "*$searchText*") {
+        $matches = $false
+        
+        if ([string]::IsNullOrWhiteSpace($searchTextLower)) {
+            $matches = $true
+        } else {
+            # Case-insensitive matching
+            $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName.ToLower() } else { "" }
+            $displayName = if ($mbx.DisplayName) { $mbx.DisplayName.ToLower() } else { "" }
+            
+            if ($upn.Contains($searchTextLower) -or $displayName.Contains($searchTextLower)) {
+                $matches = $true
+            }
+        }
+        
+        if ($matches) {
+            $matchedCount++
             # Get rule analysis for this mailbox
             $rulesCount = "0"
             $hiddenRules = "0"
@@ -3140,6 +3171,20 @@ function Filter-ExchangeGrid {
             $userMailboxGrid.Rows[$rowIdx].Cells["Delegates"].Value = $delegates
             $userMailboxGrid.Rows[$rowIdx].Cells["FullAccess"].Value = $fullAccess
         }
+    }
+    
+    # Show status message based on results
+    if ([string]::IsNullOrWhiteSpace($searchTextLower)) {
+        $statusLabel.Text = "Showing all $($script:allLoadedMailboxes.Count) mailboxes."
+    } elseif ($matchedCount -eq 0) {
+        # Only show "no matches" message if search text is at least 2 characters
+        if ($searchTextLower.Length -ge 2) {
+            $statusLabel.Text = "No mailboxes found matching '$searchText'. Try a different search term or use 'Search Mailboxes' button to query Exchange Online."
+        } else {
+            $statusLabel.Text = "Type more to search..."
+        }
+    } else {
+        $statusLabel.Text = "Found $matchedCount mailbox(es) matching '$searchText'."
     }
 }
 
@@ -4582,17 +4627,42 @@ $connectButton.add_Click({
     Show-Progress -message "Authentication window should appear. If not visible, check your taskbar or Alt+Tab to find it." -progress 10
     
     try {
+        # Quick cleanup of any existing Exchange Online sessions to prevent conflicts
+        try {
+            # Use Disconnect-ExchangeOnline first (fastest method)
+            if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
+                Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+            }
+            
+            # Quick check for orphaned sessions (limit query to avoid slowness)
+            $existingSessions = Get-PSSession -ErrorAction SilentlyContinue | Where-Object { $_.ConfigurationName -eq "Microsoft.Exchange" } | Select-Object -First 5
+            if ($existingSessions) {
+                foreach ($session in $existingSessions) {
+                    Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {
+            # Ignore cleanup errors - Connect-ExchangeOnline will handle it
+        }
+        
         # Set up authentication with better window focus handling
         $authParams = @{
             ErrorAction = 'Stop'
             ShowBanner = $false  # Reduce visual clutter
         }
         
-        # Disable WAM to prevent RuntimeBroker NullReferenceException issues with newer module versions
+        # Update status before connection attempt
+        Show-Progress -message "Connecting to Exchange Online (this may take 10-30 seconds)..." -progress 30
+        $statusLabel.Text = "Connecting to Exchange Online... Browser window should appear shortly."
+        [System.Windows.Forms.Application]::DoEvents()
+        
+        # Connect with authentication - Disable WAM to prevent RuntimeBroker NullReferenceException issues with newer module versions
+        # Note: This may take 10-30 seconds while waiting for browser authentication
         Connect-ExchangeOnline @authParams -DisableWAM
         
-        # Connect with authentication
-        Connect-ExchangeOnline @authParams
+        # Connection successful - no need for slow verification
+        # If Connect-ExchangeOnline completed without error, the connection is established
+        Write-Host "Exchange Online connection established successfully." -ForegroundColor Green
         
         $script:currentExchangeConnection = $true
         Show-Progress -message "Connected to Exchange Online successfully." -progress 100
@@ -4840,7 +4910,26 @@ $browseFolderButton.add_Click({
 
 # Search functionality
 $exchangeSearchTextBox.add_TextChanged({
-    Filter-ExchangeGrid -searchText $exchangeSearchTextBox.Text
+    # Stop and restart the timer on each keystroke (debounce)
+    if ($script:exchangeSearchTimer) {
+        $script:exchangeSearchTimer.Stop()
+        $script:exchangeSearchTimer.Start()
+    }
+    
+    # For very short searches (1 character), just clear and show status without error message
+    $searchText = $exchangeSearchTextBox.Text
+    if ([string]::IsNullOrWhiteSpace($searchText)) {
+        # Clear search immediately
+        Filter-ExchangeGrid -searchText ""
+    } elseif ($searchText.Length -eq 1) {
+        # For single character, just update grid without showing "no matches" error
+        # The timer will trigger the full filter after user stops typing
+        $userMailboxGrid.Rows.Clear()
+        if ($script:allLoadedMailboxes -and $script:allLoadedMailboxes.Count -gt 0) {
+            $statusLabel.Text = "Type more to search..."
+        }
+    }
+    # For 2+ characters, the timer will handle the full search
 })
 
 # Add search functionality for Entra ID
@@ -11469,6 +11558,21 @@ $mainForm.Add_Shown({
 
     
 })
+
+# Clean up search timer when form closes
+$mainForm.add_FormClosed({
+    try {
+        if ($script:exchangeSearchTimer) {
+            if ($script:exchangeSearchTimer.Enabled) {
+                $script:exchangeSearchTimer.Stop()
+            }
+            $script:exchangeSearchTimer.Dispose()
+        }
+    } catch {
+        # Silently ignore disposal errors
+    }
+})
+
 [void]$mainForm.ShowDialog()
 
 # --- Script End ---

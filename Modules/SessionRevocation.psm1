@@ -57,9 +57,63 @@ function Show-SessionRevocationTool {
             return
         }
         
-        $statusLabel.Text = "Revoking sessions for $($selectedUpns.Count) user(s)..."
+        # Ensure required Graph modules are imported (on-demand import)
+        $statusLabel.Text = "Loading required modules..."
         $sessionForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-        $successCount = 0; $failCount = 0
+        [System.Windows.Forms.Application]::DoEvents()
+        
+        try {
+            # Check if Revoke-MgUserSignInSession cmdlet is available
+            if (-not (Get-Command Revoke-MgUserSignInSession -ErrorAction SilentlyContinue)) {
+                Write-Host "Revoke-MgUserSignInSession not found. Importing required module..." -ForegroundColor Yellow
+                
+                # Try to use Ensure-GraphCmdletsAvailable if available (from GraphOnline module)
+                if (Get-Command Ensure-GraphCmdletsAvailable -ErrorAction SilentlyContinue) {
+                    $cmdletCheck = Ensure-GraphCmdletsAvailable -CmdletNames @("Revoke-MgUserSignInSession")
+                    if (-not $cmdletCheck.AllAvailable) {
+                        $missingMsg = "Required Graph modules are not available. Missing cmdlets: $($cmdletCheck.Missing -join ', ')`n`nPlease ensure Microsoft Graph modules are installed.`n`nYou may need to install: Install-Module Microsoft.Graph.Users.Actions -Scope CurrentUser"
+                        [System.Windows.Forms.MessageBox]::Show($missingMsg, "Module Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        $sessionForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                        return
+                    }
+                } else {
+                    # Fallback: Try to import the module directly
+                    try {
+                        if (Get-Module -ListAvailable -Name Microsoft.Graph.Users.Actions -ErrorAction SilentlyContinue) {
+                            Import-Module Microsoft.Graph.Users.Actions -ErrorAction Stop -Force
+                            Write-Host "Imported Microsoft.Graph.Users.Actions module" -ForegroundColor Green
+                        } else {
+                            throw "Microsoft.Graph.Users.Actions module is not installed"
+                        }
+                    } catch {
+                        $errorMsg = "Failed to import required module Microsoft.Graph.Users.Actions.`n`nError: $($_.Exception.Message)`n`nPlease install it with:`nInstall-Module Microsoft.Graph.Users.Actions -Scope CurrentUser"
+                        [System.Windows.Forms.MessageBox]::Show($errorMsg, "Module Import Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        $sessionForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                        return
+                    }
+                }
+                
+                # Verify cmdlet is now available
+                if (-not (Get-Command Revoke-MgUserSignInSession -ErrorAction SilentlyContinue)) {
+                    [System.Windows.Forms.MessageBox]::Show("Revoke-MgUserSignInSession cmdlet is still not available after module import. Please ensure Microsoft.Graph.Users.Actions module is properly installed.", "Cmdlet Not Available", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    $sessionForm.Cursor = [System.Windows.Forms.Cursors]::Default
+                    return
+                }
+            }
+        } catch {
+            $errorMsg = "Failed to prepare Graph modules for session revocation.`n`nError: $($_.Exception.Message)"
+            [System.Windows.Forms.MessageBox]::Show($errorMsg, "Module Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $sessionForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            return
+        }
+        
+        $statusLabel.Text = "Revoking sessions for $($selectedUpns.Count) user(s)..."
+        [System.Windows.Forms.Application]::DoEvents()
+        
+        $successCount = 0
+        $failCount = 0
+        $errorDetails = @()
+        
         foreach ($upn in $selectedUpns) {
             try {
                 Revoke-MgUserSignInSession -UserId $upn -ErrorAction Stop
@@ -67,12 +121,25 @@ function Show-SessionRevocationTool {
                 Write-Host "Successfully revoked sessions for: $upn" -ForegroundColor Green
             } catch {
                 $failCount++
-                Write-Error "Failed to revoke sessions for $upn`: $($_.Exception.Message)"
+                $errorMsg = "Failed to revoke sessions for $upn`: $($_.Exception.Message)"
+                Write-Error $errorMsg
+                $errorDetails += $errorMsg
             }
         }
         $sessionForm.Cursor = [System.Windows.Forms.Cursors]::Default
-        $statusLabel.Text = "Revoked sessions for $successCount user(s). Failed for $failCount user(s)."
-        [System.Windows.Forms.MessageBox]::Show("Revoked sessions for $successCount user(s). Failed for $failCount user(s).", "Session Revocation Result", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+        # Build result message
+        $resultMsg = "Revoked sessions for $successCount user(s)."
+        if ($failCount -gt 0) {
+            $resultMsg += "`nFailed for $failCount user(s)."
+            if ($errorDetails.Count -gt 0) {
+                $resultMsg += "`n`nErrors:`n" + ($errorDetails -join "`n")
+            }
+        }
+        
+        $statusLabel.Text = $resultMsg
+        $icon = if ($failCount -eq 0) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Warning }
+        [System.Windows.Forms.MessageBox]::Show($resultMsg, "Session Revocation Result", [System.Windows.Forms.MessageBoxButtons]::OK, $icon)
     })
     $sessionForm.Controls.Add($revokeButton)
 
