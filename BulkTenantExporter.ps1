@@ -951,7 +951,8 @@ try {
     
                 try {
                     # Note: Connect-ExchangeOnline may take time to show the browser popup
-                    Connect-ExchangeOnline -ShowBanner:`$false -ErrorAction Stop
+                    # Use -DisableWAM to prevent WAM (Web Account Manager) issues with newer module versions
+                    Connect-ExchangeOnline -ShowBanner:`$false -DisableWAM -ErrorAction Stop
                     `$exchangeAuthenticated = `$true
                     Write-Status "Exchange Online authentication successful!"
                     Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
