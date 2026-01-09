@@ -2930,6 +2930,9 @@ function New-SecurityInvestigationZip {
         $zipPath = Join-Path $OutputFolder $ZipFileName
 
         # Get all CSV, JSON files, and relevant TXT files (AI readme files and error files)
+        # This includes all export files: MessageTrace, InboxRules, TransportRules, MailFlowConnectors,
+        # GraphAuditLogs, SignInLogs, ConditionalAccessPolicies, AppRegistrations, UserSecurityPosture,
+        # SharePointActivity, OneDriveActivity, TeamsActivity, SharePointSharing, SecurityAlerts, SecurityIncidents
         $csvJsonFiles = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse
         $txtFiles = Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse |
                     Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt)$' }
