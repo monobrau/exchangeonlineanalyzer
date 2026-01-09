@@ -339,7 +339,7 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [string[]]$TicketNumbers = @(),
         [Parameter(Mandatory=$false)]
-        [string]$TicketContent = ''
+        [string]$TicketContent = '',
         [Parameter(Mandatory=$false)]
         [bool]$IncludeSharePointActivity = $true,
         [Parameter(Mandatory=$false)]
