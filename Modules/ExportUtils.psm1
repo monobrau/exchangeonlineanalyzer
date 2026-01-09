@@ -340,6 +340,18 @@ function New-SecurityInvestigationReport {
         [string[]]$TicketNumbers = @(),
         [Parameter(Mandatory=$false)]
         [string]$TicketContent = ''
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeSharePointActivity = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeOneDriveActivity = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeTeamsActivity = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeSharePointSharing = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeSecurityAlerts = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeSecurityIncidents = $true
     )
 
     try {
@@ -638,6 +650,167 @@ function New-SecurityInvestigationReport {
         $report.AppRegistrations = @()
     }
 
+    # SharePoint/OneDrive/Teams Activity and Security Data
+    if ($graphConnected) {
+        try {
+            if ($IncludeSharePointActivity) {
+                try {
+                    $statusMsg = "Collecting SharePoint activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.SharePointActivity = Get-SharePointActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.SharePointActivity.Count) SharePoint activity entries" -ForegroundColor Green
+                } catch {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                        Write-Warning "Insufficient permissions. Requires 'Reports.Read.All' permission."
+                        $report.SharePointActivity = @()
+                        $report.SharePointActivityError = "Permission denied - requires Reports.Read.All"
+                    } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*E5*") {
+                        Write-Warning "SharePoint activity logs require Microsoft 365 E5 license or Reports.Read.All permission."
+                        $report.SharePointActivity = @()
+                        $report.SharePointActivityError = "License required - Microsoft 365 E5 or Reports.Read.All"
+                    } else {
+                        Write-Warning "Failed to collect SharePoint activity: $($_.Exception.Message)"
+                        $report.SharePointActivity = @()
+                        $report.SharePointActivityError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.SharePointActivity = @()
+            }
+
+            if ($IncludeOneDriveActivity) {
+                try {
+                    $statusMsg = "Collecting OneDrive activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.OneDriveActivity = Get-OneDriveActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.OneDriveActivity.Count) OneDrive activity entries" -ForegroundColor Green
+                } catch {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                        Write-Warning "Insufficient permissions. Requires 'Reports.Read.All' permission."
+                        $report.OneDriveActivity = @()
+                        $report.OneDriveActivityError = "Permission denied - requires Reports.Read.All"
+                    } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*E5*") {
+                        Write-Warning "OneDrive activity logs require Microsoft 365 E5 license or Reports.Read.All permission."
+                        $report.OneDriveActivity = @()
+                        $report.OneDriveActivityError = "License required - Microsoft 365 E5 or Reports.Read.All"
+                    } else {
+                        Write-Warning "Failed to collect OneDrive activity: $($_.Exception.Message)"
+                        $report.OneDriveActivity = @()
+                        $report.OneDriveActivityError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.OneDriveActivity = @()
+            }
+
+            if ($IncludeTeamsActivity) {
+                try {
+                    $statusMsg = "Collecting Teams activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.TeamsActivity = Get-TeamsActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.TeamsActivity.Count) Teams activity entries" -ForegroundColor Green
+                } catch {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                        Write-Warning "Insufficient permissions. Requires 'Reports.Read.All' permission."
+                        $report.TeamsActivity = @()
+                        $report.TeamsActivityError = "Permission denied - requires Reports.Read.All"
+                    } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*E5*") {
+                        Write-Warning "Teams activity logs require Microsoft 365 E5 license or Reports.Read.All permission."
+                        $report.TeamsActivity = @()
+                        $report.TeamsActivityError = "License required - Microsoft 365 E5 or Reports.Read.All"
+                    } else {
+                        Write-Warning "Failed to collect Teams activity: $($_.Exception.Message)"
+                        $report.TeamsActivity = @()
+                        $report.TeamsActivityError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.TeamsActivity = @()
+            }
+
+            if ($IncludeSharePointSharing) {
+                try {
+                    $statusMsg = "Collecting SharePoint sharing links..."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.SharePointSharing = Get-SharePointSharingLinks -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.SharePointSharing.Count) SharePoint sharing links" -ForegroundColor Green
+                } catch {
+                    Write-Warning "Failed to collect SharePoint sharing links: $($_.Exception.Message)"
+                    $report.SharePointSharing = @()
+                    $report.SharePointSharingError = $_.Exception.Message
+                }
+            } else {
+                $report.SharePointSharing = @()
+            }
+
+            if ($IncludeSecurityAlerts) {
+                try {
+                    $statusMsg = "Collecting security alerts (last $DaysBack days)... Requires SecurityAlert.Read.All permission."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.SecurityAlerts = Get-SecurityAlerts -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.SecurityAlerts.Count) security alerts" -ForegroundColor Green
+                } catch {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                        Write-Warning "Insufficient permissions. Requires 'SecurityAlert.Read.All' permission."
+                        $report.SecurityAlerts = @()
+                        $report.SecurityAlertsError = "Permission denied - requires SecurityAlert.Read.All"
+                    } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*E5*") {
+                        Write-Warning "Security alerts require Microsoft Defender for Office 365 (E5) license or SecurityAlert.Read.All permission."
+                        $report.SecurityAlerts = @()
+                        $report.SecurityAlertsError = "License required - Microsoft Defender for Office 365 (E5) or SecurityAlert.Read.All"
+                    } else {
+                        Write-Warning "Failed to collect security alerts: $($_.Exception.Message)"
+                        $report.SecurityAlerts = @()
+                        $report.SecurityAlertsError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.SecurityAlerts = @()
+            }
+
+            if ($IncludeSecurityIncidents) {
+                try {
+                    $statusMsg = "Collecting security incidents (last $DaysBack days)... Requires SecurityIncident.Read.All permission."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.SecurityIncidents = Get-SecurityIncidents -DaysBack $DaysBack
+                    Write-Host "Collected $($report.SecurityIncidents.Count) security incidents" -ForegroundColor Green
+                } catch {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                        Write-Warning "Insufficient permissions. Requires 'SecurityIncident.Read.All' permission."
+                        $report.SecurityIncidents = @()
+                        $report.SecurityIncidentsError = "Permission denied - requires SecurityIncident.Read.All"
+                    } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*E5*") {
+                        Write-Warning "Security incidents require Microsoft Defender for Office 365 (E5) license or SecurityIncident.Read.All permission."
+                        $report.SecurityIncidents = @()
+                        $report.SecurityIncidentsError = "License required - Microsoft Defender for Office 365 (E5) or SecurityIncident.Read.All"
+                    } else {
+                        Write-Warning "Failed to collect security incidents: $($_.Exception.Message)"
+                        $report.SecurityIncidents = @()
+                        $report.SecurityIncidentsError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.SecurityIncidents = @()
+            }
+        } catch {
+            Write-Warning "Failed to collect SharePoint/Teams/OneDrive/Security data: $($_.Exception.Message)"
+        }
+    } else {
+        # Not connected, set empty arrays
+        $report.SharePointActivity = @()
+        $report.OneDriveActivity = @()
+        $report.TeamsActivity = @()
+        $report.SharePointSharing = @()
+        $report.SecurityAlerts = @()
+        $report.SecurityIncidents = @()
+    }
+
     # Generate AI Investigation Prompt
     $statusMsg = "Generating AI investigation prompts..."
     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
@@ -839,6 +1012,126 @@ function New-SecurityInvestigationReport {
                 $errorFile = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix_Error.txt"
                 "Error collecting App Registrations:`n$($report.AppRegistrationsError)" | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.AppRegistrationsError = $errorFile
+            }
+
+            # SharePoint Activity export
+            $csv = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix.json"
+            if ($report.SharePointActivity -and $report.SharePointActivity.Count -gt 0) {
+                try { 
+                    $report.SharePointActivity | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.SharePointActivityCsv = $csv
+                    Write-Host "Exported $($report.SharePointActivity.Count) SharePoint activity entries" -ForegroundColor Green
+                }
+                catch { 
+                    $report.SharePointActivity | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.SharePointActivityJson = $json
+                    Write-Warning "Failed to export SharePoint activity to CSV, exported to JSON instead"
+                }
+            } elseif ($report.SharePointActivityError) {
+                $errorFile = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix_Error.txt"
+                $report.SharePointActivityError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SharePointActivityError = $errorFile
+            }
+
+            # OneDrive Activity export
+            $csv = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix.json"
+            if ($report.OneDriveActivity -and $report.OneDriveActivity.Count -gt 0) {
+                try { 
+                    $report.OneDriveActivity | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.OneDriveActivityCsv = $csv
+                    Write-Host "Exported $($report.OneDriveActivity.Count) OneDrive activity entries" -ForegroundColor Green
+                }
+                catch { 
+                    $report.OneDriveActivity | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.OneDriveActivityJson = $json
+                    Write-Warning "Failed to export OneDrive activity to CSV, exported to JSON instead"
+                }
+            } elseif ($report.OneDriveActivityError) {
+                $errorFile = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix_Error.txt"
+                $report.OneDriveActivityError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.OneDriveActivityError = $errorFile
+            }
+
+            # Teams Activity export
+            $csv = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix.json"
+            if ($report.TeamsActivity -and $report.TeamsActivity.Count -gt 0) {
+                try { 
+                    $report.TeamsActivity | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.TeamsActivityCsv = $csv
+                    Write-Host "Exported $($report.TeamsActivity.Count) Teams activity entries" -ForegroundColor Green
+                }
+                catch { 
+                    $report.TeamsActivity | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.TeamsActivityJson = $json
+                    Write-Warning "Failed to export Teams activity to CSV, exported to JSON instead"
+                }
+            } elseif ($report.TeamsActivityError) {
+                $errorFile = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix_Error.txt"
+                $report.TeamsActivityError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.TeamsActivityError = $errorFile
+            }
+
+            # SharePoint Sharing Links export
+            $csv = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix.json"
+            if ($report.SharePointSharing -and $report.SharePointSharing.Count -gt 0) {
+                try { 
+                    $report.SharePointSharing | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.SharePointSharingCsv = $csv
+                    Write-Host "Exported $($report.SharePointSharing.Count) SharePoint sharing links" -ForegroundColor Green
+                }
+                catch { 
+                    $report.SharePointSharing | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.SharePointSharingJson = $json
+                    Write-Warning "Failed to export SharePoint sharing to CSV, exported to JSON instead"
+                }
+            } elseif ($report.SharePointSharingError) {
+                $errorFile = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix_Error.txt"
+                $report.SharePointSharingError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SharePointSharingError = $errorFile
+            }
+
+            # Security Alerts export
+            $csv = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix.json"
+            if ($report.SecurityAlerts -and $report.SecurityAlerts.Count -gt 0) {
+                try { 
+                    $report.SecurityAlerts | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.SecurityAlertsCsv = $csv
+                    Write-Host "Exported $($report.SecurityAlerts.Count) security alerts" -ForegroundColor Green
+                }
+                catch { 
+                    $report.SecurityAlerts | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.SecurityAlertsJson = $json
+                    Write-Warning "Failed to export security alerts to CSV, exported to JSON instead"
+                }
+            } elseif ($report.SecurityAlertsError) {
+                $errorFile = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix_Error.txt"
+                $report.SecurityAlertsError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SecurityAlertsError = $errorFile
+            }
+
+            # Security Incidents export
+            $csv = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix.json"
+            if ($report.SecurityIncidents -and $report.SecurityIncidents.Count -gt 0) {
+                try { 
+                    $report.SecurityIncidents | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.SecurityIncidentsCsv = $csv
+                    Write-Host "Exported $($report.SecurityIncidents.Count) security incidents" -ForegroundColor Green
+                }
+                catch { 
+                    $report.SecurityIncidents | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.SecurityIncidentsJson = $json
+                    Write-Warning "Failed to export security incidents to CSV, exported to JSON instead"
+                }
+            } elseif ($report.SecurityIncidentsError) {
+                $errorFile = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix_Error.txt"
+                $report.SecurityIncidentsError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SecurityIncidentsError = $errorFile
             }
 
             # User Security Posture export (combined MFA + Groups + Mailbox Forwarding/Delegation)
@@ -3049,6 +3342,554 @@ function Export-UserLicenseReport {
     }
 }
 
+function Get-SharePointActivityLogs {
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting SharePoint activity logs (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect SharePoint activity logs."
+            return @()
+        }
+        
+        # Ensure Reports module is available
+        if (-not (Get-Command Get-MgReportSharePointActivityUserDetail -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $results = New-Object System.Collections.ArrayList
+        $skip = 0
+        $top = 1000  # Max page size for Reports API
+        $hasMore = $true
+        $maxRecords = 100000  # Safety limit
+        
+        # Determine period format (D7, D30, etc.)
+        $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
+        
+        Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
+        
+        while ($hasMore -and $results.Count -lt $maxRecords) {
+            try {
+                $params = @{
+                    Period = $period
+                    Top = $top
+                    Skip = $skip
+                    ErrorAction = 'Stop'
+                }
+                
+                $chunk = Get-MgReportSharePointActivityUserDetail @params
+                
+                if ($chunk -and $chunk.Count -gt 0) {
+                    # Filter by SelectedUsers if provided (client-side filtering for Reports API)
+                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                        $selectedUserSet = @{}
+                        foreach ($user in $SelectedUsers) {
+                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                            $selectedUserSet[$upn.ToLower()] = $true
+                        }
+                        
+                        $filtered = $chunk | Where-Object {
+                            $userPrincipalName = if ($_.UserPrincipalName) { $_.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet.ContainsKey($userPrincipalName)
+                        }
+                        
+                        if ($filtered) {
+                            [void]$results.AddRange($filtered)
+                        }
+                    } else {
+                        [void]$results.AddRange($chunk)
+                    }
+                    
+                    $skip += $chunk.Count
+                    $hasMore = ($chunk.Count -eq $top)
+                    
+                    Write-Host "  Collected $($results.Count) SharePoint activity entries so far..." -ForegroundColor Gray
+                } else {
+                    $hasMore = $false
+                }
+            } catch {
+                # Handle rate limiting (429 errors)
+                if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
+                    Write-Warning "Rate limited, waiting 60 seconds before retry..."
+                    Start-Sleep -Seconds 60
+                    continue
+                }
+                throw
+            }
+        }
+        
+        if ($results.Count -ge $maxRecords) {
+            Write-Warning "Reached maximum record limit ($maxRecords) for SharePoint activity"
+        }
+        
+        Write-Host "  Total SharePoint activity entries collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect SharePoint activity logs: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-OneDriveActivityLogs {
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting OneDrive activity logs (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect OneDrive activity logs."
+            return @()
+        }
+        
+        # Ensure Reports module is available
+        if (-not (Get-Command Get-MgReportOneDriveActivityUserDetail -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $results = New-Object System.Collections.ArrayList
+        $skip = 0
+        $top = 1000  # Max page size for Reports API
+        $hasMore = $true
+        $maxRecords = 100000  # Safety limit
+        
+        # Determine period format (D7, D30, etc.)
+        $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
+        
+        Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
+        
+        while ($hasMore -and $results.Count -lt $maxRecords) {
+            try {
+                $params = @{
+                    Period = $period
+                    Top = $top
+                    Skip = $skip
+                    ErrorAction = 'Stop'
+                }
+                
+                $chunk = Get-MgReportOneDriveActivityUserDetail @params
+                
+                if ($chunk -and $chunk.Count -gt 0) {
+                    # Filter by SelectedUsers if provided (client-side filtering for Reports API)
+                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                        $selectedUserSet = @{}
+                        foreach ($user in $SelectedUsers) {
+                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                            $selectedUserSet[$upn.ToLower()] = $true
+                        }
+                        
+                        $filtered = $chunk | Where-Object {
+                            $userPrincipalName = if ($_.UserPrincipalName) { $_.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet.ContainsKey($userPrincipalName)
+                        }
+                        
+                        if ($filtered) {
+                            [void]$results.AddRange($filtered)
+                        }
+                    } else {
+                        [void]$results.AddRange($chunk)
+                    }
+                    
+                    $skip += $chunk.Count
+                    $hasMore = ($chunk.Count -eq $top)
+                    
+                    Write-Host "  Collected $($results.Count) OneDrive activity entries so far..." -ForegroundColor Gray
+                } else {
+                    $hasMore = $false
+                }
+            } catch {
+                # Handle rate limiting (429 errors)
+                if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
+                    Write-Warning "Rate limited, waiting 60 seconds before retry..."
+                    Start-Sleep -Seconds 60
+                    continue
+                }
+                throw
+            }
+        }
+        
+        if ($results.Count -ge $maxRecords) {
+            Write-Warning "Reached maximum record limit ($maxRecords) for OneDrive activity"
+        }
+        
+        Write-Host "  Total OneDrive activity entries collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect OneDrive activity logs: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-TeamsActivityLogs {
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting Teams activity logs (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect Teams activity logs."
+            return @()
+        }
+        
+        # Ensure Reports module is available
+        if (-not (Get-Command Get-MgReportTeamsActivityUserDetail -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $results = New-Object System.Collections.ArrayList
+        $skip = 0
+        $top = 1000  # Max page size for Reports API
+        $hasMore = $true
+        $maxRecords = 100000  # Safety limit
+        
+        # Determine period format (D7, D30, etc.)
+        $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
+        
+        Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
+        
+        while ($hasMore -and $results.Count -lt $maxRecords) {
+            try {
+                $params = @{
+                    Period = $period
+                    Top = $top
+                    Skip = $skip
+                    ErrorAction = 'Stop'
+                }
+                
+                $chunk = Get-MgReportTeamsActivityUserDetail @params
+                
+                if ($chunk -and $chunk.Count -gt 0) {
+                    # Filter by SelectedUsers if provided (client-side filtering for Reports API)
+                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                        $selectedUserSet = @{}
+                        foreach ($user in $SelectedUsers) {
+                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                            $selectedUserSet[$upn.ToLower()] = $true
+                        }
+                        
+                        $filtered = $chunk | Where-Object {
+                            $userPrincipalName = if ($_.UserPrincipalName) { $_.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet.ContainsKey($userPrincipalName)
+                        }
+                        
+                        if ($filtered) {
+                            [void]$results.AddRange($filtered)
+                        }
+                    } else {
+                        [void]$results.AddRange($chunk)
+                    }
+                    
+                    $skip += $chunk.Count
+                    $hasMore = ($chunk.Count -eq $top)
+                    
+                    Write-Host "  Collected $($results.Count) Teams activity entries so far..." -ForegroundColor Gray
+                } else {
+                    $hasMore = $false
+                }
+            } catch {
+                # Handle rate limiting (429 errors)
+                if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
+                    Write-Warning "Rate limited, waiting 60 seconds before retry..."
+                    Start-Sleep -Seconds 60
+                    continue
+                }
+                throw
+            }
+        }
+        
+        if ($results.Count -ge $maxRecords) {
+            Write-Warning "Reached maximum record limit ($maxRecords) for Teams activity"
+        }
+        
+        Write-Host "  Total Teams activity entries collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect Teams activity logs: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-SharePointSharingLinks {
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting SharePoint sharing links..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect SharePoint sharing links."
+            return @()
+        }
+        
+        # Ensure Sites module is available
+        if (-not (Get-Command Get-MgSite -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Sites -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $results = New-Object System.Collections.ArrayList
+        
+        # Get all SharePoint sites
+        Write-Host "  Enumerating SharePoint sites..." -ForegroundColor Gray
+        try {
+            $sites = Get-MgSite -All -ErrorAction Stop
+            Write-Host "  Found $($sites.Count) SharePoint sites" -ForegroundColor Gray
+            
+            $siteCount = 0
+            foreach ($site in $sites) {
+                $siteCount++
+                if ($siteCount % 10 -eq 0) {
+                    Write-Host "  Processing site $siteCount of $($sites.Count)..." -ForegroundColor Gray
+                }
+                
+                try {
+                    # Get site permissions/sharing
+                    $permissions = Get-MgSitePermission -SiteId $site.Id -All -ErrorAction SilentlyContinue
+                    
+                    if ($permissions) {
+                        foreach ($perm in $permissions) {
+                            # Filter by SelectedUsers if provided
+                            if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                                $grantedTo = if ($perm.GrantedToV2) { $perm.GrantedToV2.User } else { $null }
+                                $userPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { "" }
+                                
+                                $matches = $false
+                                foreach ($user in $SelectedUsers) {
+                                    $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                                    if ($userPrincipalName -eq $upn) {
+                                        $matches = $true
+                                        break
+                                    }
+                                }
+                                
+                                if (-not $matches) {
+                                    continue
+                                }
+                            }
+                            
+                            $shareLink = [PSCustomObject]@{
+                                SiteId = $site.Id
+                                SiteDisplayName = $site.DisplayName
+                                SiteWebUrl = $site.WebUrl
+                                PermissionId = $perm.Id
+                                Roles = $perm.Roles -join '; '
+                                LinkScope = if ($perm.Link) { $perm.Link.Scope } else { "Unknown" }
+                                LinkType = if ($perm.Link) { $perm.Link.Type } else { "Unknown" }
+                                GrantedToPrincipalName = if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) { $perm.GrantedToV2.User.UserPrincipalName } else { "Unknown" }
+                                GrantedToPrincipalId = if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) { $perm.GrantedToV2.User.Id } else { "Unknown" }
+                            }
+                            [void]$results.Add($shareLink)
+                        }
+                    }
+                } catch {
+                    Write-Warning "  Failed to get permissions for site $($site.DisplayName): $($_.Exception.Message)"
+                }
+            }
+        } catch {
+            Write-Warning "Failed to enumerate SharePoint sites: $($_.Exception.Message)"
+        }
+        
+        Write-Host "  Total SharePoint sharing links collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect SharePoint sharing links: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-SecurityAlerts {
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting security alerts (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect security alerts."
+            return @()
+        }
+        
+        # Ensure Security module is available
+        if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $filter = "createdDateTime ge $filterDate"
+        
+        Write-Host "  Querying Microsoft Graph Security API for alerts..." -ForegroundColor Gray
+        
+        # Graph handles pagination automatically with -All
+        $alerts = Get-MgSecurityAlert -Filter $filter -All -ErrorAction Stop
+        
+        $results = New-Object System.Collections.ArrayList
+        
+        if ($alerts) {
+            Write-Host "  Retrieved $($alerts.Count) security alerts" -ForegroundColor Gray
+            
+            # Filter by SelectedUsers if provided
+            if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                $selectedUserSet = @{}
+                foreach ($user in $SelectedUsers) {
+                    $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                    $selectedUserSet[$upn.ToLower()] = $true
+                }
+                
+                $alerts = $alerts | Where-Object {
+                    $alert = $_
+                    $matches = $false
+                    
+                    # Check UserPrincipalNames array
+                    if ($alert.UserPrincipalNames) {
+                        foreach ($upn in $alert.UserPrincipalNames) {
+                            if ($selectedUserSet.ContainsKey($upn.ToLower())) {
+                                $matches = $true
+                                break
+                            }
+                        }
+                    }
+                    
+                    # Check UserDisplayNames array
+                    if (-not $matches -and $alert.UserDisplayNames) {
+                        foreach ($displayName in $alert.UserDisplayNames) {
+                            # Try to match by display name (less reliable)
+                            foreach ($selectedUpn in $selectedUserSet.Keys) {
+                                if ($displayName -like "*$selectedUpn*") {
+                                    $matches = $true
+                                    break
+                                }
+                            }
+                            if ($matches) { break }
+                        }
+                    }
+                    
+                    $matches
+                }
+            }
+            
+            # Flatten alerts for export
+            foreach ($alert in $alerts) {
+                try {
+                    $alertEntry = [PSCustomObject]@{
+                        Id = $alert.Id
+                        Title = $alert.Title
+                        Description = $alert.Description
+                        Severity = $alert.Severity
+                        Status = $alert.Status
+                        Category = $alert.Category
+                        CreatedDateTime = $alert.CreatedDateTime
+                        LastUpdateDateTime = $alert.LastUpdateDateTime
+                        UserPrincipalNames = if ($alert.UserPrincipalNames) { $alert.UserPrincipalNames -join '; ' } else { "Unknown" }
+                        UserDisplayNames = if ($alert.UserDisplayNames) { $alert.UserDisplayNames -join '; ' } else { "Unknown" }
+                        VendorInformation = if ($alert.VendorInformation) { "$($alert.VendorInformation.Provider) - $($alert.VendorInformation.Vendor)" } else { "Unknown" }
+                        ActivityGroupName = if ($alert.ActivityGroupName) { $alert.ActivityGroupName } else { "Unknown" }
+                    }
+                    [void]$results.Add($alertEntry)
+                } catch {
+                    Write-Warning "  Error processing security alert entry: $($_.Exception.Message)"
+                }
+            }
+        }
+        
+        Write-Host "  Total security alerts collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect security alerts: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-SecurityIncidents {
+    param(
+        [int]$DaysBack = 10
+    )
+    
+    try {
+        Write-Host "Collecting security incidents (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect security incidents."
+            return @()
+        }
+        
+        # Ensure Security module is available
+        if (-not (Get-Command Get-MgSecurityIncident -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $filter = "createdDateTime ge $filterDate"
+        
+        Write-Host "  Querying Microsoft Graph Security API for incidents..." -ForegroundColor Gray
+        
+        # Graph handles pagination automatically with -All
+        $incidents = Get-MgSecurityIncident -Filter $filter -All -ErrorAction Stop
+        
+        $results = New-Object System.Collections.ArrayList
+        
+        if ($incidents) {
+            Write-Host "  Retrieved $($incidents.Count) security incidents" -ForegroundColor Gray
+            
+            # Flatten incidents for export
+            foreach ($incident in $incidents) {
+                try {
+                    $incidentEntry = [PSCustomObject]@{
+                        Id = $incident.Id
+                        DisplayName = $incident.DisplayName
+                        Description = $incident.Description
+                        Severity = $incident.Severity
+                        Status = $incident.Status
+                        Classification = $incident.Classification
+                        Determination = $incident.Determination
+                        CreatedDateTime = $incident.CreatedDateTime
+                        LastUpdateDateTime = $incident.LastUpdateDateTime
+                        AssignedTo = if ($incident.AssignedTo) { $incident.AssignedTo } else { "Unassigned" }
+                        AlertsCount = if ($incident.Alerts) { $incident.Alerts.Count } else { 0 }
+                    }
+                    [void]$results.Add($incidentEntry)
+                } catch {
+                    Write-Warning "  Error processing security incident entry: $($_.Exception.Message)"
+                }
+            }
+        }
+        
+        Write-Host "  Total security incidents collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect security incidents: $($_.Exception.Message)"
+        return @()
+    }
+}
+
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
 Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport
+Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents

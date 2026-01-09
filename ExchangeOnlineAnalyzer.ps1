@@ -5801,6 +5801,42 @@ $securityInvestigationButton.add_Click({
         $mfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $mfaCoverageCheckBox.Checked = $true
 
+        $sharePointActivityCheckBox = New-Object System.Windows.Forms.CheckBox
+        $sharePointActivityCheckBox.Text = "SharePoint Activity (requires E5/Reports.Read.All)"
+        $sharePointActivityCheckBox.Location = New-Object System.Drawing.Point(10, 290)
+        $sharePointActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $sharePointActivityCheckBox.Checked = $true
+
+        $oneDriveActivityCheckBox = New-Object System.Windows.Forms.CheckBox
+        $oneDriveActivityCheckBox.Text = "OneDrive Activity (requires E5/Reports.Read.All)"
+        $oneDriveActivityCheckBox.Location = New-Object System.Drawing.Point(10, 315)
+        $oneDriveActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $oneDriveActivityCheckBox.Checked = $true
+
+        $teamsActivityCheckBox = New-Object System.Windows.Forms.CheckBox
+        $teamsActivityCheckBox.Text = "Teams Activity (requires E5/Reports.Read.All)"
+        $teamsActivityCheckBox.Location = New-Object System.Drawing.Point(10, 340)
+        $teamsActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $teamsActivityCheckBox.Checked = $true
+
+        $sharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
+        $sharePointSharingCheckBox.Text = "SharePoint Sharing Links"
+        $sharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 365)
+        $sharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $sharePointSharingCheckBox.Checked = $true
+
+        $securityAlertsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $securityAlertsCheckBox.Text = "Security Alerts (requires E5/SecurityAlert.Read.All)"
+        $securityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 390)
+        $securityAlertsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $securityAlertsCheckBox.Checked = $true
+
+        $securityIncidentsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $securityIncidentsCheckBox.Text = "Security Incidents (requires E5/SecurityIncident.Read.All)"
+        $securityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 415)
+        $securityIncidentsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $securityIncidentsCheckBox.Checked = $true
+
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
         $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 242)
@@ -5832,6 +5868,12 @@ $securityInvestigationButton.add_Click({
             $appRegistrationsCheckBox.Checked = $true
             $signInLogsCheckBox.Checked = $true
             $mfaCoverageCheckBox.Checked = $true
+            $sharePointActivityCheckBox.Checked = $true
+            $oneDriveActivityCheckBox.Checked = $true
+            $teamsActivityCheckBox.Checked = $true
+            $sharePointSharingCheckBox.Checked = $true
+            $securityAlertsCheckBox.Checked = $true
+            $securityIncidentsCheckBox.Checked = $true
         })
 
         # Deselect All button click handler
@@ -5846,6 +5888,12 @@ $securityInvestigationButton.add_Click({
             $appRegistrationsCheckBox.Checked = $false
             $signInLogsCheckBox.Checked = $false
             $mfaCoverageCheckBox.Checked = $false
+            $sharePointActivityCheckBox.Checked = $false
+            $oneDriveActivityCheckBox.Checked = $false
+            $teamsActivityCheckBox.Checked = $false
+            $sharePointSharingCheckBox.Checked = $false
+            $securityAlertsCheckBox.Checked = $false
+            $securityIncidentsCheckBox.Checked = $false
         })
 
         # Add all controls to scrollable panel
@@ -5855,6 +5903,8 @@ $securityInvestigationButton.add_Click({
             $mailFlowCheckBox, $mailboxForwardingCheckBox, $auditLogsCheckBox,
             $caPoliciesCheckBox, $appRegistrationsCheckBox,
             $signInLogsCheckBox, $mfaCoverageCheckBox,
+            $sharePointActivityCheckBox, $oneDriveActivityCheckBox, $teamsActivityCheckBox,
+            $sharePointSharingCheckBox, $securityAlertsCheckBox, $securityIncidentsCheckBox,
             $signInLogsDaysLabel, $signInLogsDaysComboBox
         ))
         
@@ -5951,6 +6001,12 @@ $securityInvestigationButton.add_Click({
                     IncludeAppRegistrations = $appRegistrationsCheckBox.Checked
                     IncludeSignInLogs = $signInLogsCheckBox.Checked
                     IncludeMfaCoverage = $mfaCoverageCheckBox.Checked
+                    IncludeSharePointActivity = $sharePointActivityCheckBox.Checked
+                    IncludeOneDriveActivity = $oneDriveActivityCheckBox.Checked
+                    IncludeTeamsActivity = $teamsActivityCheckBox.Checked
+                    IncludeSharePointSharing = $sharePointSharingCheckBox.Checked
+                    IncludeSecurityAlerts = $securityAlertsCheckBox.Checked
+                    IncludeSecurityIncidents = $securityIncidentsCheckBox.Checked
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -5985,7 +6041,7 @@ $securityInvestigationButton.add_Click({
                 }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -6667,6 +6723,12 @@ if (Test-Path `$ReportSelectionsFile) {
             IncludeAppRegistrations = if (`$null -ne `$jsonObj.IncludeAppRegistrations) { `$jsonObj.IncludeAppRegistrations } else { `$false }
             IncludeSignInLogs = if (`$null -ne `$jsonObj.IncludeSignInLogs) { `$jsonObj.IncludeSignInLogs } else { `$false }
             IncludeMfaCoverage = if (`$null -ne `$jsonObj.IncludeMfaCoverage -and `$jsonObj.IncludeMfaCoverage -ne "") { [bool]`$jsonObj.IncludeMfaCoverage } else { `$false }
+            IncludeSharePointActivity = if (`$null -ne `$jsonObj.IncludeSharePointActivity) { `$jsonObj.IncludeSharePointActivity } else { `$true }
+            IncludeOneDriveActivity = if (`$null -ne `$jsonObj.IncludeOneDriveActivity) { `$jsonObj.IncludeOneDriveActivity } else { `$true }
+            IncludeTeamsActivity = if (`$null -ne `$jsonObj.IncludeTeamsActivity) { `$jsonObj.IncludeTeamsActivity } else { `$true }
+            IncludeSharePointSharing = if (`$null -ne `$jsonObj.IncludeSharePointSharing) { `$jsonObj.IncludeSharePointSharing } else { `$true }
+            IncludeSecurityAlerts = if (`$null -ne `$jsonObj.IncludeSecurityAlerts) { `$jsonObj.IncludeSecurityAlerts } else { `$true }
+            IncludeSecurityIncidents = if (`$null -ne `$jsonObj.IncludeSecurityIncidents) { `$jsonObj.IncludeSecurityIncidents } else { `$true }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
@@ -7215,7 +7277,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
