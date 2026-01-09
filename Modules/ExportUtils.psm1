@@ -3362,32 +3362,58 @@ function Get-SharePointActivityLogs {
             return @()
         }
         
-        # Ensure Reports module is available
-        if (-not (Get-Command Get-MgReportSharePointActivityUserDetail -ErrorAction SilentlyContinue)) {
-            Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
-        }
-        
+        # Use Invoke-MgGraphRequest to call Reports API directly
+        # The Reports API uses function endpoints that return CSV data
         $results = New-Object System.Collections.ArrayList
-        $skip = 0
-        $top = 1000  # Max page size for Reports API
-        $hasMore = $true
-        $maxRecords = 100000  # Safety limit
         
         # Determine period format (D7, D30, etc.)
         $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
         
         Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
         
-        while ($hasMore -and $results.Count -lt $maxRecords) {
-            try {
-                $params = @{
-                    Period = $period
-                    Top = $top
-                    Skip = $skip
-                    ErrorAction = 'Stop'
-                }
+        try {
+            # Call the Reports API function endpoint
+            $uri = "https://graph.microsoft.com/v1.0/reports/getSharePointActivityUserDetail(period='$period')"
+            Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
+            
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            
+            # The Reports API returns CSV data as a string
+            if ($response -is [string]) {
+                $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
                 
-                $chunk = Get-MgReportSharePointActivityUserDetail @params
+                if ($csvLines.Count -gt 1) {
+                    # Parse CSV header
+                    $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                    
+                    # Parse CSV data rows
+                    for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                        $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                        $row = @{}
+                        for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                            $row[$headers[$j]] = $values[$j]
+                        }
+                        
+                        # Filter by SelectedUsers if provided
+                        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                            $userPrincipalName = if ($row.UserPrincipalName) { $row.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet = @{}
+                            foreach ($user in $SelectedUsers) {
+                                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                                $selectedUserSet[$upn.ToLower()] = $true
+                            }
+                            
+                            if ($selectedUserSet.ContainsKey($userPrincipalName)) {
+                                [void]$results.Add([PSCustomObject]$row)
+                            }
+                        } else {
+                            [void]$results.Add([PSCustomObject]$row)
+                        }
+                    }
+                }
+            } elseif ($response -is [PSCustomObject] -or $response -is [Array]) {
+                # Handle if API returns JSON instead
+                $chunk = if ($response -is [Array]) { $response } else { @($response) }
                 
                 if ($chunk -and $chunk.Count -gt 0) {
                     # Filter by SelectedUsers if provided (client-side filtering for Reports API)
@@ -3409,28 +3435,39 @@ function Get-SharePointActivityLogs {
                     } else {
                         [void]$results.AddRange($chunk)
                     }
-                    
-                    $skip += $chunk.Count
-                    $hasMore = ($chunk.Count -eq $top)
-                    
-                    Write-Host "  Collected $($results.Count) SharePoint activity entries so far..." -ForegroundColor Gray
-                } else {
-                    $hasMore = $false
                 }
             } catch {
                 # Handle rate limiting (429 errors)
                 if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
                     Write-Warning "Rate limited, waiting 60 seconds before retry..."
                     Start-Sleep -Seconds 60
-                    continue
+                    # Retry once
+                    try {
+                        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                        # Parse response again (same logic as above)
+                        if ($response -is [string]) {
+                            $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                            if ($csvLines.Count -gt 1) {
+                                $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                                for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                                    $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                                    $row = @{}
+                                    for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                                        $row[$headers[$j]] = $values[$j]
+                                    }
+                                    if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
+                                        [void]$results.Add([PSCustomObject]$row)
+                                    }
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
+                    }
+                } else {
+                    throw
                 }
-                throw
             }
-        }
-        
-        if ($results.Count -ge $maxRecords) {
-            Write-Warning "Reached maximum record limit ($maxRecords) for SharePoint activity"
-        }
         
         Write-Host "  Total SharePoint activity entries collected: $($results.Count)" -ForegroundColor Green
         return [System.Collections.ArrayList]$results
@@ -3457,75 +3494,93 @@ function Get-OneDriveActivityLogs {
             return @()
         }
         
-        # Ensure Reports module is available
-        if (-not (Get-Command Get-MgReportOneDriveActivityUserDetail -ErrorAction SilentlyContinue)) {
-            Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
-        }
-        
+        # Use Invoke-MgGraphRequest to call Reports API directly
         $results = New-Object System.Collections.ArrayList
-        $skip = 0
-        $top = 1000  # Max page size for Reports API
-        $hasMore = $true
-        $maxRecords = 100000  # Safety limit
         
         # Determine period format (D7, D30, etc.)
         $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
         
         Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
         
-        while ($hasMore -and $results.Count -lt $maxRecords) {
-            try {
-                $params = @{
-                    Period = $period
-                    Top = $top
-                    Skip = $skip
-                    ErrorAction = 'Stop'
+        try {
+            # Call the Reports API function endpoint
+            $uri = "https://graph.microsoft.com/v1.0/reports/getOneDriveActivityUserDetail(period='$period')"
+            Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
+            
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            
+            # The Reports API returns CSV data as a string
+            if ($response -is [string]) {
+                $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                
+                if ($csvLines.Count -gt 1) {
+                    # Parse CSV header
+                    $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                    
+                    # Parse CSV data rows
+                    for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                        $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                        $row = @{}
+                        for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                            $row[$headers[$j]] = $values[$j]
+                        }
+                        
+                        # Filter by SelectedUsers if provided
+                        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                            $userPrincipalName = if ($row.UserPrincipalName) { $row.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet = @{}
+                            foreach ($user in $SelectedUsers) {
+                                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                                $selectedUserSet[$upn.ToLower()] = $true
+                            }
+                            
+                            if ($selectedUserSet.ContainsKey($userPrincipalName)) {
+                                [void]$results.Add([PSCustomObject]$row)
+                            }
+                        } else {
+                            [void]$results.Add([PSCustomObject]$row)
+                        }
+                    }
                 }
+            } elseif ($response -is [PSCustomObject] -or $response -is [Array]) {
+                # Handle if API returns JSON instead
+                $chunk = if ($response -is [Array]) { $response } else { @($response) }
                 
-                $chunk = Get-MgReportOneDriveActivityUserDetail @params
-                
-                if ($chunk -and $chunk.Count -gt 0) {
-                    # Filter by SelectedUsers if provided (client-side filtering for Reports API)
-                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                        $selectedUserSet = @{}
-                        foreach ($user in $SelectedUsers) {
-                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
-                            $selectedUserSet[$upn.ToLower()] = $true
-                        }
-                        
-                        $filtered = $chunk | Where-Object {
-                            $userPrincipalName = if ($_.UserPrincipalName) { $_.UserPrincipalName.ToLower() } else { "" }
-                            $selectedUserSet.ContainsKey($userPrincipalName)
-                        }
-                        
-                        if ($filtered) {
-                            [void]$results.AddRange($filtered)
-                        }
                     } else {
                         [void]$results.AddRange($chunk)
                     }
-                    
-                    $skip += $chunk.Count
-                    $hasMore = ($chunk.Count -eq $top)
-                    
-                    Write-Host "  Collected $($results.Count) OneDrive activity entries so far..." -ForegroundColor Gray
-                } else {
-                    $hasMore = $false
                 }
             } catch {
-                # Handle rate limiting (429 errors)
+                # Handle rate limiting (429 errors) and other API errors
                 if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
                     Write-Warning "Rate limited, waiting 60 seconds before retry..."
                     Start-Sleep -Seconds 60
-                    continue
+                    # Retry once
+                    try {
+                        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                        if ($response -is [string]) {
+                            $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                            if ($csvLines.Count -gt 1) {
+                                $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                                for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                                    $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                                    $row = @{}
+                                    for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                                        $row[$headers[$j]] = $values[$j]
+                                    }
+                                    if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
+                                        [void]$results.Add([PSCustomObject]$row)
+                                    }
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
+                    }
+                } else {
+                    throw
                 }
-                throw
             }
-        }
-        
-        if ($results.Count -ge $maxRecords) {
-            Write-Warning "Reached maximum record limit ($maxRecords) for OneDrive activity"
-        }
         
         Write-Host "  Total OneDrive activity entries collected: $($results.Count)" -ForegroundColor Green
         return [System.Collections.ArrayList]$results
@@ -3552,75 +3607,93 @@ function Get-TeamsActivityLogs {
             return @()
         }
         
-        # Ensure Reports module is available
-        if (-not (Get-Command Get-MgReportTeamsActivityUserDetail -ErrorAction SilentlyContinue)) {
-            Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
-        }
-        
+        # Use Invoke-MgGraphRequest to call Reports API directly
         $results = New-Object System.Collections.ArrayList
-        $skip = 0
-        $top = 1000  # Max page size for Reports API
-        $hasMore = $true
-        $maxRecords = 100000  # Safety limit
         
         # Determine period format (D7, D30, etc.)
         $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
         
         Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
         
-        while ($hasMore -and $results.Count -lt $maxRecords) {
-            try {
-                $params = @{
-                    Period = $period
-                    Top = $top
-                    Skip = $skip
-                    ErrorAction = 'Stop'
+        try {
+            # Call the Reports API function endpoint
+            $uri = "https://graph.microsoft.com/v1.0/reports/getTeamsActivityUserDetail(period='$period')"
+            Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
+            
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            
+            # The Reports API returns CSV data as a string
+            if ($response -is [string]) {
+                $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                
+                if ($csvLines.Count -gt 1) {
+                    # Parse CSV header
+                    $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                    
+                    # Parse CSV data rows
+                    for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                        $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                        $row = @{}
+                        for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                            $row[$headers[$j]] = $values[$j]
+                        }
+                        
+                        # Filter by SelectedUsers if provided
+                        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                            $userPrincipalName = if ($row.UserPrincipalName) { $row.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet = @{}
+                            foreach ($user in $SelectedUsers) {
+                                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                                $selectedUserSet[$upn.ToLower()] = $true
+                            }
+                            
+                            if ($selectedUserSet.ContainsKey($userPrincipalName)) {
+                                [void]$results.Add([PSCustomObject]$row)
+                            }
+                        } else {
+                            [void]$results.Add([PSCustomObject]$row)
+                        }
+                    }
                 }
+            } elseif ($response -is [PSCustomObject] -or $response -is [Array]) {
+                # Handle if API returns JSON instead
+                $chunk = if ($response -is [Array]) { $response } else { @($response) }
                 
-                $chunk = Get-MgReportTeamsActivityUserDetail @params
-                
-                if ($chunk -and $chunk.Count -gt 0) {
-                    # Filter by SelectedUsers if provided (client-side filtering for Reports API)
-                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                        $selectedUserSet = @{}
-                        foreach ($user in $SelectedUsers) {
-                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
-                            $selectedUserSet[$upn.ToLower()] = $true
-                        }
-                        
-                        $filtered = $chunk | Where-Object {
-                            $userPrincipalName = if ($_.UserPrincipalName) { $_.UserPrincipalName.ToLower() } else { "" }
-                            $selectedUserSet.ContainsKey($userPrincipalName)
-                        }
-                        
-                        if ($filtered) {
-                            [void]$results.AddRange($filtered)
-                        }
                     } else {
                         [void]$results.AddRange($chunk)
                     }
-                    
-                    $skip += $chunk.Count
-                    $hasMore = ($chunk.Count -eq $top)
-                    
-                    Write-Host "  Collected $($results.Count) Teams activity entries so far..." -ForegroundColor Gray
-                } else {
-                    $hasMore = $false
                 }
             } catch {
-                # Handle rate limiting (429 errors)
+                # Handle rate limiting (429 errors) and other API errors
                 if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
                     Write-Warning "Rate limited, waiting 60 seconds before retry..."
                     Start-Sleep -Seconds 60
-                    continue
+                    # Retry once
+                    try {
+                        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                        if ($response -is [string]) {
+                            $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                            if ($csvLines.Count -gt 1) {
+                                $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                                for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                                    $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                                    $row = @{}
+                                    for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                                        $row[$headers[$j]] = $values[$j]
+                                    }
+                                    if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
+                                        [void]$results.Add([PSCustomObject]$row)
+                                    }
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
+                    }
+                } else {
+                    throw
                 }
-                throw
             }
-        }
-        
-        if ($results.Count -ge $maxRecords) {
-            Write-Warning "Reached maximum record limit ($maxRecords) for Teams activity"
-        }
         
         Write-Host "  Total Teams activity entries collected: $($results.Count)" -ForegroundColor Green
         return [System.Collections.ArrayList]$results
