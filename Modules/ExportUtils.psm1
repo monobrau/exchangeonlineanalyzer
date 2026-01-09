@@ -3470,40 +3470,74 @@ function Get-SharePointActivityLogs {
         
         try {
             # Call the Reports API function endpoint
-            # Reports API requires Accept: text/csv header to return CSV data
+            # Reports API may return CSV directly or a redirect URL to download CSV
             $uri = "https://graph.microsoft.com/v1.0/reports/getSharePointActivityUserDetail(period='$period')"
             Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
             
-            # Use Accept header to request CSV format
-            $headers = @{ Accept = 'text/csv' }
-            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+            # Try downloading to temp file first (Reports API often returns redirect URLs)
+            $tempCsvFile = Join-Path $env:TEMP "SharePointActivity_$(Get-Random).csv"
+            try {
+                $headers = @{ Accept = 'text/csv' }
+                $null = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
+                
+                if (Test-Path $tempCsvFile) {
+                    Write-Host "  CSV file downloaded successfully" -ForegroundColor Gray
+                    $response = Get-Content $tempCsvFile -Raw -Encoding UTF8
+                    Remove-Item $tempCsvFile -Force -ErrorAction SilentlyContinue
+                } else {
+                    Write-Host "  No file was downloaded, trying direct API call..." -ForegroundColor Yellow
+                    $headers = @{ Accept = 'text/csv' }
+                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                }
+            } catch {
+                # If OutputFilePath fails, try direct call
+                Write-Host "  OutputFilePath method failed, trying direct call: $($_.Exception.Message)" -ForegroundColor Yellow
+                $headers = @{ Accept = 'text/csv' }
+                $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+            }
             
             # Debug: Log response type and first 500 chars
             Write-Host "  Response type: $($response.GetType().FullName)" -ForegroundColor Gray
             if ($response -is [string]) {
                 Write-Host "  Response length: $($response.Length) characters" -ForegroundColor Gray
                 if ($response.Length -gt 0) {
-                    Write-Host "  First 500 chars: $($response.Substring(0, [Math]::Min(500, $response.Length)))" -ForegroundColor DarkGray
+                    $preview = $response.Substring(0, [Math]::Min(500, $response.Length))
+                    Write-Host "  First 500 chars: $preview" -ForegroundColor DarkGray
                 } else {
                     Write-Host "  Response is empty string" -ForegroundColor Yellow
                 }
             } elseif ($response -is [PSCustomObject]) {
                 Write-Host "  Response properties: $($response.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
-                # Check if it's a redirect URL
-                if ($response.'@odata.context' -or $response.value) {
-                    Write-Host "  Response appears to be JSON/OData format" -ForegroundColor Yellow
+                # Check if it contains a redirect URL
+                if ($response.location -or $response.'@odata.nextLink') {
+                    Write-Host "  Response contains redirect URL - attempting to follow..." -ForegroundColor Yellow
+                    $redirectUrl = if ($response.location) { $response.location } else { $response.'@odata.nextLink' }
+                    try {
+                        $tempCsvFile2 = Join-Path $env:TEMP "SharePointActivity_Redirect_$(Get-Random).csv"
+                        $null = Invoke-WebRequest -Uri $redirectUrl -OutFile $tempCsvFile2 -ErrorAction Stop
+                        if (Test-Path $tempCsvFile2) {
+                            $response = Get-Content $tempCsvFile2 -Raw -Encoding UTF8
+                            Remove-Item $tempCsvFile2 -Force -ErrorAction SilentlyContinue
+                            Write-Host "  Successfully downloaded CSV from redirect URL" -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Warning "  Failed to download from redirect URL: $($_.Exception.Message)"
+                    }
                 }
             }
             
-            # The Reports API returns CSV data as a string when Accept: text/csv header is used
+            # The Reports API returns CSV data as a string
             if ($response -is [string] -and $response.Length -gt 0) {
-                $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
+                
+                Write-Host "  Parsed $($csvLines.Count) CSV lines from response" -ForegroundColor Gray
                 
                 if ($csvLines.Count -gt 1) {
                     # Parse CSV header
-                    $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                    $headers = ($csvLines[0] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                    Write-Host "  Found $($headers.Count) columns in CSV header" -ForegroundColor Gray
                     
-                    # Parse CSV data rows
+                    # Parse CSV data rows (skip header row)
                     for ($i = 1; $i -lt $csvLines.Count; $i++) {
                         $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
                         $row = @{}
@@ -3527,9 +3561,15 @@ function Get-SharePointActivityLogs {
                             [void]$results.Add([PSCustomObject]$row)
                         }
                     }
+                    Write-Host "  Parsed $($results.Count) data rows from CSV" -ForegroundColor Gray
+                } elseif ($csvLines.Count -eq 1) {
+                    Write-Host "  CSV contains only header row - no activity data for this period" -ForegroundColor Yellow
+                } else {
+                    Write-Host "  CSV response is empty" -ForegroundColor Yellow
                 }
             } elseif ($response -is [PSCustomObject] -or $response -is [Array]) {
                 # Handle if API returns JSON instead
+                Write-Host "  API returned JSON/OData format instead of CSV" -ForegroundColor Yellow
                 $chunk = if ($response -is [Array]) { $response } else { @($response) }
                 
                 if ($chunk -and $chunk.Count -gt 0) {
@@ -3552,7 +3592,12 @@ function Get-SharePointActivityLogs {
                     } else {
                         [void]$results.AddRange($chunk)
                     }
+                    Write-Host "  Added $($chunk.Count) items from JSON response" -ForegroundColor Gray
+                } else {
+                    Write-Host "  JSON response is empty" -ForegroundColor Yellow
                 }
+            } else {
+                Write-Host "  Unexpected response type: $($response.GetType().FullName)" -ForegroundColor Yellow
             }
             
             Write-Host "  Collected $($results.Count) SharePoint activity entries" -ForegroundColor Gray
@@ -3566,7 +3611,7 @@ function Get-SharePointActivityLogs {
                     $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
                     # Parse response again (same logic as above)
                     if ($response -is [string]) {
-                        $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                        $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                         if ($csvLines.Count -gt 1) {
                             $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
                             for ($i = 1; $i -lt $csvLines.Count; $i++) {
@@ -3634,30 +3679,65 @@ function Get-OneDriveActivityLogs {
         
         try {
             # Call the Reports API function endpoint
-            # Reports API requires Accept: text/csv header to return CSV data
+            # Reports API may return CSV directly or a redirect URL to download CSV
             $uri = "https://graph.microsoft.com/v1.0/reports/getOneDriveActivityUserDetail(period='$period')"
             Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
             
-            # Use Accept header to request CSV format
-            $headers = @{ Accept = 'text/csv' }
-            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+            # Try downloading to temp file first (Reports API often returns redirect URLs)
+            $tempCsvFile = Join-Path $env:TEMP "OneDriveActivity_$(Get-Random).csv"
+            try {
+                $headers = @{ Accept = 'text/csv' }
+                $null = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
+                
+                if (Test-Path $tempCsvFile) {
+                    Write-Host "  CSV file downloaded successfully" -ForegroundColor Gray
+                    $response = Get-Content $tempCsvFile -Raw -Encoding UTF8
+                    Remove-Item $tempCsvFile -Force -ErrorAction SilentlyContinue
+                } else {
+                    Write-Host "  No file was downloaded, trying direct API call..." -ForegroundColor Yellow
+                    $headers = @{ Accept = 'text/csv' }
+                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                }
+            } catch {
+                # If OutputFilePath fails, try direct call
+                Write-Host "  OutputFilePath method failed, trying direct call: $($_.Exception.Message)" -ForegroundColor Yellow
+                $headers = @{ Accept = 'text/csv' }
+                $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+            }
             
             # Debug: Log response type and first 500 chars
             Write-Host "  Response type: $($response.GetType().FullName)" -ForegroundColor Gray
             if ($response -is [string]) {
                 Write-Host "  Response length: $($response.Length) characters" -ForegroundColor Gray
                 if ($response.Length -gt 0) {
-                    Write-Host "  First 500 chars: $($response.Substring(0, [Math]::Min(500, $response.Length)))" -ForegroundColor DarkGray
+                    $preview = $response.Substring(0, [Math]::Min(500, $response.Length))
+                    Write-Host "  First 500 chars: $preview" -ForegroundColor DarkGray
                 } else {
                     Write-Host "  Response is empty string" -ForegroundColor Yellow
                 }
             } elseif ($response -is [PSCustomObject]) {
                 Write-Host "  Response properties: $($response.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
+                # Check if it contains a redirect URL
+                if ($response.location -or $response.'@odata.nextLink') {
+                    Write-Host "  Response contains redirect URL - attempting to follow..." -ForegroundColor Yellow
+                    $redirectUrl = if ($response.location) { $response.location } else { $response.'@odata.nextLink' }
+                    try {
+                        $tempCsvFile2 = Join-Path $env:TEMP "OneDriveActivity_Redirect_$(Get-Random).csv"
+                        $null = Invoke-WebRequest -Uri $redirectUrl -OutFile $tempCsvFile2 -ErrorAction Stop
+                        if (Test-Path $tempCsvFile2) {
+                            $response = Get-Content $tempCsvFile2 -Raw -Encoding UTF8
+                            Remove-Item $tempCsvFile2 -Force -ErrorAction SilentlyContinue
+                            Write-Host "  Successfully downloaded CSV from redirect URL" -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Warning "  Failed to download from redirect URL: $($_.Exception.Message)"
+                    }
+                }
             }
             
-            # The Reports API returns CSV data as a string when Accept: text/csv header is used
+            # The Reports API returns CSV data as a string
             if ($response -is [string] -and $response.Length -gt 0) {
-                $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                 
                 if ($csvLines.Count -gt 1) {
                     # Parse CSV header
@@ -3725,7 +3805,7 @@ function Get-OneDriveActivityLogs {
                 try {
                     $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
                     if ($response -is [string]) {
-                        $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                        $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                         if ($csvLines.Count -gt 1) {
                             $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
                             for ($i = 1; $i -lt $csvLines.Count; $i++) {
@@ -3783,30 +3863,65 @@ function Get-TeamsActivityLogs {
         
         try {
             # Call the Reports API function endpoint
-            # Reports API requires Accept: text/csv header to return CSV data
+            # Reports API may return CSV directly or a redirect URL to download CSV
             $uri = "https://graph.microsoft.com/v1.0/reports/getTeamsActivityUserDetail(period='$period')"
             Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
             
-            # Use Accept header to request CSV format
-            $headers = @{ Accept = 'text/csv' }
-            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+            # Try downloading to temp file first (Reports API often returns redirect URLs)
+            $tempCsvFile = Join-Path $env:TEMP "TeamsActivity_$(Get-Random).csv"
+            try {
+                $headers = @{ Accept = 'text/csv' }
+                $null = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
+                
+                if (Test-Path $tempCsvFile) {
+                    Write-Host "  CSV file downloaded successfully" -ForegroundColor Gray
+                    $response = Get-Content $tempCsvFile -Raw -Encoding UTF8
+                    Remove-Item $tempCsvFile -Force -ErrorAction SilentlyContinue
+                } else {
+                    Write-Host "  No file was downloaded, trying direct API call..." -ForegroundColor Yellow
+                    $headers = @{ Accept = 'text/csv' }
+                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                }
+            } catch {
+                # If OutputFilePath fails, try direct call
+                Write-Host "  OutputFilePath method failed, trying direct call: $($_.Exception.Message)" -ForegroundColor Yellow
+                $headers = @{ Accept = 'text/csv' }
+                $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+            }
             
             # Debug: Log response type and first 500 chars
             Write-Host "  Response type: $($response.GetType().FullName)" -ForegroundColor Gray
             if ($response -is [string]) {
                 Write-Host "  Response length: $($response.Length) characters" -ForegroundColor Gray
                 if ($response.Length -gt 0) {
-                    Write-Host "  First 500 chars: $($response.Substring(0, [Math]::Min(500, $response.Length)))" -ForegroundColor DarkGray
+                    $preview = $response.Substring(0, [Math]::Min(500, $response.Length))
+                    Write-Host "  First 500 chars: $preview" -ForegroundColor DarkGray
                 } else {
                     Write-Host "  Response is empty string" -ForegroundColor Yellow
                 }
             } elseif ($response -is [PSCustomObject]) {
                 Write-Host "  Response properties: $($response.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
+                # Check if it contains a redirect URL
+                if ($response.location -or $response.'@odata.nextLink') {
+                    Write-Host "  Response contains redirect URL - attempting to follow..." -ForegroundColor Yellow
+                    $redirectUrl = if ($response.location) { $response.location } else { $response.'@odata.nextLink' }
+                    try {
+                        $tempCsvFile2 = Join-Path $env:TEMP "TeamsActivity_Redirect_$(Get-Random).csv"
+                        $null = Invoke-WebRequest -Uri $redirectUrl -OutFile $tempCsvFile2 -ErrorAction Stop
+                        if (Test-Path $tempCsvFile2) {
+                            $response = Get-Content $tempCsvFile2 -Raw -Encoding UTF8
+                            Remove-Item $tempCsvFile2 -Force -ErrorAction SilentlyContinue
+                            Write-Host "  Successfully downloaded CSV from redirect URL" -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Warning "  Failed to download from redirect URL: $($_.Exception.Message)"
+                    }
+                }
             }
             
-            # The Reports API returns CSV data as a string when Accept: text/csv header is used
+            # The Reports API returns CSV data as a string
             if ($response -is [string] -and $response.Length -gt 0) {
-                $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                 
                 if ($csvLines.Count -gt 1) {
                     # Parse CSV header
@@ -3874,7 +3989,7 @@ function Get-TeamsActivityLogs {
                 try {
                     $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
                     if ($response -is [string]) {
-                        $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                        $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                         if ($csvLines.Count -gt 1) {
                             $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
                             for ($i = 1; $i -lt $csvLines.Count; $i++) {
