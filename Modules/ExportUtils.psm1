@@ -4282,7 +4282,523 @@ function Get-SecurityIncidents {
     }
 }
 
+function Get-AnonymousSharePointSharing {
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting anonymous SharePoint sharing events (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect anonymous sharing events."
+            return @()
+        }
+        
+        # Ensure AuditLogs module is available
+        if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $results = New-Object System.Collections.ArrayList
+        
+        # Calculate date filter
+        $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
+        $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        
+        Write-Host "  Querying audit logs for SharePoint sharing events..." -ForegroundColor Gray
+        
+        # Filter for SharePoint sharing activities, specifically anonymous/external sharing
+        # Activity types: FileAccessed, FileDownloaded, FileShared, FileSharedExternally
+        # Look for activities where anonymous links were created or used
+        $filter = "activityDateTime ge $startIso and (activityDisplayName eq 'FileShared' or activityDisplayName eq 'FileSharedExternally' or activityDisplayName eq 'AnonymousLinkCreated' or activityDisplayName eq 'SharingInheritanceBroken')"
+        
+        try {
+            $auditLogs = Get-MgAuditLogDirectoryAudit -Filter $filter -All -ErrorAction Stop
+            
+            if ($auditLogs) {
+                Write-Host "  Retrieved $($auditLogs.Count) audit log entries" -ForegroundColor Gray
+                
+                # Filter by SelectedUsers if provided
+                if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                    $selectedUserSet = @{}
+                    foreach ($user in $SelectedUsers) {
+                        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                        $selectedUserSet[$upn.ToLower()] = $true
+                    }
+                    
+                    $auditLogs = $auditLogs | Where-Object {
+                        $matches = $false
+                        if ($_.InitiatedBy -and $_.InitiatedBy.User -and $_.InitiatedBy.User.UserPrincipalName) {
+                            $initiatorUpn = $_.InitiatedBy.User.UserPrincipalName.ToLower()
+                            if ($selectedUserSet.ContainsKey($initiatorUpn)) {
+                                $matches = $true
+                            }
+                        }
+                        if (-not $matches -and $_.TargetResources) {
+                            foreach ($target in $_.TargetResources) {
+                                if ($target.UserPrincipalName -and $selectedUserSet.ContainsKey($target.UserPrincipalName.ToLower())) {
+                                    $matches = $true
+                                    break
+                                }
+                            }
+                        }
+                        $matches
+                    }
+                }
+                
+                # Process audit logs and extract sharing details
+                foreach ($log in $auditLogs) {
+                    try {
+                        # Check if this involves anonymous/external sharing
+                        $isAnonymous = $false
+                        $linkUrl = ""
+                        $sharedWith = ""
+                        
+                        # Check AdditionalDetails for link information
+                        if ($log.AdditionalDetails) {
+                            foreach ($detail in $log.AdditionalDetails) {
+                                if ($detail.Key -eq "LinkUrl" -or $detail.Key -eq "SharingLinkUrl") {
+                                    $linkUrl = $detail.Value
+                                    # Check if it's an anonymous link (contains /s/ or /u/ or /d/ patterns)
+                                    if ($linkUrl -match "(/s/|/u/|/d/)" -or $linkUrl -match "anonymous") {
+                                        $isAnonymous = $true
+                                    }
+                                }
+                                if ($detail.Key -eq "SharedWith" -or $detail.Key -eq "RecipientEmail") {
+                                    $sharedWith = $detail.Value
+                                    # If shared with "Anyone" or empty, it's anonymous
+                                    if ($sharedWith -eq "Anyone" -or $sharedWith -eq "" -or $sharedWith -match "anonymous") {
+                                        $isAnonymous = $true
+                                    }
+                                }
+                            }
+                        }
+                        
+                        # Check TargetResources for file/site information
+                        $targetInfo = ""
+                        $filePath = ""
+                        $siteUrl = ""
+                        if ($log.TargetResources) {
+                            foreach ($target in $log.TargetResources) {
+                                if ($target.DisplayName) {
+                                    $targetInfo = $target.DisplayName
+                                }
+                                if ($target.ObjectId) {
+                                    $filePath = $target.ObjectId
+                                }
+                                if ($target.ModifiedProperties) {
+                                    foreach ($prop in $target.ModifiedProperties) {
+                                        if ($prop.Name -eq "SiteUrl" -or $prop.Name -eq "WebUrl") {
+                                            $siteUrl = $prop.NewValue
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        # Only include if it's anonymous/external sharing
+                        if ($isAnonymous -or $log.ActivityDisplayName -eq "FileSharedExternally" -or $log.ActivityDisplayName -eq "AnonymousLinkCreated") {
+                            $sharingEvent = [PSCustomObject]@{
+                                ActivityDateTime = $log.ActivityDateTime
+                                ActivityDisplayName = $log.ActivityDisplayName
+                                InitiatedBy = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.UserPrincipalName } else { "Unknown" }
+                                InitiatedByDisplayName = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.DisplayName } else { "Unknown" }
+                                IPAddress = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.IpAddress } else { "Unknown" }
+                                TargetResource = $targetInfo
+                                FilePath = $filePath
+                                SiteUrl = $siteUrl
+                                LinkUrl = $linkUrl
+                                SharedWith = $sharedWith
+                                IsAnonymous = $isAnonymous
+                                Result = $log.Result
+                                ResultReason = $log.ResultReason
+                                Category = $log.Category
+                                CorrelationId = $log.CorrelationId
+                            }
+                            [void]$results.Add($sharingEvent)
+                        }
+                    } catch {
+                        Write-Warning "  Error processing audit log entry: $($_.Exception.Message)"
+                    }
+                }
+            } else {
+                Write-Host "  No audit log entries found" -ForegroundColor Gray
+            }
+        } catch {
+            if ($_.Exception.Message -like "*Permission*" -or $_.Exception.Message -like "*Access*") {
+                Write-Warning "Permission denied - requires AuditLog.Read.All permission"
+                throw "Permission denied - requires AuditLog.Read.All"
+            } else {
+                throw
+            }
+        }
+        
+        Write-Host "  Total anonymous sharing events collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect anonymous SharePoint sharing events: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-SharePointFileSharingLinks {
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting SharePoint file-level sharing links..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect file sharing links."
+            return @()
+        }
+        
+        # Ensure Sites module is available
+        if (-not (Get-Command Get-MgSite -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Sites -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        $results = New-Object System.Collections.ArrayList
+        
+        # Get all SharePoint sites
+        Write-Host "  Enumerating SharePoint sites..." -ForegroundColor Gray
+        try {
+            $sites = Get-MgSite -All -ErrorAction Stop
+            Write-Host "  Found $($sites.Count) SharePoint sites" -ForegroundColor Gray
+            
+            $siteCount = 0
+            foreach ($site in $sites) {
+                $siteCount++
+                if ($siteCount % 10 -eq 0) {
+                    Write-Host "  Processing site $siteCount of $($sites.Count)..." -ForegroundColor Gray
+                }
+                
+                try {
+                    # Get drives (document libraries) in the site
+                    $drives = Get-MgSiteDrive -SiteId $site.Id -All -ErrorAction SilentlyContinue
+                    
+                    if ($drives) {
+                        foreach ($drive in $drives) {
+                            try {
+                                # Get root folder items
+                                $rootItems = Get-MgDriveRootChild -DriveId $drive.Id -All -ErrorAction SilentlyContinue
+                                
+                                if ($rootItems) {
+                                    foreach ($item in $rootItems) {
+                                        try {
+                                            # Get permissions for this item
+                                            $permissions = Get-MgDriveItemPermission -DriveId $drive.Id -DriveItemId $item.Id -All -ErrorAction SilentlyContinue
+                                            
+                                            if ($permissions) {
+                                                foreach ($perm in $permissions) {
+                                                    # Check if this is a sharing link (anonymous or otherwise)
+                                                    $isLink = $false
+                                                    $isAnonymous = $false
+                                                    $linkType = ""
+                                                    
+                                                    if ($perm.Link) {
+                                                        $isLink = $true
+                                                        $linkType = $perm.Link.Type
+                                                        $linkScope = $perm.Link.Scope
+                                                        
+                                                        # Anonymous links have type "view" or "edit" with scope "anonymous"
+                                                        if ($linkScope -eq "anonymous") {
+                                                            $isAnonymous = $true
+                                                        }
+                                                    }
+                                                    
+                                                    # Filter by SelectedUsers if provided
+                                                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                                                        $grantedTo = if ($perm.GrantedToV2) { $perm.GrantedToV2.User } else { $null }
+                                                        $userPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { "" }
+                                                        
+                                                        $matches = $false
+                                                        foreach ($user in $SelectedUsers) {
+                                                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                                                            if ($userPrincipalName -eq $upn) {
+                                                                $matches = $true
+                                                                break
+                                                            }
+                                                        }
+                                                        
+                                                        # Also match if it's an anonymous link (no specific user)
+                                                        if ($isAnonymous) {
+                                                            $matches = $true
+                                                        }
+                                                        
+                                                        if (-not $matches) {
+                                                            continue
+                                                        }
+                                                    }
+                                                    
+                                                    # Only include sharing links (not direct user permissions)
+                                                    if ($isLink) {
+                                                        $shareLink = [PSCustomObject]@{
+                                                            SiteId = $site.Id
+                                                            SiteDisplayName = $site.DisplayName
+                                                            SiteWebUrl = $site.WebUrl
+                                                            DriveId = $drive.Id
+                                                            DriveName = $drive.Name
+                                                            ItemId = $item.Id
+                                                            ItemName = $item.Name
+                                                            ItemWebUrl = $item.WebUrl
+                                                            PermissionId = $perm.Id
+                                                            LinkType = $linkType
+                                                            LinkScope = if ($perm.Link) { $perm.Link.Scope } else { "Unknown" }
+                                                            IsAnonymous = $isAnonymous
+                                                            Roles = $perm.Roles -join '; '
+                                                            GrantedToPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { "Anyone (Link)" }
+                                                            GrantedToPrincipalId = if ($grantedTo -and $grantedTo.Id) { $grantedTo.Id } else { "N/A" }
+                                                            ShareId = if ($perm.Link) { $perm.Link.WebUrl } else { "" }
+                                                        }
+                                                        [void]$results.Add($shareLink)
+                                                    }
+                                                }
+                                            }
+                                        } catch {
+                                            # Skip items we can't access
+                                            continue
+                                        }
+                                    }
+                                }
+                            } catch {
+                                # Skip drives we can't access
+                                continue
+                            }
+                        }
+                    }
+                } catch {
+                    # Skip sites we can't access
+                    continue
+                }
+            }
+        } catch {
+            Write-Warning "Failed to enumerate SharePoint sites: $($_.Exception.Message)"
+        }
+        
+        Write-Host "  Total file sharing links collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect SharePoint file sharing links: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-DLPViolations {
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    
+    try {
+        Write-Host "Collecting DLP policy violations (last $DaysBack days)..." -ForegroundColor Yellow
+        
+        # Check if Microsoft Graph is connected
+        $context = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            Write-Warning "Microsoft Graph not connected. Cannot collect DLP violations."
+            return @()
+        }
+        
+        $results = New-Object System.Collections.ArrayList
+        
+        # Calculate date filter
+        $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
+        $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        
+        Write-Host "  Querying audit logs for DLP policy violations..." -ForegroundColor Gray
+        
+        # Filter for DLP-related activities
+        # Activity types: DlpSensitiveInformationDetected, DlpPolicyViolation, DlpRuleViolation
+        $filter = "activityDateTime ge $startIso and (activityDisplayName eq 'DLPSensitiveInformationDetected' or activityDisplayName eq 'DLPPolicyViolation' or activityDisplayName eq 'DLPRuleViolation' or category eq 'DataLossPrevention')"
+        
+        try {
+            # Ensure AuditLogs module is available
+            if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
+                Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue | Out-Null
+            }
+            
+            $auditLogs = Get-MgAuditLogDirectoryAudit -Filter $filter -All -ErrorAction Stop
+            
+            if ($auditLogs) {
+                Write-Host "  Retrieved $($auditLogs.Count) DLP-related audit log entries" -ForegroundColor Gray
+                
+                # Filter by SelectedUsers if provided
+                if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                    $selectedUserSet = @{}
+                    foreach ($user in $SelectedUsers) {
+                        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                        $selectedUserSet[$upn.ToLower()] = $true
+                    }
+                    
+                    $auditLogs = $auditLogs | Where-Object {
+                        $matches = $false
+                        if ($_.InitiatedBy -and $_.InitiatedBy.User -and $_.InitiatedBy.User.UserPrincipalName) {
+                            $initiatorUpn = $_.InitiatedBy.User.UserPrincipalName.ToLower()
+                            if ($selectedUserSet.ContainsKey($initiatorUpn)) {
+                                $matches = $true
+                            }
+                        }
+                        if (-not $matches -and $_.TargetResources) {
+                            foreach ($target in $_.TargetResources) {
+                                if ($target.UserPrincipalName -and $selectedUserSet.ContainsKey($target.UserPrincipalName.ToLower())) {
+                                    $matches = $true
+                                    break
+                                }
+                            }
+                        }
+                        $matches
+                    }
+                }
+                
+                # Also query Security API for DLP alerts
+                try {
+                    if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
+                        Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
+                    }
+                    
+                    $filterDate = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    $alertFilter = "createdDateTime ge $filterDate and (category eq 'DataLossPrevention' or title contains 'DLP')"
+                    $dlpAlerts = Get-MgSecurityAlert -Filter $alertFilter -All -ErrorAction SilentlyContinue
+                    
+                    if ($dlpAlerts) {
+                        Write-Host "  Retrieved $($dlpAlerts.Count) DLP security alerts" -ForegroundColor Gray
+                        
+                        # Filter alerts by SelectedUsers if provided
+                        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                            $selectedUserSet = @{}
+                            foreach ($user in $SelectedUsers) {
+                                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                                $selectedUserSet[$upn.ToLower()] = $true
+                            }
+                            
+                            $dlpAlerts = $dlpAlerts | Where-Object {
+                                $matches = $false
+                                if ($_.UserPrincipalNames) {
+                                    foreach ($upn in $_.UserPrincipalNames) {
+                                        if ($selectedUserSet.ContainsKey($upn.ToLower())) {
+                                            $matches = $true
+                                            break
+                                        }
+                                    }
+                                }
+                                $matches
+                            }
+                        }
+                        
+                        # Add DLP alerts to results
+                        foreach ($alert in $dlpAlerts) {
+                            $violation = [PSCustomObject]@{
+                                Source = "Security Alert"
+                                ActivityDateTime = $alert.CreatedDateTime
+                                ActivityDisplayName = $alert.Title
+                                InitiatedBy = if ($alert.UserPrincipalNames) { $alert.UserPrincipalNames -join '; ' } else { "Unknown" }
+                                Description = $alert.Description
+                                Severity = $alert.Severity
+                                Status = $alert.Status
+                                Category = $alert.Category
+                                PolicyName = if ($alert.ActivityGroupName) { $alert.ActivityGroupName } else { "Unknown" }
+                                TargetResource = if ($alert.UserDisplayNames) { $alert.UserDisplayNames -join '; ' } else { "Unknown" }
+                                Result = $alert.Status
+                                CorrelationId = $alert.Id
+                            }
+                            [void]$results.Add($violation)
+                        }
+                    }
+                } catch {
+                    Write-Warning "  Could not query DLP security alerts: $($_.Exception.Message)"
+                }
+                
+                # Process audit logs
+                foreach ($log in $auditLogs) {
+                    try {
+                        # Extract DLP policy information
+                        $policyName = ""
+                        $ruleName = ""
+                        $sensitiveInfoType = ""
+                        
+                        if ($log.AdditionalDetails) {
+                            foreach ($detail in $log.AdditionalDetails) {
+                                if ($detail.Key -eq "PolicyName" -or $detail.Key -eq "DLPPolicyName") {
+                                    $policyName = $detail.Value
+                                }
+                                if ($detail.Key -eq "RuleName" -or $detail.Key -eq "DLPRuleName") {
+                                    $ruleName = $detail.Value
+                                }
+                                if ($detail.Key -eq "SensitiveInformationType" -or $detail.Key -eq "SensitiveType") {
+                                    $sensitiveInfoType = $detail.Value
+                                }
+                            }
+                        }
+                        
+                        $targetInfo = ""
+                        $filePath = ""
+                        if ($log.TargetResources) {
+                            foreach ($target in $log.TargetResources) {
+                                if ($target.DisplayName) {
+                                    $targetInfo = $target.DisplayName
+                                }
+                                if ($target.ObjectId) {
+                                    $filePath = $target.ObjectId
+                                }
+                            }
+                        }
+                        
+                        $violation = [PSCustomObject]@{
+                            Source = "Audit Log"
+                            ActivityDateTime = $log.ActivityDateTime
+                            ActivityDisplayName = $log.ActivityDisplayName
+                            InitiatedBy = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.UserPrincipalName } else { "Unknown" }
+                            Description = $log.ActivityDisplayName
+                            Severity = "Medium"
+                            Status = $log.Result
+                            Category = $log.Category
+                            PolicyName = $policyName
+                            RuleName = $ruleName
+                            SensitiveInformationType = $sensitiveInfoType
+                            TargetResource = $targetInfo
+                            FilePath = $filePath
+                            Result = $log.Result
+                            ResultReason = $log.ResultReason
+                            CorrelationId = $log.CorrelationId
+                        }
+                        [void]$results.Add($violation)
+                    } catch {
+                        Write-Warning "  Error processing DLP violation entry: $($_.Exception.Message)"
+                    }
+                }
+            } else {
+                Write-Host "  No DLP violation entries found" -ForegroundColor Gray
+            }
+        } catch {
+            if ($_.Exception.Message -like "*Permission*" -or $_.Exception.Message -like "*Access*") {
+                Write-Warning "Permission denied - requires AuditLog.Read.All and SecurityEvents.Read.All permissions"
+                throw "Permission denied - requires AuditLog.Read.All and SecurityEvents.Read.All"
+            } else {
+                throw
+            }
+        }
+        
+        Write-Host "  Total DLP violations collected: $($results.Count)" -ForegroundColor Green
+        return [System.Collections.ArrayList]$results
+    } catch {
+        Write-Error "Failed to collect DLP violations: $($_.Exception.Message)"
+        return @()
+    }
+}
+
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
 Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport
 Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents
+Export-ModuleMember -Function Get-AnonymousSharePointSharing,Get-SharePointFileSharingLinks,Get-DLPViolations
