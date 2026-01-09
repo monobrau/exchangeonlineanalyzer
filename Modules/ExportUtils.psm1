@@ -802,13 +802,31 @@ function New-SecurityInvestigationReport {
             Write-Warning "Failed to collect SharePoint/Teams/OneDrive/Security data: $($_.Exception.Message)"
         }
     } else {
-        # Not connected, set empty arrays
-        $report.SharePointActivity = @()
-        $report.OneDriveActivity = @()
-        $report.TeamsActivity = @()
-        $report.SharePointSharing = @()
-        $report.SecurityAlerts = @()
-        $report.SecurityIncidents = @()
+        # Not connected, set empty arrays and error messages
+        if ($IncludeSharePointActivity) {
+            $report.SharePointActivity = @()
+            $report.SharePointActivityError = "Microsoft Graph not connected. Cannot collect SharePoint activity logs."
+        }
+        if ($IncludeOneDriveActivity) {
+            $report.OneDriveActivity = @()
+            $report.OneDriveActivityError = "Microsoft Graph not connected. Cannot collect OneDrive activity logs."
+        }
+        if ($IncludeTeamsActivity) {
+            $report.TeamsActivity = @()
+            $report.TeamsActivityError = "Microsoft Graph not connected. Cannot collect Teams activity logs."
+        }
+        if ($IncludeSharePointSharing) {
+            $report.SharePointSharing = @()
+            $report.SharePointSharingError = "Microsoft Graph not connected. Cannot collect SharePoint sharing links."
+        }
+        if ($IncludeSecurityAlerts) {
+            $report.SecurityAlerts = @()
+            $report.SecurityAlertsError = "Microsoft Graph not connected. Cannot collect security alerts."
+        }
+        if ($IncludeSecurityIncidents) {
+            $report.SecurityIncidents = @()
+            $report.SecurityIncidentsError = "Microsoft Graph not connected. Cannot collect security incidents."
+        }
     }
 
     # Generate AI Investigation Prompt
@@ -1017,7 +1035,14 @@ function New-SecurityInvestigationReport {
             # SharePoint Activity export
             $csv = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix.json"
-            if ($report.SharePointActivity -and $report.SharePointActivity.Count -gt 0) {
+            if ($report.SharePointActivityError) {
+                # Error occurred - write error file
+                $errorFile = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix_Error.txt"
+                $report.SharePointActivityError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SharePointActivityError = $errorFile
+                Write-Host "SharePoint Activity collection failed - see error file" -ForegroundColor Yellow
+            } elseif ($report.SharePointActivity -and $report.SharePointActivity.Count -gt 0) {
+                # Data collected - export CSV
                 try { 
                     $report.SharePointActivity | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.SharePointActivityCsv = $csv
@@ -1028,16 +1053,30 @@ function New-SecurityInvestigationReport {
                     $report.FilePaths.SharePointActivityJson = $json
                     Write-Warning "Failed to export SharePoint activity to CSV, exported to JSON instead"
                 }
-            } elseif ($report.SharePointActivityError) {
-                $errorFile = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix_Error.txt"
-                $report.SharePointActivityError | Out-File -FilePath $errorFile -Encoding UTF8
-                $report.FilePaths.SharePointActivityError = $errorFile
+            } elseif ($IncludeSharePointActivity) {
+                # No data and no error - create empty CSV with header
+                try {
+                    # Create empty CSV with header row
+                    $emptyCsv = "Report Period`nNo data available for the specified time period`n"
+                    $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
+                    $report.FilePaths.SharePointActivityCsv = $csv
+                    Write-Host "No SharePoint activity data found - created empty CSV" -ForegroundColor Gray
+                } catch {
+                    Write-Warning "Failed to create empty SharePoint activity CSV: $($_.Exception.Message)"
+                }
             }
 
             # OneDrive Activity export
             $csv = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix.json"
-            if ($report.OneDriveActivity -and $report.OneDriveActivity.Count -gt 0) {
+            if ($report.OneDriveActivityError) {
+                # Error occurred - write error file
+                $errorFile = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix_Error.txt"
+                $report.OneDriveActivityError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.OneDriveActivityError = $errorFile
+                Write-Host "OneDrive Activity collection failed - see error file" -ForegroundColor Yellow
+            } elseif ($report.OneDriveActivity -and $report.OneDriveActivity.Count -gt 0) {
+                # Data collected - export CSV
                 try { 
                     $report.OneDriveActivity | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.OneDriveActivityCsv = $csv
@@ -1048,16 +1087,29 @@ function New-SecurityInvestigationReport {
                     $report.FilePaths.OneDriveActivityJson = $json
                     Write-Warning "Failed to export OneDrive activity to CSV, exported to JSON instead"
                 }
-            } elseif ($report.OneDriveActivityError) {
-                $errorFile = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix_Error.txt"
-                $report.OneDriveActivityError | Out-File -FilePath $errorFile -Encoding UTF8
-                $report.FilePaths.OneDriveActivityError = $errorFile
+            } elseif ($IncludeOneDriveActivity) {
+                # No data and no error - create empty CSV with header
+                try {
+                    $emptyCsv = "Report Period`nNo data available for the specified time period`n"
+                    $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
+                    $report.FilePaths.OneDriveActivityCsv = $csv
+                    Write-Host "No OneDrive activity data found - created empty CSV" -ForegroundColor Gray
+                } catch {
+                    Write-Warning "Failed to create empty OneDrive activity CSV: $($_.Exception.Message)"
+                }
             }
 
             # Teams Activity export
             $csv = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix.json"
-            if ($report.TeamsActivity -and $report.TeamsActivity.Count -gt 0) {
+            if ($report.TeamsActivityError) {
+                # Error occurred - write error file
+                $errorFile = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix_Error.txt"
+                $report.TeamsActivityError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.TeamsActivityError = $errorFile
+                Write-Host "Teams Activity collection failed - see error file" -ForegroundColor Yellow
+            } elseif ($report.TeamsActivity -and $report.TeamsActivity.Count -gt 0) {
+                # Data collected - export CSV
                 try { 
                     $report.TeamsActivity | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.TeamsActivityCsv = $csv
@@ -1068,16 +1120,29 @@ function New-SecurityInvestigationReport {
                     $report.FilePaths.TeamsActivityJson = $json
                     Write-Warning "Failed to export Teams activity to CSV, exported to JSON instead"
                 }
-            } elseif ($report.TeamsActivityError) {
-                $errorFile = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix_Error.txt"
-                $report.TeamsActivityError | Out-File -FilePath $errorFile -Encoding UTF8
-                $report.FilePaths.TeamsActivityError = $errorFile
+            } elseif ($IncludeTeamsActivity) {
+                # No data and no error - create empty CSV with header
+                try {
+                    $emptyCsv = "Report Period`nNo data available for the specified time period`n"
+                    $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
+                    $report.FilePaths.TeamsActivityCsv = $csv
+                    Write-Host "No Teams activity data found - created empty CSV" -ForegroundColor Gray
+                } catch {
+                    Write-Warning "Failed to create empty Teams activity CSV: $($_.Exception.Message)"
+                }
             }
 
             # SharePoint Sharing Links export
             $csv = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix.json"
-            if ($report.SharePointSharing -and $report.SharePointSharing.Count -gt 0) {
+            if ($report.SharePointSharingError) {
+                # Error occurred - write error file
+                $errorFile = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix_Error.txt"
+                $report.SharePointSharingError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SharePointSharingError = $errorFile
+                Write-Host "SharePoint Sharing collection failed - see error file" -ForegroundColor Yellow
+            } elseif ($report.SharePointSharing -and $report.SharePointSharing.Count -gt 0) {
+                # Data collected - export CSV
                 try { 
                     $report.SharePointSharing | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.SharePointSharingCsv = $csv
@@ -1088,16 +1153,29 @@ function New-SecurityInvestigationReport {
                     $report.FilePaths.SharePointSharingJson = $json
                     Write-Warning "Failed to export SharePoint sharing to CSV, exported to JSON instead"
                 }
-            } elseif ($report.SharePointSharingError) {
-                $errorFile = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix_Error.txt"
-                $report.SharePointSharingError | Out-File -FilePath $errorFile -Encoding UTF8
-                $report.FilePaths.SharePointSharingError = $errorFile
+            } elseif ($IncludeSharePointSharing) {
+                # No data and no error - create empty CSV with header
+                try {
+                    $emptyCsv = "SiteId`nNo sharing links found`n"
+                    $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
+                    $report.FilePaths.SharePointSharingCsv = $csv
+                    Write-Host "No SharePoint sharing links found - created empty CSV" -ForegroundColor Gray
+                } catch {
+                    Write-Warning "Failed to create empty SharePoint sharing CSV: $($_.Exception.Message)"
+                }
             }
 
             # Security Alerts export
             $csv = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix.json"
-            if ($report.SecurityAlerts -and $report.SecurityAlerts.Count -gt 0) {
+            if ($report.SecurityAlertsError) {
+                # Error occurred - write error file
+                $errorFile = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix_Error.txt"
+                $report.SecurityAlertsError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SecurityAlertsError = $errorFile
+                Write-Host "Security Alerts collection failed - see error file" -ForegroundColor Yellow
+            } elseif ($report.SecurityAlerts -and $report.SecurityAlerts.Count -gt 0) {
+                # Data collected - export CSV
                 try { 
                     $report.SecurityAlerts | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.SecurityAlertsCsv = $csv
@@ -1108,16 +1186,29 @@ function New-SecurityInvestigationReport {
                     $report.FilePaths.SecurityAlertsJson = $json
                     Write-Warning "Failed to export security alerts to CSV, exported to JSON instead"
                 }
-            } elseif ($report.SecurityAlertsError) {
-                $errorFile = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix_Error.txt"
-                $report.SecurityAlertsError | Out-File -FilePath $errorFile -Encoding UTF8
-                $report.FilePaths.SecurityAlertsError = $errorFile
+            } elseif ($IncludeSecurityAlerts) {
+                # No data and no error - create empty CSV with header
+                try {
+                    $emptyCsv = "Id`nNo security alerts found for the specified time period`n"
+                    $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
+                    $report.FilePaths.SecurityAlertsCsv = $csv
+                    Write-Host "No security alerts found - created empty CSV" -ForegroundColor Gray
+                } catch {
+                    Write-Warning "Failed to create empty Security Alerts CSV: $($_.Exception.Message)"
+                }
             }
 
             # Security Incidents export
             $csv = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix.json"
-            if ($report.SecurityIncidents -and $report.SecurityIncidents.Count -gt 0) {
+            if ($report.SecurityIncidentsError) {
+                # Error occurred - write error file
+                $errorFile = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix_Error.txt"
+                $report.SecurityIncidentsError | Out-File -FilePath $errorFile -Encoding UTF8
+                $report.FilePaths.SecurityIncidentsError = $errorFile
+                Write-Host "Security Incidents collection failed - see error file" -ForegroundColor Yellow
+            } elseif ($report.SecurityIncidents -and $report.SecurityIncidents.Count -gt 0) {
+                # Data collected - export CSV
                 try { 
                     $report.SecurityIncidents | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.SecurityIncidentsCsv = $csv
@@ -1128,10 +1219,16 @@ function New-SecurityInvestigationReport {
                     $report.FilePaths.SecurityIncidentsJson = $json
                     Write-Warning "Failed to export security incidents to CSV, exported to JSON instead"
                 }
-            } elseif ($report.SecurityIncidentsError) {
-                $errorFile = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix_Error.txt"
-                $report.SecurityIncidentsError | Out-File -FilePath $errorFile -Encoding UTF8
-                $report.FilePaths.SecurityIncidentsError = $errorFile
+            } elseif ($IncludeSecurityIncidents) {
+                # No data and no error - create empty CSV with header
+                try {
+                    $emptyCsv = "Id`nNo security incidents found for the specified time period`n"
+                    $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
+                    $report.FilePaths.SecurityIncidentsCsv = $csv
+                    Write-Host "No security incidents found - created empty CSV" -ForegroundColor Gray
+                } catch {
+                    Write-Warning "Failed to create empty Security Incidents CSV: $($_.Exception.Message)"
+                }
             }
 
             # User Security Posture export (combined MFA + Groups + Mailbox Forwarding/Delegation)
