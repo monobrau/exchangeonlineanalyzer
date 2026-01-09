@@ -3546,41 +3546,61 @@ function Get-OneDriveActivityLogs {
                 # Handle if API returns JSON instead
                 $chunk = if ($response -is [Array]) { $response } else { @($response) }
                 
+                if ($chunk -and $chunk.Count -gt 0) {
+                    # Filter by SelectedUsers if provided
+                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                        $selectedUserSet = @{}
+                        foreach ($user in $SelectedUsers) {
+                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                            $selectedUserSet[$upn.ToLower()] = $true
+                        }
+                        
+                        $filtered = $chunk | Where-Object {
+                            $userPrincipalName = if ($_.UserPrincipalName) { $_.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet.ContainsKey($userPrincipalName)
+                        }
+                        
+                        if ($filtered) {
+                            [void]$results.AddRange($filtered)
+                        }
                     } else {
                         [void]$results.AddRange($chunk)
                     }
                 }
-            } catch {
-                # Handle rate limiting (429 errors) and other API errors
-                if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
-                    Write-Warning "Rate limited, waiting 60 seconds before retry..."
-                    Start-Sleep -Seconds 60
-                    # Retry once
-                    try {
-                        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-                        if ($response -is [string]) {
-                            $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
-                            if ($csvLines.Count -gt 1) {
-                                $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
-                                for ($i = 1; $i -lt $csvLines.Count; $i++) {
-                                    $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
-                                    $row = @{}
-                                    for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
-                                        $row[$headers[$j]] = $values[$j]
-                                    }
-                                    if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
-                                        [void]$results.Add([PSCustomObject]$row)
-                                    }
+            }
+            
+            Write-Host "  Collected $($results.Count) OneDrive activity entries" -ForegroundColor Gray
+        } catch {
+            # Handle rate limiting (429 errors) and other API errors
+            if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
+                Write-Warning "Rate limited, waiting 60 seconds before retry..."
+                Start-Sleep -Seconds 60
+                # Retry once
+                try {
+                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                    if ($response -is [string]) {
+                        $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                        if ($csvLines.Count -gt 1) {
+                            $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                            for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                                $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                                $row = @{}
+                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                                    $row[$headers[$j]] = $values[$j]
+                                }
+                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
+                                    [void]$results.Add([PSCustomObject]$row)
                                 }
                             }
                         }
-                    } catch {
-                        Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
                     }
-                } else {
-                    throw
+                } catch {
+                    Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
                 }
+            } else {
+                throw
             }
+        }
         
         Write-Host "  Total OneDrive activity entries collected: $($results.Count)" -ForegroundColor Green
         return [System.Collections.ArrayList]$results
@@ -3659,41 +3679,61 @@ function Get-TeamsActivityLogs {
                 # Handle if API returns JSON instead
                 $chunk = if ($response -is [Array]) { $response } else { @($response) }
                 
+                if ($chunk -and $chunk.Count -gt 0) {
+                    # Filter by SelectedUsers if provided
+                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                        $selectedUserSet = @{}
+                        foreach ($user in $SelectedUsers) {
+                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                            $selectedUserSet[$upn.ToLower()] = $true
+                        }
+                        
+                        $filtered = $chunk | Where-Object {
+                            $userPrincipalName = if ($_.UserPrincipalName) { $_.UserPrincipalName.ToLower() } else { "" }
+                            $selectedUserSet.ContainsKey($userPrincipalName)
+                        }
+                        
+                        if ($filtered) {
+                            [void]$results.AddRange($filtered)
+                        }
                     } else {
                         [void]$results.AddRange($chunk)
                     }
                 }
-            } catch {
-                # Handle rate limiting (429 errors) and other API errors
-                if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
-                    Write-Warning "Rate limited, waiting 60 seconds before retry..."
-                    Start-Sleep -Seconds 60
-                    # Retry once
-                    try {
-                        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-                        if ($response -is [string]) {
-                            $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
-                            if ($csvLines.Count -gt 1) {
-                                $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
-                                for ($i = 1; $i -lt $csvLines.Count; $i++) {
-                                    $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
-                                    $row = @{}
-                                    for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
-                                        $row[$headers[$j]] = $values[$j]
-                                    }
-                                    if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
-                                        [void]$results.Add([PSCustomObject]$row)
-                                    }
+            }
+            
+            Write-Host "  Collected $($results.Count) Teams activity entries" -ForegroundColor Gray
+        } catch {
+            # Handle rate limiting (429 errors) and other API errors
+            if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
+                Write-Warning "Rate limited, waiting 60 seconds before retry..."
+                Start-Sleep -Seconds 60
+                # Retry once
+                try {
+                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                    if ($response -is [string]) {
+                        $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
+                        if ($csvLines.Count -gt 1) {
+                            $headers = ($csvLines[0] -split ',').ForEach({ $_.Trim('"') })
+                            for ($i = 1; $i -lt $csvLines.Count; $i++) {
+                                $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
+                                $row = @{}
+                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
+                                    $row[$headers[$j]] = $values[$j]
+                                }
+                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
+                                    [void]$results.Add([PSCustomObject]$row)
                                 }
                             }
                         }
-                    } catch {
-                        Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
                     }
-                } else {
-                    throw
+                } catch {
+                    Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
                 }
+            } else {
+                throw
             }
+        }
         
         Write-Host "  Total Teams activity entries collected: $($results.Count)" -ForegroundColor Green
         return [System.Collections.ArrayList]$results
