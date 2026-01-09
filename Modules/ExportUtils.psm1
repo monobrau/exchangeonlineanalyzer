@@ -3470,13 +3470,33 @@ function Get-SharePointActivityLogs {
         
         try {
             # Call the Reports API function endpoint
+            # Reports API requires Accept: text/csv header to return CSV data
             $uri = "https://graph.microsoft.com/v1.0/reports/getSharePointActivityUserDetail(period='$period')"
             Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
             
-            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            # Use Accept header to request CSV format
+            $headers = @{ Accept = 'text/csv' }
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
             
-            # The Reports API returns CSV data as a string
+            # Debug: Log response type and first 500 chars
+            Write-Host "  Response type: $($response.GetType().FullName)" -ForegroundColor Gray
             if ($response -is [string]) {
+                Write-Host "  Response length: $($response.Length) characters" -ForegroundColor Gray
+                if ($response.Length -gt 0) {
+                    Write-Host "  First 500 chars: $($response.Substring(0, [Math]::Min(500, $response.Length)))" -ForegroundColor DarkGray
+                } else {
+                    Write-Host "  Response is empty string" -ForegroundColor Yellow
+                }
+            } elseif ($response -is [PSCustomObject]) {
+                Write-Host "  Response properties: $($response.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
+                # Check if it's a redirect URL
+                if ($response.'@odata.context' -or $response.value) {
+                    Write-Host "  Response appears to be JSON/OData format" -ForegroundColor Yellow
+                }
+            }
+            
+            # The Reports API returns CSV data as a string when Accept: text/csv header is used
+            if ($response -is [string] -and $response.Length -gt 0) {
                 $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
                 
                 if ($csvLines.Count -gt 1) {
@@ -3570,9 +3590,19 @@ function Get-SharePointActivityLogs {
         }
         
         Write-Host "  Total SharePoint activity entries collected: $($results.Count)" -ForegroundColor Green
+        if ($results.Count -eq 0) {
+            Write-Host "  WARNING: No SharePoint activity data was returned. This could mean:" -ForegroundColor Yellow
+            Write-Host "    - No activity in the specified time period" -ForegroundColor Yellow
+            Write-Host "    - API returned empty response" -ForegroundColor Yellow
+            Write-Host "    - Permission/license issue (check error messages above)" -ForegroundColor Yellow
+        }
         return [System.Collections.ArrayList]$results
     } catch {
         Write-Error "Failed to collect SharePoint activity logs: $($_.Exception.Message)"
+        Write-Host "  Full error details: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "  Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
         return @()
     }
 }
@@ -3604,13 +3634,29 @@ function Get-OneDriveActivityLogs {
         
         try {
             # Call the Reports API function endpoint
+            # Reports API requires Accept: text/csv header to return CSV data
             $uri = "https://graph.microsoft.com/v1.0/reports/getOneDriveActivityUserDetail(period='$period')"
             Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
             
-            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            # Use Accept header to request CSV format
+            $headers = @{ Accept = 'text/csv' }
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
             
-            # The Reports API returns CSV data as a string
+            # Debug: Log response type and first 500 chars
+            Write-Host "  Response type: $($response.GetType().FullName)" -ForegroundColor Gray
             if ($response -is [string]) {
+                Write-Host "  Response length: $($response.Length) characters" -ForegroundColor Gray
+                if ($response.Length -gt 0) {
+                    Write-Host "  First 500 chars: $($response.Substring(0, [Math]::Min(500, $response.Length)))" -ForegroundColor DarkGray
+                } else {
+                    Write-Host "  Response is empty string" -ForegroundColor Yellow
+                }
+            } elseif ($response -is [PSCustomObject]) {
+                Write-Host "  Response properties: $($response.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
+            }
+            
+            # The Reports API returns CSV data as a string when Accept: text/csv header is used
+            if ($response -is [string] -and $response.Length -gt 0) {
                 $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
                 
                 if ($csvLines.Count -gt 1) {
@@ -3737,13 +3783,29 @@ function Get-TeamsActivityLogs {
         
         try {
             # Call the Reports API function endpoint
+            # Reports API requires Accept: text/csv header to return CSV data
             $uri = "https://graph.microsoft.com/v1.0/reports/getTeamsActivityUserDetail(period='$period')"
             Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
             
-            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            # Use Accept header to request CSV format
+            $headers = @{ Accept = 'text/csv' }
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
             
-            # The Reports API returns CSV data as a string
+            # Debug: Log response type and first 500 chars
+            Write-Host "  Response type: $($response.GetType().FullName)" -ForegroundColor Gray
             if ($response -is [string]) {
+                Write-Host "  Response length: $($response.Length) characters" -ForegroundColor Gray
+                if ($response.Length -gt 0) {
+                    Write-Host "  First 500 chars: $($response.Substring(0, [Math]::Min(500, $response.Length)))" -ForegroundColor DarkGray
+                } else {
+                    Write-Host "  Response is empty string" -ForegroundColor Yellow
+                }
+            } elseif ($response -is [PSCustomObject]) {
+                Write-Host "  Response properties: $($response.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
+            }
+            
+            # The Reports API returns CSV data as a string when Accept: text/csv header is used
+            if ($response -is [string] -and $response.Length -gt 0) {
                 $csvLines = $response -split "`n" | Where-Object { $_.Trim() -ne "" }
                 
                 if ($csvLines.Count -gt 1) {
