@@ -390,6 +390,24 @@ $bulkSecurityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 41
 $bulkSecurityIncidentsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSecurityIncidentsCheckBox.Checked = $true
 
+$bulkAnonymousSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkAnonymousSharePointSharingCheckBox.Text = "Anonymous SharePoint Sharing (requires AuditLog.Read.All)"
+$bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 440)
+$bulkAnonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkAnonymousSharePointSharingCheckBox.Checked = $true
+
+$bulkSharePointFileSharingLinksCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkSharePointFileSharingLinksCheckBox.Text = "SharePoint File Sharing Links"
+$bulkSharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 465)
+$bulkSharePointFileSharingLinksCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSharePointFileSharingLinksCheckBox.Checked = $true
+
+$bulkDLPViolationsCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkDLPViolationsCheckBox.Text = "DLP Violations (requires AuditLog.Read.All)"
+$bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 490)
+$bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkDLPViolationsCheckBox.Checked = $true
+
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
 $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
 $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 290)
@@ -445,6 +463,9 @@ $bulkDeselectAllBtn.add_Click({
     $bulkSharePointSharingCheckBox.Checked = $false
     $bulkSecurityAlertsCheckBox.Checked = $false
     $bulkSecurityIncidentsCheckBox.Checked = $false
+    $bulkAnonymousSharePointSharingCheckBox.Checked = $false
+    $bulkSharePointFileSharingLinksCheckBox.Checked = $false
+    $bulkDLPViolationsCheckBox.Checked = $false
 })
 
 # Add all controls to scrollable panel
@@ -456,6 +477,7 @@ $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox,
     $bulkSharePointActivityCheckBox, $bulkOneDriveActivityCheckBox, $bulkTeamsActivityCheckBox,
     $bulkSharePointSharingCheckBox, $bulkSecurityAlertsCheckBox, $bulkSecurityIncidentsCheckBox,
+    $bulkAnonymousSharePointSharingCheckBox, $bulkSharePointFileSharingLinksCheckBox, $bulkDLPViolationsCheckBox,
     $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
 ))
 
@@ -544,6 +566,9 @@ $bulkStartButton.add_Click({
         IncludeSharePointSharing = $bulkSharePointSharingCheckBox.Checked
         IncludeSecurityAlerts = $bulkSecurityAlertsCheckBox.Checked
         IncludeSecurityIncidents = $bulkSecurityIncidentsCheckBox.Checked
+        IncludeAnonymousSharePointSharing = $bulkAnonymousSharePointSharingCheckBox.Checked
+        IncludeSharePointFileSharingLinks = $bulkSharePointFileSharingLinksCheckBox.Checked
+        IncludeDLPViolations = $bulkDLPViolationsCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days
     }
@@ -692,6 +717,9 @@ try {
             IncludeSharePointSharing = if (`$null -ne `$jsonObj.IncludeSharePointSharing) { `$jsonObj.IncludeSharePointSharing } else { `$true }
             IncludeSecurityAlerts = if (`$null -ne `$jsonObj.IncludeSecurityAlerts) { `$jsonObj.IncludeSecurityAlerts } else { `$true }
             IncludeSecurityIncidents = if (`$null -ne `$jsonObj.IncludeSecurityIncidents) { `$jsonObj.IncludeSecurityIncidents } else { `$true }
+            IncludeAnonymousSharePointSharing = if (`$null -ne `$jsonObj.IncludeAnonymousSharePointSharing) { `$jsonObj.IncludeAnonymousSharePointSharing } else { `$true }
+            IncludeSharePointFileSharingLinks = if (`$null -ne `$jsonObj.IncludeSharePointFileSharingLinks) { `$jsonObj.IncludeSharePointFileSharingLinks } else { `$true }
+            IncludeDLPViolations = if (`$null -ne `$jsonObj.IncludeDLPViolations) { `$jsonObj.IncludeDLPViolations } else { `$true }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }

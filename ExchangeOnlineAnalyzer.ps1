@@ -5837,6 +5837,24 @@ $securityInvestigationButton.add_Click({
         $securityIncidentsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $securityIncidentsCheckBox.Checked = $true
 
+        $anonymousSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
+        $anonymousSharePointSharingCheckBox.Text = "Anonymous SharePoint Sharing (requires AuditLog.Read.All)"
+        $anonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 440)
+        $anonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $anonymousSharePointSharingCheckBox.Checked = $true
+
+        $sharePointFileSharingLinksCheckBox = New-Object System.Windows.Forms.CheckBox
+        $sharePointFileSharingLinksCheckBox.Text = "SharePoint File Sharing Links"
+        $sharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 465)
+        $sharePointFileSharingLinksCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $sharePointFileSharingLinksCheckBox.Checked = $true
+
+        $dlpViolationsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $dlpViolationsCheckBox.Text = "DLP Violations (requires AuditLog.Read.All)"
+        $dlpViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 490)
+        $dlpViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $dlpViolationsCheckBox.Checked = $true
+
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
         $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 242)
@@ -5874,6 +5892,9 @@ $securityInvestigationButton.add_Click({
             $sharePointSharingCheckBox.Checked = $true
             $securityAlertsCheckBox.Checked = $true
             $securityIncidentsCheckBox.Checked = $true
+            $anonymousSharePointSharingCheckBox.Checked = $true
+            $sharePointFileSharingLinksCheckBox.Checked = $true
+            $dlpViolationsCheckBox.Checked = $true
         })
 
         # Deselect All button click handler
@@ -5894,6 +5915,9 @@ $securityInvestigationButton.add_Click({
             $sharePointSharingCheckBox.Checked = $false
             $securityAlertsCheckBox.Checked = $false
             $securityIncidentsCheckBox.Checked = $false
+            $anonymousSharePointSharingCheckBox.Checked = $false
+            $sharePointFileSharingLinksCheckBox.Checked = $false
+            $dlpViolationsCheckBox.Checked = $false
         })
 
         # Add all controls to scrollable panel
@@ -5905,6 +5929,7 @@ $securityInvestigationButton.add_Click({
             $signInLogsCheckBox, $mfaCoverageCheckBox,
             $sharePointActivityCheckBox, $oneDriveActivityCheckBox, $teamsActivityCheckBox,
             $sharePointSharingCheckBox, $securityAlertsCheckBox, $securityIncidentsCheckBox,
+            $anonymousSharePointSharingCheckBox, $sharePointFileSharingLinksCheckBox, $dlpViolationsCheckBox,
             $signInLogsDaysLabel, $signInLogsDaysComboBox
         ))
         
@@ -6007,6 +6032,9 @@ $securityInvestigationButton.add_Click({
                     IncludeSharePointSharing = $sharePointSharingCheckBox.Checked
                     IncludeSecurityAlerts = $securityAlertsCheckBox.Checked
                     IncludeSecurityIncidents = $securityIncidentsCheckBox.Checked
+                    IncludeAnonymousSharePointSharing = $anonymousSharePointSharingCheckBox.Checked
+                    IncludeSharePointFileSharingLinks = $sharePointFileSharingLinksCheckBox.Checked
+                    IncludeDLPViolations = $dlpViolationsCheckBox.Checked
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -6729,6 +6757,9 @@ if (Test-Path `$ReportSelectionsFile) {
             IncludeSharePointSharing = if (`$null -ne `$jsonObj.IncludeSharePointSharing) { `$jsonObj.IncludeSharePointSharing } else { `$true }
             IncludeSecurityAlerts = if (`$null -ne `$jsonObj.IncludeSecurityAlerts) { `$jsonObj.IncludeSecurityAlerts } else { `$true }
             IncludeSecurityIncidents = if (`$null -ne `$jsonObj.IncludeSecurityIncidents) { `$jsonObj.IncludeSecurityIncidents } else { `$true }
+            IncludeAnonymousSharePointSharing = if (`$null -ne `$jsonObj.IncludeAnonymousSharePointSharing) { `$jsonObj.IncludeAnonymousSharePointSharing } else { `$true }
+            IncludeSharePointFileSharingLinks = if (`$null -ne `$jsonObj.IncludeSharePointFileSharingLinks) { `$jsonObj.IncludeSharePointFileSharingLinks } else { `$true }
+            IncludeDLPViolations = if (`$null -ne `$jsonObj.IncludeDLPViolations) { `$jsonObj.IncludeDLPViolations } else { `$true }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
