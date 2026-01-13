@@ -5311,18 +5311,28 @@ $entraViewSignInLogsButton.add_Click({
         if (-not $allLogs -or $allLogs.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show("No sign-in logs found for selected users.", "No Logs", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); return
         }
-        # Flatten logs for DataGridView
+        # Use enhanced log data directly (already flattened by Get-EntraSignInLogs)
         $data = foreach ($log in $allLogs) {
             [PSCustomObject]@{
                 UserPrincipalName = $log.UserPrincipalName
                 CreatedDateTime   = $log.CreatedDateTime
                 AppDisplayName    = $log.AppDisplayName
                 IPAddress         = $log.IPAddress
-                Location          = if ($log.Location) { ($log.Location.City + ', ' + $log.Location.State + ', ' + $log.Location.CountryOrRegion) } else { '' }
-                Status            = if ($log.Status) { $log.Status.AdditionalDetails } else { '' }
-                Device            = if ($log.DeviceDetail) { ($log.DeviceDetail.Browser + ' / ' + $log.DeviceDetail.OperatingSystem) } else { '' }
-                RiskLevelAggregated = $log.RiskLevelAggregated
+                Location          = $log.Location
+                CountryOrRegion   = $log.CountryOrRegion
+                ResultStatusCode  = $log.ResultStatusCode
+                ResultStatus      = $log.ResultStatus
+                DeviceId          = $log.DeviceId
+                DeviceDetail      = $log.DeviceDetail
+                DeviceIsCompliant = $log.DeviceIsCompliant
+                DeviceIsManaged   = $log.DeviceIsManaged
                 ConditionalAccessStatus = $log.ConditionalAccessStatus
+                CAPolicyNames     = $log.CAPolicyNames
+                CAPolicyResults   = $log.CAPolicyResults
+                CAPolicyDetails   = $log.CAPolicyDetails
+                AuthMethods       = $log.AuthMethods
+                RiskLevelAggregated = $log.RiskLevelAggregated
+                RiskLevelDuringSignIn = $log.RiskLevelDuringSignIn
             }
         }
         # Convert to DataTable for DataGridView
@@ -5855,6 +5865,12 @@ $securityInvestigationButton.add_Click({
         $dlpViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $dlpViolationsCheckBox.Checked = $true
 
+        $intuneDevicesCheckBox = New-Object System.Windows.Forms.CheckBox
+        $intuneDevicesCheckBox.Text = "Intune Device Records (requires DeviceManagementManagedDevices.Read.All)"
+        $intuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 515)
+        $intuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $intuneDevicesCheckBox.Checked = $false
+
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
         $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 242)
@@ -5895,6 +5911,7 @@ $securityInvestigationButton.add_Click({
             $anonymousSharePointSharingCheckBox.Checked = $true
             $sharePointFileSharingLinksCheckBox.Checked = $true
             $dlpViolationsCheckBox.Checked = $true
+            $intuneDevicesCheckBox.Checked = $true
         })
 
         # Deselect All button click handler
@@ -5918,6 +5935,7 @@ $securityInvestigationButton.add_Click({
             $anonymousSharePointSharingCheckBox.Checked = $false
             $sharePointFileSharingLinksCheckBox.Checked = $false
             $dlpViolationsCheckBox.Checked = $false
+            $intuneDevicesCheckBox.Checked = $false
         })
 
         # Add all controls to scrollable panel
@@ -5930,6 +5948,7 @@ $securityInvestigationButton.add_Click({
             $sharePointActivityCheckBox, $oneDriveActivityCheckBox, $teamsActivityCheckBox,
             $sharePointSharingCheckBox, $securityAlertsCheckBox, $securityIncidentsCheckBox,
             $anonymousSharePointSharingCheckBox, $sharePointFileSharingLinksCheckBox, $dlpViolationsCheckBox,
+            $intuneDevicesCheckBox,
             $signInLogsDaysLabel, $signInLogsDaysComboBox
         ))
         
@@ -6035,6 +6054,7 @@ $securityInvestigationButton.add_Click({
                     IncludeAnonymousSharePointSharing = $anonymousSharePointSharingCheckBox.Checked
                     IncludeSharePointFileSharingLinks = $sharePointFileSharingLinksCheckBox.Checked
                     IncludeDLPViolations = $dlpViolationsCheckBox.Checked
+                    IncludeIntuneDevices = $intuneDevicesCheckBox.Checked
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -6069,7 +6089,7 @@ $securityInvestigationButton.add_Click({
                 }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeIntuneDevices $reportSelections.IncludeIntuneDevices -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
                     $progressLabel.Text = "✅ Security investigation completed successfully!"
@@ -6159,7 +6179,18 @@ $securityInvestigationButton.add_Click({
                         if ($filePaths.AppRegistrationsError) { $exportedFiles += "AppRegistrations_Error.txt" }
                         if ($filePaths.UserSecurityPostureCsv) { $exportedFiles += "UserSecurityPosture.csv" }
                         if ($filePaths.LLMInstructionsTxt) { $exportedFiles += "_AI_Readme.txt" }
-                        if ($filePaths.ZipFile) { $exportedFiles += "SecurityInvestigation_*.zip (Zip Archive)" }
+                        if ($filePaths.ZipFile) {
+                            # Handle multiple zip files (comma-separated)
+                            if ($filePaths.ZipFile -like "*,*") {
+                                $zipFiles = $filePaths.ZipFile -split ','
+                                foreach ($zipFile in $zipFiles) {
+                                    $zipFileName = Split-Path $zipFile -Leaf
+                                    $exportedFiles += $zipFileName
+                                }
+                            } else {
+                                $exportedFiles += "SecurityInvestigation_*.zip (Zip Archive)"
+                            }
+                        }
                     }
                     
                     if ($exportedFiles.Count -gt 0) {
@@ -6174,7 +6205,24 @@ $securityInvestigationButton.add_Click({
                         if ($selectedFile -and $selectedFile -ne "No files were exported.") {
                             $filePath = $null
                             if ($selectedFile -like "*.zip*") {
-                                $filePath = $securityReport.FilePaths.ZipFile
+                                # Handle multiple zip files (comma-separated)
+                                if ($securityReport.FilePaths.ZipFile -like "*,*") {
+                                    # Find the specific zip file that matches the selected item
+                                    $zipFiles = $securityReport.FilePaths.ZipFile -split ','
+                                    foreach ($zipFile in $zipFiles) {
+                                        $zipFileName = Split-Path $zipFile -Leaf
+                                        if ($selectedFile -eq $zipFileName) {
+                                            $filePath = $zipFile.Trim()
+                                            break
+                                        }
+                                    }
+                                    # If not found, use first zip file
+                                    if (-not $filePath -and $zipFiles.Count -gt 0) {
+                                        $filePath = $zipFiles[0].Trim()
+                                    }
+                                } else {
+                                    $filePath = $securityReport.FilePaths.ZipFile
+                                }
                             } else {
                                 # Find the matching file path
                                 $fileName = $selectedFile
@@ -6276,11 +6324,20 @@ $securityInvestigationButton.add_Click({
                     $openZipBtn.Size = New-Object System.Drawing.Size(160, 30)
                     $openZipBtn.add_Click({
                         if ($securityReport.FilePaths -and $securityReport.FilePaths.ZipFile) {
-                            if (Test-Path $securityReport.FilePaths.ZipFile) {
-                                # Open folder and select the zip file
-                                Start-Process "explorer.exe" -ArgumentList "/select,`"$($securityReport.FilePaths.ZipFile)`""
+                            # Handle multiple zip files (comma-separated)
+                            if ($securityReport.FilePaths.ZipFile -like "*,*") {
+                                # Multiple zip files - open the folder instead of selecting a specific file
+                                $firstZip = ($securityReport.FilePaths.ZipFile -split ',')[0].Trim()
+                                $zipFolder = Split-Path $firstZip -Parent
+                                Start-Process "explorer.exe" -ArgumentList "`"$zipFolder`""
                             } else {
-                                [System.Windows.Forms.MessageBox]::Show("Zip file not found at: $($securityReport.FilePaths.ZipFile)", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                                $zipPath = $securityReport.FilePaths.ZipFile
+                                if (Test-Path $zipPath) {
+                                    # Open folder and select the zip file
+                                    Start-Process "explorer.exe" -ArgumentList "/select,`"$zipPath`""
+                                } else {
+                                    [System.Windows.Forms.MessageBox]::Show("Zip file not found at: $zipPath", "File Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                                }
                             }
                         } else {
                             [System.Windows.Forms.MessageBox]::Show("Zip file was not created during export.", "Not Available", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -6750,6 +6807,7 @@ if (Test-Path `$ReportSelectionsFile) {
             IncludeConditionalAccessPolicies = if (`$null -ne `$jsonObj.IncludeConditionalAccessPolicies) { `$jsonObj.IncludeConditionalAccessPolicies } else { `$false }
             IncludeAppRegistrations = if (`$null -ne `$jsonObj.IncludeAppRegistrations) { `$jsonObj.IncludeAppRegistrations } else { `$false }
             IncludeSignInLogs = if (`$null -ne `$jsonObj.IncludeSignInLogs) { `$jsonObj.IncludeSignInLogs } else { `$false }
+            IncludeIntuneDevices = if (`$null -ne `$jsonObj.IncludeIntuneDevices -and `$jsonObj.IncludeIntuneDevices -ne "") { [bool]`$jsonObj.IncludeIntuneDevices } else { `$false }
             IncludeMfaCoverage = if (`$null -ne `$jsonObj.IncludeMfaCoverage -and `$jsonObj.IncludeMfaCoverage -ne "") { [bool]`$jsonObj.IncludeMfaCoverage } else { `$false }
             IncludeSharePointActivity = if (`$null -ne `$jsonObj.IncludeSharePointActivity) { `$jsonObj.IncludeSharePointActivity } else { `$true }
             IncludeOneDriveActivity = if (`$null -ne `$jsonObj.IncludeOneDriveActivity) { `$jsonObj.IncludeOneDriveActivity } else { `$true }
@@ -7308,7 +7366,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {

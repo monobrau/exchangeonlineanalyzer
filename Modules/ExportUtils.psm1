@@ -329,6 +329,8 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeSignInLogs = $false,
         [Parameter(Mandatory=$false)]
+        [bool]$IncludeIntuneDevices = $false,
+        [Parameter(Mandatory=$false)]
         [bool]$IncludeMfaCoverage = $false,
         [Parameter(Mandatory=$false)]
         [int]$SignInLogsDaysBack = 7,
@@ -543,12 +545,51 @@ function New-SecurityInvestigationReport {
             } else {
                 $report.SignInLogs = @()
             }
+            
+            # Intune Device Records
+            if ($IncludeIntuneDevices) {
+                try {
+                    $statusMsg = "Collecting Intune device compliance records..."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    
+                    # Extract DeviceIds from sign-in logs if available
+                    $deviceIdsFromSignIns = @()
+                    if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
+                        foreach ($signIn in $report.SignInLogs) {
+                            if ($signIn.DeviceId -and -not [string]::IsNullOrWhiteSpace($signIn.DeviceId)) {
+                                if ($deviceIdsFromSignIns -notcontains $signIn.DeviceId) {
+                                    $deviceIdsFromSignIns += $signIn.DeviceId
+                                }
+                            }
+                        }
+                        if ($deviceIdsFromSignIns.Count -gt 0) {
+                            Write-Host "  Found $($deviceIdsFromSignIns.Count) unique device ID(s) in sign-in logs" -ForegroundColor Gray
+                        }
+                    }
+                    
+                    $report.IntuneDevices = Get-IntuneDeviceComplianceRecords -SelectedUsers $SelectedUsers -DeviceIds $deviceIdsFromSignIns
+                    if ($report.IntuneDevices -and $report.IntuneDevices.Count -gt 0) {
+                        Write-Host "Collected $($report.IntuneDevices.Count) Intune device record(s)" -ForegroundColor Green
+                    } else {
+                        Write-Host "No Intune device records found" -ForegroundColor Yellow
+                        $report.IntuneDevices = @()
+                    }
+                } catch {
+                    Write-Warning "Failed to collect Intune device records: $($_.Exception.Message)"
+                    $report.IntuneDevices = @()
+                    $report.IntuneDevicesError = $_.Exception.Message
+                }
+            } else {
+                $report.IntuneDevices = @()
+            }
         } catch {
             Write-Warning "Failed to collect Microsoft Graph data: $($_.Exception.Message)"
             $report.GraphDataError = $_.Exception.Message
         }
     } else {
         $report.SignInLogs = @()
+        $report.IntuneDevices = @()
     }
 
     # MFA Coverage and User Security Groups
@@ -940,6 +981,56 @@ function New-SecurityInvestigationReport {
                 $errorFile = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix_Error.txt"
                 "Error collecting Sign-in Logs:`n$($report.SignInLogsError)`n`nNote: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days of data." | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.SignInLogsError = $errorFile
+            }
+
+            # Intune Device Records export
+            $csv = Join-Path $report.OutputFolder "IntuneDevices$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "IntuneDevices$ticketSuffix.json"
+            if ($report.IntuneDevicesError) {
+                # Write error to a text file
+                $errorFile = Join-Path $report.OutputFolder "IntuneDevices$ticketSuffix_Error.txt"
+                "Error collecting Intune Device Records:`n$($report.IntuneDevicesError)`n`nNote: Intune device records require DeviceManagementManagedDevices.Read.All permission and Intune license." | Out-File -FilePath $errorFile -Encoding utf8
+                $report.FilePaths.IntuneDevicesError = $errorFile
+                Write-Host "Intune device collection failed - see IntuneDevices$ticketSuffix_Error.txt" -ForegroundColor Yellow
+            } elseif ($report.IntuneDevices -and $report.IntuneDevices.Count -gt 0) {
+                try { 
+                    $report.IntuneDevices | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.IntuneDevicesCsv = $csv
+                    Write-Host "Exported $($report.IntuneDevices.Count) Intune device record(s) to IntuneDevices$ticketSuffix.csv" -ForegroundColor Green
+                }
+                catch { 
+                    $report.IntuneDevices | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.IntuneDevicesJson = $json
+                    Write-Warning "Failed to export Intune devices to CSV, exported to JSON instead"
+                }
+            } else {
+                # No devices found and no error - create an empty CSV with header or info file
+                try {
+                    # Create an empty CSV with headers
+                    $emptyDevice = [PSCustomObject]@{
+                        DeviceId = $null
+                        DeviceName = $null
+                        UserId = $null
+                        UserPrincipalName = $null
+                        ComplianceState = $null
+                        IsCompliant = $null
+                        LastSyncDateTime = $null
+                        LastCheckInTime = $null
+                        EnrolledDateTime = $null
+                        OperatingSystem = $null
+                        OSVersion = $null
+                        ManagementState = $null
+                        IsManaged = $null
+                        DeviceType = $null
+                        Ownership = $null
+                        CompliancePoliciesJSON = $null
+                    }
+                    $emptyDevice | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.IntuneDevicesCsv = $csv
+                    Write-Host "No Intune device records found - created empty IntuneDevices$ticketSuffix.csv" -ForegroundColor Yellow
+                } catch {
+                    Write-Warning "Could not create Intune devices export file: $($_.Exception.Message)"
+                }
             }
 
             # Conditional Access Policies export
@@ -1432,7 +1523,16 @@ function New-SecurityInvestigationReport {
             $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder -ZipFileName $zipFileName
             if ($zipPath) {
                 $report.FilePaths.ZipFile = $zipPath
-                Write-Host "Zip archive created: $zipPath" -ForegroundColor Green
+                if ($zipPath -like "*,*") {
+                    # Multiple zip files created
+                    $zipCount = ($zipPath -split ',').Count
+                    Write-Host "Created $zipCount zip archive(s):" -ForegroundColor Green
+                    foreach ($zip in ($zipPath -split ',')) {
+                        Write-Host "  - $zip" -ForegroundColor Cyan
+                    }
+                } else {
+                    Write-Host "Zip archive created: $zipPath" -ForegroundColor Green
+                }
             }
         } catch {
             Write-Warning "Failed to create zip archive: $($_.Exception.Message)"
@@ -2049,14 +2149,220 @@ function Get-GraphSignInLogs {
         
         try {
             # Attempt to retrieve sign-in logs
+            # appliedConditionalAccessPolicies should be included by default with AuditLog.Read.All permission
             $signIns = Get-MgAuditLogSignIn -Filter $filter -All -ErrorAction Stop
             
             if ($signIns) {
                 Write-Host "  Retrieved $($signIns.Count) sign-in log entries" -ForegroundColor Green
                 
-                # Flatten sign-in logs for easier export
+                # Flatten sign-in logs for easier export with all enhanced fields
                 foreach ($signIn in $signIns) {
                     try {
+                        # Extract Status information
+                        $resultStatusCode = $null
+                        $resultStatus = "Unknown"
+                        if ($signIn.Status) {
+                            $resultStatusCode = $signIn.Status.ErrorCode
+                            if ($signIn.Status.ErrorCode -eq 0) {
+                                $resultStatus = "Success"
+                            } elseif ($signIn.Status.FailureReason) {
+                                $resultStatus = $signIn.Status.FailureReason
+                            } elseif ($signIn.Status.AdditionalDetails) {
+                                $resultStatus = $signIn.Status.AdditionalDetails
+                            } else {
+                                $resultStatus = "Failure (Code: $($signIn.Status.ErrorCode))"
+                            }
+                        }
+                        
+                        # Extract DeviceDetail information
+                        $deviceId = $null
+                        $deviceDetailJSON = $null
+                        $deviceIsCompliant = $null
+                        $deviceIsManaged = $null
+                        $deviceDetailSummary = "Unknown"
+                        if ($signIn.DeviceDetail) {
+                            $deviceId = $signIn.DeviceDetail.DeviceId
+                            $deviceIsCompliant = $signIn.DeviceDetail.IsCompliant
+                            $deviceIsManaged = $signIn.DeviceDetail.IsManaged
+                            try {
+                                $deviceDetailJSON = $signIn.DeviceDetail | ConvertTo-Json -Depth 10 -Compress
+                            } catch {
+                                $deviceDetailJSON = "Error serializing DeviceDetail"
+                            }
+                            $deviceParts = @()
+                            if ($signIn.DeviceDetail.Browser) { $deviceParts += $signIn.DeviceDetail.Browser }
+                            if ($signIn.DeviceDetail.OperatingSystem) { $deviceParts += $signIn.DeviceDetail.OperatingSystem }
+                            if ($deviceParts.Count -gt 0) { $deviceDetailSummary = $deviceParts -join " / " }
+                        }
+                        
+                        # Extract Conditional Access Policies
+                        $conditionalAccessPoliciesJSON = $null
+                        $caPolicyNames = @()
+                        $caPolicyResults = @()
+                        $caPolicyDetails = @()  # For detailed policy info
+                        
+                        # Helper function to safely get property value
+                        $getProperty = {
+                            param($obj, $propNames)
+                            foreach ($propName in $propNames) {
+                                if ($obj.PSObject.Properties[$propName]) {
+                                    return $obj.PSObject.Properties[$propName].Value
+                                }
+                            }
+                            return $null
+                        }
+                        
+                        # Check for ConditionalAccessPolicies in multiple ways
+                        # Try appliedConditionalAccessPolicies first (the correct property name per Microsoft Graph API)
+                        $caPolicies = $null
+                        
+                        # Try appliedConditionalAccessPolicies first (correct property name)
+                        if ($signIn.AppliedConditionalAccessPolicies) {
+                            $caPolicies = $signIn.AppliedConditionalAccessPolicies
+                        } elseif ($signIn.appliedConditionalAccessPolicies) {
+                            $caPolicies = $signIn.appliedConditionalAccessPolicies
+                        } elseif ($signIn.PSObject.Properties['AppliedConditionalAccessPolicies']) {
+                            $caPolicies = $signIn.PSObject.Properties['AppliedConditionalAccessPolicies'].Value
+                        } elseif ($signIn.PSObject.Properties['appliedConditionalAccessPolicies']) {
+                            $caPolicies = $signIn.PSObject.Properties['appliedConditionalAccessPolicies'].Value
+                        } elseif ($signIn.AdditionalProperties -and $signIn.AdditionalProperties['appliedConditionalAccessPolicies']) {
+                            $caPolicies = $signIn.AdditionalProperties['appliedConditionalAccessPolicies']
+                        } elseif ($signIn.AdditionalProperties -and $signIn.AdditionalProperties.ContainsKey('appliedConditionalAccessPolicies')) {
+                            $caPolicies = $signIn.AdditionalProperties['appliedConditionalAccessPolicies']
+                        } elseif ($signIn.ConditionalAccessPolicies) {
+                            $caPolicies = $signIn.ConditionalAccessPolicies
+                        } elseif ($signIn.conditionalAccessPolicies) {
+                            $caPolicies = $signIn.conditionalAccessPolicies
+                        } elseif ($signIn.PSObject.Properties['ConditionalAccessPolicies']) {
+                            $caPolicies = $signIn.PSObject.Properties['ConditionalAccessPolicies'].Value
+                        } elseif ($signIn.PSObject.Properties['conditionalAccessPolicies']) {
+                            $caPolicies = $signIn.PSObject.Properties['conditionalAccessPolicies'].Value
+                        } elseif ($signIn.AdditionalProperties -and $signIn.AdditionalProperties['conditionalAccessPolicies']) {
+                            $caPolicies = $signIn.AdditionalProperties['conditionalAccessPolicies']
+                        }
+                        
+                        if ($caPolicies) {
+                            # Handle array or single object
+                            if ($caPolicies -is [Array]) {
+                                $policyArray = $caPolicies
+                            } elseif ($caPolicies.Count) {
+                                $policyArray = @($caPolicies)
+                            } else {
+                                $policyArray = @($caPolicies)
+                            }
+                            
+                            if ($policyArray.Count -gt 0) {
+                                try {
+                                    $conditionalAccessPoliciesJSON = $policyArray | ConvertTo-Json -Depth 10 -Compress
+                                    foreach ($policy in $policyArray) {
+                                        # Get policy name - appliedConditionalAccessPolicies uses 'id' and 'displayName'
+                                        $policyName = & $getProperty $policy @('DisplayName', 'displayName', 'name', 'Name')
+                                        
+                                        # Get policy result - appliedConditionalAccessPolicies uses 'result'
+                                        $policyResult = & $getProperty $policy @('Result', 'result', 'outcome', 'Outcome')
+                                        
+                                        # Get policy ID - appliedConditionalAccessPolicies uses 'id'
+                                        $policyId = & $getProperty $policy @('Id', 'id', 'policyId', 'PolicyId')
+                                        
+                                        # Get applied grant controls (what was enforced)
+                                        $appliedGrantControls = & $getProperty $policy @('AppliedGrantControls', 'appliedGrantControls', 'GrantControls', 'grantControls')
+                                        
+                                        # Get conditions that triggered (if available)
+                                        $conditions = & $getProperty $policy @('Conditions', 'conditions')
+                                        
+                                        # If still no name, try to get from Id by looking up policy
+                                        if (-not $policyName -and $policyId) {
+                                            try {
+                                                # Try to get policy name from Graph API if we have the ID
+                                                $policyObj = Get-MgIdentityConditionalAccessPolicy -ConditionalAccessPolicyId $policyId -ErrorAction SilentlyContinue
+                                                if ($policyObj -and $policyObj.DisplayName) {
+                                                    $policyName = $policyObj.DisplayName
+                                                }
+                                            } catch {
+                                                # Ignore lookup errors
+                                            }
+                                        }
+                                        
+                                        # If we have a policy ID but no name, use the ID as fallback
+                                        if (-not $policyName -and $policyId) {
+                                            $policyName = "Policy ID: $policyId"
+                                        }
+                                        
+                                        # Only add if we have a policy identifier (name or ID)
+                                        if ($policyName -or $policyId) {
+                                            if ($policyName) {
+                                                $caPolicyNames += $policyName
+                                            } else {
+                                                $caPolicyNames += $policyId
+                                            }
+                                            
+                                            # Format result for readability
+                                            if ($policyResult) {
+                                                $resultText = $policyResult.ToString()
+                                                # Normalize result values
+                                                if ($resultText -eq "failure" -or $resultText -eq "Failure" -or $resultText -eq "0") {
+                                                    $resultText = "Failed"
+                                                } elseif ($resultText -eq "success" -or $resultText -eq "Success" -or $resultText -eq "1") {
+                                                    $resultText = "Success"
+                                                } elseif ($resultText -eq "notApplied" -or $resultText -eq "NotApplied" -or $resultText -eq "2") {
+                                                    $resultText = "Not Applied"
+                                                }
+                                                $caPolicyResults += $resultText
+                                                
+                                                # Create detailed entry for blocked policies
+                                                $detailParts = @($policyName)
+                                                if ($resultText -eq "Failed") {
+                                                    $detailParts += "(BLOCKED)"
+                                                } else {
+                                                    $detailParts += "($resultText)"
+                                                }
+                                                
+                                                # Add grant controls info if available
+                                                if ($appliedGrantControls) {
+                                                    $grantControlsStr = $null
+                                                    if ($appliedGrantControls -is [Array]) {
+                                                        $grantControlsStr = $appliedGrantControls -join ", "
+                                                    } elseif ($appliedGrantControls.PSObject.Properties['builtInControls']) {
+                                                        $grantControlsStr = $appliedGrantControls.builtInControls -join ", "
+                                                    } elseif ($appliedGrantControls.PSObject.Properties['BuiltInControls']) {
+                                                        $grantControlsStr = $appliedGrantControls.BuiltInControls -join ", "
+                                                    }
+                                                    if ($grantControlsStr) {
+                                                        $detailParts += "[$grantControlsStr]"
+                                                    }
+                                                }
+                                                
+                                                $caPolicyDetails += ($detailParts -join " ")
+                                            } else {
+                                                $caPolicyResults += "Unknown"
+                                                $caPolicyDetails += $policyName
+                                            }
+                                        }
+                                    }
+                                } catch {
+                                    $conditionalAccessPoliciesJSON = "Error serializing ConditionalAccessPolicies: $($_.Exception.Message)"
+                                }
+                            }
+                        }
+                        
+                        # Extract Authentication Details
+                        $authenticationDetailsJSON = $null
+                        $authMethods = @()
+                        if ($signIn.AuthenticationDetails -and $signIn.AuthenticationDetails.Count -gt 0) {
+                            try {
+                                $authenticationDetailsJSON = $signIn.AuthenticationDetails | ConvertTo-Json -Depth 10 -Compress
+                                foreach ($authDetail in $signIn.AuthenticationDetails) {
+                                    if ($authDetail.AuthenticationMethod) {
+                                        $authMethods += $authDetail.AuthenticationMethod
+                                    } elseif ($authDetail.AuthenticationMethodDetail) {
+                                        $authMethods += $authDetail.AuthenticationMethodDetail
+                                    }
+                                }
+                            } catch {
+                                $authenticationDetailsJSON = "Error serializing AuthenticationDetails"
+                            }
+                        }
+                        
                         $logEntry = [PSCustomObject]@{
                             CreatedDateTime = $signIn.CreatedDateTime
                             UserPrincipalName = if ($signIn.UserId) { 
@@ -2078,19 +2384,25 @@ function Get-GraphSignInLogs {
                                 if ($signIn.Location.CountryOrRegion) { $locParts += $signIn.Location.CountryOrRegion }
                                 if ($locParts.Count -gt 0) { $locParts -join ", " } else { "Unknown" }
                             } else { "Unknown" }
-                            Status = if ($signIn.Status) {
-                                if ($signIn.Status.AdditionalDetails) { $signIn.Status.AdditionalDetails } else { $signIn.Status.ErrorCode }
-                            } else { "Unknown" }
+                            CountryOrRegion = if ($signIn.Location) { $signIn.Location.CountryOrRegion } else { $null }
+                            ResultStatusCode = $resultStatusCode
+                            ResultStatus = $resultStatus
+                            Status = $resultStatus  # Keep for backward compatibility
+                            DeviceId = $deviceId
+                            DeviceDetailJSON = $deviceDetailJSON
+                            DeviceIsCompliant = $deviceIsCompliant
+                            DeviceIsManaged = $deviceIsManaged
+                            DeviceDetail = $deviceDetailSummary
+                            ConditionalAccessStatus = if ($signIn.ConditionalAccessStatus) { $signIn.ConditionalAccessStatus } else { "Not Applied" }
+                            ConditionalAccessPoliciesJSON = $conditionalAccessPoliciesJSON
+                            CAPolicyNames = $caPolicyNames -join "; "
+                            CAPolicyResults = $caPolicyResults -join "; "
+                            CAPolicyDetails = $caPolicyDetails -join "; "
+                            AuthenticationDetailsJSON = $authenticationDetailsJSON
+                            AuthMethods = $authMethods -join "; "
                             RiskLevelAggregated = $signIn.RiskLevelAggregated
                             RiskLevelDuringSignIn = $signIn.RiskLevelDuringSignIn
                             RiskState = $signIn.RiskState
-                            ConditionalAccessStatus = if ($signIn.ConditionalAccessStatus) { $signIn.ConditionalAccessStatus } else { "Not Applied" }
-                            DeviceDetail = if ($signIn.DeviceDetail) {
-                                $deviceParts = @()
-                                if ($signIn.DeviceDetail.Browser) { $deviceParts += $signIn.DeviceDetail.Browser }
-                                if ($signIn.DeviceDetail.OperatingSystem) { $deviceParts += $signIn.DeviceDetail.OperatingSystem }
-                                if ($deviceParts.Count -gt 0) { $deviceParts -join " / " } else { "Unknown" }
-                            } else { "Unknown" }
                             ResourceDisplayName = $signIn.ResourceDisplayName
                             ResourceId = $signIn.ResourceId
                         }
@@ -2122,6 +2434,113 @@ function Get-GraphSignInLogs {
         return [System.Collections.ArrayList]$allLogs
     } catch {
         Write-Error "Failed to collect sign-in logs: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-IntuneDeviceComplianceRecords {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [string[]]$DeviceIds = @()
+    )
+    
+    try {
+        Write-Host "Collecting Intune device compliance records..." -ForegroundColor Cyan
+        
+        # Check if EntraInvestigator module is available
+        if (-not (Get-Command Get-IntuneDeviceRecords -ErrorAction SilentlyContinue)) {
+            $errorMsg = "Get-IntuneDeviceRecords function not available. Intune device export requires EntraInvestigator module. Please ensure the module is imported."
+            Write-Warning $errorMsg
+            Write-Host "  Attempting to import EntraInvestigator module..." -ForegroundColor Yellow
+            try {
+                $modulePath = Join-Path $PSScriptRoot "EntraInvestigator.psm1"
+                if (Test-Path $modulePath) {
+                    Import-Module $modulePath -Force -ErrorAction Stop
+                    Write-Host "  EntraInvestigator module imported successfully" -ForegroundColor Green
+                } else {
+                    Write-Warning "  EntraInvestigator.psm1 not found at $modulePath"
+                    return @()
+                }
+            } catch {
+                Write-Warning "  Failed to import EntraInvestigator module: $($_.Exception.Message)"
+                return @()
+            }
+        }
+        
+        # Get user UPNs from SelectedUsers if provided
+        $userUpns = @()
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            foreach ($user in $SelectedUsers) {
+                if ($user -is [string]) {
+                    $userUpns += $user
+                } elseif ($user.UserPrincipalName) {
+                    $userUpns += $user.UserPrincipalName
+                } elseif ($user.PSObject.Properties['UserPrincipalName']) {
+                    $userUpns += $user.UserPrincipalName
+                }
+            }
+        }
+        
+        # Call Get-IntuneDeviceRecords
+        # IMPORTANT: Always query ALL Intune devices regardless of user filtering
+        # Device compliance data is valuable even if devices aren't assigned to selected users
+        # The UserPrincipalName column will show which user each device belongs to
+        if ($userUpns.Count -gt 0) {
+            Write-Host "  Note: Querying all Intune devices (user filtering does not limit device export)" -ForegroundColor Gray
+            Write-Host "  Selected users: $($userUpns -join ', ')" -ForegroundColor Gray
+        }
+        
+        # Always query all devices - don't filter by user for Intune device export
+        # DeviceIds from sign-in logs are still used if available
+        $devices = Get-IntuneDeviceRecords -UserPrincipalNames @() -DeviceIds $DeviceIds
+        
+        if ($devices -and $devices.Count -gt 0) {
+            Write-Host "  Retrieved $($devices.Count) Intune device record(s)" -ForegroundColor Green
+            
+            # Flatten device records for export
+            $flattenedDevices = @()
+            foreach ($device in $devices) {
+                try {
+                    $deviceRecord = [PSCustomObject]@{
+                        DeviceId = $device.DeviceId
+                        DeviceName = $device.DeviceName
+                        UserId = $device.UserId
+                        UserPrincipalName = $device.UserPrincipalName
+                        ComplianceState = $device.ComplianceState
+                        IsCompliant = $device.IsCompliant
+                        LastSyncDateTime = $device.LastSyncDateTime
+                        LastCheckInTime = $device.LastCheckInTime
+                        EnrolledDateTime = $device.EnrolledDateTime
+                        OperatingSystem = $device.OperatingSystem
+                        OSVersion = $device.OSVersion
+                        ManagementState = $device.ManagementState
+                        IsManaged = $device.IsManaged
+                        DeviceType = $device.DeviceType
+                        Ownership = $device.Ownership
+                        CompliancePoliciesJSON = $device.CompliancePoliciesJSON
+                    }
+                    $flattenedDevices += $deviceRecord
+                } catch {
+                    Write-Warning "  Error processing device record: $($_.Exception.Message)"
+                }
+            }
+            
+            return [System.Collections.ArrayList]$flattenedDevices
+        } else {
+            if ($userUpns.Count -gt 0) {
+                Write-Host "  No Intune device records found for selected user(s): $($userUpns -join ', ')" -ForegroundColor Yellow
+                Write-Host "  Note: If devices exist in Intune, they may not be assigned to these users, or user filtering may need adjustment" -ForegroundColor Gray
+            } else {
+                Write-Host "  No Intune device records found (no devices enrolled or Intune not configured)" -ForegroundColor Yellow
+            }
+            return @()
+        }
+        
+    } catch {
+        Write-Warning "Failed to collect Intune device compliance records: $($_.Exception.Message)"
         return @()
     }
 }
@@ -2997,6 +3416,107 @@ function New-SecurityInvestigationSummary {
     return $summary
 }
 
+function Test-ExportFileIsEmpty {
+    <#
+    .SYNOPSIS
+    Checks if a CSV or JSON export file is empty (headers only, no data).
+    
+    .DESCRIPTION
+    For CSV files: Checks if the file has more than just the header row (more than 1 line).
+    For JSON files: Checks if the file contains actual data (not just empty arrays or minimal metadata).
+    
+    .PARAMETER FilePath
+    Path to the file to check.
+    
+    .OUTPUTS
+    Boolean. Returns $true if file is empty (headers only), $false if it contains data.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$FilePath
+    )
+    
+    try {
+        if (-not (Test-Path $FilePath)) {
+            return $true
+        }
+        
+        $fileInfo = Get-Item $FilePath
+        if ($fileInfo.Length -eq 0) {
+            return $true
+        }
+        
+        $extension = $fileInfo.Extension.ToLower()
+        
+        if ($extension -eq '.csv') {
+            # CSV file: Check if it has more than just the header row
+            # A CSV with data will have at least 2 lines (header + at least one data row)
+            $lineCount = (Get-Content $FilePath -ErrorAction Stop | Measure-Object -Line).Lines
+            if ($lineCount -le 1) {
+                return $true  # Only header row or empty
+            }
+            # Additional check: If file has exactly 2 lines, verify the second line isn't just whitespace
+            if ($lineCount -eq 2) {
+                $lines = Get-Content $FilePath -ErrorAction Stop
+                if ([string]::IsNullOrWhiteSpace($lines[1])) {
+                    return $true  # Second line is empty/whitespace
+                }
+            }
+            return $false  # Has data rows
+        }
+        elseif ($extension -eq '.json') {
+            # JSON file: Check if it contains actual data
+            $content = Get-Content $FilePath -Raw -ErrorAction Stop
+            if ([string]::IsNullOrWhiteSpace($content)) {
+                return $true
+            }
+            
+            # Try to parse JSON and check if it's empty
+            try {
+                $jsonObj = $content | ConvertFrom-Json -ErrorAction Stop
+                
+                # Check if it's an empty array
+                if ($jsonObj -is [System.Array] -and $jsonObj.Count -eq 0) {
+                    return $true
+                }
+                
+                # Check if it's an object but has no meaningful properties (just metadata)
+                if ($jsonObj -is [PSCustomObject]) {
+                    $props = $jsonObj.PSObject.Properties
+                    # If it only has 1-2 properties and they're likely metadata, consider it empty
+                    # This is a heuristic - adjust as needed
+                    if ($props.Count -le 2) {
+                        $propNames = $props.Name
+                        # Common metadata properties that don't count as "data"
+                        $metadataProps = @('Count', 'Error', 'Message', 'Status')
+                        $hasDataProps = $propNames | Where-Object { $_ -notin $metadataProps }
+                        if ($hasDataProps.Count -eq 0) {
+                            return $true
+                        }
+                    }
+                }
+                
+                return $false  # Has data
+            } catch {
+                # If JSON parsing fails, check if content is minimal
+                $trimmed = $content.Trim()
+                if ($trimmed -eq '[]' -or $trimmed -eq '{}' -or $trimmed.Length -lt 10) {
+                    return $true
+                }
+                return $false  # Assume it has content if we can't parse it
+            }
+        }
+        else {
+            # For TXT files and other types, don't filter them (include error files and readme files)
+            return $false
+        }
+    } catch {
+        # On error, err on the side of including the file
+        Write-Warning "Error checking if file is empty: $FilePath - $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function New-SecurityInvestigationZip {
     param(
         [Parameter(Mandatory=$true)]
@@ -3012,20 +3532,6 @@ function New-SecurityInvestigationZip {
             return $null
         }
 
-        # Determine zip file name
-        if ([string]::IsNullOrWhiteSpace($ZipFileName)) {
-            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-            $ZipFileName = "SecurityInvestigation_$timestamp.zip"
-        }
-
-        # Ensure .zip extension
-        if (-not $ZipFileName.EndsWith('.zip')) {
-            $ZipFileName += '.zip'
-        }
-
-        # Create zip file path in the output folder
-        $zipPath = Join-Path $OutputFolder $ZipFileName
-
         # Get all CSV, JSON files, and relevant TXT files (AI readme files and error files)
         # This includes all export files: MessageTrace, InboxRules, TransportRules, MailFlowConnectors,
         # GraphAuditLogs, SignInLogs, ConditionalAccessPolicies, AppRegistrations, UserSecurityPosture,
@@ -3033,25 +3539,95 @@ function New-SecurityInvestigationZip {
         $csvJsonFiles = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse
         $txtFiles = Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse |
                     Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt)$' }
-        $filesToZip = $csvJsonFiles + $txtFiles
+        
+        # Filter out empty CSV/JSON files (headers only, no data)
+        $nonEmptyCsvJsonFiles = @()
+        foreach ($file in $csvJsonFiles) {
+            if (-not (Test-ExportFileIsEmpty -FilePath $file.FullName)) {
+                $nonEmptyCsvJsonFiles += $file
+            } else {
+                Write-Host "  Skipping empty file: $($file.Name)" -ForegroundColor DarkGray
+            }
+        }
+        
+        $filesToZip = $nonEmptyCsvJsonFiles + $txtFiles
 
         if ($filesToZip.Count -eq 0) {
-            Write-Warning "No CSV or JSON files found to zip in $OutputFolder"
+            Write-Warning "No non-empty CSV/JSON files found to zip in $OutputFolder"
             return $null
         }
 
-        # Remove existing zip file if it exists
-        if (Test-Path $zipPath) {
-            Remove-Item $zipPath -Force
+        # Determine base zip file name
+        $baseZipFileName = $ZipFileName
+        if ([string]::IsNullOrWhiteSpace($baseZipFileName)) {
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $baseZipFileName = "SecurityInvestigation_$timestamp"
+        }
+        
+        # Remove .zip extension if present (we'll add it back)
+        if ($baseZipFileName.EndsWith('.zip')) {
+            $baseZipFileName = $baseZipFileName.Substring(0, $baseZipFileName.Length - 4)
         }
 
-        # Create the zip file using Compress-Archive
-        Compress-Archive -Path $filesToZip.FullName -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
+        # Split zip files if more than 10 items (LLM limitation)
+        $maxFilesPerZip = 10
+        $zipPaths = @()
+        
+        if ($filesToZip.Count -le $maxFilesPerZip) {
+            # Single zip file
+            $zipFileName = "$baseZipFileName.zip"
+            $zipPath = Join-Path $OutputFolder $zipFileName
+            
+            # Remove existing zip file if it exists
+            if (Test-Path $zipPath) {
+                Remove-Item $zipPath -Force
+            }
+            
+            # Create the zip file using Compress-Archive
+            Compress-Archive -Path $filesToZip.FullName -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
+            
+            Write-Host "Successfully created zip file: $zipPath" -ForegroundColor Green
+            Write-Host "Files included: $($filesToZip.Count)" -ForegroundColor Cyan
+            
+            $zipPaths += $zipPath
+        } else {
+            # Split into multiple zip files
+            Write-Host "Splitting $($filesToZip.Count) files into multiple zip archives (max $maxFilesPerZip files per zip)..." -ForegroundColor Yellow
+            
+            $fileGroups = @()
+            for ($i = 0; $i -lt $filesToZip.Count; $i += $maxFilesPerZip) {
+                $group = $filesToZip[$i..([Math]::Min($i + $maxFilesPerZip - 1, $filesToZip.Count - 1))]
+                $fileGroups += ,$group
+            }
+            
+            for ($zipIndex = 0; $zipIndex -lt $fileGroups.Count; $zipIndex++) {
+                $fileGroup = $fileGroups[$zipIndex]
+                $zipIndexNumber = $zipIndex + 1
+                $zipFileName = "${baseZipFileName}_Part${zipIndexNumber}of$($fileGroups.Count).zip"
+                $zipPath = Join-Path $OutputFolder $zipFileName
+                
+                # Remove existing zip file if it exists
+                if (Test-Path $zipPath) {
+                    Remove-Item $zipPath -Force
+                }
+                
+                # Create the zip file using Compress-Archive
+                Compress-Archive -Path $fileGroup.FullName -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
+                
+                Write-Host "Successfully created zip file $zipIndexNumber of $($fileGroups.Count): $zipPath" -ForegroundColor Green
+                Write-Host "  Files included: $($fileGroup.Count)" -ForegroundColor Cyan
+                
+                $zipPaths += $zipPath
+            }
+        }
 
-        Write-Host "Successfully created zip file: $zipPath" -ForegroundColor Green
-        Write-Host "Files included: $($filesToZip.Count)" -ForegroundColor Cyan
-
-        return $zipPath
+        # Return the first zip path for backward compatibility (or comma-separated list)
+        if ($zipPaths.Count -eq 1) {
+            return $zipPaths[0]
+        } else {
+            # Return comma-separated list of zip paths
+            return ($zipPaths -join ',')
+        }
     } catch {
         Write-Error "Failed to create zip file: $($_.Exception.Message)"
         return $null

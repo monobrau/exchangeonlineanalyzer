@@ -408,6 +408,12 @@ $bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 490)
 $bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkDLPViolationsCheckBox.Checked = $true
 
+$bulkIntuneDevicesCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkIntuneDevicesCheckBox.Text = "Intune Device Records (requires DeviceManagementManagedDevices.Read.All)"
+$bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 515)
+$bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkIntuneDevicesCheckBox.Checked = $false
+
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
 $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
 $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 290)
@@ -443,6 +449,7 @@ $bulkSelectAllBtn.add_Click({
     $bulkSharePointSharingCheckBox.Checked = $true
     $bulkSecurityAlertsCheckBox.Checked = $true
     $bulkSecurityIncidentsCheckBox.Checked = $true
+    $bulkIntuneDevicesCheckBox.Checked = $true
 })
 
 # Deselect All button click handler
@@ -466,6 +473,7 @@ $bulkDeselectAllBtn.add_Click({
     $bulkAnonymousSharePointSharingCheckBox.Checked = $false
     $bulkSharePointFileSharingLinksCheckBox.Checked = $false
     $bulkDLPViolationsCheckBox.Checked = $false
+    $bulkIntuneDevicesCheckBox.Checked = $false
 })
 
 # Add all controls to scrollable panel
@@ -478,6 +486,7 @@ $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkSharePointActivityCheckBox, $bulkOneDriveActivityCheckBox, $bulkTeamsActivityCheckBox,
     $bulkSharePointSharingCheckBox, $bulkSecurityAlertsCheckBox, $bulkSecurityIncidentsCheckBox,
     $bulkAnonymousSharePointSharingCheckBox, $bulkSharePointFileSharingLinksCheckBox, $bulkDLPViolationsCheckBox,
+    $bulkIntuneDevicesCheckBox,
     $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
 ))
 
@@ -569,6 +578,7 @@ $bulkStartButton.add_Click({
         IncludeAnonymousSharePointSharing = $bulkAnonymousSharePointSharingCheckBox.Checked
         IncludeSharePointFileSharingLinks = $bulkSharePointFileSharingLinksCheckBox.Checked
         IncludeDLPViolations = $bulkDLPViolationsCheckBox.Checked
+        IncludeIntuneDevices = $bulkIntuneDevicesCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days
     }
@@ -710,6 +720,7 @@ try {
             IncludeConditionalAccessPolicies = if (`$null -ne `$jsonObj.IncludeConditionalAccessPolicies) { `$jsonObj.IncludeConditionalAccessPolicies } else { `$false }
             IncludeAppRegistrations = if (`$null -ne `$jsonObj.IncludeAppRegistrations) { `$jsonObj.IncludeAppRegistrations } else { `$false }
             IncludeSignInLogs = if (`$null -ne `$jsonObj.IncludeSignInLogs) { `$jsonObj.IncludeSignInLogs } else { `$false }
+            IncludeIntuneDevices = if (`$null -ne `$jsonObj.IncludeIntuneDevices -and `$jsonObj.IncludeIntuneDevices -ne "") { [bool]`$jsonObj.IncludeIntuneDevices } else { `$false }
             IncludeMfaCoverage = if (`$null -ne `$jsonObj.IncludeMfaCoverage -and `$jsonObj.IncludeMfaCoverage -ne "") { [bool]`$jsonObj.IncludeMfaCoverage } else { `$false }
             IncludeSharePointActivity = if (`$null -ne `$jsonObj.IncludeSharePointActivity) { `$jsonObj.IncludeSharePointActivity } else { `$true }
             IncludeOneDriveActivity = if (`$null -ne `$jsonObj.IncludeOneDriveActivity) { `$jsonObj.IncludeOneDriveActivity } else { `$true }
@@ -1395,7 +1406,7 @@ try {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
