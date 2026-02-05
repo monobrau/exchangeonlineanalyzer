@@ -681,16 +681,16 @@ function Generate-ObsidianNote {
     
     $note += "`n## Action Items`n`n"
     $note += "### Immediate`n"
-    $note += "- [ ] Review suspicious inbox rules`n"
-    $note += "- [ ] Check external forwarding`n"
-    $note += "- [ ] Verify user permissions`n"
-    $note += "- [ ] Review sign-in logs`n"
+    $note += "- PENDING Review suspicious inbox rules`n"
+    $note += "- PENDING Check external forwarding`n"
+    $note += "- PENDING Verify user permissions`n"
+    $note += "- PENDING Review sign-in logs`n"
     
     $note += "`n### Ongoing`n"
-    $note += "- [ ] Regular inbox rules audits`n"
-    $note += "- [ ] Monitor sign-in patterns`n"
-    $note += "- [ ] Review transport rules`n"
-    $note += "- [ ] Maintain MFA compliance`n"
+    $note += "- PENDING Regular inbox rules audits`n"
+    $note += "- PENDING Monitor sign-in patterns`n"
+    $note += "- PENDING Review transport rules`n"
+    $note += "- PENDING Maintain MFA compliance`n"
     
     $note += "`n## Technical Notes`n`n"
     $note += "Tool: Microsoft 365 Management Tool v8.0`n"
@@ -1641,44 +1641,44 @@ function Generate-IncidentRemediationChecklist {
     $checklist += "User Principal Name: $($firstSelectedUser.UserPrincipalName)`n`n"
     
     # Checklist items with enhanced data analysis
-    $checklist += "☐ Reset the Users Password in Active Directory or Office 365 if the account is a cloud-only account.`n"
+    $checklist += "[ ] Reset the Users Password in Active Directory or Office 365 if the account is a cloud-only account.`n"
     $isLicensed = $firstSelectedUser.Licensed -and $firstSelectedUser.Licensed -ne "None" -and $firstSelectedUser.Licensed -ne "Unlicensed"
     $checklist += "   Current Status: $(if ($isLicensed) { "Licensed cloud account ($($firstSelectedUser.Licensed)) - Password reset required" } else { "Unlicensed account - Verify account status" })`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Recommend Multi-Factor Authentication (MFA) to the client`n"
+    $checklist += "[ ] Recommend Multi-Factor Authentication (MFA) to the client`n"
     $checklist += "   Current Status: MFA status available for individual analysis`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Apply the Require user to sign in again via Cloud App Security (if available)`n"
+    $checklist += "[ ] Apply the Require user to sign in again via Cloud App Security (if available)`n"
     $checklist += "   Current Status: Session revocation available in Entra ID tab`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Force User Sign-out from Microsoft 365 Admin Panel`n"
+    $checklist += "[ ] Force User Sign-out from Microsoft 365 Admin Panel`n"
     $checklist += "   Current Status: Session management available in Entra ID tab`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Review the mailbox for any mailbox delegates and remove from the compromised account`n"
+    $checklist += "[ ] Review the mailbox for any mailbox delegates and remove from the compromised account`n"
     $checklist += "   Current Status: Delegates found: $($firstSelectedUser.Delegates)`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Review the mailbox for any mail forwarding rules that may have been created`n"
+    $checklist += "[ ] Review the mailbox for any mail forwarding rules that may have been created`n"
     $checklist += "   Current Status: External forwarding: $($firstSelectedUser.ExternalForwarding)`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Review the mailbox inbox rules and delete any suspicious ones.`n"
+    $checklist += "[ ] Review the mailbox inbox rules and delete any suspicious ones.`n"
     $checklist += "   Current Status: Total rules: $($firstSelectedUser.RulesCount), Suspicious rules: $($firstSelectedUser.SuspiciousRules)`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Educate the user about security threats and methods used to gain access to users' credentials`n"
+    $checklist += "[ ] Educate the user about security threats and methods used to gain access to users' credentials`n"
     $checklist += "   Current Status: User education required`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Run a mail trace to identify suspicious messages sent or received by this account`n"
+    $checklist += "[ ] Run a mail trace to identify suspicious messages sent or received by this account`n"
     $checklist += "   Current Status: Mail trace analysis required`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Search the audit log to identify suspicious logins, attempt to identify the earliest date and time the account was compromised, and confirm no suspicious logins occur after password reset`n"
+    $checklist += "[ ] Search the audit log to identify suspicious logins, attempt to identify the earliest date and time the account was compromised, and confirm no suspicious logins occur after password reset`n"
     $recentSignIns = if ($signInLogs -and $signInLogs.Count -gt 0) { $signInLogs | Select-Object -First 5 } else { $null }
     $suspiciousSignIns = if ($recentSignIns) { ($recentSignIns | Where-Object { $_.RiskLevel -eq "High" -or $_.RiskLevel -eq "Medium" }).Count } else { 0 }
     $checklist += "   Current Status: Sign-in logs available for selected user`n"
@@ -1686,21 +1686,21 @@ function Generate-IncidentRemediationChecklist {
     $checklist += "   Suspicious Sign-ins: $suspiciousSignIns`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Advise the user that if the password that was in use is also used on any other accounts, those passwords should also be changed immediately`n"
+    $checklist += "[ ] Advise the user that if the password that was in use is also used on any other accounts, those passwords should also be changed immediately`n"
     $checklist += "   Current Status: Password security advisory required`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Review the list of Administrators/Global Administrators in the Administration console. Check this against the users who SHOULD be Admins/Global Admins`n"
+    $checklist += "[ ] Review the list of Administrators/Global Administrators in the Administration console. Check this against the users who SHOULD be Admins/Global Admins`n"
     $checklist += "   Current Status: Admin review required`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Review the Global/Domain Transport rules to ensure no rules have been set up.`n"
+    $checklist += "[ ] Review the Global/Domain Transport rules to ensure no rules have been set up.`n"
     $activeTransportRules = if ($transportRules) { ($transportRules | Where-Object { $_.State -eq "Enabled" }).Count } else { "Unknown" }
     $checklist += "   Current Status: Transport rules analysis available`n"
     $checklist += "   Active Transport Rules: $activeTransportRules`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
-    $checklist += "☐ Review the list of licensed O365 Users. Check this against the list of users who SHOULD be in O365. Ensure that no disabled users or terminated users have a valid license assigned.`n"
+    $checklist += "[ ] Review the list of licensed O365 Users. Check this against the list of users who SHOULD be in O365. Ensure that no disabled users or terminated users have a valid license assigned.`n"
     $checklist += "   Current Status: User licensing review required`n"
     $checklist += "   Date completed:			Technician: `n`n"
     
@@ -2700,36 +2700,36 @@ $btnTestMemberberry.add_Click({
         # Build validation message
         $message = "Memberberry Configuration Validation`n`n"
         $message += "Directory: $memberberryDir`n"
-        $message += "  ✓ Directory exists`n"
+        $message += "  OK: Directory exists`n"
         
         if ($scriptFound) {
-            $message += "  ✓ Script found: $(Split-Path $foundScript -Leaf)`n"
+            $message += "  OK: Script found: $(Split-Path $foundScript -Leaf)`n"
         } else {
-            $message += "  ⚠ Script not found (looking for: compile.ps1, memberberry.ps1, run.ps1, main.ps1)`n"
+            $message += "  WARNING: Script not found (looking for: compile.ps1, memberberry.ps1, run.ps1, main.ps1)`n"
         }
         
         if ($outputFileExists) {
             $fileSize = (Get-Item $outputFile).Length
-            $message += "  ✓ Output file exists: output\memberberry.md ($fileSize bytes)`n"
+            $message += "  OK: Output file exists: output\memberberry.md ($fileSize bytes)`n"
         } else {
-            $message += "  ⚠ Output file not found: output\memberberry.md`n"
+            $message += "  WARNING: Output file not found: output\memberberry.md`n"
             $message += "     (This will be generated when compile.ps1 runs)`n"
         }
         
         if (-not [string]::IsNullOrWhiteSpace($exceptionsPath)) {
             $message += "`nExceptions File: $exceptionsPath`n"
             if (Test-Path $exceptionsPath -PathType Leaf) {
-                $message += "  ✓ File exists`n"
+                $message += "  OK: File exists`n"
             } else {
-                $message += "  ⚠ File not found (optional)`n"
+                $message += "  WARNING: File not found (optional)`n"
             }
         }
         
         if ($scriptFound -and $outputFileExists) {
-            $message += "`n✓ Configuration is valid and ready to use!"
+            $message += "`nOK: Configuration is valid and ready to use!"
             [System.Windows.Forms.MessageBox]::Show($message, "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         } else {
-            $message += "`n⚠ Configuration has warnings but may still work."
+            $message += "`nWARNING: Configuration has warnings but may still work."
             [System.Windows.Forms.MessageBox]::Show($message, "Validation Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         }
     } catch {
@@ -5543,7 +5543,7 @@ $accountSelectorGroup.Controls.Add($unifiedAccountGrid)
 
 # Account selector buttons
 $refreshAccountsButton = New-Object System.Windows.Forms.Button
-$refreshAccountsButton.Text = "🔄 Refresh Account List"
+$refreshAccountsButton.Text = " Refresh Account List"
 $refreshAccountsButton.Location = New-Object System.Drawing.Point(10, 370)
 $refreshAccountsButton.Size = New-Object System.Drawing.Size(180, 35)
 $refreshAccountsButton.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
@@ -5581,8 +5581,8 @@ function Update-ConnectionStatus {
     $mgConnected = $false
     try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true } } catch { $mgConnected = ($script:graphConnection -ne $null) }
 
-    $exchangeStatus = if ($exoConnected) { "✅ Exchange Online" } else { "❌ Exchange Online" }
-    $entraStatus = if ($mgConnected) { "✅ Entra ID" } else { "❌ Entra ID" }
+    $exchangeStatus = if ($exoConnected) { "OK: Exchange Online" } else { "ERROR: Exchange Online" }
+    $entraStatus = if ($mgConnected) { "OK: Entra ID" } else { "ERROR: Entra ID" }
     $connectionStatusLabel.Text = "Connection Status: $exchangeStatus | $entraStatus"
     
     if ($exoConnected -and $mgConnected) {
@@ -5622,7 +5622,7 @@ $securityInvestigationButton.Size = New-Object System.Drawing.Size(250, 40)
 $securityInvestigationButton.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204) # Blue color
 $securityInvestigationButton.ForeColor = [System.Drawing.Color]::White
 $securityInvestigationButton.add_Click({
-    $statusLabel.Text = "🔍 Opening Security Investigation Report..."
+    $statusLabel.Text = "Opening Security Investigation Report..."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
 
     try {
@@ -5641,7 +5641,7 @@ $securityInvestigationButton.add_Click({
 
         # Title
         $securityTitleLabel = New-Object System.Windows.Forms.Label
-        $securityTitleLabel.Text = "🔍 Comprehensive Security Investigation Report"
+        $securityTitleLabel.Text = "Comprehensive Security Investigation Report"
         $securityTitleLabel.Font = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
         $securityTitleLabel.Location = New-Object System.Drawing.Point(15, 15)
         $securityTitleLabel.Size = New-Object System.Drawing.Size(500, 35)
@@ -5657,7 +5657,7 @@ $securityInvestigationButton.add_Click({
 
         # User Selection Info Label
         $userSelectionInfoLabel = New-Object System.Windows.Forms.Label
-        $userSelectionInfoLabel.Text = "ℹ️ USER SELECTION: Select specific users in the Report Generator tab to export data for those users only (faster, targeted analysis).`n   If no users are selected, the report will include ALL users in your organization (comprehensive but more time-consuming)."
+        $userSelectionInfoLabel.Text = "INFO: USER SELECTION: Select specific users in the Report Generator tab to export data for those users only (faster, targeted analysis).`n   If no users are selected, the report will include ALL users in your organization (comprehensive but more time-consuming)."
         $userSelectionInfoLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Regular)
         $userSelectionInfoLabel.Location = New-Object System.Drawing.Point(15, 100)
         $userSelectionInfoLabel.Size = New-Object System.Drawing.Size(850, 50)
@@ -5867,20 +5867,26 @@ $securityInvestigationButton.add_Click({
 
         $intuneDevicesCheckBox = New-Object System.Windows.Forms.CheckBox
         $intuneDevicesCheckBox.Text = "Intune Device Records (requires DeviceManagementManagedDevices.Read.All)"
-        $intuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 515)
+        $intuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 540)
         $intuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-        $intuneDevicesCheckBox.Checked = $false
+        $intuneDevicesCheckBox.Checked = $true
+
+        $unifiedAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $unifiedAuditLogsCheckBox.Text = "Email Audit Logs (Unified Audit Log - requires View-Only Audit Logs)"
+        $unifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 540)
+        $unifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $unifiedAuditLogsCheckBox.Checked = $true
 
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
-        $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 242)
+        $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 217)
         $signInLogsDaysLabel.Size = New-Object System.Drawing.Size(70, 20)
         $signInLogsDaysLabel.Enabled = $false
 
         $signInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
         $signInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
         $signInLogsDaysComboBox.SelectedItem = "7 days"
-        $signInLogsDaysComboBox.Location = New-Object System.Drawing.Point(290, 240)
+        $signInLogsDaysComboBox.Location = New-Object System.Drawing.Point(290, 215)
         $signInLogsDaysComboBox.Size = New-Object System.Drawing.Size(80, 20)
         $signInLogsDaysComboBox.Enabled = $false
 
@@ -5912,6 +5918,7 @@ $securityInvestigationButton.add_Click({
             $sharePointFileSharingLinksCheckBox.Checked = $true
             $dlpViolationsCheckBox.Checked = $true
             $intuneDevicesCheckBox.Checked = $true
+            $unifiedAuditLogsCheckBox.Checked = $true
         })
 
         # Deselect All button click handler
@@ -5936,19 +5943,25 @@ $securityInvestigationButton.add_Click({
             $sharePointFileSharingLinksCheckBox.Checked = $false
             $dlpViolationsCheckBox.Checked = $false
             $intuneDevicesCheckBox.Checked = $false
+            $unifiedAuditLogsCheckBox.Checked = $false
         })
 
-        # Add all controls to scrollable panel
+        # Add all controls to scrollable panel - Organized logically
         $reportsScrollPanel.Controls.AddRange(@(
             $selectAllReportsBtn, $deselectAllReportsBtn,
-            $messageTraceCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
-            $mailFlowCheckBox, $mailboxForwardingCheckBox, $auditLogsCheckBox,
-            $caPoliciesCheckBox, $appRegistrationsCheckBox,
-            $signInLogsCheckBox, $mfaCoverageCheckBox,
+            # Exchange Online / Email Reports
+            $messageTraceCheckBox, $unifiedAuditLogsCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
+            $mailFlowCheckBox, $mailboxForwardingCheckBox,
+            # Entra ID / Identity & Access Reports
+            $auditLogsCheckBox, $signInLogsCheckBox, $mfaCoverageCheckBox, $caPoliciesCheckBox, $appRegistrationsCheckBox,
+            # Security Reports
+            $securityAlertsCheckBox, $securityIncidentsCheckBox, $dlpViolationsCheckBox,
+            # Collaboration Reports
             $sharePointActivityCheckBox, $oneDriveActivityCheckBox, $teamsActivityCheckBox,
-            $sharePointSharingCheckBox, $securityAlertsCheckBox, $securityIncidentsCheckBox,
-            $anonymousSharePointSharingCheckBox, $sharePointFileSharingLinksCheckBox, $dlpViolationsCheckBox,
+            $sharePointSharingCheckBox, $anonymousSharePointSharingCheckBox, $sharePointFileSharingLinksCheckBox,
+            # Device Management Reports
             $intuneDevicesCheckBox,
+            # Sign-In Logs configuration
             $signInLogsDaysLabel, $signInLogsDaysComboBox
         ))
         
@@ -5957,7 +5970,7 @@ $securityInvestigationButton.add_Click({
 
         # Generate Button
         $generateButton = New-Object System.Windows.Forms.Button
-        $generateButton.Text = "🚀 Generate Security Investigation"
+        $generateButton.Text = " Generate Security Investigation"
         $generateButton.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
         $generateButton.Location = New-Object System.Drawing.Point(430, 190)
         $generateButton.Size = New-Object System.Drawing.Size(280, 50)
@@ -5977,15 +5990,15 @@ $securityInvestigationButton.add_Click({
         $graphConnected = $script:graphConnection -ne $null
 
         if ($exchangeConnected -and $graphConnected) {
-            $connectionStatusLabel.Text = "✅ Both Exchange Online and Microsoft Graph connected"
+            $connectionStatusLabel.Text = "OK: Both Exchange Online and Microsoft Graph connected"
             $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Green
             $generateButton.Enabled = $true
         } elseif ($exchangeConnected -or $graphConnected) {
-            $connectionStatusLabel.Text = "⚠️ Partial connection - some data may be unavailable"
+            $connectionStatusLabel.Text = "WARNING: Partial connection - some data may be unavailable"
             $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Orange
             $generateButton.Enabled = $true
         } else {
-            $connectionStatusLabel.Text = "❌ No connections available - cannot generate report"
+            $connectionStatusLabel.Text = "ERROR: No connections available - cannot generate report"
             $connectionStatusLabel.ForeColor = [System.Drawing.Color]::Red
             $generateButton.Enabled = $false
         }
@@ -5998,7 +6011,7 @@ $securityInvestigationButton.add_Click({
             $company = if ($companyNameTextBox.Text -and $companyNameTextBox.Text.Trim().Length -gt 0) { $companyNameTextBox.Text } elseif ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
             $days = [int]$daysComboBox.SelectedItem
 
-            $progressLabel.Text = "🔍 Starting comprehensive security investigation..."
+            $progressLabel.Text = "Starting comprehensive security investigation..."
             $progressLabel.ForeColor = [System.Drawing.Color]::Blue
             $securityForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
             $generateButton.Enabled = $false
@@ -6055,6 +6068,7 @@ $securityInvestigationButton.add_Click({
                     IncludeSharePointFileSharingLinks = $sharePointFileSharingLinksCheckBox.Checked
                     IncludeDLPViolations = $dlpViolationsCheckBox.Checked
                     IncludeIntuneDevices = $intuneDevicesCheckBox.Checked
+                    IncludeUnifiedAuditLogs = $unifiedAuditLogsCheckBox.Checked
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -6089,10 +6103,10 @@ $securityInvestigationButton.add_Click({
                 }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeIntuneDevices $reportSelections.IncludeIntuneDevices -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeIntuneDevices $reportSelections.IncludeIntuneDevices -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs $reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
-                    $progressLabel.Text = "✅ Security investigation completed successfully!"
+                    $progressLabel.Text = "OK: Security investigation completed successfully!"
                     $progressLabel.ForeColor = [System.Drawing.Color]::Green
 
                     # Show results in a new form
@@ -6107,7 +6121,7 @@ $securityInvestigationButton.add_Click({
 
                     # Summary tab
                     $summaryTab = New-Object System.Windows.Forms.TabPage
-                    $summaryTab.Text = "📋 Investigation Summary"
+                    $summaryTab.Text = "Investigation Summary"
                     $summaryTextBox = New-Object System.Windows.Forms.RichTextBox
                     $summaryTextBox.Dock = 'Fill'
                     $summaryTextBox.ReadOnly = $true
@@ -6117,7 +6131,7 @@ $securityInvestigationButton.add_Click({
 
                     # AI Prompt tab
                     $aiPromptTab = New-Object System.Windows.Forms.TabPage
-                    $aiPromptTab.Text = "🤖 AI Investigation Prompt"
+                    $aiPromptTab.Text = " AI Investigation Prompt"
                     $aiPromptTextBox = New-Object System.Windows.Forms.RichTextBox
                     $aiPromptTextBox.Dock = 'Fill'
                     $aiPromptTextBox.ReadOnly = $true
@@ -6127,7 +6141,7 @@ $securityInvestigationButton.add_Click({
 
                     # Ticket Message tab
                     $ticketTab = New-Object System.Windows.Forms.TabPage
-                    $ticketTab.Text = "📝 Non-Technical Summary"
+                    $ticketTab.Text = " Non-Technical Summary"
                     $ticketTextBox = New-Object System.Windows.Forms.RichTextBox
                     $ticketTextBox.Dock = 'Fill'
                     $ticketTextBox.ReadOnly = $true
@@ -6137,7 +6151,7 @@ $securityInvestigationButton.add_Click({
 
                     # Exported Files tab
                     $filesTab = New-Object System.Windows.Forms.TabPage
-                    $filesTab.Text = "📁 Exported Files"
+                    $filesTab.Text = "Exported Files"
                     $filesPanel = New-Object System.Windows.Forms.Panel
                     $filesPanel.Dock = 'Fill'
                     $filesPanel.Padding = New-Object System.Windows.Forms.Padding(10)
@@ -6168,6 +6182,9 @@ $securityInvestigationButton.add_Click({
                         if ($filePaths.MailFlowConnectorsJson) { $exportedFiles += "MailFlowConnectors.json" }
                         if ($filePaths.AuditLogsCsv) { $exportedFiles += "GraphAuditLogs.csv" }
                         if ($filePaths.AuditLogsJson) { $exportedFiles += "GraphAuditLogs.json" }
+                        if ($filePaths.UnifiedAuditLogsCsv) { $exportedFiles += "UnifiedAuditLogs.csv" }
+                        if ($filePaths.UnifiedAuditLogsJson) { $exportedFiles += "UnifiedAuditLogs.json" }
+                        if ($filePaths.UnifiedAuditLogsError) { $exportedFiles += "UnifiedAuditLogs_Error.txt" }
                         if ($filePaths.SignInLogsCsv) { $exportedFiles += "SignInLogs.csv" }
                         if ($filePaths.SignInLogsJson) { $exportedFiles += "SignInLogs.json" }
                         if ($filePaths.SignInLogsError) { $exportedFiles += "SignInLogs_Error.txt" }
@@ -6284,7 +6301,7 @@ $securityInvestigationButton.add_Click({
                     $instructionsLabel.Text = "Instructions: All reports have been exported as individual CSV files AND a zip archive (excluding _AI_Readme.txt). Use 'Open Zip Location' to find the zip file for easy upload to your analysis workspace. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them for full analysis."
 
                     $copySummaryBtn = New-Object System.Windows.Forms.Button
-                    $copySummaryBtn.Text = "📋 Copy Summary"
+                    $copySummaryBtn.Text = "Copy Summary"
                     $copySummaryBtn.Location = New-Object System.Drawing.Point(15, 35)
                     $copySummaryBtn.Size = New-Object System.Drawing.Size(130, 30)
                     $copySummaryBtn.add_Click({
@@ -6293,7 +6310,7 @@ $securityInvestigationButton.add_Click({
                     })
 
                     $copyAIBtn = New-Object System.Windows.Forms.Button
-                    $copyAIBtn.Text = "🤖 Copy AI Prompt"
+                    $copyAIBtn.Text = " Copy AI Prompt"
                     $copyAIBtn.Location = New-Object System.Drawing.Point(155, 35)
                     $copyAIBtn.Size = New-Object System.Drawing.Size(130, 30)
                     $copyAIBtn.add_Click({
@@ -6302,7 +6319,7 @@ $securityInvestigationButton.add_Click({
                     })
 
                     $copyTicketBtn = New-Object System.Windows.Forms.Button
-                    $copyTicketBtn.Text = "📝 Copy Ticket Message"
+                    $copyTicketBtn.Text = " Copy Ticket Message"
                     $copyTicketBtn.Location = New-Object System.Drawing.Point(295, 35)
                     $copyTicketBtn.Size = New-Object System.Drawing.Size(150, 30)
                     $copyTicketBtn.add_Click({
@@ -6312,14 +6329,14 @@ $securityInvestigationButton.add_Click({
 
                     # Open folder button if files were exported
                     $openFolderBtn = New-Object System.Windows.Forms.Button
-                    $openFolderBtn.Text = "📁 Open Export Folder"
+                    $openFolderBtn.Text = "Open Export Folder"
                     $openFolderBtn.Location = New-Object System.Drawing.Point(455, 35)
                     $openFolderBtn.Size = New-Object System.Drawing.Size(160, 30)
                     $openFolderBtn.add_Click({ if ($securityReport.OutputFolder) { Start-Process $securityReport.OutputFolder } })
 
                     # Open zip location button (zip is auto-created during export)
                     $openZipBtn = New-Object System.Windows.Forms.Button
-                    $openZipBtn.Text = "📦 Open Zip Location"
+                    $openZipBtn.Text = " Open Zip Location"
                     $openZipBtn.Location = New-Object System.Drawing.Point(625, 35)
                     $openZipBtn.Size = New-Object System.Drawing.Size(160, 30)
                     $openZipBtn.add_Click({
@@ -6356,12 +6373,12 @@ $securityInvestigationButton.add_Click({
                     $resultsForm.ShowDialog()
 
                 } else {
-                    $progressLabel.Text = "❌ Failed to generate security investigation report"
+                    $progressLabel.Text = "ERROR: Failed to generate security investigation report"
                     $progressLabel.ForeColor = [System.Drawing.Color]::Red
                     [System.Windows.Forms.MessageBox]::Show("Failed to generate security investigation report. Please check connections and permissions.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                 }
             } catch {
-                $progressLabel.Text = "❌ Error: $($_.Exception.Message)"
+                $progressLabel.Text = "ERROR: Error: $($_.Exception.Message)"
                 $progressLabel.ForeColor = [System.Drawing.Color]::Red
                 [System.Windows.Forms.MessageBox]::Show("Error generating security investigation report: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             } finally {
@@ -6389,7 +6406,7 @@ $securityInvestigationButton.add_Click({
 
     } catch {
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
-        $statusLabel.Text = "❌ Error opening security investigation: $($_.Exception.Message)"
+        $statusLabel.Text = "ERROR: Error opening security investigation: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error opening security investigation interface: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
@@ -6404,7 +6421,7 @@ $bulkTenantExporterButton.Size = New-Object System.Drawing.Size(250, 40)
 $bulkTenantExporterButton.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50) # Green color
 $bulkTenantExporterButton.ForeColor = [System.Drawing.Color]::White
 $bulkTenantExporterButton.add_Click({
-    $statusLabel.Text = "🔄 Opening Bulk Tenant Report Exporter..."
+    $statusLabel.Text = " Opening Bulk Tenant Report Exporter..."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
 
     try {
@@ -7366,7 +7383,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
@@ -8172,9 +8189,9 @@ if (Test-Path `$ReportSelectionsFile) {
                 $borderPanel.Size = New-Object System.Drawing.Size(5, $clientRowHeight)
                 $borderPanel.BackColor = [System.Drawing.Color]::Gray  # Default: Not started
 
-                # Toggle button (▼ for expanded, ▶ for minimized)
+                # Toggle button ([v] for expanded, [>] for minimized)
                 $toggleBtn = New-Object System.Windows.Forms.Button
-                $toggleBtn.Text = "▼"
+                $toggleBtn.Text = "[v]"
                 $toggleBtn.Location = New-Object System.Drawing.Point(10, ($yPos + 10))
                 $toggleBtn.Size = New-Object System.Drawing.Size(30, 30)
                 $toggleBtn.Tag = $ClientNumber
@@ -8183,7 +8200,7 @@ if (Test-Path `$ReportSelectionsFile) {
 
                 # Graph Status Indicator (for minimized view)
                 $graphStatusLabel = New-Object System.Windows.Forms.Label
-                $graphStatusLabel.Text = "Graph: ○"
+                $graphStatusLabel.Text = "Graph: PENDING"
                 $graphStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
                 $graphStatusLabel.Location = New-Object System.Drawing.Point(480, ($yPos + 15))
                 $graphStatusLabel.Size = New-Object System.Drawing.Size(100, 20)
@@ -8192,7 +8209,7 @@ if (Test-Path `$ReportSelectionsFile) {
 
                 # Exchange Status Indicator (for minimized view)
                 $exchangeStatusLabel = New-Object System.Windows.Forms.Label
-                $exchangeStatusLabel.Text = "Exchange: ○"
+                $exchangeStatusLabel.Text = "Exchange: PENDING"
                 $exchangeStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
                 $exchangeStatusLabel.Location = New-Object System.Drawing.Point(590, ($yPos + 15))
                 $exchangeStatusLabel.Size = New-Object System.Drawing.Size(120, 20)
@@ -8212,7 +8229,7 @@ if (Test-Path `$ReportSelectionsFile) {
 
                 # Remove button (for minimized view)
                 $removeMinimizedBtn = New-Object System.Windows.Forms.Button
-                $removeMinimizedBtn.Text = "×"
+                $removeMinimizedBtn.Text = "X"
                 $removeMinimizedBtn.Location = New-Object System.Drawing.Point(850, ($yPos + 10))
                 $removeMinimizedBtn.Size = New-Object System.Drawing.Size(30, 30)
                 $removeMinimizedBtn.Enabled = $true
@@ -8562,7 +8579,7 @@ if (Test-Path `$ReportSelectionsFile) {
                     if (-not $controls) { return }
 
                     # Update toggle button text
-                    $this.Text = if ($isExpanded) { "▼" } else { "▶" }
+                    $this.Text = if ($isExpanded) { "[v]" } else { "[>]" }
 
                     # Calculate heights
                     $minimizedHeight = 50
@@ -9171,7 +9188,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph Auth Complete - Ready for Exchange"
                         $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
                         $script:clientAuthControls[$clientNum].ExchangeButton.Enabled = $true
-                        $this.Text = "Graph Auth ✓"
+                        $this.Text = "Graph Auth OK"
                         
                         # Show user filtering controls after Graph Auth
                         $script:clientAuthControls[$clientNum].UserFilterCheckBox.Visible = $true
@@ -9287,7 +9304,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $true
                         $script:clientAuthControls[$clientNum].StatusLabel.Text = "Exchange Auth Complete - Ready to Generate Reports"
                         $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Green
-                        $this.Text = "Exchange Auth ✓"
+                        $this.Text = "Exchange Auth OK"
                         $this.Enabled = $false
                         $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication successful!`r`n")
                         
@@ -9632,8 +9649,8 @@ if (Test-Path `$ReportSelectionsFile) {
                                             # Show/hide warning label based on license warning
                                             if ($signInLogsWarning -and $controls.WarningLabel -and -not $controls.WarningLabel.IsDisposed) {
                                                 try {
-                                                    if (-not $controls.WarningLabel.Visible -or $controls.WarningLabel.Text -ne "⚠ WARNING: $warningText") {
-                                                        $controls.WarningLabel.Text = "⚠ WARNING: Sign-in logs require Azure AD Premium license - pull manually"
+                                                    if (-not $controls.WarningLabel.Visible -or $controls.WarningLabel.Text -ne "WARNING: WARNING: $warningText") {
+                                                        $controls.WarningLabel.Text = "WARNING: WARNING: Sign-in logs require Azure AD Premium license - pull manually"
                                                         $controls.WarningLabel.ForeColor = [System.Drawing.Color]::Orange
                                                         $controls.WarningLabel.Visible = $true
                                                     }
@@ -9668,20 +9685,20 @@ if (Test-Path `$ReportSelectionsFile) {
                                             # Update Graph/Exchange status indicators for minimized view
                                             if ($controls.GraphStatusLabel -and -not $controls.GraphStatusLabel.IsDisposed) {
                                                 if ($script:clientAuthStates[$clientNum].GraphAuthenticated) {
-                                                    $controls.GraphStatusLabel.Text = "Graph: ✓"
+                                                    $controls.GraphStatusLabel.Text = "Graph: OK"
                                                     $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Green
                                                 } else {
-                                                    $controls.GraphStatusLabel.Text = "Graph: ○"
+                                                    $controls.GraphStatusLabel.Text = "Graph: PENDING"
                                                     $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Gray
                                                 }
                                             }
 
                                             if ($controls.ExchangeStatusLabel -and -not $controls.ExchangeStatusLabel.IsDisposed) {
                                                 if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                                                    $controls.ExchangeStatusLabel.Text = "Exchange: ✓"
+                                                    $controls.ExchangeStatusLabel.Text = "Exchange: OK"
                                                     $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Green
                                                 } else {
-                                                    $controls.ExchangeStatusLabel.Text = "Exchange: ○"
+                                                    $controls.ExchangeStatusLabel.Text = "Exchange: PENDING"
                                                     $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Gray
                                                 }
                                             }
@@ -9824,7 +9841,7 @@ if (Test-Path `$ReportSelectionsFile) {
 
     } catch {
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
-        $statusLabel.Text = "❌ Error opening bulk tenant exporter: $($_.Exception.Message)"
+        $statusLabel.Text = "ERROR: Error opening bulk tenant exporter: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error opening bulk tenant exporter: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
@@ -9857,7 +9874,7 @@ $reportGeneratorTab.add_Enter({
         $hasEntraData = $entraUserGrid.Rows.Count -gt 0
         
         if (-not $exoConnected -and -not $mgConnected -and -not $hasExchangeData -and -not $hasEntraData) {
-            $statusLabel.Text = "⚠️ No data available - please connect to Exchange Online and/or Entra ID first"
+            $statusLabel.Text = "WARNING: No data available - please connect to Exchange Online and/or Entra ID first"
             [System.Windows.Forms.MessageBox]::Show(
                 "No account data available for reports.`n`nPlease connect to Exchange Online and/or Entra ID first, then refresh the account list.",
                 "No Data Available",
@@ -9869,16 +9886,16 @@ $reportGeneratorTab.add_Enter({
         
         # Auto-refresh if grid is empty or if we have new data
         if ($unifiedAccountGrid.Rows.Count -eq 0) {
-            $statusLabel.Text = "🔄 Auto-refreshing account list..."
+            $statusLabel.Text = " Auto-refreshing account list..."
             Update-UnifiedAccountGrid
             $accountCount = $unifiedAccountGrid.Rows.Count
-            $statusLabel.Text = "✅ Reports tab ready - $accountCount accounts loaded"
+            $statusLabel.Text = "OK: Reports tab ready - $accountCount accounts loaded"
         } else {
-            $statusLabel.Text = "📊 Reports tab ready - $($unifiedAccountGrid.Rows.Count) accounts available"
+            $statusLabel.Text = "INFO: Reports tab ready - $($unifiedAccountGrid.Rows.Count) accounts available"
         }
         
     } catch {
-        $statusLabel.Text = "❌ Error initializing reports tab: $($_.Exception.Message)"
+            $statusLabel.Text = "ERROR: Error initializing reports tab: $($_.Exception.Message)"
     }
 })
 
@@ -9888,7 +9905,7 @@ $reportGeneratorTab.Controls.Add($reportGeneratorPanel)
 # Account selector button event handlers
 $refreshAccountsButton.add_Click({
     try {
-        $statusLabel.Text = "🔄 Refreshing unified account list..."
+        $statusLabel.Text = " Refreshing unified account list..."
         $mainForm.Refresh()
         
         # Update connection status first
@@ -9902,7 +9919,7 @@ $refreshAccountsButton.add_Click({
         
         # Show success message with count
         $accountCount = $unifiedAccountGrid.Rows.Count
-        $statusLabel.Text = "✅ Account list refreshed - $accountCount accounts loaded"
+        $statusLabel.Text = "OK: Account list refreshed - $accountCount accounts loaded"
         
         # Show a brief success message
         [System.Windows.Forms.MessageBox]::Show(
@@ -9913,7 +9930,7 @@ $refreshAccountsButton.add_Click({
         )
         
     } catch {
-        $statusLabel.Text = "❌ Error refreshing account list: $($_.Exception.Message)"
+        $statusLabel.Text = "ERROR: Error refreshing account list: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show(
             "Error refreshing account list: $($_.Exception.Message)`n`nPlease ensure you are connected to both Exchange Online and Entra ID.",
             "Refresh Error",
@@ -10427,7 +10444,7 @@ $incidentChecklistButton.add_Click({
                          foreach ($checkbox in $checkboxes) {
                  if ($checkbox.Checked) {
                      $completedItems++
-                     $completedChecklist += "☑ $($checkbox.Text)`n`n"
+                     $completedChecklist += "[X] $($checkbox.Text)`n`n"
                  }
              }
             
@@ -11779,7 +11796,7 @@ $entraDisconnectGraphButton.add_Click({
 # Legacy Fix Module Conflicts button handler (button moved to Settings). Guard against null.
 if ($null -ne $entraFixModulesButton) {
 $entraFixModulesButton.add_Click({
-    $statusLabel.Text = "🔧 Fixing Microsoft Graph module conflicts..."
+    $statusLabel.Text = "Fixing Microsoft Graph module conflicts..."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     $entraFixModulesButton.Enabled = $false
 
@@ -11818,7 +11835,7 @@ $entraFixModulesButton.add_Click({
             foreach ($module in $modulesToInstall) {
                 try {
                     Install-Module -Name $module -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
-                    Write-Host "✓ $module installed successfully" -ForegroundColor Green
+                    Write-Host "OK: $module installed successfully" -ForegroundColor Green
                 } catch {
                     Write-Host "✗ Failed to install $module`: $($_.Exception.Message)" -ForegroundColor Red
                     throw "Failed to install required modules"
@@ -11836,12 +11853,12 @@ $entraFixModulesButton.add_Click({
                 # Ignore errors clearing token cache
             }
 
-            $statusLabel.Text = "✅ Microsoft Graph module conflicts fixed! Please restart PowerShell."
+            $statusLabel.Text = "OK: Microsoft Graph module conflicts fixed! Please restart PowerShell."
             [System.Windows.Forms.MessageBox]::Show(
                 "Microsoft Graph module conflicts have been resolved!`n`n" +
-                "✅ All conflicting modules uninstalled`n" +
-                "✅ Required modules reinstalled with compatible versions`n" +
-                "✅ Authentication cache cleared`n`n" +
+                "OK: All conflicting modules uninstalled`n" +
+                "OK: Required modules reinstalled with compatible versions`n" +
+                "OK: Authentication cache cleared`n`n" +
                 "Please restart PowerShell and try connecting again.",
                 "Module Conflicts Fixed",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -11849,7 +11866,7 @@ $entraFixModulesButton.add_Click({
             )
 
         } catch {
-            $statusLabel.Text = "❌ Error fixing module conflicts: $($_.Exception.Message)"
+            $statusLabel.Text = "ERROR: Error fixing module conflicts: $($_.Exception.Message)"
             [System.Windows.Forms.MessageBox]::Show(
                 "Error fixing Microsoft Graph module conflicts: $($_.Exception.Message)`n`n" +
                 "Please manually run these commands:`n`n" +
@@ -11866,7 +11883,7 @@ $entraFixModulesButton.add_Click({
         }
 
     } catch {
-        $statusLabel.Text = "❌ Error fixing module conflicts: $($_.Exception.Message)"
+        $statusLabel.Text = "ERROR: Error fixing module conflicts: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error fixing module conflicts: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     } finally {
         $entraFixModulesButton.Enabled = $true

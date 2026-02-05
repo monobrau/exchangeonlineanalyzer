@@ -353,7 +353,9 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeSecurityAlerts = $true,
         [Parameter(Mandatory=$false)]
-        [bool]$IncludeSecurityIncidents = $true
+        [bool]$IncludeSecurityIncidents = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeUnifiedAuditLogs = $true
     )
 
     try {
@@ -495,6 +497,28 @@ function New-SecurityInvestigationReport {
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers
                 Write-Host "Collected mailbox forwarding data for $($report.MailboxForwarding.Count) mailboxes" -ForegroundColor Green
+            }
+
+            if ($IncludeUnifiedAuditLogs) {
+                try {
+                    $statusMsg = "Collecting unified audit logs (email audit logs) (last $MessageTraceDaysBack days)..."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.UnifiedAuditLogs.Count) unified audit log entries" -ForegroundColor Green
+                } catch {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                        Write-Warning "Insufficient permissions to read unified audit logs. Requires 'View-Only Audit Logs' role."
+                        $report.UnifiedAuditLogs = @()
+                        $report.UnifiedAuditLogsError = "Permission denied - requires View-Only Audit Logs role"
+                    } else {
+                        Write-Warning "Failed to collect unified audit logs: $($_.Exception.Message)"
+                        $report.UnifiedAuditLogs = @()
+                        $report.UnifiedAuditLogsError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.UnifiedAuditLogs = @()
             }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
@@ -960,6 +984,28 @@ function New-SecurityInvestigationReport {
             if ($report.AuditLogs -and $report.AuditLogs.Count -gt 0) {
                 try { $report.AuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.AuditLogsCsv = $csv }
                 catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
+            }
+
+            # Unified Audit Logs (Email Audit Logs) export
+            $csv = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix.csv"
+            $json = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix.json"
+            if ($report.UnifiedAuditLogsError) {
+                # Write error to a text file
+                $errorFile = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix_Error.txt"
+                "Error collecting Unified Audit Logs:`n$($report.UnifiedAuditLogsError)`n`nNote: Unified audit logs require Exchange Online connection and 'View-Only Audit Logs' role." | Out-File -FilePath $errorFile -Encoding utf8
+                $report.FilePaths.UnifiedAuditLogsError = $errorFile
+                Write-Host "Unified audit log collection failed - see UnifiedAuditLogs$ticketSuffix_Error.txt" -ForegroundColor Yellow
+            } elseif ($report.UnifiedAuditLogs -and $report.UnifiedAuditLogs.Count -gt 0) {
+                try { 
+                    $report.UnifiedAuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.UnifiedAuditLogsCsv = $csv
+                    Write-Host "Exported $($report.UnifiedAuditLogs.Count) unified audit log entries to UnifiedAuditLogs.csv" -ForegroundColor Green
+                }
+                catch { 
+                    $report.UnifiedAuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                    $report.FilePaths.UnifiedAuditLogsJson = $json
+                    Write-Warning "Failed to export unified audit logs to CSV, exported to JSON instead"
+                }
             }
 
             # Sign-in Logs export
@@ -2081,6 +2127,113 @@ function Get-GraphAuditLogs {
         return [System.Collections.ArrayList]$flattened
     } catch {
         Write-Error "Failed to collect audit logs: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Get-UnifiedAuditLogs {
+    param(
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+
+    try {
+        Write-Host "Collecting unified audit logs (email audit logs)..." -ForegroundColor Yellow
+        
+        # Check if Search-UnifiedAuditLog cmdlet is available (indicates Exchange Online connection)
+        if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
+            Write-Warning "Search-UnifiedAuditLog cmdlet not available. Please ensure Exchange Online Management module is installed and connected."
+            return @()
+        }
+
+        # Ensure Exchange Online Management module is available
+        if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
+            Write-Warning "Search-UnifiedAuditLog cmdlet not available. Please ensure Exchange Online Management module is installed."
+            return @()
+        }
+
+        $startDate = (Get-Date).AddDays(-[Math]::Max(1, $DaysBack))
+        $endDate = Get-Date
+        
+        $raw = New-Object System.Collections.Generic.List[object]
+        
+        # If SelectedUsers provided, filter by user
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                try {
+                    Write-Host "  Querying unified audit logs for: $upn" -ForegroundColor Gray
+                    # Search unified audit logs for this user
+                    $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -UserIds $upn -ResultSize 5000 -ErrorAction Stop
+                    if ($results) {
+                        foreach ($item in $results) {
+                            [void]$raw.Add($item)
+                        }
+                        Write-Host "  Found $($results.Count) audit log entries for $upn" -ForegroundColor Gray
+                    }
+                } catch {
+                    Write-Warning "Failed to get unified audit logs for $upn : $($_.Exception.Message)"
+                }
+            }
+        } else {
+            # No selection - get all unified audit logs
+            try {
+                Write-Host "  Querying unified audit logs for all users..." -ForegroundColor Gray
+                $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -ResultSize 5000 -ErrorAction Stop
+                if ($results) {
+                    foreach ($item in $results) {
+                        [void]$raw.Add($item)
+                    }
+                    Write-Host "  Found $($results.Count) audit log entries" -ForegroundColor Gray
+                }
+            } catch {
+                Write-Warning "Failed to get unified audit logs: $($_.Exception.Message)"
+            }
+        }
+
+        # Flatten for CSV export
+        $flattened = New-Object System.Collections.Generic.List[object]
+
+        foreach ($r in $raw) {
+            try {
+                $flattened.Add([pscustomobject]@{
+                    CreationDate         = $r.CreationDate
+                    RecordType            = $r.RecordType
+                    UserIds               = if ($r.UserIds) { ($r.UserIds -join '; ') } else { $null }
+                    Operations           = if ($r.Operations) { ($r.Operations -join '; ') } else { $null }
+                    AuditData            = $r.AuditData
+                    ResultIndex          = $r.ResultIndex
+                    ResultCount          = $r.ResultCount
+                    Identity             = $r.Identity
+                    ExternalAccess       = $r.ExternalAccess
+                    ObjectId             = $r.ObjectId
+                    MailboxGuid          = $r.MailboxGuid
+                    MailboxResolvedName  = $r.MailboxResolvedName
+                    MailboxOwnerUPN      = $r.MailboxOwnerUPN
+                    MailboxOwnerSid      = $r.MailboxOwnerSid
+                    MailboxOwnerMasterAccountSid = $r.MailboxOwnerMasterAccountSid
+                    LogonType            = $r.LogonType
+                    Operation            = $r.Operation
+                    OrganizationId       = $r.OrganizationId
+                }) | Out-Null
+            } catch {
+                # If flattening fails for a record, fall back to a minimal projection
+                $flattened.Add([pscustomobject]@{
+                    CreationDate    = $r.CreationDate
+                    RecordType      = $r.RecordType
+                    UserIds         = if ($r.UserIds) { ($r.UserIds -join '; ') } else { $null }
+                    Operations      = if ($r.Operations) { ($r.Operations -join '; ') } else { $null }
+                    Operation       = $r.Operation
+                }) | Out-Null
+            }
+        }
+
+        Write-Host "  Total unified audit log entries collected: $($flattened.Count)" -ForegroundColor Gray
+        
+        return [System.Collections.ArrayList]$flattened
+    } catch {
+        Write-Error "Failed to collect unified audit logs: $($_.Exception.Message)"
         return @()
     }
 }

@@ -293,134 +293,145 @@ $bulkDeselectAllBtn.Text = "Deselect All"
 $bulkDeselectAllBtn.Location = New-Object System.Drawing.Point(100, 5)
 $bulkDeselectAllBtn.Size = New-Object System.Drawing.Size(90, 25)
 
-# Checkboxes for each report type
+# Checkboxes for each report type - Organized logically by category
+# Exchange Online / Email Reports
 $bulkMessageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMessageTraceCheckBox.Text = "Message Trace"
 $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(10, 40)
 $bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMessageTraceCheckBox.Checked = $true
 
+$bulkUnifiedAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkUnifiedAuditLogsCheckBox.Text = "Email Audit Logs (Unified Audit Log - requires View-Only Audit Logs)"
+$bulkUnifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 65)
+$bulkUnifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkUnifiedAuditLogsCheckBox.Checked = $true
+
 $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkInboxRulesCheckBox.Text = "Inbox Rules"
-$bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 65)
+$bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
 $bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkInboxRulesCheckBox.Checked = $true
 
 $bulkTransportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkTransportRulesCheckBox.Text = "Transport Rules"
-$bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
+$bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 115)
 $bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkTransportRulesCheckBox.Checked = $true
 
 $bulkMailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailFlowCheckBox.Text = "Mail Flow Connectors"
-$bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 115)
+$bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 140)
 $bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMailFlowCheckBox.Checked = $true
 
 $bulkMailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailboxForwardingCheckBox.Text = "Mailbox Forwarding & Delegation"
-$bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 140)
+$bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 165)
 $bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMailboxForwardingCheckBox.Checked = $true
 
+# Entra ID / Identity & Access Reports
 $bulkAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkAuditLogsCheckBox.Text = "Audit Logs"
-$bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 165)
+$bulkAuditLogsCheckBox.Text = "Audit Logs (Graph)"
+$bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 190)
 $bulkAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAuditLogsCheckBox.Checked = $true
 
-$bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
-$bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 190)
-$bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkCaPoliciesCheckBox.Checked = $true
-
-$bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkAppRegistrationsCheckBox.Text = "App Registrations"
-$bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
-$bulkAppRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkAppRegistrationsCheckBox.Checked = $true
-
 $bulkSignInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSignInLogsCheckBox.Text = "Sign-In Logs"
-$bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 240)
+$bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
 $bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSignInLogsCheckBox.Checked = $true
 
 $bulkMfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMfaCoverageCheckBox.Text = "MFA Coverage"
-$bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 265)
+$bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 240)
 $bulkMfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMfaCoverageCheckBox.Checked = $true
 
-$bulkSharePointActivityCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkSharePointActivityCheckBox.Text = "SharePoint Activity (requires E5/Reports.Read.All)"
-$bulkSharePointActivityCheckBox.Location = New-Object System.Drawing.Point(10, 290)
-$bulkSharePointActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkSharePointActivityCheckBox.Checked = $true
+$bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
+$bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 265)
+$bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkCaPoliciesCheckBox.Checked = $true
 
-$bulkOneDriveActivityCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkOneDriveActivityCheckBox.Text = "OneDrive Activity (requires E5/Reports.Read.All)"
-$bulkOneDriveActivityCheckBox.Location = New-Object System.Drawing.Point(10, 315)
-$bulkOneDriveActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkOneDriveActivityCheckBox.Checked = $true
+$bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkAppRegistrationsCheckBox.Text = "App Registrations"
+$bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 290)
+$bulkAppRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkAppRegistrationsCheckBox.Checked = $true
 
-$bulkTeamsActivityCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkTeamsActivityCheckBox.Text = "Teams Activity (requires E5/Reports.Read.All)"
-$bulkTeamsActivityCheckBox.Location = New-Object System.Drawing.Point(10, 340)
-$bulkTeamsActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkTeamsActivityCheckBox.Checked = $true
-
-$bulkSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkSharePointSharingCheckBox.Text = "SharePoint Sharing Links"
-$bulkSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 365)
-$bulkSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkSharePointSharingCheckBox.Checked = $true
-
+# Security Reports
 $bulkSecurityAlertsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSecurityAlertsCheckBox.Text = "Security Alerts (requires E5/SecurityAlert.Read.All)"
-$bulkSecurityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 390)
+$bulkSecurityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 315)
 $bulkSecurityAlertsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSecurityAlertsCheckBox.Checked = $true
 
 $bulkSecurityIncidentsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSecurityIncidentsCheckBox.Text = "Security Incidents (requires E5/SecurityIncident.Read.All)"
-$bulkSecurityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 415)
+$bulkSecurityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 340)
 $bulkSecurityIncidentsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSecurityIncidentsCheckBox.Checked = $true
 
+$bulkDLPViolationsCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkDLPViolationsCheckBox.Text = "DLP Violations (requires AuditLog.Read.All)"
+$bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
+$bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkDLPViolationsCheckBox.Checked = $true
+
+# Collaboration Reports (SharePoint/OneDrive/Teams)
+$bulkSharePointActivityCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkSharePointActivityCheckBox.Text = "SharePoint Activity (requires E5/Reports.Read.All)"
+$bulkSharePointActivityCheckBox.Location = New-Object System.Drawing.Point(10, 390)
+$bulkSharePointActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSharePointActivityCheckBox.Checked = $true
+
+$bulkOneDriveActivityCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkOneDriveActivityCheckBox.Text = "OneDrive Activity (requires E5/Reports.Read.All)"
+$bulkOneDriveActivityCheckBox.Location = New-Object System.Drawing.Point(10, 415)
+$bulkOneDriveActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkOneDriveActivityCheckBox.Checked = $true
+
+$bulkTeamsActivityCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkTeamsActivityCheckBox.Text = "Teams Activity (requires E5/Reports.Read.All)"
+$bulkTeamsActivityCheckBox.Location = New-Object System.Drawing.Point(10, 440)
+$bulkTeamsActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkTeamsActivityCheckBox.Checked = $true
+
+$bulkSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkSharePointSharingCheckBox.Text = "SharePoint Sharing Links"
+$bulkSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 465)
+$bulkSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSharePointSharingCheckBox.Checked = $true
+
 $bulkAnonymousSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAnonymousSharePointSharingCheckBox.Text = "Anonymous SharePoint Sharing (requires AuditLog.Read.All)"
-$bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 440)
+$bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 490)
 $bulkAnonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAnonymousSharePointSharingCheckBox.Checked = $true
 
 $bulkSharePointFileSharingLinksCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointFileSharingLinksCheckBox.Text = "SharePoint File Sharing Links"
-$bulkSharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 465)
+$bulkSharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 515)
 $bulkSharePointFileSharingLinksCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointFileSharingLinksCheckBox.Checked = $true
 
-$bulkDLPViolationsCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkDLPViolationsCheckBox.Text = "DLP Violations (requires AuditLog.Read.All)"
-$bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 490)
-$bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkDLPViolationsCheckBox.Checked = $true
-
+# Device Management Reports
 $bulkIntuneDevicesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkIntuneDevicesCheckBox.Text = "Intune Device Records (requires DeviceManagementManagedDevices.Read.All)"
-$bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 515)
+$bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 540)
 $bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkIntuneDevicesCheckBox.Checked = $false
+$bulkIntuneDevicesCheckBox.Checked = $true
 
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
 $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
-$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 290)
+$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 215)
 $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
 $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
-$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 288)
+$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 213)
 $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
 $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
@@ -450,6 +461,7 @@ $bulkSelectAllBtn.add_Click({
     $bulkSecurityAlertsCheckBox.Checked = $true
     $bulkSecurityIncidentsCheckBox.Checked = $true
     $bulkIntuneDevicesCheckBox.Checked = $true
+    $bulkUnifiedAuditLogsCheckBox.Checked = $true
 })
 
 # Deselect All button click handler
@@ -474,19 +486,25 @@ $bulkDeselectAllBtn.add_Click({
     $bulkSharePointFileSharingLinksCheckBox.Checked = $false
     $bulkDLPViolationsCheckBox.Checked = $false
     $bulkIntuneDevicesCheckBox.Checked = $false
+    $bulkUnifiedAuditLogsCheckBox.Checked = $false
 })
 
-# Add all controls to scrollable panel
+# Add all controls to scrollable panel - Organized logically
 $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkSelectAllBtn, $bulkDeselectAllBtn,
-    $bulkMessageTraceCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
-    $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox, $bulkAuditLogsCheckBox,
-    $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
-    $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox,
+    # Exchange Online / Email Reports
+    $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
+    $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox,
+    # Entra ID / Identity & Access Reports
+    $bulkAuditLogsCheckBox, $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox, $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
+    # Security Reports
+    $bulkSecurityAlertsCheckBox, $bulkSecurityIncidentsCheckBox, $bulkDLPViolationsCheckBox,
+    # Collaboration Reports
     $bulkSharePointActivityCheckBox, $bulkOneDriveActivityCheckBox, $bulkTeamsActivityCheckBox,
-    $bulkSharePointSharingCheckBox, $bulkSecurityAlertsCheckBox, $bulkSecurityIncidentsCheckBox,
-    $bulkAnonymousSharePointSharingCheckBox, $bulkSharePointFileSharingLinksCheckBox, $bulkDLPViolationsCheckBox,
+    $bulkSharePointSharingCheckBox, $bulkAnonymousSharePointSharingCheckBox, $bulkSharePointFileSharingLinksCheckBox,
+    # Device Management Reports
     $bulkIntuneDevicesCheckBox,
+    # Sign-In Logs configuration
     $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
 ))
 
@@ -579,6 +597,7 @@ $bulkStartButton.add_Click({
         IncludeSharePointFileSharingLinks = $bulkSharePointFileSharingLinksCheckBox.Checked
         IncludeDLPViolations = $bulkDLPViolationsCheckBox.Checked
         IncludeIntuneDevices = $bulkIntuneDevicesCheckBox.Checked
+        IncludeUnifiedAuditLogs = $bulkUnifiedAuditLogsCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days
     }
@@ -731,6 +750,7 @@ try {
             IncludeAnonymousSharePointSharing = if (`$null -ne `$jsonObj.IncludeAnonymousSharePointSharing) { `$jsonObj.IncludeAnonymousSharePointSharing } else { `$true }
             IncludeSharePointFileSharingLinks = if (`$null -ne `$jsonObj.IncludeSharePointFileSharingLinks) { `$jsonObj.IncludeSharePointFileSharingLinks } else { `$true }
             IncludeDLPViolations = if (`$null -ne `$jsonObj.IncludeDLPViolations) { `$jsonObj.IncludeDLPViolations } else { `$true }
+            IncludeUnifiedAuditLogs = if (`$null -ne `$jsonObj.IncludeUnifiedAuditLogs) { `$jsonObj.IncludeUnifiedAuditLogs } else { `$true }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
@@ -1406,7 +1426,7 @@ try {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
