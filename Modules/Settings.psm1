@@ -1682,7 +1682,50 @@ function Extract-EmailsFromTicket {
     return $tenantEmails
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket
+function Select-UsersInTicketContent {
+    <#
+    .SYNOPSIS
+        Returns only those users (emails/UPNs) whose address appears in the ticket content.
+
+    .DESCRIPTION
+        Used by the bulk exporter to only include the client contact's (or any user's) email
+        when that email is actually present in the ticket text. Filters the given user list
+        to users whose email/UPN appears in TicketContent (case-insensitive).
+
+    .PARAMETER Users
+        Array of user identifiers (email addresses or UPNs). Can be strings or objects with .UserPrincipalName.
+
+    .PARAMETER TicketContent
+        The ticket content text to search for each user's email.
+
+    .OUTPUTS
+        Array of the same type as input (strings or objects) containing only users that appear in the ticket.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$Users,
+        [Parameter(Mandatory = $true)]
+        [string]$TicketContent
+    )
+    if (-not $Users -or $Users.Count -eq 0) {
+        return @()
+    }
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        return @()
+    }
+    $contentLower = $TicketContent.ToLowerInvariant()
+    $result = @()
+    foreach ($u in $Users) {
+        $email = if ($u -is [string]) { $u } else { $u.UserPrincipalName }
+        if ([string]::IsNullOrWhiteSpace($email)) { continue }
+        if ($contentLower.IndexOf($email.ToLowerInvariant(), [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $result += $u
+        }
+    }
+    return $result
+}
+
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent
 
 
 

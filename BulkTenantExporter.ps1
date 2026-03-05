@@ -425,6 +425,13 @@ $bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 540)
 $bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkIntuneDevicesCheckBox.Checked = $true
 
+# Detailed File Action Logs
+$bulkSharePointOneDriveFileActionsCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkSharePointOneDriveFileActionsCheckBox.Text = "SharePoint/OneDrive File Actions (detailed audit log - requires View-Only Audit Logs)"
+$bulkSharePointOneDriveFileActionsCheckBox.Location = New-Object System.Drawing.Point(10, 565)
+$bulkSharePointOneDriveFileActionsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
+
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
 $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
 $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 215)
@@ -462,6 +469,7 @@ $bulkSelectAllBtn.add_Click({
     $bulkSecurityIncidentsCheckBox.Checked = $true
     $bulkIntuneDevicesCheckBox.Checked = $true
     $bulkUnifiedAuditLogsCheckBox.Checked = $true
+    $bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
 })
 
 # Deselect All button click handler
@@ -487,6 +495,7 @@ $bulkDeselectAllBtn.add_Click({
     $bulkDLPViolationsCheckBox.Checked = $false
     $bulkIntuneDevicesCheckBox.Checked = $false
     $bulkUnifiedAuditLogsCheckBox.Checked = $false
+    $bulkSharePointOneDriveFileActionsCheckBox.Checked = $false
 })
 
 # Add all controls to scrollable panel - Organized logically
@@ -504,6 +513,8 @@ $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkSharePointSharingCheckBox, $bulkAnonymousSharePointSharingCheckBox, $bulkSharePointFileSharingLinksCheckBox,
     # Device Management Reports
     $bulkIntuneDevicesCheckBox,
+    # Detailed File Action Logs
+    $bulkSharePointOneDriveFileActionsCheckBox,
     # Sign-In Logs configuration
     $bulkSignInLogsDaysLabel, $bulkSignInLogsDaysComboBox
 ))
@@ -598,6 +609,7 @@ $bulkStartButton.add_Click({
         IncludeDLPViolations = $bulkDLPViolationsCheckBox.Checked
         IncludeIntuneDevices = $bulkIntuneDevicesCheckBox.Checked
         IncludeUnifiedAuditLogs = $bulkUnifiedAuditLogsCheckBox.Checked
+        IncludeSharePointOneDriveFileActions = $bulkSharePointOneDriveFileActionsCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days
     }
@@ -751,6 +763,7 @@ try {
             IncludeSharePointFileSharingLinks = if (`$null -ne `$jsonObj.IncludeSharePointFileSharingLinks) { `$jsonObj.IncludeSharePointFileSharingLinks } else { `$true }
             IncludeDLPViolations = if (`$null -ne `$jsonObj.IncludeDLPViolations) { `$jsonObj.IncludeDLPViolations } else { `$true }
             IncludeUnifiedAuditLogs = if (`$null -ne `$jsonObj.IncludeUnifiedAuditLogs) { `$jsonObj.IncludeUnifiedAuditLogs } else { `$true }
+            IncludeSharePointOneDriveFileActions = if (`$null -ne `$jsonObj.IncludeSharePointOneDriveFileActions) { `$jsonObj.IncludeSharePointOneDriveFileActions } else { `$true }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
         }
@@ -1426,7 +1439,7 @@ try {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -IncludeSharePointOneDriveFileActions `$reportSelections.IncludeSharePointOneDriveFileActions -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
@@ -2236,6 +2249,17 @@ try {
         $extractEmailsBtn.BackColor = [System.Drawing.Color]::FromArgb(94, 53, 177)
         $extractEmailsBtn.ForeColor = [System.Drawing.Color]::White
 
+        # Only include users that appear in ticket (filters client contact / any user to ticket-only)
+        $onlyUsersInTicketCheckBox = New-Object System.Windows.Forms.CheckBox
+        $onlyUsersInTicketCheckBox.Text = "Only include users that appear in ticket"
+        $onlyUsersInTicketCheckBox.Location = New-Object System.Drawing.Point(10, ($yPos + 155))
+        $onlyUsersInTicketCheckBox.Size = New-Object System.Drawing.Size(280, 20)
+        $onlyUsersInTicketCheckBox.Enabled = $false
+        $onlyUsersInTicketCheckBox.Visible = $false
+        $onlyUsersInTicketCheckBox.Checked = $true
+        $onlyUsersInTicketCheckBox.Tag = $ClientNumber
+        $onlyUsersInTicketCheckBox.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+
         # Exchange Online Auth button
         $exchangeAuthBtn = New-Object System.Windows.Forms.Button
         $exchangeAuthBtn.Text = "Exchange Online Auth"
@@ -2285,7 +2309,7 @@ try {
         $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
 
         # Add controls to panel
-        $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $viewReportsBtn))
+        $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $viewReportsBtn))
 
         # Store controls and state
         $script:clientAuthStates[$ClientNumber] = @{
@@ -2321,6 +2345,7 @@ try {
             TicketTextBox = $ticketTextBox
             TicketNumbersLabel = $ticketNumbersLabel
             ExtractEmailsButton = $extractEmailsBtn
+            OnlyUsersInTicketCheckBox = $onlyUsersInTicketCheckBox
             ViewReportsButton = $viewReportsBtn
         }
 
@@ -2524,6 +2549,8 @@ try {
                 if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
                     $controls.TicketLabel.Visible = $true
                     $controls.TicketTextBox.Visible = $true
+                    $controls.OnlyUsersInTicketCheckBox.Visible = $true
+                    $controls.OnlyUsersInTicketCheckBox.Enabled = $true
                     $controls.GenerateReportsButton.Visible = $true
                     $controls.ExtractEmailsButton.Visible = $true
                 }
@@ -2557,6 +2584,7 @@ try {
                 $controls.UserValidationLabel.Visible = $false
                 $controls.TicketLabel.Visible = $false
                 $controls.TicketTextBox.Visible = $false
+                $controls.OnlyUsersInTicketCheckBox.Visible = $false
                 $controls.TicketNumbersLabel.Visible = $false
                 $controls.ExtractEmailsButton.Visible = $false
                 $controls.GenerateReportsButton.Visible = $false
@@ -3075,6 +3103,8 @@ try {
                 $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
                 $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
                 $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
+                $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Visible = $true
+                $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Enabled = $true
 
                 # Show and enable Extract Emails button (both auths now complete)
                 $script:clientAuthControls[$clientNum].ExtractEmailsButton.Visible = $true
@@ -3257,8 +3287,28 @@ try {
             # Build GENERATE_REPORTS command
             $command = "GENERATE_REPORTS"
             if ($selectedUsers.Count -gt 0) {
-                $usersJson = ($selectedUsers | ConvertTo-Json -Compress)
-                $command += "|SelectedUsers:$usersJson"
+                $usersToSend = $selectedUsers
+                # Optionally filter to only users whose email appears in the ticket
+                $onlyInTicketChecked = $controls.OnlyUsersInTicketCheckBox -and $controls.OnlyUsersInTicketCheckBox.Checked
+                if ($onlyInTicketChecked -and -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
+                    try {
+                        Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                        if (Get-Command Select-UsersInTicketContent -ErrorAction SilentlyContinue) {
+                            $usersToSend = Select-UsersInTicketContent -Users $selectedUsers -TicketContent $filteredTicketContent
+                            if ($usersToSend.Count -lt $selectedUsers.Count) {
+                                $excluded = $selectedUsers.Count - $usersToSend.Count
+                                $script:authStatusTextBox.AppendText("Client $($clientNum): Filtered to $($usersToSend.Count) user(s) that appear in ticket ($excluded excluded)`r`n")
+                                Write-Host "Only include users in ticket: filtered from $($selectedUsers.Count) to $($usersToSend.Count) user(s)" -ForegroundColor Cyan
+                            }
+                        }
+                    } catch {
+                        Write-Warning "Failed to filter users by ticket content: $($_.Exception.Message)"
+                    }
+                }
+                if ($usersToSend.Count -gt 0) {
+                    $usersJson = ($usersToSend | ConvertTo-Json -Compress)
+                    $command += "|SelectedUsers:$usersJson"
+                }
             }
             # Include ticket data if we have ticket numbers OR ticket content
             if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
@@ -3382,6 +3432,8 @@ try {
             $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $false
             $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $false
             $script:clientAuthControls[$clientNum].TicketTextBox.Text = ""
+            $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Visible = $false
+            $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Enabled = $false
             $script:clientAuthControls[$clientNum].TicketNumbersLabel.Visible = $false
             $script:clientAuthControls[$clientNum].TicketNumbersLabel.Text = ""
             
