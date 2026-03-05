@@ -373,7 +373,8 @@ function New-SecurityInvestigationReport {
     $report.Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $report.Investigator = $InvestigatorName
     $report.Company = $CompanyName
-    # Display intent: 10 days for message trace; sign-ins use max available. Keep DaysAnalyzed consistent with 10 unless explicitly provided.
+    # Timing standard: All date-range exports use start = (now - DaysBack) and end = run time (now).
+    # Message trace, unified audit logs, Graph audit/sign-in, security alerts/incidents all include data through export run time.
     if (-not $PSBoundParameters.ContainsKey('DaysBack')) { $DaysBack = 10 }
     $report.DaysAnalyzed = $DaysBack
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
@@ -1598,9 +1599,9 @@ function Get-ExchangeMessageTrace {
     )
 
     try {
-        Write-Host "Collecting message trace data (last $DaysBack days)..." -ForegroundColor Yellow
+        Write-Host "Collecting message trace data (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         $end = (Get-Date).ToUniversalTime()
-        $start = $end.AddDays(-$DaysBack).Date # start at 00:00Z
+        $start = $end.AddDays(-$DaysBack).Date # start at 00:00Z; last window ends at $end (run time)
 
         $results = New-Object System.Collections.Generic.List[object]
 
@@ -1616,10 +1617,10 @@ function Get-ExchangeMessageTrace {
             
             # Query message trace for each selected user (server-side filtering)
             foreach ($upn in $selectedUserList) {
-                # Chunk by day to avoid server-side caps
+                # Chunk by day to avoid server-side caps; last window extends to run time
                 for ($d = 0; $d -lt $DaysBack; $d++) {
                     $winStart = $start.AddDays($d)
-                    $winEnd   = $winStart.AddDays(1)
+                    $winEnd   = if ($d -eq $DaysBack - 1) { $end } else { $winStart.AddDays(1) }
 
                     try {
                         if ($hasV2) {
@@ -1711,10 +1712,10 @@ function Get-ExchangeMessageTrace {
             return [System.Collections.ArrayList]$uniqueResults
         } else {
             # No selection - get all message traces
-            # Chunk by day to avoid server-side caps; try paged in each window
+            # Chunk by day to avoid server-side caps; last window extends to run time
             for ($d = 0; $d -lt $DaysBack; $d++) {
                 $winStart = $start.AddDays($d)
-                $winEnd   = $winStart.AddDays(1)
+                $winEnd   = if ($d -eq $DaysBack - 1) { $end } else { $winStart.AddDays(1) }
 
                 try {
                     if ($hasV2) {
@@ -1969,7 +1970,7 @@ function Get-GraphAuditLogs {
     )
 
     try {
-        Write-Host "Collecting audit logs..." -ForegroundColor Yellow
+        Write-Host "Collecting audit logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         # Ensure identity modules are available
         if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
@@ -1978,6 +1979,7 @@ function Get-GraphAuditLogs {
 
         $startUtc = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max(1,$DaysBack))
         $startIso = $startUtc.ToString("s") + "Z"
+        # Filter "ge" returns from start through run time (no end filter = through now)
 
         $raw = New-Object System.Collections.Generic.List[object]
         
@@ -2139,7 +2141,7 @@ function Get-UnifiedAuditLogs {
     )
 
     try {
-        Write-Host "Collecting unified audit logs (email audit logs)..." -ForegroundColor Yellow
+        Write-Host "Collecting unified audit logs (email audit logs) (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         
         # Check if Search-UnifiedAuditLog cmdlet is available (indicates Exchange Online connection)
         if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
@@ -2154,10 +2156,10 @@ function Get-UnifiedAuditLogs {
         }
 
         $startDate = (Get-Date).AddDays(-[Math]::Max(1, $DaysBack))
-        $endDate = Get-Date
-        
+        $endDate = Get-Date  # Through run time (same timing as message trace)
+
         $raw = New-Object System.Collections.Generic.List[object]
-        
+
         # If SelectedUsers provided, filter by user
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             foreach ($user in $SelectedUsers) {
@@ -2247,7 +2249,7 @@ function Get-GraphSignInLogs {
     )
     
     try {
-        Write-Host "Collecting sign-in logs (last $DaysBack days)..." -ForegroundColor Yellow
+        Write-Host "Collecting sign-in logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
@@ -2264,7 +2266,8 @@ function Get-GraphSignInLogs {
         $allLogs = New-Object System.Collections.ArrayList
         $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
         $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        
+        # Filter "ge" returns from start through run time (no end filter = through now)
+
         # Build filter for date range
         $filter = "createdDateTime ge $startIso"
         
@@ -4848,7 +4851,7 @@ function Get-SecurityAlerts {
     )
     
     try {
-        Write-Host "Collecting security alerts (last $DaysBack days)..." -ForegroundColor Yellow
+        Write-Host "Collecting security alerts (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
@@ -4863,7 +4866,7 @@ function Get-SecurityAlerts {
         }
         
         $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-        $filter = "createdDateTime ge $filterDate"
+        $filter = "createdDateTime ge $filterDate"  # Through run time (no end filter = through now)
         
         Write-Host "  Querying Microsoft Graph Security API for alerts..." -ForegroundColor Gray
         
@@ -4953,7 +4956,7 @@ function Get-SecurityIncidents {
     )
     
     try {
-        Write-Host "Collecting security incidents (last $DaysBack days)..." -ForegroundColor Yellow
+        Write-Host "Collecting security incidents (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
@@ -4968,7 +4971,7 @@ function Get-SecurityIncidents {
         }
         
         $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-        $filter = "createdDateTime ge $filterDate"
+        $filter = "createdDateTime ge $filterDate"  # Through run time (no end filter = through now)
         
         Write-Host "  Querying Microsoft Graph Security API for incidents..." -ForegroundColor Gray
         
@@ -5019,7 +5022,7 @@ function Get-AnonymousSharePointSharing {
     )
     
     try {
-        Write-Host "Collecting anonymous SharePoint sharing events (last $DaysBack days)..." -ForegroundColor Yellow
+        Write-Host "Collecting anonymous SharePoint sharing events (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
@@ -5035,12 +5038,12 @@ function Get-AnonymousSharePointSharing {
         
         $results = New-Object System.Collections.ArrayList
         
-        # Calculate date filter
+        # Calculate date filter (through run time)
         $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
         $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        
+
         Write-Host "  Querying audit logs for SharePoint sharing events..." -ForegroundColor Gray
-        
+
         # Filter for SharePoint sharing activities, specifically anonymous/external sharing
         # Activity types: FileAccessed, FileDownloaded, FileShared, FileSharedExternally
         # Look for activities where anonymous links were created or used
@@ -5330,7 +5333,7 @@ function Get-DLPViolations {
     )
     
     try {
-        Write-Host "Collecting DLP policy violations (last $DaysBack days)..." -ForegroundColor Yellow
+        Write-Host "Collecting DLP policy violations (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
