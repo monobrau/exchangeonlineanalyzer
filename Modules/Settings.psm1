@@ -1646,36 +1646,46 @@ function Extract-EmailsFromTicket {
     }
 
     # Extract all email addresses using regex
-    # Pattern matches: word chars + @ + domain with TLD
-    $emailPattern = '\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
+    # Pattern matches: word chars + @ + domain with TLD (allows hyphens in domain)
+    $emailPattern = '\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}\b'
     $allEmails = [regex]::Matches($TicketContent, $emailPattern) |
                  ForEach-Object { $_.Value.ToLower().Trim() } |
                  Select-Object -Unique
 
     # If no tenant domains specified, return all emails
     if (-not $TenantDomains -or $TenantDomains.Count -eq 0) {
-        return $allEmails
+        return @($allEmails)
     }
 
-    # Filter to ONLY include emails from tenant domains
+    # Build expanded domain set: tenant domains + common variants (e.g. x.onmicrosoft.com <-> x.com)
+    $domainSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in $TenantDomains) {
+        $dl = $d.ToLower().Trim()
+        if ([string]::IsNullOrWhiteSpace($dl)) { continue }
+        [void]$domainSet.Add($dl)
+        # Add variant: zillihospitalitygroup.onmicrosoft.com -> zillihospitalitygroup.com
+        if ($dl -match '^(.+)\.onmicrosoft\.com$') {
+            [void]$domainSet.Add("$($matches[1]).com")
+        }
+        # Add variant: zillihospitalitygroup.com -> zillihospitalitygroup.onmicrosoft.com
+        if ($dl -match '^(.+)\.(com|net|org|edu|gov)$' -and -not $dl.EndsWith('.onmicrosoft.com')) {
+            [void]$domainSet.Add("$($matches[1]).onmicrosoft.com")
+        }
+    }
+
+    # Filter to ONLY include emails from tenant domains (or their variants)
     $tenantEmails = @()
     foreach ($email in $allEmails) {
-        # Extract domain from email (part after @)
         if ($email -match '@(.+)$') {
             $emailDomain = $matches[1].ToLower()
-
-            # Check against each tenant domain
-            foreach ($tenantDomain in $TenantDomains) {
-                $tenantDomainLower = $tenantDomain.ToLower()
-
-                # Exact match or subdomain match
-                # e.g., "contoso.com" matches "contoso.com" and "mail.contoso.com"
-                if ($emailDomain -eq $tenantDomainLower -or
-                    $emailDomain.EndsWith(".$tenantDomainLower")) {
-                    $tenantEmails += $email
-                    break  # Found a match, no need to check other domains
+            $matched = $false
+            foreach ($tenantDomain in $domainSet) {
+                if ($emailDomain -eq $tenantDomain -or $emailDomain.EndsWith(".$tenantDomain")) {
+                    $matched = $true
+                    break
                 }
             }
+            if ($matched) { $tenantEmails += $email }
         }
     }
 

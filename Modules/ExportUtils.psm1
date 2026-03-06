@@ -727,7 +727,7 @@ function New-SecurityInvestigationReport {
                     $report.SharePointActivity = Get-SharePointActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
                     Write-Host "Collected $($report.SharePointActivity.Count) SharePoint activity entries" -ForegroundColor Green
                 } catch {
-                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
                         Write-Warning "Insufficient permissions. Requires 'Reports.Read.All' permission."
                         $report.SharePointActivity = @()
                         $report.SharePointActivityError = "Permission denied - requires Reports.Read.All"
@@ -753,7 +753,7 @@ function New-SecurityInvestigationReport {
                     $report.OneDriveActivity = Get-OneDriveActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
                     Write-Host "Collected $($report.OneDriveActivity.Count) OneDrive activity entries" -ForegroundColor Green
                 } catch {
-                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
                         Write-Warning "Insufficient permissions. Requires 'Reports.Read.All' permission."
                         $report.OneDriveActivity = @()
                         $report.OneDriveActivityError = "Permission denied - requires Reports.Read.All"
@@ -779,7 +779,7 @@ function New-SecurityInvestigationReport {
                     $report.TeamsActivity = Get-TeamsActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
                     Write-Host "Collected $($report.TeamsActivity.Count) Teams activity entries" -ForegroundColor Green
                 } catch {
-                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
                         Write-Warning "Insufficient permissions. Requires 'Reports.Read.All' permission."
                         $report.TeamsActivity = @()
                         $report.TeamsActivityError = "Permission denied - requires Reports.Read.All"
@@ -821,7 +821,7 @@ function New-SecurityInvestigationReport {
                     $report.SecurityAlerts = Get-SecurityAlerts -DaysBack $DaysBack -SelectedUsers $SelectedUsers
                     Write-Host "Collected $($report.SecurityAlerts.Count) security alerts" -ForegroundColor Green
                 } catch {
-                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
                         Write-Warning "Insufficient permissions. Requires 'SecurityAlert.Read.All' permission."
                         $report.SecurityAlerts = @()
                         $report.SecurityAlertsError = "Permission denied - requires SecurityAlert.Read.All"
@@ -847,7 +847,7 @@ function New-SecurityInvestigationReport {
                     $report.SecurityIncidents = Get-SecurityIncidents -DaysBack $DaysBack
                     Write-Host "Collected $($report.SecurityIncidents.Count) security incidents" -ForegroundColor Green
                 } catch {
-                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
                         Write-Warning "Insufficient permissions. Requires 'SecurityIncident.Read.All' permission."
                         $report.SecurityIncidents = @()
                         $report.SecurityIncidentsError = "Permission denied - requires SecurityIncident.Read.All"
@@ -1051,9 +1051,8 @@ function New-SecurityInvestigationReport {
                     Write-Warning "Failed to export Intune devices to CSV, exported to JSON instead"
                 }
             } else {
-                # No devices found and no error - create an empty CSV with header or info file
+                # No devices found and no error - create an empty CSV with headers and note
                 try {
-                    # Create an empty CSV with headers
                     $emptyDevice = [PSCustomObject]@{
                         DeviceId = $null
                         DeviceName = $null
@@ -1192,10 +1191,13 @@ function New-SecurityInvestigationReport {
                     Write-Warning "Failed to export SharePoint activity to CSV, exported to JSON instead"
                 }
             } elseif ($IncludeSharePointActivity) {
-                # No data and no error - create empty CSV with header
+                # No data and no error - create empty CSV with explanatory note
                 try {
-                    # Create empty CSV with header row
-                    $emptyCsv = "Report Period`nNo data available for the specified time period`n"
+                    $emptyCsv = @"
+Report Period
+No data available for the specified time period.
+Note: SharePoint activity reports require Reports.Read.All permission and Microsoft 365 E5 (or equivalent) license. If you expected data, check for permission/license issues.
+"@
                     $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
                     $report.FilePaths.SharePointActivityCsv = $csv
                     Write-Host "No SharePoint activity data found - created empty CSV" -ForegroundColor Gray
@@ -1226,9 +1228,13 @@ function New-SecurityInvestigationReport {
                     Write-Warning "Failed to export OneDrive activity to CSV, exported to JSON instead"
                 }
             } elseif ($IncludeOneDriveActivity) {
-                # No data and no error - create empty CSV with header
+                # No data and no error - create empty CSV with explanatory note
                 try {
-                    $emptyCsv = "Report Period`nNo data available for the specified time period`n"
+                    $emptyCsv = @"
+Report Period
+No data available for the specified time period.
+Note: OneDrive activity reports require Reports.Read.All permission and Microsoft 365 E5 (or equivalent) license. If you expected data, check for permission/license issues.
+"@
                     $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
                     $report.FilePaths.OneDriveActivityCsv = $csv
                     Write-Host "No OneDrive activity data found - created empty CSV" -ForegroundColor Gray
@@ -1259,9 +1265,13 @@ function New-SecurityInvestigationReport {
                     Write-Warning "Failed to export Teams activity to CSV, exported to JSON instead"
                 }
             } elseif ($IncludeTeamsActivity) {
-                # No data and no error - create empty CSV with header
+                # No data and no error - create empty CSV with explanatory note
                 try {
-                    $emptyCsv = "Report Period`nNo data available for the specified time period`n"
+                    $emptyCsv = @"
+Report Period
+No data available for the specified time period.
+Note: Teams activity reports require Reports.Read.All permission and Microsoft 365 E5 (or equivalent) license. If you expected data, check for permission/license issues.
+"@
                     $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
                     $report.FilePaths.TeamsActivityCsv = $csv
                     Write-Host "No Teams activity data found - created empty CSV" -ForegroundColor Gray
@@ -1292,9 +1302,13 @@ function New-SecurityInvestigationReport {
                     Write-Warning "Failed to export SharePoint sharing to CSV, exported to JSON instead"
                 }
             } elseif ($IncludeSharePointSharing) {
-                # No data and no error - create empty CSV with header
+                # No data and no error - create empty CSV with explanatory note
                 try {
-                    $emptyCsv = "SiteId`nNo sharing links found`n"
+                    $emptyCsv = @"
+SiteId
+No sharing links found.
+Note: SharePoint sharing links require Sites.Read.All permission. If you expected data, verify permissions.
+"@
                     $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
                     $report.FilePaths.SharePointSharingCsv = $csv
                     Write-Host "No SharePoint sharing links found - created empty CSV" -ForegroundColor Gray
@@ -1325,9 +1339,13 @@ function New-SecurityInvestigationReport {
                     Write-Warning "Failed to export security alerts to CSV, exported to JSON instead"
                 }
             } elseif ($IncludeSecurityAlerts) {
-                # No data and no error - create empty CSV with header
+                # No data and no error - create empty CSV with explanatory note
                 try {
-                    $emptyCsv = "Id`nNo security alerts found for the specified time period`n"
+                    $emptyCsv = @"
+Id
+No security alerts found for the specified time period.
+Note: Security alerts require SecurityAlert.Read.All permission and Microsoft Defender for Office 365 (E5). If you expected data, check for permission/license issues.
+"@
                     $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
                     $report.FilePaths.SecurityAlertsCsv = $csv
                     Write-Host "No security alerts found - created empty CSV" -ForegroundColor Gray
@@ -1358,9 +1376,13 @@ function New-SecurityInvestigationReport {
                     Write-Warning "Failed to export security incidents to CSV, exported to JSON instead"
                 }
             } elseif ($IncludeSecurityIncidents) {
-                # No data and no error - create empty CSV with header
+                # No data and no error - create empty CSV with explanatory note
                 try {
-                    $emptyCsv = "Id`nNo security incidents found for the specified time period`n"
+                    $emptyCsv = @"
+Id
+No security incidents found for the specified time period.
+Note: Security incidents require SecurityIncident.Read.All permission and Microsoft Defender for Office 365 (E5). If you expected data, check for permission/license issues.
+"@
                     $emptyCsv | Out-File -FilePath $csv -Encoding UTF8
                     $report.FilePaths.SecurityIncidentsCsv = $csv
                     Write-Host "No security incidents found - created empty CSV" -ForegroundColor Gray
@@ -2617,12 +2639,10 @@ function Get-IntuneDeviceComplianceRecords {
                     Import-Module $modulePath -Force -ErrorAction Stop
                     Write-Host "  EntraInvestigator module imported successfully" -ForegroundColor Green
                 } else {
-                    Write-Warning "  EntraInvestigator.psm1 not found at $modulePath"
-                    return @()
+                    throw "EntraInvestigator.psm1 not found at $modulePath. Intune device export requires this module."
                 }
             } catch {
-                Write-Warning "  Failed to import EntraInvestigator module: $($_.Exception.Message)"
-                return @()
+                throw "Failed to import EntraInvestigator module: $($_.Exception.Message). Intune device export requires DeviceManagementManagedDevices.Read.All permission and Intune license."
             }
         }
         
@@ -2697,7 +2717,7 @@ function Get-IntuneDeviceComplianceRecords {
         
     } catch {
         Write-Warning "Failed to collect Intune device compliance records: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -4187,8 +4207,7 @@ function Get-SharePointActivityLogs {
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect SharePoint activity logs."
-            return @()
+            throw "Microsoft Graph not connected. Cannot collect SharePoint activity logs."
         }
         
         # Use Invoke-MgGraphRequest to call Reports API directly
@@ -4360,6 +4379,7 @@ function Get-SharePointActivityLogs {
                     }
                 } catch {
                     Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
+                    throw
                 }
             } else {
                 throw
@@ -4368,10 +4388,7 @@ function Get-SharePointActivityLogs {
         
         Write-Host "  Total SharePoint activity entries collected: $($results.Count)" -ForegroundColor Green
         if ($results.Count -eq 0) {
-            Write-Host "  WARNING: No SharePoint activity data was returned. This could mean:" -ForegroundColor Yellow
-            Write-Host "    - No activity in the specified time period" -ForegroundColor Yellow
-            Write-Host "    - API returned empty response" -ForegroundColor Yellow
-            Write-Host "    - Permission/license issue (check error messages above)" -ForegroundColor Yellow
+            Write-Host "  No SharePoint activity data for this period (may be normal if no activity)" -ForegroundColor Gray
         }
         return [System.Collections.ArrayList]$results
     } catch {
@@ -4380,7 +4397,7 @@ function Get-SharePointActivityLogs {
         if ($_.Exception.InnerException) {
             Write-Host "  Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         }
-        return @()
+        throw
     }
 }
 
@@ -4397,8 +4414,7 @@ function Get-OneDriveActivityLogs {
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect OneDrive activity logs."
-            return @()
+            throw "Microsoft Graph not connected. Cannot collect OneDrive activity logs."
         }
         
         # Use Invoke-MgGraphRequest to call Reports API directly
@@ -4564,7 +4580,7 @@ function Get-OneDriveActivityLogs {
         return [System.Collections.ArrayList]$results
     } catch {
         Write-Error "Failed to collect OneDrive activity logs: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -4581,8 +4597,7 @@ function Get-TeamsActivityLogs {
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect Teams activity logs."
-            return @()
+            throw "Microsoft Graph not connected. Cannot collect Teams activity logs."
         }
         
         # Use Invoke-MgGraphRequest to call Reports API directly
@@ -4596,7 +4611,7 @@ function Get-TeamsActivityLogs {
         try {
             # Call the Reports API function endpoint
             # Reports API may return CSV directly or a redirect URL to download CSV
-            $uri = "https://graph.microsoft.com/v1.0/reports/getTeamsActivityUserDetail(period='$period')"
+            $uri = "https://graph.microsoft.com/v1.0/reports/getTeamsUserActivityUserDetail(period='$period')"
             Write-Host "  Calling Reports API: $uri" -ForegroundColor Gray
             
             # Try downloading to temp file first (Reports API often returns redirect URLs)
@@ -4748,7 +4763,7 @@ function Get-TeamsActivityLogs {
         return [System.Collections.ArrayList]$results
     } catch {
         Write-Error "Failed to collect Teams activity logs: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -4764,8 +4779,7 @@ function Get-SharePointSharingLinks {
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect SharePoint sharing links."
-            return @()
+            throw "Microsoft Graph not connected. Cannot collect SharePoint sharing links."
         }
         
         # Ensure Sites module is available
@@ -4839,7 +4853,7 @@ function Get-SharePointSharingLinks {
         return [System.Collections.ArrayList]$results
     } catch {
         Write-Error "Failed to collect SharePoint sharing links: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -4856,8 +4870,7 @@ function Get-SecurityAlerts {
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect security alerts."
-            return @()
+            throw "Microsoft Graph not connected. Cannot collect security alerts."
         }
         
         # Ensure Security module is available
@@ -4946,7 +4959,7 @@ function Get-SecurityAlerts {
         return [System.Collections.ArrayList]$results
     } catch {
         Write-Error "Failed to collect security alerts: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -4961,8 +4974,7 @@ function Get-SecurityIncidents {
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect security incidents."
-            return @()
+            throw "Microsoft Graph not connected. Cannot collect security incidents."
         }
         
         # Ensure Security module is available
@@ -5010,7 +5022,7 @@ function Get-SecurityIncidents {
         return [System.Collections.ArrayList]$results
     } catch {
         Write-Error "Failed to collect security incidents: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 

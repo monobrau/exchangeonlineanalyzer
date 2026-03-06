@@ -205,18 +205,12 @@ function Connect-GraphService {
                     try {
                         $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
                     } catch {
-                        try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop } catch {}
+                        try { $global:graphConnection = Connect-MgGraph -Scopes $scopes -ErrorAction Stop } catch { throw }
                     }
                 }
-                # If still not connected, fall back to Device Code flow (bypasses InteractiveBrowserCredential path)
+                # Never use device code auth - let error surface if interactive auth (WAM/browser) fails
                 if (-not $global:graphConnection) {
-                    Write-Warning "Falling back to Device Code authentication for Microsoft Graph..."
-                    try {
-                        $global:graphConnection = Connect-MgGraph -Scopes $scopes -UseDeviceCode -ErrorAction Stop
-                        Write-Host "Connected to Graph via Device Code." -ForegroundColor Green
-                    } catch {
-                        throw
-                    }
+                    throw [System.InvalidOperationException]::new("Graph connection failed after module repair. Interactive authentication (WAM or browser) is required; device code is not used.")
                 }
             } else {
                 throw

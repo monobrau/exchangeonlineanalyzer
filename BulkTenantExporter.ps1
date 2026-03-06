@@ -737,6 +737,14 @@ try {
         # Ignore errors - no session exists or module not loaded yet
     }
     
+    # Disconnect any existing Exchange session for clean slate (module may not be loaded yet)
+    try {
+        Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue
+        Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" } | Remove-PSSession -ErrorAction SilentlyContinue
+    } catch {
+        # Ignore - Exchange module may not be loaded yet
+    }
+    
     # Load report selections from JSON
     `$reportSelections = @{}
     if (Test-Path `$ReportSelectionsFile) {
@@ -823,8 +831,8 @@ try {
                         Write-Host "Found existing Graph context - Tenant: `$(`$mgContext.TenantId), Account: `$(`$mgContext.Account)" -ForegroundColor Yellow
                         Disconnect-MgGraph -ErrorAction SilentlyContinue 
                         Write-Host "Disconnected existing Graph session for this tenant" -ForegroundColor Gray
-                        # Wait a moment to ensure disconnection completes
-                        Start-Sleep -Milliseconds 500
+                        # Wait for session to fully release before re-auth (reduces reuse of cached credentials)
+                        Start-Sleep -Milliseconds 1500
                     } else {
                         Write-Host "No existing Graph session to disconnect" -ForegroundColor Gray
                     }
@@ -901,34 +909,17 @@ try {
                 `$env:MSAL_DISABLE_BROKER = "1"
                 `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
 
-                # Ensure the per-client cache directory exists and is completely empty before authenticating
-                # This is critical to prevent reusing tokens from previous tenants
-                if (`$env:MSAL_CACHE_DIR) {
-                    try {
-                        if (-not (Test-Path `$env:MSAL_CACHE_DIR)) {
-                            New-Item -ItemType Directory -Path `$env:MSAL_CACHE_DIR -Force -ErrorAction SilentlyContinue | Out-Null
-                        } else {
-                            # Remove ALL contents (files and subdirectories) to ensure fresh authentication
-                            Get-ChildItem -Path `$env:MSAL_CACHE_DIR -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-                            Write-Host "Cleared MSAL cache directory contents before authentication" -ForegroundColor Gray
-                        }
-                    } catch {
-                        # Ignore cache cleanup errors to avoid blocking auth
-                    }
-                }
-                
-                # Also clear IDENTITY_SERVICE_CACHE_DIR before authentication
-                if (`$env:IDENTITY_SERVICE_CACHE_DIR) {
-                    try {
-                        if (-not (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
-                            New-Item -ItemType Directory -Path `$env:IDENTITY_SERVICE_CACHE_DIR -Force -ErrorAction SilentlyContinue | Out-Null
-                        } else {
-                            Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-                            Write-Host "Cleared Identity cache directory contents before authentication" -ForegroundColor Gray
-                        }
-                    } catch {
-                        # Ignore cache cleanup errors to avoid blocking auth
-                    }
+                # Create a FRESH cache directory for THIS auth attempt (new path = no cached tokens)
+                # This is critical to prevent reusing tokens from previous tenants or prior attempts
+                `$authCacheDir = Join-Path `$env:TEMP "ExchangeOnlineAnalyzer_Client`$ClientNumber_Auth_`$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                try {
+                    if (Test-Path `$authCacheDir) { Remove-Item -Path `$authCacheDir -Recurse -Force -ErrorAction SilentlyContinue }
+                    New-Item -ItemType Directory -Path `$authCacheDir -Force -ErrorAction Stop | Out-Null
+                    `$env:MSAL_CACHE_DIR = `$authCacheDir
+                    `$env:IDENTITY_SERVICE_CACHE_DIR = `$authCacheDir
+                    Write-Host "Using fresh auth cache directory: `$authCacheDir" -ForegroundColor Gray
+                } catch {
+                    Write-Warning "Could not create fresh cache dir, using existing: `$(`$_.Exception.Message)"
                 }
 
                 # Clear default MSAL cache location in user profile (in addition to custom cache dir)
@@ -1074,6 +1065,11 @@ try {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Status "Exchange Online authentication command received"
                 Write-CommandResponse "EXCHANGE_AUTH_STARTED"
+                
+                # Disconnect any existing Exchange session to ensure fresh authentication per tenant
+                Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue
+                Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" } | Remove-PSSession -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 1000  # Allow session to fully release before re-auth
                 
                 # Exchange Online Authentication
                 Write-Host ""
@@ -1439,14 +1435,15 @@ try {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -IncludeSharePointOneDriveFileActions `$reportSelections.IncludeSharePointOneDriveFileActions -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
-                    Write-Status "ERROR: Failed to generate report - `$(`$_.Exception.Message)"
-                    Write-Host "ERROR: Failed to generate report - `$(`$_.Exception.Message)" -ForegroundColor Red
+                    `$errMsg = if (`$_.Exception.Message) { `$_.Exception.Message } else { `$_.ToString() }
+                    Write-Status "ERROR: Failed to generate report - `$errMsg"
+                    Write-Host "ERROR: Failed to generate report - `$errMsg" -ForegroundColor Red
                     Write-Host "Error details: `$(`$_.Exception | Out-String)" -ForegroundColor Red
-                    Write-CommandResponse "GENERATE_REPORTS_FAILED:`$(`$_.Exception.Message)"
+                    Write-CommandResponse "GENERATE_REPORTS_FAILED:`$errMsg"
                     continue
                 }
                 
@@ -1522,45 +1519,51 @@ try {
                 # Disconnect any active sessions
                 try {
                     Disconnect-MgGraph -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
                 } catch {}
                 try {
                     if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
                         Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue
                     }
+                    Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" } | Remove-PSSession -ErrorAction SilentlyContinue
                 } catch {}
                 
-                # Clear authentication context and token cache more thoroughly
+                # Clear authentication context and token cache (same as GRAPH_AUTH)
                 try {
                     `$graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
                     if (`$graphSession -and `$graphSession.AuthContext) {
                         `$graphSession.AuthContext.ClearTokenCache()
                         Write-Host "Cleared Graph token cache" -ForegroundColor Cyan
                     }
-                } catch {
-                    # Ignore errors clearing token cache
-                }
+                } catch {}
                 
-                # Also try to clear any MSAL cache
+                # Clear MSAL and Identity cache directories
                 try {
-                    `$msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
-                    if (`$msalCache -and (Test-Path `$msalCache)) {
-                        Remove-Item `$msalCache -Force -ErrorAction SilentlyContinue
-                        Write-Host "Cleared MSAL token cache" -ForegroundColor Cyan
+                    if (`$env:MSAL_CACHE_DIR -and (Test-Path `$env:MSAL_CACHE_DIR)) {
+                        Get-ChildItem -Path `$env:MSAL_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared MSAL cache directory" -ForegroundColor Cyan
                     }
-                } catch {
-                    # Ignore errors clearing MSAL cache - method may not be available
-                }
+                    if (`$env:IDENTITY_SERVICE_CACHE_DIR -and (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
+                        Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                        Write-Host "Cleared Identity cache directory" -ForegroundColor Cyan
+                    }
+                } catch {}
                 
-                # Clear Exchange Online token cache
+                # Clear default MSAL cache, Graph module cache, WAM cache
                 try {
-                    `$exoSession = Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" }
-                    if (`$exoSession) {
-                        Remove-PSSession `$exoSession -ErrorAction SilentlyContinue
-                        Write-Host "Cleared Exchange Online sessions" -ForegroundColor Cyan
+                    `$paths = @(
+                        (Join-Path `$env:LOCALAPPDATA ".IdentityService"),
+                        (Join-Path `$env:LOCALAPPDATA "Microsoft\Graph"),
+                        (Join-Path `$env:LOCALAPPDATA "Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Cache"),
+                        (Join-Path `$env:LOCALAPPDATA "Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\LocalState")
+                    )
+                    foreach (`$p in `$paths) {
+                        if (Test-Path `$p) {
+                            Get-ChildItem -Path `$p -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                        }
                     }
-                } catch {
-                    # Ignore errors clearing Exchange sessions
-                }
+                    Write-Host "Cleared IdentityService, Graph, and WAM caches" -ForegroundColor Cyan
+                } catch {}
     
                 Write-Status "Authentication cancelled and reset"
                 Write-Host "Authentication cancelled and reset. All token caches cleared. Ready for new authentication attempt." -ForegroundColor Green
@@ -1741,6 +1744,7 @@ try {
     $script:authPanel = $authPanel
 
     # Function to update tenant positions after minimize/expand
+    # Each client uses a container panel; only the container is repositioned.
     function Update-TenantPositions {
         $clientRowSpacing = 10
         $minimizedHeight = 50
@@ -1752,45 +1756,23 @@ try {
 
         foreach ($clientNum in $sortedClientNums) {
             $controls = $script:clientAuthControls[$clientNum]
-            if (-not $controls) { continue }
+            if (-not $controls -or -not $controls.ClientContainerPanel) { continue }
+
+            $container = $controls.ClientContainerPanel
 
             # Determine height based on expanded state
             $isExpanded = $script:clientAuthStates[$clientNum].IsExpanded
             $rowHeight = if ($isExpanded) { $expandedHeight } else { $minimizedHeight }
 
-            # Update Y position for all controls in this tenant
-            $controls.BorderPanel.Location = New-Object System.Drawing.Point(0, $currentY)
-            $controls.BorderPanel.Height = $rowHeight
+            # Position and size the container; all child controls stay in place (relative)
+            $container.Location = New-Object System.Drawing.Point(0, $currentY)
+            $container.Height = $rowHeight
+            $container.Size = New-Object System.Drawing.Size($container.Width, $rowHeight)
 
-            $controls.ToggleButton.Location = New-Object System.Drawing.Point(10, ($currentY + 10))
-            $controls.ClientLabel.Location = New-Object System.Drawing.Point(50, ($currentY + 15))
-            $controls.StatusLabel.Location = New-Object System.Drawing.Point(270, ($currentY + 15))
-            $controls.WarningLabel.Location = New-Object System.Drawing.Point(270, ($currentY + 35))
-
-            # Minimized view controls
-            $controls.GraphStatusLabel.Location = New-Object System.Drawing.Point(480, ($currentY + 15))
-            $controls.ExchangeStatusLabel.Location = New-Object System.Drawing.Point(590, ($currentY + 15))
-            $controls.OpenReportsButton.Location = New-Object System.Drawing.Point(720, ($currentY + 10))
-            $controls.RemoveMinimizedButton.Location = New-Object System.Drawing.Point(850, ($currentY + 10))
-
-            # Expanded view controls
-            $controls.GraphButton.Location = New-Object System.Drawing.Point(480, ($currentY + 10))
-            $controls.ExchangeButton.Location = New-Object System.Drawing.Point(610, ($currentY + 10))
-            $controls.RemoveButton.Location = New-Object System.Drawing.Point(760, ($currentY + 10))
-            $controls.ResetButton.Location = New-Object System.Drawing.Point(840, ($currentY + 10))
-
-            $controls.UserFilterCheckBox.Location = New-Object System.Drawing.Point(10, ($currentY + 50))
-            $controls.UserSearchTextBox.Location = New-Object System.Drawing.Point(120, ($currentY + 48))
-            $controls.ValidateUsersButton.Location = New-Object System.Drawing.Point(330, ($currentY + 47))
-            $controls.UserValidationLabel.Location = New-Object System.Drawing.Point(410, ($currentY + 50))
-
-            $controls.TicketLabel.Location = New-Object System.Drawing.Point(10, ($currentY + 75))
-            $controls.TicketTextBox.Location = New-Object System.Drawing.Point(170, ($currentY + 73))
-            $controls.TicketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($currentY + 73))
-
-            $controls.ExtractEmailsButton.Location = New-Object System.Drawing.Point(580, ($currentY + 47))
-            $controls.GenerateReportsButton.Location = New-Object System.Drawing.Point(760, ($currentY + 47))
-            $controls.ViewReportsButton.Location = New-Object System.Drawing.Point(760, ($currentY + 160))
+            # Border panel height matches container
+            if ($controls.BorderPanel) {
+                $controls.BorderPanel.Height = $rowHeight
+            }
 
             # Move to next position
             $currentY += $rowHeight + $clientRowSpacing
@@ -2076,18 +2058,34 @@ try {
             return $false
         }
         
-        # Create UI row for this client
-        # Row height must account for: buttons (30px) + user filter row (25px) + ticket row (80px) + view reports button (25px) + spacing
-        $clientRowHeight = 200  # Increased to accommodate all controls including ticket textbox (80px) and view reports button
-        $clientRowSpacing = 10  # Increased spacing between rows
+        # Create UI row for this client - use container panel so all controls collapse together
+        $clientRowHeight = 200
+        $clientRowSpacing = 10
         $existingRows = ($script:clientAuthControls.Keys | Measure-Object).Count
-        $yPos = $existingRows * ($clientRowHeight + $clientRowSpacing) + 10
-        
+        $containerY = $existingRows * ($clientRowHeight + $clientRowSpacing) + 10
+
+        # Container panel - all controls for this client live inside; repositioning only moves this
+        $clientContainerPanel = New-Object System.Windows.Forms.Panel
+        $clientContainerPanel.Location = New-Object System.Drawing.Point(0, $containerY)
+        $clientContainerPanel.Size = New-Object System.Drawing.Size(920, $clientRowHeight)
+        $clientContainerPanel.Height = $clientRowHeight
+        $clientContainerPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+        $clientContainerPanel.BackColor = [System.Drawing.Color]::Transparent
+        $clientContainerPanel.Tag = $ClientNumber
+
+        # Border panel for status indication (color-coded left border) - inside container
+        $borderPanel = New-Object System.Windows.Forms.Panel
+        $borderPanel.Location = New-Object System.Drawing.Point(0, 0)
+        $borderPanel.Size = New-Object System.Drawing.Size(5, $clientRowHeight)
+        $borderPanel.Height = $clientRowHeight
+        $borderPanel.BackColor = [System.Drawing.Color]::Gray
+
+        # All positions are relative to container (Y = 0 at top of client row)
         # Client label
         $clientLabel = New-Object System.Windows.Forms.Label
         $clientLabel.Text = "Client $ClientNumber"
         $clientLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-        $clientLabel.Location = New-Object System.Drawing.Point(50, ($yPos + 15))
+        $clientLabel.Location = New-Object System.Drawing.Point(50, 15)
         $clientLabel.Size = New-Object System.Drawing.Size(210, 20)
         $clientLabel.AutoEllipsis = $true
 
@@ -2095,30 +2093,24 @@ try {
         $statusLabel = New-Object System.Windows.Forms.Label
         $statusLabel.Text = "Initializing..."
         $statusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-        $statusLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 15))
+        $statusLabel.Location = New-Object System.Drawing.Point(270, 15)
         $statusLabel.Size = New-Object System.Drawing.Size(200, 20)
         $statusLabel.ForeColor = [System.Drawing.Color]::Gray
 
-        # Warning label (for license issues, etc.)
+        # Warning label
         $warningLabel = New-Object System.Windows.Forms.Label
         $warningLabel.Text = ""
         $warningLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Bold)
-        $warningLabel.Location = New-Object System.Drawing.Point(270, ($yPos + 35))
+        $warningLabel.Location = New-Object System.Drawing.Point(270, 35)
         $warningLabel.Size = New-Object System.Drawing.Size(600, 15)
         $warningLabel.ForeColor = [System.Drawing.Color]::Orange
         $warningLabel.Visible = $false
         $warningLabel.AutoEllipsis = $true
 
-        # Border panel for status indication (color-coded left border)
-        $borderPanel = New-Object System.Windows.Forms.Panel
-        $borderPanel.Location = New-Object System.Drawing.Point(0, $yPos)
-        $borderPanel.Size = New-Object System.Drawing.Size(5, $clientRowHeight)
-        $borderPanel.BackColor = [System.Drawing.Color]::Gray  # Default: Not started
-
         # Toggle button (▼ for expanded, ▶ for minimized)
         $toggleBtn = New-Object System.Windows.Forms.Button
         $toggleBtn.Text = "▼"
-        $toggleBtn.Location = New-Object System.Drawing.Point(10, ($yPos + 10))
+        $toggleBtn.Location = New-Object System.Drawing.Point(10, 10)
         $toggleBtn.Size = New-Object System.Drawing.Size(30, 30)
         $toggleBtn.Tag = $ClientNumber
         $toggleBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -2128,27 +2120,27 @@ try {
         $graphStatusLabel = New-Object System.Windows.Forms.Label
         $graphStatusLabel.Text = "Graph: ○"
         $graphStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-        $graphStatusLabel.Location = New-Object System.Drawing.Point(480, ($yPos + 15))
+        $graphStatusLabel.Location = New-Object System.Drawing.Point(480, 15)
         $graphStatusLabel.Size = New-Object System.Drawing.Size(100, 20)
         $graphStatusLabel.ForeColor = [System.Drawing.Color]::Gray
-        $graphStatusLabel.Visible = $false  # Only visible when minimized
+        $graphStatusLabel.Visible = $false
 
         # Exchange Status Indicator (for minimized view)
         $exchangeStatusLabel = New-Object System.Windows.Forms.Label
         $exchangeStatusLabel.Text = "Exchange: ○"
         $exchangeStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-        $exchangeStatusLabel.Location = New-Object System.Drawing.Point(590, ($yPos + 15))
+        $exchangeStatusLabel.Location = New-Object System.Drawing.Point(590, 15)
         $exchangeStatusLabel.Size = New-Object System.Drawing.Size(120, 20)
         $exchangeStatusLabel.ForeColor = [System.Drawing.Color]::Gray
-        $exchangeStatusLabel.Visible = $false  # Only visible when minimized
+        $exchangeStatusLabel.Visible = $false
 
         # Open Reports button (for minimized view)
         $openReportsBtn = New-Object System.Windows.Forms.Button
         $openReportsBtn.Text = "Open Reports"
-        $openReportsBtn.Location = New-Object System.Drawing.Point(720, ($yPos + 10))
+        $openReportsBtn.Location = New-Object System.Drawing.Point(720, 10)
         $openReportsBtn.Size = New-Object System.Drawing.Size(120, 30)
         $openReportsBtn.Enabled = $false
-        $openReportsBtn.Visible = $false  # Only visible when minimized and reports exist
+        $openReportsBtn.Visible = $false
         $openReportsBtn.Tag = $ClientNumber
         $openReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
         $openReportsBtn.ForeColor = [System.Drawing.Color]::White
@@ -2156,34 +2148,34 @@ try {
         # Remove button (for minimized view)
         $removeMinimizedBtn = New-Object System.Windows.Forms.Button
         $removeMinimizedBtn.Text = "×"
-        $removeMinimizedBtn.Location = New-Object System.Drawing.Point(850, ($yPos + 10))
+        $removeMinimizedBtn.Location = New-Object System.Drawing.Point(850, 10)
         $removeMinimizedBtn.Size = New-Object System.Drawing.Size(30, 30)
         $removeMinimizedBtn.Enabled = $true
-        $removeMinimizedBtn.Visible = $false  # Only visible when minimized
+        $removeMinimizedBtn.Visible = $false
         $removeMinimizedBtn.Tag = $ClientNumber
         $removeMinimizedBtn.ForeColor = [System.Drawing.Color]::DarkRed
         $removeMinimizedBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 
-        # Graph Auth button (disabled until worker script is ready)
+        # Graph Auth button
         $graphAuthBtn = New-Object System.Windows.Forms.Button
         $graphAuthBtn.Text = "Graph Auth (Waiting...)"
-        $graphAuthBtn.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
+        $graphAuthBtn.Location = New-Object System.Drawing.Point(480, 10)
         $graphAuthBtn.Size = New-Object System.Drawing.Size(120, 30)
-        $graphAuthBtn.Enabled = $false  # Disabled until worker script is ready
+        $graphAuthBtn.Enabled = $false
         $graphAuthBtn.Tag = $ClientNumber
 
-        # User Filtering Checkbox (shown after Graph Auth, on second row)
+        # User Filtering Checkbox
         $userFilterCheckBox = New-Object System.Windows.Forms.CheckBox
         $userFilterCheckBox.Text = "Filter by users"
-        $userFilterCheckBox.Location = New-Object System.Drawing.Point(10, ($yPos + 50))
+        $userFilterCheckBox.Location = New-Object System.Drawing.Point(10, 50)
         $userFilterCheckBox.Size = New-Object System.Drawing.Size(100, 20)
-        $userFilterCheckBox.Enabled = $false  # Enabled after Graph Auth
-        $userFilterCheckBox.Visible = $false  # Shown after Graph Auth
+        $userFilterCheckBox.Enabled = $false
+        $userFilterCheckBox.Visible = $false
         $userFilterCheckBox.Tag = $ClientNumber
 
         # User Search TextBox
         $userSearchTextBox = New-Object System.Windows.Forms.TextBox
-        $userSearchTextBox.Location = New-Object System.Drawing.Point(120, ($yPos + 48))
+        $userSearchTextBox.Location = New-Object System.Drawing.Point(120, 48)
         $userSearchTextBox.Size = New-Object System.Drawing.Size(200, 20)
         $userSearchTextBox.Enabled = $false
         $userSearchTextBox.Visible = $false
@@ -2192,7 +2184,7 @@ try {
         # Validate Users Button
         $validateUsersBtn = New-Object System.Windows.Forms.Button
         $validateUsersBtn.Text = "Validate"
-        $validateUsersBtn.Location = New-Object System.Drawing.Point(330, ($yPos + 47))
+        $validateUsersBtn.Location = New-Object System.Drawing.Point(330, 47)
         $validateUsersBtn.Size = New-Object System.Drawing.Size(70, 25)
         $validateUsersBtn.Enabled = $false
         $validateUsersBtn.Visible = $false
@@ -2201,7 +2193,7 @@ try {
         # User Validation Status Label
         $userValidationLabel = New-Object System.Windows.Forms.Label
         $userValidationLabel.Text = ""
-        $userValidationLabel.Location = New-Object System.Drawing.Point(410, ($yPos + 50))
+        $userValidationLabel.Location = New-Object System.Drawing.Point(410, 50)
         $userValidationLabel.Size = New-Object System.Drawing.Size(160, 15)
         $userValidationLabel.ForeColor = [System.Drawing.Color]::Blue
         $userValidationLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
@@ -2210,20 +2202,20 @@ try {
         # ConnectWise Ticket Label
         $ticketLabel = New-Object System.Windows.Forms.Label
         $ticketLabel.Text = "ConnectWise Ticket(s):"
-        $ticketLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 75))
+        $ticketLabel.Location = New-Object System.Drawing.Point(10, 75)
         $ticketLabel.Size = New-Object System.Drawing.Size(150, 20)
         $ticketLabel.Enabled = $false
-        $ticketLabel.Visible = $false  # Shown after Exchange Auth
+        $ticketLabel.Visible = $false
         $ticketLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
         # ConnectWise Ticket TextBox (multiline)
         $ticketTextBox = New-Object System.Windows.Forms.TextBox
         $ticketTextBox.Multiline = $true
         $ticketTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-        $ticketTextBox.Location = New-Object System.Drawing.Point(170, ($yPos + 73))
+        $ticketTextBox.Location = New-Object System.Drawing.Point(170, 73)
         $ticketTextBox.Size = New-Object System.Drawing.Size(400, 80)
         $ticketTextBox.Enabled = $false
-        $ticketTextBox.Visible = $false  # Shown after Exchange Auth
+        $ticketTextBox.Visible = $false
         $ticketTextBox.Tag = $ClientNumber
         $ticketTextBox.ShortcutsEnabled = $true
         $ticketTextBox.AcceptsReturn = $true
@@ -2232,16 +2224,16 @@ try {
         # Ticket Numbers Detected Label
         $ticketNumbersLabel = New-Object System.Windows.Forms.Label
         $ticketNumbersLabel.Text = ""
-        $ticketNumbersLabel.Location = New-Object System.Drawing.Point(580, ($yPos + 73))
+        $ticketNumbersLabel.Location = New-Object System.Drawing.Point(580, 73)
         $ticketNumbersLabel.Size = New-Object System.Drawing.Size(200, 15)
         $ticketNumbersLabel.ForeColor = [System.Drawing.Color]::DarkGreen
         $ticketNumbersLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
         $ticketNumbersLabel.Visible = $false
 
-        # Extract Emails Button (to the left of Generate Reports button)
+        # Extract Emails Button
         $extractEmailsBtn = New-Object System.Windows.Forms.Button
         $extractEmailsBtn.Text = "Extract Emails from Ticket"
-        $extractEmailsBtn.Location = New-Object System.Drawing.Point(580, ($yPos + 47))
+        $extractEmailsBtn.Location = New-Object System.Drawing.Point(580, 47)
         $extractEmailsBtn.Size = New-Object System.Drawing.Size(170, 25)
         $extractEmailsBtn.Enabled = $false
         $extractEmailsBtn.Visible = $false
@@ -2249,10 +2241,10 @@ try {
         $extractEmailsBtn.BackColor = [System.Drawing.Color]::FromArgb(94, 53, 177)
         $extractEmailsBtn.ForeColor = [System.Drawing.Color]::White
 
-        # Only include users that appear in ticket (filters client contact / any user to ticket-only)
+        # Only include users that appear in ticket
         $onlyUsersInTicketCheckBox = New-Object System.Windows.Forms.CheckBox
         $onlyUsersInTicketCheckBox.Text = "Only include users that appear in ticket"
-        $onlyUsersInTicketCheckBox.Location = New-Object System.Drawing.Point(10, ($yPos + 155))
+        $onlyUsersInTicketCheckBox.Location = New-Object System.Drawing.Point(10, 155)
         $onlyUsersInTicketCheckBox.Size = New-Object System.Drawing.Size(280, 20)
         $onlyUsersInTicketCheckBox.Enabled = $false
         $onlyUsersInTicketCheckBox.Visible = $false
@@ -2263,7 +2255,7 @@ try {
         # Exchange Online Auth button
         $exchangeAuthBtn = New-Object System.Windows.Forms.Button
         $exchangeAuthBtn.Text = "Exchange Online Auth"
-        $exchangeAuthBtn.Location = New-Object System.Drawing.Point(610, ($yPos + 10))
+        $exchangeAuthBtn.Location = New-Object System.Drawing.Point(610, 10)
         $exchangeAuthBtn.Size = New-Object System.Drawing.Size(140, 30)
         $exchangeAuthBtn.Enabled = $false
         $exchangeAuthBtn.Tag = $ClientNumber
@@ -2271,7 +2263,7 @@ try {
         # Remove Tenant button
         $removeTenantBtn = New-Object System.Windows.Forms.Button
         $removeTenantBtn.Text = "Remove"
-        $removeTenantBtn.Location = New-Object System.Drawing.Point(760, ($yPos + 10))
+        $removeTenantBtn.Location = New-Object System.Drawing.Point(760, 10)
         $removeTenantBtn.Size = New-Object System.Drawing.Size(70, 30)
         $removeTenantBtn.Enabled = $true
         $removeTenantBtn.Tag = $ClientNumber
@@ -2280,16 +2272,16 @@ try {
         # Reset Auth button
         $resetAuthBtn = New-Object System.Windows.Forms.Button
         $resetAuthBtn.Text = "Reset Auth"
-        $resetAuthBtn.Location = New-Object System.Drawing.Point(840, ($yPos + 10))
+        $resetAuthBtn.Location = New-Object System.Drawing.Point(840, 10)
         $resetAuthBtn.Size = New-Object System.Drawing.Size(90, 30)
         $resetAuthBtn.Enabled = $true
         $resetAuthBtn.Tag = $ClientNumber
         $resetAuthBtn.ForeColor = [System.Drawing.Color]::DarkRed
 
-        # Generate Reports button (shown after Exchange Auth)
+        # Generate Reports button
         $generateReportsBtn = New-Object System.Windows.Forms.Button
         $generateReportsBtn.Text = "Generate Reports"
-        $generateReportsBtn.Location = New-Object System.Drawing.Point(760, ($yPos + 47))
+        $generateReportsBtn.Location = New-Object System.Drawing.Point(760, 47)
         $generateReportsBtn.Size = New-Object System.Drawing.Size(140, 25)
         $generateReportsBtn.Enabled = $false
         $generateReportsBtn.Visible = $false
@@ -2300,7 +2292,7 @@ try {
         # View Reports button (shown after report generation completes)
         $viewReportsBtn = New-Object System.Windows.Forms.Button
         $viewReportsBtn.Text = "View Reports"
-        $viewReportsBtn.Location = New-Object System.Drawing.Point(760, ($yPos + 160))
+        $viewReportsBtn.Location = New-Object System.Drawing.Point(760, 160)
         $viewReportsBtn.Size = New-Object System.Drawing.Size(140, 25)
         $viewReportsBtn.Enabled = $false
         $viewReportsBtn.Visible = $false
@@ -2308,10 +2300,11 @@ try {
         $viewReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
         $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
 
-        # Add controls to panel
-        $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $viewReportsBtn))
+        # Add all controls to the container panel, then add container to auth panel
+        $clientContainerPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $viewReportsBtn))
+        $script:authPanel.Controls.Add($clientContainerPanel)
 
-        # Store controls and state
+        # Store controls and state BEFORE Update-TenantPositions so the new client is included in layout
         $script:clientAuthStates[$ClientNumber] = @{
             GraphAuthenticated = $false
             ExchangeAuthenticated = $false
@@ -2323,6 +2316,7 @@ try {
             IsExpanded = $true  # Start expanded so user can interact with fields
         }
         $script:clientAuthControls[$ClientNumber] = @{
+            ClientContainerPanel = $clientContainerPanel
             BorderPanel = $borderPanel
             ToggleButton = $toggleBtn
             ClientLabel = $clientLabel
@@ -2348,6 +2342,9 @@ try {
             OnlyUsersInTicketCheckBox = $onlyUsersInTicketCheckBox
             ViewReportsButton = $viewReportsBtn
         }
+
+        # Reposition all clients for consistent spacing (must run after client is in clientAuthControls)
+        Update-TenantPositions
 
         # View Reports button handler
         $capturedClientNumForView = $ClientNumber
@@ -3490,31 +3487,12 @@ try {
                     $script:clientProcesses.Remove($clientNum)
                 }
                 
-                # Remove controls from panel
+                # Remove client container (contains all controls for this client)
                 $controls = $script:clientAuthControls[$clientNum]
-                $script:authPanel.Controls.Remove($controls.BorderPanel)
-                $script:authPanel.Controls.Remove($controls.ToggleButton)
-                $script:authPanel.Controls.Remove($controls.ClientLabel)
-                $script:authPanel.Controls.Remove($controls.StatusLabel)
-                $script:authPanel.Controls.Remove($controls.WarningLabel)
-                $script:authPanel.Controls.Remove($controls.GraphStatusLabel)
-                $script:authPanel.Controls.Remove($controls.ExchangeStatusLabel)
-                $script:authPanel.Controls.Remove($controls.OpenReportsButton)
-                $script:authPanel.Controls.Remove($controls.RemoveMinimizedButton)
-                $script:authPanel.Controls.Remove($controls.GraphButton)
-                $script:authPanel.Controls.Remove($controls.ExchangeButton)
-                $script:authPanel.Controls.Remove($controls.RemoveButton)
-                $script:authPanel.Controls.Remove($controls.ResetButton)
-                $script:authPanel.Controls.Remove($controls.UserFilterCheckBox)
-                $script:authPanel.Controls.Remove($controls.UserSearchTextBox)
-                $script:authPanel.Controls.Remove($controls.ValidateUsersButton)
-                $script:authPanel.Controls.Remove($controls.UserValidationLabel)
-                $script:authPanel.Controls.Remove($controls.GenerateReportsButton)
-                $script:authPanel.Controls.Remove($controls.TicketLabel)
-                $script:authPanel.Controls.Remove($controls.TicketTextBox)
-                $script:authPanel.Controls.Remove($controls.TicketNumbersLabel)
-                $script:authPanel.Controls.Remove($controls.ExtractEmailsButton)
-                $script:authPanel.Controls.Remove($controls.ViewReportsButton)
+                if ($controls.ClientContainerPanel) {
+                    $script:authPanel.Controls.Remove($controls.ClientContainerPanel)
+                    $controls.ClientContainerPanel.Dispose()
+                }
                 
                 # Remove from state dictionaries
                 $script:clientAuthStates.Remove($clientNum)
