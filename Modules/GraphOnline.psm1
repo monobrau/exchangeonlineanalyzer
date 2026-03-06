@@ -1,36 +1,36 @@
 function Test-GraphModules {
     foreach ($moduleInfo in $script:requiredGraphModules) {
         if (-not (Get-Module -ListAvailable -Name $moduleInfo.Name)) {
-            Write-Warning "Required Graph module $($moduleInfo.Name) is missing."
+            Write-Warning ('Required Graph module ' + $moduleInfo.Name + ' is missing.')
             return $false
         }
     }
-    Write-Host "All required Microsoft Graph modules are available." -ForegroundColor Green
+    Write-Host 'All required Microsoft Graph modules are available.' -ForegroundColor Green
     return $true
 }
 
 function Install-GraphModules {
     param($statusLabel)
-    Write-Host "Attempting to install required Microsoft Graph modules..." -ForegroundColor Yellow
-    if ($statusLabel) { $statusLabel.Text = "Installing Graph modules..." }
+    Write-Host 'Attempting to install required Microsoft Graph modules...' -ForegroundColor Yellow
+    if ($statusLabel) { $statusLabel.Text = 'Installing Graph modules...' }
     $allInstalled = $true
     foreach ($moduleInfo in $script:requiredGraphModules) {
         if (-not (Get-Module -ListAvailable -Name $moduleInfo.Name)) {
-            Write-Host "Installing module: $($moduleInfo.Name)..."
+            Write-Host ('Installing module: ' + $moduleInfo.Name + '...')
             try {
                 Install-Module -Name $moduleInfo.Name -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
-                Write-Host "Module $($moduleInfo.Name) installed successfully." -ForegroundColor Green
+                Write-Host ('Module ' + $moduleInfo.Name + ' installed successfully.') -ForegroundColor Green
             } catch {
                 $ex = $_.Exception
-                Write-Error ("Failed to install module $($moduleInfo.Name). Please install it manually: Install-Module $($moduleInfo.Name) -Scope CurrentUser. Error: {0}" -f $ex.Message)
-                if ($statusLabel) { $statusLabel.Text = "Error installing $($moduleInfo.Name). See console." }
+                Write-Error ('Failed to install module ' + $moduleInfo.Name + '. Please install it manually: Install-Module ' + $moduleInfo.Name + ' -Scope CurrentUser. Error: ' + $ex.Message)
+                if ($statusLabel) { $statusLabel.Text = ('Error installing ' + $moduleInfo.Name + '. See console.') }
                 $allInstalled = $false
             }
         }
     }
     if ($allInstalled) {
         Write-Host "All required Graph modules checked/installed. Please restart the script if prompted or if new modules were installed." -ForegroundColor Green
-        if ($statusLabel) { $statusLabel.Text = "Graph modules installed/checked. Restart script if needed." }
+        if ($statusLabel) { $statusLabel.Text = 'Graph modules installed/checked. Restart script if needed.' }
         return $true
     } else {
         return $false
@@ -39,18 +39,18 @@ function Install-GraphModules {
 
 function Fix-GraphModuleConflicts {
     param([System.Windows.Forms.Label]$statusLabel)
-    Write-Host "Attempting to fix Microsoft Graph module version conflicts..." -ForegroundColor Yellow
-    if ($statusLabel) { $statusLabel.Text = "Fixing Graph module conflicts..." }
+    Write-Host 'Attempting to fix Microsoft Graph module version conflicts...' -ForegroundColor Yellow
+    if ($statusLabel) { $statusLabel.Text = 'Fixing Graph module conflicts...' }
 
     try {
         # Disconnect any existing connections
         Disconnect-MgGraph -ErrorAction SilentlyContinue
 
         # Uninstall all Microsoft Graph modules (no wildcard with -Name)
-        Write-Host "Unloading Microsoft Graph modules from session..." -ForegroundColor Cyan
-        Get-Module -Name "Microsoft.Graph*" -All | Remove-Module -Force -ErrorAction SilentlyContinue
+        Write-Host 'Unloading Microsoft Graph modules from session...' -ForegroundColor Cyan
+        Get-Module -Name 'Microsoft.Graph*' -All | Remove-Module -Force -ErrorAction SilentlyContinue
 
-        Write-Host "Uninstalling all installed Microsoft Graph modules..." -ForegroundColor Cyan
+        Write-Host 'Uninstalling all installed Microsoft Graph modules...' -ForegroundColor Cyan
         $installed = @()
         try {
             $installed = Get-InstalledModule -Name 'Microsoft.Graph*' -AllVersions -ErrorAction SilentlyContinue
@@ -69,16 +69,16 @@ function Fix-GraphModuleConflicts {
                     else { Uninstall-Module -Name $name -AllVersions -Force -ErrorAction SilentlyContinue }
                 }
             } catch {
-                Write-Warning "Failed to uninstall module ${name} ${ver}: $($_.Exception.Message)"
+                Write-Warning ('Failed to uninstall module ' + $name + ' ' + $ver + ': ' + $_.Exception.Message)
             }
         }
 
         # Clear any cached modules
-        Get-Module -Name "Microsoft.Graph*" -ListAvailable | ForEach-Object {
+        Get-Module -Name 'Microsoft.Graph*' -ListAvailable | ForEach-Object {
             try {
                 Remove-Item -Path $_.ModuleBase -Recurse -Force -ErrorAction SilentlyContinue
             } catch {
-                Write-Warning "Could not remove module directory: $($_.ModuleBase)"
+                Write-Warning ('Could not remove module directory: ' + $_.ModuleBase)
             }
         }
 
@@ -89,7 +89,7 @@ function Fix-GraphModuleConflicts {
                 $msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
                 if ($msalCache -and (Test-Path $msalCache)) {
                     Remove-Item $msalCache -Force -ErrorAction SilentlyContinue
-                    Write-Host "Cleared MSAL token cache" -ForegroundColor Cyan
+                    Write-Host 'Cleared MSAL token cache' -ForegroundColor Cyan
                 }
             }
         } catch {
@@ -97,23 +97,23 @@ function Fix-GraphModuleConflicts {
         }
 
         # Reinstall using umbrella to ensure consistent versions
-        Write-Host "Installing Microsoft.Graph umbrella module for consistent versions..." -ForegroundColor Cyan
+        Write-Host 'Installing Microsoft.Graph umbrella module for consistent versions...' -ForegroundColor Cyan
         try {
             Install-Module -Name Microsoft.Graph -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
-            Write-Host "✓ Microsoft.Graph installed successfully" -ForegroundColor Green
+            Write-Host 'Microsoft.Graph installed successfully' -ForegroundColor Green
         } catch {
-            Write-Error "Failed to install Microsoft.Graph umbrella: $($_.Exception.Message)"
+            Write-Error ('Failed to install Microsoft.Graph umbrella: ' + $_.Exception.Message)
             return $false
         }
 
-        Write-Host "Microsoft Graph module conflicts fixed! Please restart PowerShell and try connecting again." -ForegroundColor Green
-        if ($statusLabel) { $statusLabel.Text = "Graph module conflicts fixed. Restart PowerShell." }
+        Write-Host 'Microsoft Graph module conflicts fixed! Please restart PowerShell and try connecting again.' -ForegroundColor Green
+        if ($statusLabel) { $statusLabel.Text = 'Graph module conflicts fixed. Restart PowerShell.' }
 
         return $true
 
     } catch {
-        Write-Error "Failed to fix Microsoft Graph module conflicts: $($_.Exception.Message)"
-        if ($statusLabel) { $statusLabel.Text = "Error fixing Graph modules. See console." }
+        Write-Error ('Failed to fix Microsoft Graph module conflicts: ' + $_.Exception.Message)
+        if ($statusLabel) { $statusLabel.Text = 'Error fixing Graph modules. See console.' }
         return $false
     }
 }
@@ -126,7 +126,7 @@ function Connect-GraphService {
         [System.Windows.Forms.Form]$mainForm
     )
     try {
-        if ($statusLabel) { $statusLabel.Text = "Connecting to Microsoft Graph..." }
+        if ($statusLabel) { $statusLabel.Text = 'Connecting to Microsoft Graph...' }
         if ($mainForm) { $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor }
 
         # Use global script variables for scopes
@@ -134,10 +134,10 @@ function Connect-GraphService {
         if (-not $scopes) {
             # Include scopes required for audit and sign-in logs
             $scopes = @(
-                "User.Read.All",
-                "Directory.Read.All",
-                "AuditLog.Read.All",
-                "SecurityEvents.Read.All"
+                'User.Read.All',
+                'Directory.Read.All',
+                'AuditLog.Read.All',
+                'SecurityEvents.Read.All'
             )
         }
 
@@ -165,9 +165,9 @@ function Connect-GraphService {
         }
 
         # Disable broker/WAM so Connect-MgGraph uses the system browser instead of an embedded popup
-        $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
-        $env:MSAL_DISABLE_BROKER = "1"
-        $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+        $env:AZURE_IDENTITY_DISABLE_BROKER = 'true'
+        $env:MSAL_DISABLE_BROKER = '1'
+        $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = '1'
 
         # Ensure the cache directory is empty before starting a new auth flow
         if ($env:MSAL_CACHE_DIR) {
@@ -188,20 +188,20 @@ function Connect-GraphService {
         } catch {
             $msg = $_.Exception.Message
             # Retry if there was a parameter issue
-            if ($msg -match "parameter name|matches parameter name") {
+            if ($msg -match 'parameter name|matches parameter name') {
                 try {
                     $global:graphConnection = Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
                 } catch {
                     throw
                 }
             }
-            elseif ($msg -match "Method not found|Could not load type|BaseAbstractApplicationBuilder.*WithLogging") {
-                Write-Warning "Graph module conflict detected. Attempting automatic repair..."
-                if ($statusLabel) { $statusLabel.Text = "Fixing Graph modules..." }
+            elseif ($msg -match 'Method not found|Could not load type|BaseAbstractApplicationBuilder.*WithLogging') {
+                Write-Warning 'Graph module conflict detected. Attempting automatic repair...'
+                if ($statusLabel) { $statusLabel.Text = 'Fixing Graph modules...' }
                 $fixOk = $false
                 try { $fixOk = Fix-GraphModuleConflicts -statusLabel $statusLabel } catch {}
                 if ($fixOk) {
-                    Write-Host "Retrying Graph connection after repair..." -ForegroundColor Yellow
+                    Write-Host 'Retrying Graph connection after repair...' -ForegroundColor Yellow
                     try {
                         $global:graphConnection = Connect-MgGraph -Scopes $scopes -ForceRefresh -ErrorAction Stop
                     } catch {
@@ -210,7 +210,7 @@ function Connect-GraphService {
                 }
                 # Never use device code auth - let error surface if interactive auth (WAM/browser) fails
                 if (-not $global:graphConnection) {
-                    throw [System.InvalidOperationException]::new("Graph connection failed after module repair. Interactive authentication (WAM or browser) is required; device code is not used.")
+                    throw [System.InvalidOperationException]::new('Graph connection failed after module repair. Interactive authentication (WAM or browser) is required; device code is not used.')
                 }
             } else {
                 throw
@@ -219,33 +219,35 @@ function Connect-GraphService {
 
         # Note: Modules will be imported on-demand when functions are called, not here
         # This improves connection speed and reduces unnecessary module loading
-        Write-Host "Microsoft Graph connected. Modules will be imported as needed." -ForegroundColor Green
+        Write-Host 'Microsoft Graph connected. Modules will be imported as needed.' -ForegroundColor Green
 
         $global:graphConnectionAttempted = $true
-        if ($statusLabel) { $statusLabel.Text = "Connected to Microsoft Graph. Modules will load as needed." }
+        if ($statusLabel) { $statusLabel.Text = 'Connected to Microsoft Graph. Modules will load as needed.' }
         return $true
     } catch {
         $ex = $_.Exception
         $errorMessage = $ex.Message
 
         # Check if this is a module version conflict
-        if ($errorMessage -match "Method not found|Could not load type|Assembly.*not found") {
-            $fixMessage = "This appears to be a Microsoft Graph module version conflict.`n`n" +
-                         "To fix this issue, please run:`n`n" +
-                         "1. Uninstall-Module Microsoft.Graph* -AllVersions -Force`n" +
-                         "2. Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force`n" +
-                         "3. Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force`n" +
-                         "4. Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force`n" +
-                         "5. Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force`n" +
-                         "6. Restart PowerShell and try again"
+        if ($errorMessage -match 'Method not found|Could not load type|Assembly.*not found') {
+            $nl = [Environment]::NewLine
+            $fixMessage = 'This appears to be a Microsoft Graph module version conflict.' + $nl + $nl +
+                         'To fix this issue, please run:' + $nl + $nl +
+                         '1. Uninstall-Module Microsoft.Graph* -AllVersions -Force' + $nl +
+                         '2. Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force' + $nl +
+                         '3. Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force' + $nl +
+                         '4. Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force' + $nl +
+                         '5. Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force' + $nl +
+                         '6. Restart PowerShell and try again'
 
-            [System.Windows.Forms.MessageBox]::Show("MODULE VERSION CONFLICT DETECTED`n`n$fixMessage", "Microsoft Graph Connection Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            $msg = 'MODULE VERSION CONFLICT DETECTED' + [Environment]::NewLine + [Environment]::NewLine + $fixMessage
+            [System.Windows.Forms.MessageBox]::Show($msg, 'Microsoft Graph Connection Error', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         } else {
-            [System.Windows.Forms.MessageBox]::Show("Connect-GraphService ERROR: $($ex.Message)", "DEBUG: GraphOnline", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            [System.Windows.Forms.MessageBox]::Show('Connect-GraphService ERROR: ' + $ex.Message, 'DEBUG: GraphOnline', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
 
-        if ($statusLabel) { $statusLabel.Text = "Microsoft Graph connection failed." }
-        Write-Error "Microsoft Graph connection failed: $($ex.Message)"
+        if ($statusLabel) { $statusLabel.Text = 'Microsoft Graph connection failed.' }
+        Write-Error ('Microsoft Graph connection failed: ' + $ex.Message)
         return $false
     } finally {
         if ($mainForm) { $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
@@ -272,13 +274,13 @@ function Import-GraphModulesOnDemand {
             if (Get-Module -ListAvailable -Name $moduleName -ErrorAction SilentlyContinue) {
                 Import-Module $moduleName -ErrorAction Stop -Force
                 $imported += $moduleName
-                Write-Verbose "Imported module: $moduleName"
+                Write-Verbose ('Imported module: ' + $moduleName)
             } else {
-                Write-Warning "Module $moduleName not available. It may need to be installed."
+                Write-Warning ('Module ' + $moduleName + ' not available. It may need to be installed.')
                 $failed += $moduleName
             }
         } catch {
-            Write-Warning "Failed to import module $moduleName`: $($_.Exception.Message)"
+            Write-Warning ('Failed to import module ' + $moduleName + ': ' + $_.Exception.Message)
             $failed += $moduleName
         }
     }
@@ -305,13 +307,13 @@ function Ensure-GraphCmdletsAvailable {
             
             # Map cmdlets to their modules
             switch -Wildcard ($cmdletName) {
-                "Get-MgUser" { $modulesToImport += "Microsoft.Graph.Users" }
-                "Update-MgUser" { $modulesToImport += "Microsoft.Graph.Users" }
-                "Revoke-MgUserSignInSession" { $modulesToImport += "Microsoft.Graph.Users.Actions" }
-                "Get-MgContext" { $modulesToImport += "Microsoft.Graph.Authentication" }
-                "Get-MgAuditLog*" { $modulesToImport += "Microsoft.Graph.Reports" }
-                "Get-MgAuditLogSignIn" { $modulesToImport += "Microsoft.Graph.Reports" }
-                "Get-MgAuditLogDirectoryAudit" { $modulesToImport += "Microsoft.Graph.Reports" }
+                'Get-MgUser' { $modulesToImport += 'Microsoft.Graph.Users' }
+                'Update-MgUser' { $modulesToImport += 'Microsoft.Graph.Users' }
+                'Revoke-MgUserSignInSession' { $modulesToImport += 'Microsoft.Graph.Users.Actions' }
+                'Get-MgContext' { $modulesToImport += 'Microsoft.Graph.Authentication' }
+                'Get-MgAuditLog*' { $modulesToImport += 'Microsoft.Graph.Reports' }
+                'Get-MgAuditLogSignIn' { $modulesToImport += 'Microsoft.Graph.Reports' }
+                'Get-MgAuditLogDirectoryAudit' { $modulesToImport += 'Microsoft.Graph.Reports' }
             }
         }
     }
@@ -323,7 +325,8 @@ function Ensure-GraphCmdletsAvailable {
     if ($modulesToImport.Count -gt 0) {
         $result = Import-GraphModulesOnDemand -ModuleNames $modulesToImport
         if ($result.Failed.Count -gt 0) {
-            Write-Warning "Some modules failed to import: $($result.Failed -join ', ')"
+            $failedList = $result.Failed -join ', '
+            Write-Warning ('Some modules failed to import: ' + $failedList)
         }
     }
     

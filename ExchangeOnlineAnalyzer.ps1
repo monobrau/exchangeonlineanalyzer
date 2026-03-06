@@ -64,6 +64,7 @@ function Safe-ImportModule($modulePath) {
         exit
     }
 }
+Safe-ImportModule "$PSScriptRoot\Modules\Logging.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\ExchangeOnline.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\GraphOnline.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\MailboxAnalysis.psm1"
@@ -74,6 +75,11 @@ Safe-ImportModule "$PSScriptRoot\Modules\SignInManagement.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
+
+# Initialize logging (file + console, Documents\ExchangeOnlineAnalyzer\Logs)
+try {
+    Initialize-Logger -MinLevel Info -ConsoleOutput $true -Component 'ExchangeOnlineAnalyzer' | Out-Null
+} catch {}
 
 # Function to show/hide progress bar
 function Show-Progress {
@@ -5671,28 +5677,45 @@ $securityInvestigationButton.add_Click({
         $configGroupBox = New-Object System.Windows.Forms.GroupBox
         $configGroupBox.Text = "Investigation Configuration"
         $configGroupBox.Location = New-Object System.Drawing.Point(15, 160)
-        $configGroupBox.Size = New-Object System.Drawing.Size(400, 140)
+        $configGroupBox.Size = New-Object System.Drawing.Size(400, 170)
+
+        # Export Preset
+        $presetLabel = New-Object System.Windows.Forms.Label
+        $presetLabel.Text = "Alert Type Preset:"
+        $presetLabel.Location = New-Object System.Drawing.Point(20, 22)
+        $presetLabel.Size = New-Object System.Drawing.Size(120, 20)
+
+        $presetComboBox = New-Object System.Windows.Forms.ComboBox
+        $presetComboBox.Location = New-Object System.Drawing.Point(145, 20)
+        $presetComboBox.Size = New-Object System.Drawing.Size(230, 20)
+        $presetComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+        try {
+            Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+            $presets = Get-ExportPresets
+            foreach ($name in $presets.Keys) { $presetComboBox.Items.Add($name) | Out-Null }
+        } catch {}
+        $presetComboBox.SelectedIndex = 0
 
         # Investigator Name
         $investigatorNameLabel = New-Object System.Windows.Forms.Label
         $investigatorNameLabel.Text = "Investigator Name:"
-        $investigatorNameLabel.Location = New-Object System.Drawing.Point(20, 30)
+        $investigatorNameLabel.Location = New-Object System.Drawing.Point(20, 52)
         $investigatorNameLabel.Size = New-Object System.Drawing.Size(120, 20)
 
         $investigatorNameTextBox = New-Object System.Windows.Forms.TextBox
         $investigatorNameTextBox.Text = "Security Administrator"
-        $investigatorNameTextBox.Location = New-Object System.Drawing.Point(145, 27)
+        $investigatorNameTextBox.Location = New-Object System.Drawing.Point(145, 49)
         $investigatorNameTextBox.Size = New-Object System.Drawing.Size(230, 20)
 
         # Company Name
         $companyNameLabel = New-Object System.Windows.Forms.Label
         $companyNameLabel.Text = "Company Name:"
-        $companyNameLabel.Location = New-Object System.Drawing.Point(20, 60)
+        $companyNameLabel.Location = New-Object System.Drawing.Point(20, 82)
         $companyNameLabel.Size = New-Object System.Drawing.Size(120, 20)
 
         $companyNameTextBox = New-Object System.Windows.Forms.TextBox
         $companyNameTextBox.Text = "Organization"
-        $companyNameTextBox.Location = New-Object System.Drawing.Point(145, 57)
+        $companyNameTextBox.Location = New-Object System.Drawing.Point(145, 79)
         $companyNameTextBox.Size = New-Object System.Drawing.Size(230, 20)
 
         # Prefill from saved settings if available
@@ -5708,28 +5731,28 @@ $securityInvestigationButton.add_Click({
         # Days to Analyze
         $daysLabel = New-Object System.Windows.Forms.Label
         $daysLabel.Text = "Days to Analyze:"
-        $daysLabel.Location = New-Object System.Drawing.Point(20, 90)
+        $daysLabel.Location = New-Object System.Drawing.Point(20, 112)
         $daysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
         $daysComboBox = New-Object System.Windows.Forms.ComboBox
         $daysComboBox.Items.AddRange(@("1", "3", "7", "10", "30", "45", "60", "90"))
         $daysComboBox.SelectedItem = "10"
-        $daysComboBox.Location = New-Object System.Drawing.Point(145, 87)
+        $daysComboBox.Location = New-Object System.Drawing.Point(145, 109)
         $daysComboBox.Size = New-Object System.Drawing.Size(80, 20)
 
         # Connection Status
         $connectionStatusLabel = New-Object System.Windows.Forms.Label
         $connectionStatusLabel.Text = "Checking connections..."
         $connectionStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Italic)
-        $connectionStatusLabel.Location = New-Object System.Drawing.Point(20, 115)
+        $connectionStatusLabel.Location = New-Object System.Drawing.Point(20, 137)
         $connectionStatusLabel.Size = New-Object System.Drawing.Size(350, 20)
 
-        $configGroupBox.Controls.AddRange(@($investigatorNameLabel, $investigatorNameTextBox, $companyNameLabel, $companyNameTextBox, $daysLabel, $daysComboBox, $connectionStatusLabel))
+        $configGroupBox.Controls.AddRange(@($presetLabel, $presetComboBox, $investigatorNameLabel, $investigatorNameTextBox, $companyNameLabel, $companyNameTextBox, $daysLabel, $daysComboBox, $connectionStatusLabel))
 
         # Report Selection section
         $reportsGroupBox = New-Object System.Windows.Forms.GroupBox
         $reportsGroupBox.Text = "Select Reports to Export"
-        $reportsGroupBox.Location = New-Object System.Drawing.Point(15, 310)
+        $reportsGroupBox.Location = New-Object System.Drawing.Point(15, 340)
         $reportsGroupBox.Size = New-Object System.Drawing.Size(400, 320)
 
         # Create scrollable panel inside GroupBox
@@ -5896,6 +5919,38 @@ $securityInvestigationButton.add_Click({
             $signInLogsDaysComboBox.Enabled = $signInLogsCheckBox.Checked
         })
 
+        # Preset change handler - apply selected preset to checkboxes
+        $presetComboBox.add_SelectedIndexChanged({
+            $presetName = $presetComboBox.SelectedItem
+            if (-not $presetName) { return }
+            try {
+                $presets = Get-ExportPresets
+                $preset = $presets[$presetName]
+                if (-not $preset) { return }
+                $messageTraceCheckBox.Checked = $preset.IncludeMessageTrace
+                $unifiedAuditLogsCheckBox.Checked = $preset.IncludeUnifiedAuditLogs
+                $inboxRulesCheckBox.Checked = $preset.IncludeInboxRules
+                $transportRulesCheckBox.Checked = $preset.IncludeTransportRules
+                $mailFlowCheckBox.Checked = $preset.IncludeMailFlowConnectors
+                $mailboxForwardingCheckBox.Checked = $preset.IncludeMailboxForwarding
+                $auditLogsCheckBox.Checked = $preset.IncludeAuditLogs
+                $signInLogsCheckBox.Checked = $preset.IncludeSignInLogs
+                $mfaCoverageCheckBox.Checked = $preset.IncludeMfaCoverage
+                $caPoliciesCheckBox.Checked = $preset.IncludeConditionalAccessPolicies
+                $appRegistrationsCheckBox.Checked = $preset.IncludeAppRegistrations
+                $securityAlertsCheckBox.Checked = $preset.IncludeSecurityAlerts
+                $securityIncidentsCheckBox.Checked = $preset.IncludeSecurityIncidents
+                $intuneDevicesCheckBox.Checked = $preset.IncludeIntuneDevices
+                $sharePointActivityCheckBox.Checked = $preset.IncludeSharePointActivity
+                $oneDriveActivityCheckBox.Checked = $preset.IncludeOneDriveActivity
+                $teamsActivityCheckBox.Checked = $preset.IncludeTeamsActivity
+                $sharePointSharingCheckBox.Checked = $preset.IncludeSharePointSharing
+                $anonymousSharePointSharingCheckBox.Checked = $preset.IncludeAnonymousSharePointSharing
+                $sharePointFileSharingLinksCheckBox.Checked = $preset.IncludeSharePointFileSharingLinks
+                $dlpViolationsCheckBox.Checked = $preset.IncludeDLPViolations
+            } catch {}
+        })
+
         # Select All button click handler
         $selectAllReportsBtn.add_Click({
             $messageTraceCheckBox.Checked = $true
@@ -6019,6 +6074,16 @@ $securityInvestigationButton.add_Click({
             try {
                 # Import the security investigation module
                 Import-Module "$PSScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
+
+                # Pre-warm connections so parallel runspaces can reuse tokens; any auth prompts happen now, not during collection
+                $progressLabel.Text = "Validating connections..."
+                [System.Windows.Forms.Application]::DoEvents()
+                try {
+                    $exoOk = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
+                    if (-not $exoOk) { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction SilentlyContinue | Out-Null }
+                    $mgOk = $false; try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgOk = $true } } catch {}
+                    if (-not $mgOk) { Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null }
+                } catch { }
 
                 # Resolve output folder for this run
                 # Determine tenant-scoped folder root to match ExportUtils behavior
@@ -6398,6 +6463,22 @@ $securityInvestigationButton.add_Click({
         $securityMainPanel.Controls.AddRange(@($securityTitleLabel, $securityDescLabel, $userSelectionInfoLabel, $configGroupBox, $reportsGroupBox, $generateButton, $progressLabel, $closeButton))
 
         $securityForm.Controls.Add($securityMainPanel)
+
+        # Pre-warm connections so any auth popups happen here, before report generation
+        $statusLabel.Text = "Validating connections (any auth prompts will appear now)..."
+        [System.Windows.Forms.Application]::DoEvents()
+        try {
+            $exoOk = $false
+            try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
+            if (-not $exoOk) {
+                Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction SilentlyContinue | Out-Null
+            }
+            $mgOk = $false
+            try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgOk = $true } } catch {}
+            if (-not $mgOk) {
+                Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+            }
+        } catch { }
 
         $securityForm.ShowDialog()
 
@@ -7383,7 +7464,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -ProgressCallback { param(`$m) Write-Status `$m } -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {

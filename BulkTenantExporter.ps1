@@ -189,11 +189,18 @@ function Search-AndValidateUsers {
 
 # Import required modules
 Write-Host "Loading required modules..." -ForegroundColor Cyan
+Safe-ImportModule "$script:scriptRoot\Modules\Logging.psm1"
 Safe-ImportModule "$script:scriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule "$script:scriptRoot\Modules\GraphOnline.psm1"
 Safe-ImportModule "$script:scriptRoot\Modules\BrowserIntegration.psm1"
 Safe-ImportModule "$script:scriptRoot\Modules\Settings.psm1"
 Write-Host "All modules loaded successfully." -ForegroundColor Green
+
+# Initialize logging
+try {
+    Initialize-Logger -MinLevel Info -ConsoleOutput $true -Component 'BulkTenantExporter' | Out-Null
+    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "BulkTenantExporter started" -Level Info }
+} catch {}
 
 # Load settings (shared with main application if it exists)
 # Get-AppSettings will use custom location if configured, otherwise default location
@@ -252,27 +259,41 @@ $bulkDescLabel.AutoSize = $true
 $bulkConfigGroupBox = New-Object System.Windows.Forms.GroupBox
 $bulkConfigGroupBox.Text = "Configuration"
 $bulkConfigGroupBox.Location = New-Object System.Drawing.Point(15, 110)
-$bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 80)
+$bulkConfigGroupBox.Size = New-Object System.Drawing.Size(400, 110)
+
+# Export Preset
+$bulkPresetLabel = New-Object System.Windows.Forms.Label
+$bulkPresetLabel.Text = "Alert Type Preset:"
+$bulkPresetLabel.Location = New-Object System.Drawing.Point(20, 22)
+$bulkPresetLabel.Size = New-Object System.Drawing.Size(120, 20)
+
+$bulkPresetComboBox = New-Object System.Windows.Forms.ComboBox
+$bulkPresetComboBox.Location = New-Object System.Drawing.Point(145, 20)
+$bulkPresetComboBox.Size = New-Object System.Drawing.Size(240, 20)
+$bulkPresetComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+$presets = Get-ExportPresets
+foreach ($name in $presets.Keys) { $bulkPresetComboBox.Items.Add($name) | Out-Null }
+$bulkPresetComboBox.SelectedIndex = 0  # Custom
 
 # Days Back
 $bulkDaysLabel = New-Object System.Windows.Forms.Label
 $bulkDaysLabel.Text = "Days Back (Message Trace):"
-$bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 25)
+$bulkDaysLabel.Location = New-Object System.Drawing.Point(20, 52)
 $bulkDaysLabel.Size = New-Object System.Drawing.Size(150, 20)
 
 $bulkDaysComboBox = New-Object System.Windows.Forms.ComboBox
-$bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 23)
+$bulkDaysComboBox.Location = New-Object System.Drawing.Point(180, 50)
 $bulkDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
 $bulkDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $bulkDaysComboBox.Items.AddRange(@("1", "3", "5", "7", "10", "14", "30", "45", "60", "90"))
 $bulkDaysComboBox.SelectedIndex = 4  # Default to 10 days
 
-$bulkConfigGroupBox.Controls.AddRange(@($bulkDaysLabel, $bulkDaysComboBox))
+$bulkConfigGroupBox.Controls.AddRange(@($bulkPresetLabel, $bulkPresetComboBox, $bulkDaysLabel, $bulkDaysComboBox))
 
 # Report Selection section
 $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
 $bulkReportsGroupBox.Text = "Select Reports to Export"
-$bulkReportsGroupBox.Location = New-Object System.Drawing.Point(15, 280)
+$bulkReportsGroupBox.Location = New-Object System.Drawing.Point(15, 230)
 $bulkReportsGroupBox.Size = New-Object System.Drawing.Size(400, 320)
 
 # Create scrollable panel inside GroupBox
@@ -447,6 +468,37 @@ $bulkSignInLogsDaysComboBox.Enabled = $bulkSignInLogsCheckBox.Checked
 
 $bulkSignInLogsCheckBox.add_CheckedChanged({
     $bulkSignInLogsDaysComboBox.Enabled = $bulkSignInLogsCheckBox.Checked
+})
+
+# Preset change handler - apply selected preset to checkboxes
+$bulkPresetComboBox.add_SelectedIndexChanged({
+    $presetName = $bulkPresetComboBox.SelectedItem
+    if (-not $presetName) { return }
+    $presets = Get-ExportPresets
+    $preset = $presets[$presetName]
+    if (-not $preset) { return }  # Custom - no change
+    $bulkMessageTraceCheckBox.Checked = $preset.IncludeMessageTrace
+    $bulkUnifiedAuditLogsCheckBox.Checked = $preset.IncludeUnifiedAuditLogs
+    $bulkInboxRulesCheckBox.Checked = $preset.IncludeInboxRules
+    $bulkTransportRulesCheckBox.Checked = $preset.IncludeTransportRules
+    $bulkMailFlowCheckBox.Checked = $preset.IncludeMailFlowConnectors
+    $bulkMailboxForwardingCheckBox.Checked = $preset.IncludeMailboxForwarding
+    $bulkAuditLogsCheckBox.Checked = $preset.IncludeAuditLogs
+    $bulkSignInLogsCheckBox.Checked = $preset.IncludeSignInLogs
+    $bulkMfaCoverageCheckBox.Checked = $preset.IncludeMfaCoverage
+    $bulkCaPoliciesCheckBox.Checked = $preset.IncludeConditionalAccessPolicies
+    $bulkAppRegistrationsCheckBox.Checked = $preset.IncludeAppRegistrations
+    $bulkSecurityAlertsCheckBox.Checked = $preset.IncludeSecurityAlerts
+    $bulkSecurityIncidentsCheckBox.Checked = $preset.IncludeSecurityIncidents
+    $bulkIntuneDevicesCheckBox.Checked = $preset.IncludeIntuneDevices
+    $bulkSharePointActivityCheckBox.Checked = $preset.IncludeSharePointActivity
+    $bulkOneDriveActivityCheckBox.Checked = $preset.IncludeOneDriveActivity
+    $bulkTeamsActivityCheckBox.Checked = $preset.IncludeTeamsActivity
+    $bulkSharePointSharingCheckBox.Checked = $preset.IncludeSharePointSharing
+    $bulkAnonymousSharePointSharingCheckBox.Checked = $preset.IncludeAnonymousSharePointSharing
+    $bulkSharePointFileSharingLinksCheckBox.Checked = $preset.IncludeSharePointFileSharingLinks
+    $bulkDLPViolationsCheckBox.Checked = $preset.IncludeDLPViolations
+    $bulkSharePointOneDriveFileActionsCheckBox.Checked = $preset.IncludeSharePointOneDriveFileActions
 })
 
 # Select All button click handler
@@ -715,6 +767,8 @@ try {
     # Import required modules
     Write-Status "Importing modules..."
     Write-Host "Importing modules..." -ForegroundColor Cyan
+    Import-Module "`$ScriptRoot\Modules\Logging.psm1" -Force -ErrorAction SilentlyContinue
+    try { Initialize-Logger -MinLevel Info -ConsoleOutput `$true -SessionId "Client`$ClientNumber" -Component ExportUtils | Out-Null } catch {}
     Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
@@ -1435,7 +1489,7 @@ try {
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
@@ -1666,6 +1720,16 @@ try {
     $collapseAllBtn.BackColor = [System.Drawing.Color]::FromArgb(156, 39, 176)
     $collapseAllBtn.ForeColor = [System.Drawing.Color]::White
 
+    # Generate All Reports button - sends GENERATE_REPORTS to all authenticated tenants in parallel
+    $generateAllReportsBtn = New-Object System.Windows.Forms.Button
+    $generateAllReportsBtn.Text = "Generate All Reports"
+    $generateAllReportsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    $generateAllReportsBtn.Location = New-Object System.Drawing.Point(395, 100)
+    $generateAllReportsBtn.Size = New-Object System.Drawing.Size(180, 35)
+    $generateAllReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
+    $generateAllReportsBtn.ForeColor = [System.Drawing.Color]::White
+    $generateAllReportsBtn.Visible = $false  # Shown when first tenant completes both Graph and Exchange auth
+
     # Create Panel for client authentication rows
     $authPanel = New-Object System.Windows.Forms.Panel
     $authPanel.Location = New-Object System.Drawing.Point(15, 145)
@@ -1681,7 +1745,8 @@ try {
     $clientRowSpacing = 10  # Increased spacing between rows
 
     # Add controls to form
-    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $authPanel))
+    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $generateAllReportsBtn, $authPanel))
+    $script:generateAllReportsBtn = $generateAllReportsBtn
 
     # Close button
     $authCloseBtn = New-Object System.Windows.Forms.Button
@@ -3094,6 +3159,12 @@ try {
                 # Show Generate Reports button
                 $script:clientAuthControls[$clientNum].GenerateReportsButton.Visible = $true
                 $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $true
+
+                # Show Generate All Reports button when at least one tenant is ready
+                if ($script:generateAllReportsBtn -and -not $script:generateAllReportsBtn.IsDisposed) {
+                    $script:generateAllReportsBtn.Visible = $true
+                    $script:generateAllReportsBtn.Enabled = $true
+                }
                 
                 # Show ticket controls
                 $script:clientAuthControls[$clientNum].TicketLabel.Visible = $true
@@ -3552,6 +3623,31 @@ try {
                     # Don't set IsExpanded first - let the toggle button handler toggle it
                     $controls.ToggleButton.PerformClick()
                 }
+            }
+        }
+    })
+
+    # Generate All Reports button click handler - sends GENERATE_REPORTS to all authenticated tenants
+    $generateAllReportsBtn.add_Click({
+        $authenticatedClients = @()
+        foreach ($clientNum in $script:clientAuthStates.Keys) {
+            $state = $script:clientAuthStates[$clientNum]
+            if ($state.GraphAuthenticated -and $state.ExchangeAuthenticated) {
+                $authenticatedClients += $clientNum
+            }
+        }
+        if ($authenticatedClients.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No tenants are fully authenticated. Complete both Graph and Exchange authentication for at least one tenant first.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        $script:authStatusTextBox.AppendText("Generate All Reports: Sending to $($authenticatedClients.Count) tenant(s)...`r`n")
+        $script:authStatusTextBox.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+        foreach ($clientNum in $authenticatedClients) {
+            $controls = $script:clientAuthControls[$clientNum]
+            if ($controls -and $controls.GenerateReportsButton -and $controls.GenerateReportsButton.Enabled) {
+                $controls.GenerateReportsButton.PerformClick()
+                [System.Windows.Forms.Application]::DoEvents()
             }
         }
     })

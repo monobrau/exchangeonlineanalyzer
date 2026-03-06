@@ -296,6 +296,82 @@ function Format-InboxRuleXlsx {
     return $true
 }
 
+# Runs independent Graph collectors in parallel (AuditLogs, CA, AppReg, SharePoint, OneDrive, Teams, Sharing, Alerts, Incidents, MFA)
+function Invoke-IndependentGraphCollectorsParallel {
+    param([hashtable]$Params)
+    $r = @{}
+    $exportUtilsPath = Join-Path $PSScriptRoot 'ExportUtils.psm1'
+    $securityAnalysisPath = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
+    $collectorScript = {
+        param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath)
+        Import-Module $ExportUtilsPath -Force -ErrorAction Stop
+        Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+        switch ($CollectorName) {
+            'AuditLogs' { return Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
+            'CAPolicies' { Import-Module $SecurityAnalysisPath -Force -ErrorAction SilentlyContinue; return Get-ConditionalAccessPolicies -ErrorAction Stop }
+            'AppRegistrations' { Import-Module $SecurityAnalysisPath -Force -ErrorAction SilentlyContinue; return Get-AppRegistrations -ErrorAction Stop }
+            'SharePointActivity' { return Get-SharePointActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
+            'OneDriveActivity' { return Get-OneDriveActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
+            'TeamsActivity' { return Get-TeamsActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
+            'SharePointSharing' { return Get-SharePointSharingLinks -SelectedUsers $SelectedUsers }
+            'SecurityAlerts' { return Get-SecurityAlerts -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
+            'SecurityIncidents' { return Get-SecurityIncidents -DaysBack $DaysBack }
+            'MfaCoverage' { return Get-MfaCoverageReport -SelectedUsers $SelectedUsers }
+            'UserSecurityGroups' { return Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers }
+            default { return $null }
+        }
+    }
+    $collectorNames = @()
+    if ($Params.IncludeAuditLogs) { $collectorNames += 'AuditLogs' }
+    if ($Params.IncludeConditionalAccessPolicies -and (Test-Path $securityAnalysisPath)) { $collectorNames += 'CAPolicies' }
+    if ($Params.IncludeAppRegistrations -and (Test-Path $securityAnalysisPath)) { $collectorNames += 'AppRegistrations' }
+    if ($Params.IncludeSharePointActivity) { $collectorNames += 'SharePointActivity' }
+    if ($Params.IncludeOneDriveActivity) { $collectorNames += 'OneDriveActivity' }
+    if ($Params.IncludeTeamsActivity) { $collectorNames += 'TeamsActivity' }
+    if ($Params.IncludeSharePointSharing) { $collectorNames += 'SharePointSharing' }
+    if ($Params.IncludeSecurityAlerts) { $collectorNames += 'SecurityAlerts' }
+    if ($Params.IncludeSecurityIncidents) { $collectorNames += 'SecurityIncidents' }
+    if ($Params.IncludeMfaCoverage) { $collectorNames += 'MfaCoverage', 'UserSecurityGroups' }
+    if ($collectorNames.Count -eq 0) { return $r }
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    $iss.ImportPSModule($exportUtilsPath)
+    foreach ($mod in @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Reports', 'Microsoft.Graph.Users', 'Microsoft.Graph.Identity.SignIns', 'Microsoft.Graph.Applications', 'Microsoft.Graph.Identity.ConditionalAccess')) {
+        try { $iss.ImportPSModule($mod) } catch { }
+    }
+    $runspacePool = [runspacefactory]::CreateRunspacePool(1, [Math]::Min(4, [Math]::Max(1, $collectorNames.Count)), $iss, $Host)
+    $runspacePool.Open()
+    $jobs = New-Object System.Collections.ArrayList
+    foreach ($name in $collectorNames) {
+        $ps = [PowerShell]::Create()
+        $ps.RunspacePool = $runspacePool
+        $null = $ps.AddScript($collectorScript).AddArgument($name).AddArgument($Params.DaysBack).AddArgument($Params.SelectedUsers).AddArgument($exportUtilsPath).AddArgument($securityAnalysisPath)
+        $jobs.Add(@{ Name = $name; PowerShell = $ps; Handle = $ps.BeginInvoke() }) | Out-Null
+    }
+    foreach ($j in $jobs) {
+        try {
+            $result = $j.PowerShell.EndInvoke($j.Handle)
+            $val = if ($result -and $result.Count -gt 0) { $result[0] } else { $result }
+            switch ($j.Name) {
+                'AuditLogs' { $r.AuditLogs = $val }
+                'CAPolicies' { $r.ConditionalAccessPolicies = $val }
+                'AppRegistrations' { $r.AppRegistrations = $val }
+                'SharePointActivity' { $r.SharePointActivity = $val }
+                'OneDriveActivity' { $r.OneDriveActivity = $val }
+                'TeamsActivity' { $r.TeamsActivity = $val }
+                'SharePointSharing' { $r.SharePointSharing = $val }
+                'SecurityAlerts' { $r.SecurityAlerts = $val }
+                'SecurityIncidents' { $r.SecurityIncidents = $val }
+                'MfaCoverage' { $r.MfaCoverage = $val }
+                'UserSecurityGroups' { $r.UserSecurityGroups = $val }
+            }
+        } catch { }
+        $j.PowerShell.Dispose()
+    }
+    $runspacePool.Close()
+    $runspacePool.Dispose()
+    return $r
+}
+
 function New-SecurityInvestigationReport {
     param(
         [Parameter(Mandatory=$false)]
@@ -355,7 +431,13 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeSecurityIncidents = $true,
         [Parameter(Mandatory=$false)]
-        [bool]$IncludeUnifiedAuditLogs = $true
+        [bool]$IncludeUnifiedAuditLogs = $true,
+        [Parameter(Mandatory=$false)]
+        [scriptblock]$ProgressCallback = $null,
+        [Parameter(Mandatory=$false)]
+        [string]$SessionId = $null,
+        [Parameter(Mandatory=$false)]
+        [string]$StatusFile = $null
     )
 
     try {
@@ -368,6 +450,8 @@ function New-SecurityInvestigationReport {
     } catch {
         # Ignore Windows Forms errors when running outside GUI context
     }
+    if ($ProgressCallback) { try { & $ProgressCallback "Starting report generation..." } catch {} }
+    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Starting report generation" -Level Info -Component ExportUtils }
 
     $report = @{}
     $report.Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -457,56 +541,310 @@ function New-SecurityInvestigationReport {
         $report.GraphConnection = "Connected"
     }
 
+    if ($ProgressCallback) { try { & $ProgressCallback "Connections verified. Starting data collection..." } catch {} }
+    if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
+        Write-Log -Message "Connections verified. Exchange=$exchangeConnected Graph=$graphConnected" -Level Info -Component ExportUtils
+    }
+
+    # Collect data - run Exchange and Graph collectors in parallel when both connections exist
+    # Runspaces attempt to reuse MSAL/EXO token cache (process-wide); fallback to sequential if empty
+    $useParallelCollection = $exchangeConnected -and $graphConnected
+    $exchangeResult = @{}
+    $graphResult = @{}
+
+    if ($useParallelCollection) {
+        try {
+            $exportUtilsPath = Join-Path $PSScriptRoot 'ExportUtils.psm1'
+            $params = @{
+                DaysBack = $DaysBack
+                MessageTraceDaysBack = $MessageTraceDaysBack
+                SignInLogsDaysBack = $SignInLogsDaysBack
+                SelectedUsers = $SelectedUsers
+                IncludeMessageTrace = $IncludeMessageTrace
+                IncludeInboxRules = $IncludeInboxRules
+                IncludeTransportRules = $IncludeTransportRules
+                IncludeMailFlowConnectors = $IncludeMailFlowConnectors
+                IncludeMailboxForwarding = $IncludeMailboxForwarding
+                IncludeUnifiedAuditLogs = $IncludeUnifiedAuditLogs
+                IncludeAuditLogs = $IncludeAuditLogs
+                IncludeSignInLogs = $IncludeSignInLogs
+                IncludeIntuneDevices = $IncludeIntuneDevices
+                IncludeMfaCoverage = $IncludeMfaCoverage
+                IncludeConditionalAccessPolicies = $IncludeConditionalAccessPolicies
+                IncludeAppRegistrations = $IncludeAppRegistrations
+                IncludeSharePointActivity = $IncludeSharePointActivity
+                IncludeOneDriveActivity = $IncludeOneDriveActivity
+                IncludeTeamsActivity = $IncludeTeamsActivity
+                IncludeSharePointSharing = $IncludeSharePointSharing
+                IncludeSecurityAlerts = $IncludeSecurityAlerts
+                IncludeSecurityIncidents = $IncludeSecurityIncidents
+                SessionId = $SessionId
+                StatusFile = $StatusFile
+            }
+
+            $exchangeScript = {
+                param($ExportUtilsPath, $Params)
+                Import-Module $ExportUtilsPath -Force -ErrorAction Stop
+                try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId | Out-Null } catch {}
+                $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
+                # Reuse cached Exchange connection if available (EXO v2 token cache)
+                if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: connecting..." -Level Info -Component ExchangeRS }
+                try { & $writeStatus "Exchange runspace: connecting..." } catch {}
+                Connect-ExchangeOnline -ShowBanner:$false -ErrorAction SilentlyContinue | Out-Null
+                $r = @{}
+                if ($Params.IncludeMessageTrace) {
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting message trace..." -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: collecting message trace..." } catch {}
+                    $r.MessageTrace = Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" } catch {}
+                }
+                if ($Params.IncludeInboxRules) {
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting inbox rules..." -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: collecting inbox rules..." } catch {}
+                    $r.InboxRules = Get-ExchangeInboxRules -SelectedUsers $Params.SelectedUsers
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: inbox rules done ($($r.InboxRules.Count) entries)" -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: inbox rules done ($($r.InboxRules.Count) entries)" } catch {}
+                }
+                if ($Params.IncludeTransportRules) {
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting transport rules..." -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: collecting transport rules..." } catch {}
+                    $r.TransportRules = Get-ExchangeTransportRules
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: transport rules done ($($r.TransportRules.Count) entries)" -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: transport rules done ($($r.TransportRules.Count) entries)" } catch {}
+                }
+                if ($Params.IncludeMailFlowConnectors) {
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting mail flow connectors..." -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: collecting mail flow connectors..." } catch {}
+                    $r.MailFlowConnectors = Get-MailFlowConnectors
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: mail flow connectors done ($($r.MailFlowConnectors.Count) entries)" -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: mail flow connectors done ($($r.MailFlowConnectors.Count) entries)" } catch {}
+                }
+                if ($Params.IncludeMailboxForwarding) {
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting mailbox forwarding..." -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: collecting mailbox forwarding..." } catch {}
+                    $r.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $Params.SelectedUsers
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: mailbox forwarding done ($($r.MailboxForwarding.Count) mailboxes)" -Level Info -Component ExchangeRS }
+                    try { & $writeStatus "Exchange runspace: mailbox forwarding done ($($r.MailboxForwarding.Count) mailboxes)" } catch {}
+                }
+                if ($Params.IncludeUnifiedAuditLogs) {
+                    try {
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting unified audit logs..." -Level Info -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: collecting unified audit logs... (this may take 10+ minutes)" } catch {}
+                        $r.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" -Level Info -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" } catch {}
+                    }
+                    catch {
+                        $r.UnifiedAuditLogs = @(); $r.UnifiedAuditLogsError = $_.Exception.Message
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: unified audit logs failed - $($_.Exception.Message)" -Level Warning -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: unified audit logs failed - $($_.Exception.Message)" } catch {}
+                    }
+                }
+                if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: complete" -Level Info -Component ExchangeRS }
+                try { & $writeStatus "Exchange runspace: complete" } catch {}
+                return $r
+            }
+
+            $graphScript = {
+                param($ExportUtilsPath, $Params)
+                Import-Module $ExportUtilsPath -Force -ErrorAction Stop
+                try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId | Out-Null } catch {}
+                $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
+                # Reuse cached Graph token (MSAL cache may be process-wide)
+                if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: connecting..." -Level Info -Component GraphRS }
+                try { & $writeStatus "Graph runspace: connecting..." } catch {}
+                Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+                $r = @{}
+                if ($Params.IncludeAuditLogs) {
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: collecting audit logs..." -Level Info -Component GraphRS }
+                    try { & $writeStatus "Graph runspace: collecting audit logs..." } catch {}
+                    $r.AuditLogs = Get-GraphAuditLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: audit logs done ($($r.AuditLogs.Count) entries)" -Level Info -Component GraphRS }
+                    try { & $writeStatus "Graph runspace: audit logs done ($($r.AuditLogs.Count) entries)" } catch {}
+                }
+                if ($Params.IncludeSignInLogs) {
+                    try {
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: collecting sign-in logs..." -Level Info -Component GraphRS }
+                        try { & $writeStatus "Graph runspace: collecting sign-in logs..." } catch {}
+                        $r.SignInLogs = Get-GraphSignInLogs -DaysBack $Params.SignInLogsDaysBack -SelectedUsers $Params.SelectedUsers
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" -Level Info -Component GraphRS }
+                        try { & $writeStatus "Graph runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" } catch {}
+                    }
+                    catch { $r.SignInLogs = @(); $r.SignInLogsError = $_.Exception.Message }
+                }
+                if ($Params.IncludeIntuneDevices) {
+                    try {
+                        $deviceIdsFromSignIns = @()
+                        if ($r.SignInLogs -and $r.SignInLogs.Count -gt 0) {
+                            foreach ($signIn in $r.SignInLogs) {
+                                if ($signIn.DeviceId -and -not [string]::IsNullOrWhiteSpace($signIn.DeviceId) -and $deviceIdsFromSignIns -notcontains $signIn.DeviceId) {
+                                    $deviceIdsFromSignIns += $signIn.DeviceId
+                                }
+                            }
+                        }
+                        $r.IntuneDevices = Get-IntuneDeviceComplianceRecords -SelectedUsers $Params.SelectedUsers -DeviceIds $deviceIdsFromSignIns
+                    }
+                    catch { $r.IntuneDevices = @(); $r.IntuneDevicesError = $_.Exception.Message }
+                }
+                if ($Params.IncludeMfaCoverage) {
+                    try { $r.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $Params.SelectedUsers; $r.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $Params.SelectedUsers }
+                    catch { $r.MfaCoverage = $null; $r.UserSecurityGroups = $null }
+                }
+                $securityAnalysisModule = Join-Path (Split-Path $ExportUtilsPath) "SecurityAnalysis.psm1"
+                if (Test-Path $securityAnalysisModule) {
+                    Import-Module $securityAnalysisModule -Force -ErrorAction SilentlyContinue
+                    if ($Params.IncludeConditionalAccessPolicies) { try { $r.ConditionalAccessPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop } catch { $r.ConditionalAccessPolicies = @(); $r.CAPoliciesError = $_.Exception.Message } }
+                    if ($Params.IncludeAppRegistrations) { try { $r.AppRegistrations = Get-AppRegistrations -ErrorAction Stop } catch { $r.AppRegistrations = @(); $r.AppRegistrationsError = $_.Exception.Message } }
+                }
+                if ($Params.IncludeSharePointActivity) { try { $r.SharePointActivity = Get-SharePointActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.SharePointActivity = @(); $r.SharePointActivityError = $_.Exception.Message } }
+                if ($Params.IncludeOneDriveActivity) { try { $r.OneDriveActivity = Get-OneDriveActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.OneDriveActivity = @(); $r.OneDriveActivityError = $_.Exception.Message } }
+                if ($Params.IncludeTeamsActivity) { try { $r.TeamsActivity = Get-TeamsActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.TeamsActivity = @(); $r.TeamsActivityError = $_.Exception.Message } }
+                if ($Params.IncludeSharePointSharing) { try { $r.SharePointSharing = Get-SharePointSharingLinks -SelectedUsers $Params.SelectedUsers } catch { $r.SharePointSharing = @(); $r.SharePointSharingError = $_.Exception.Message } }
+                if ($Params.IncludeSecurityAlerts) { try { $r.SecurityAlerts = Get-SecurityAlerts -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.SecurityAlerts = @(); $r.SecurityAlertsError = $_.Exception.Message } }
+                if ($Params.IncludeSecurityIncidents) { try { $r.SecurityIncidents = Get-SecurityIncidents -DaysBack $Params.DaysBack } catch { $r.SecurityIncidents = @(); $r.SecurityIncidentsError = $_.Exception.Message } }
+                if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: complete" -Level Info -Component GraphRS }
+                try { & $writeStatus "Graph runspace: complete" } catch {}
+                return $r
+            }
+
+            $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+            $iss.ImportPSModule((Join-Path $PSScriptRoot 'ExportUtils.psm1'))
+            $loggingPath = Join-Path $PSScriptRoot 'Logging.psm1'
+            if (Test-Path $loggingPath) { $iss.ImportPSModule($loggingPath) }
+            foreach ($mod in @('ExchangeOnlineManagement', 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Reports')) {
+                try { $iss.ImportPSModule($mod) } catch { }
+            }
+
+            $exchangeRunspace = [runspacefactory]::CreateRunspace($iss)
+            $exchangeRunspace.Open()
+            $exchangePs = [PowerShell]::Create()
+            $exchangePs.Runspace = $exchangeRunspace
+            $null = $exchangePs.AddScript($exchangeScript).AddArgument($exportUtilsPath).AddArgument($params)
+
+            $graphRunspace = [runspacefactory]::CreateRunspace($iss)
+            $graphRunspace.Open()
+            $graphPs = [PowerShell]::Create()
+            $graphPs.Runspace = $graphRunspace
+            $null = $graphPs.AddScript($graphScript).AddArgument($exportUtilsPath).AddArgument($params)
+
+            $statusMsg = "Collecting Exchange and Graph data in parallel... This may take several minutes."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+            if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Parallel collection started (Exchange + Graph)" -Level Info -Component ExportUtils }
+            [System.Windows.Forms.Application]::DoEvents()
+            Write-Host $statusMsg -ForegroundColor Cyan
+
+            $exchangeHandle = $exchangePs.BeginInvoke()
+            $graphHandle = $graphPs.BeginInvoke()
+
+            $exchangeResultRaw = $exchangePs.EndInvoke($exchangeHandle)
+            $waitMsg = "Exchange data collected. Waiting for Graph..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $waitMsg }
+            if ($ProgressCallback) { try { & $ProgressCallback $waitMsg } catch {} }
+            if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange data collected. Waiting for Graph..." -Level Info -Component ExportUtils }
+            [System.Windows.Forms.Application]::DoEvents()
+            $graphResultRaw = $graphPs.EndInvoke($graphHandle)
+
+            $exchangePs.Dispose(); $exchangeRunspace.Dispose()
+            $graphPs.Dispose(); $graphRunspace.Dispose()
+
+            $exchangeResult = if ($exchangeResultRaw -is [hashtable]) { $exchangeResultRaw } elseif ($exchangeResultRaw -and $exchangeResultRaw.Count -gt 0) { $exchangeResultRaw[0] } else { @{} }
+            $graphResult = if ($graphResultRaw -is [hashtable]) { $graphResultRaw } elseif ($graphResultRaw -and $graphResultRaw.Count -gt 0) { $graphResultRaw[0] } else { @{} }
+
+            # If runspaces returned empty (no connection reuse), fall back to sequential
+            if (($exchangeResult.Keys.Count -eq 0 -and $exchangeConnected) -or ($graphResult.Keys.Count -eq 0 -and $graphConnected)) {
+                Write-Warning "Parallel runspaces returned empty (token cache not shared). Falling back to sequential collection."
+                if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Parallel runspaces returned empty, falling back to sequential" -Level Warning -Component ExportUtils }
+                $useParallelCollection = $false
+            } else {
+                foreach ($k in $exchangeResult.Keys) { $report[$k] = $exchangeResult[$k] }
+                foreach ($k in $graphResult.Keys) { $report[$k] = $graphResult[$k] }
+            }
+
+            if (-not $report.SignInLogs) { $report.SignInLogs = @() }
+            if (-not $report.IntuneDevices) { $report.IntuneDevices = @() }
+            if (-not $report.MfaCoverage) { $report.MfaCoverage = $null }
+            if (-not $report.UserSecurityGroups) { $report.UserSecurityGroups = $null }
+            if (-not $report.ConditionalAccessPolicies) { $report.ConditionalAccessPolicies = @() }
+            if (-not $report.AppRegistrations) { $report.AppRegistrations = @() }
+        } catch {
+            Write-Warning "Parallel collection failed, falling back to sequential: $($_.Exception.Message)"
+            if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Parallel collection failed: $($_.Exception.Message)" -Level Error -Component ExportUtils }
+            $useParallelCollection = $false
+        }
+    }
+
+    # Sequential collection (fallback or when only one connection exists)
+    if (-not $useParallelCollection) {
     # Collect data from Exchange Online
     if ($exchangeConnected) {
         try {
             if ($IncludeMessageTrace) {
-                $statusMsg = "Collecting message trace data (last $MessageTraceDaysBack days)..."
+                $statusMsg = "Collecting message trace data (last $MessageTraceDaysBack days)... This may take several minutes."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                [System.Windows.Forms.Application]::DoEvents()
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
                 Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
+                [System.Windows.Forms.Application]::DoEvents()
             }
 
             if ($IncludeInboxRules) {
                 $statusMsg = "Exporting inbox rules..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                [System.Windows.Forms.Application]::DoEvents()
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers
                 Write-Host "Collected $($report.InboxRules.Count) inbox rules" -ForegroundColor Green
+                [System.Windows.Forms.Application]::DoEvents()
             }
 
             if ($IncludeTransportRules) {
                 $statusMsg = "Collecting transport rules..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                [System.Windows.Forms.Application]::DoEvents()
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.TransportRules = Get-ExchangeTransportRules
                 Write-Host "Collected $($report.TransportRules.Count) transport rules" -ForegroundColor Green
+                [System.Windows.Forms.Application]::DoEvents()
             }
 
             if ($IncludeMailFlowConnectors) {
                 $statusMsg = "Collecting mail flow connectors..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                [System.Windows.Forms.Application]::DoEvents()
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailFlowConnectors = Get-MailFlowConnectors
                 Write-Host "Collected $($report.MailFlowConnectors.Count) mail flow connectors" -ForegroundColor Green
+                [System.Windows.Forms.Application]::DoEvents()
             }
 
             if ($IncludeMailboxForwarding) {
                 $statusMsg = "Collecting mailbox forwarding and delegation..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                [System.Windows.Forms.Application]::DoEvents()
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers
                 Write-Host "Collected mailbox forwarding data for $($report.MailboxForwarding.Count) mailboxes" -ForegroundColor Green
+                [System.Windows.Forms.Application]::DoEvents()
             }
 
             if ($IncludeUnifiedAuditLogs) {
                 try {
-                    $statusMsg = "Collecting unified audit logs (email audit logs) (last $MessageTraceDaysBack days)..."
+                    $statusMsg = "Collecting unified audit logs (last $MessageTraceDaysBack days)... This may take several minutes."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                    [System.Windows.Forms.Application]::DoEvents()
                     Write-Host $statusMsg -ForegroundColor Cyan
                     $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
                     Write-Host "Collected $($report.UnifiedAuditLogs.Count) unified audit log entries" -ForegroundColor Green
+                    [System.Windows.Forms.Application]::DoEvents()
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
                         Write-Warning "Insufficient permissions to read unified audit logs. Requires 'View-Only Audit Logs' role."
@@ -527,26 +865,23 @@ function New-SecurityInvestigationReport {
         }
     }
 
-    # Collect data from Microsoft Graph (audit logs and sign-in logs)
+    # Collect data from Microsoft Graph
+    # Order: SignInLogs first (required for Intune), then Intune, then independent collectors in parallel
     if ($graphConnected) {
         try {
-            if ($IncludeAuditLogs) {
-                $statusMsg = "Collecting audit logs from Microsoft Graph..."
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                Write-Host $statusMsg -ForegroundColor Cyan
-                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
-                Write-Host "Collected $($report.AuditLogs.Count) audit log entries" -ForegroundColor Green
-            }
-
+            # Phase 1: SignInLogs (must complete before Intune)
             if ($IncludeSignInLogs) {
                 try {
-                    $statusMsg = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This requires Azure AD Premium license."
+                    $statusMsg = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This may take several minutes."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                    [System.Windows.Forms.Application]::DoEvents()
                     Write-Host $statusMsg -ForegroundColor Cyan
                     $report.SignInLogs = Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers
                     if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                         Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
                     }
+                    [System.Windows.Forms.Application]::DoEvents()
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
                         Write-Warning "Insufficient permissions to read sign-in logs. Requires 'AuditLog.Read.All' permission."
@@ -576,6 +911,8 @@ function New-SecurityInvestigationReport {
                 try {
                     $statusMsg = "Collecting Intune device compliance records..."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                    [System.Windows.Forms.Application]::DoEvents()
                     Write-Host $statusMsg -ForegroundColor Cyan
                     
                     # Extract DeviceIds from sign-in logs if available
@@ -600,6 +937,7 @@ function New-SecurityInvestigationReport {
                         Write-Host "No Intune device records found" -ForegroundColor Yellow
                         $report.IntuneDevices = @()
                     }
+                    [System.Windows.Forms.Application]::DoEvents()
                 } catch {
                     Write-Warning "Failed to collect Intune device records: $($_.Exception.Message)"
                     $report.IntuneDevices = @()
@@ -617,107 +955,76 @@ function New-SecurityInvestigationReport {
         $report.IntuneDevices = @()
     }
 
-    # MFA Coverage and User Security Groups
+    # Phase 3: Independent Graph collectors - try parallel (runspaces use Connect-MgGraph -NoWelcome for cache reuse), fallback sequential
+    $graphParallelPhaseSucceeded = $false
     if ($graphConnected) {
         try {
-            # Only evaluate MFA coverage if explicitly requested
+            $statusMsg = "Collecting independent Graph data in parallel... This may take several minutes."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+            [System.Windows.Forms.Application]::DoEvents()
+            Write-Host $statusMsg -ForegroundColor Cyan
+            $parallelParams = @{
+                DaysBack = $DaysBack
+                SelectedUsers = $SelectedUsers
+                IncludeAuditLogs = $IncludeAuditLogs
+                IncludeConditionalAccessPolicies = $IncludeConditionalAccessPolicies
+                IncludeAppRegistrations = $IncludeAppRegistrations
+                IncludeSharePointActivity = $IncludeSharePointActivity
+                IncludeOneDriveActivity = $IncludeOneDriveActivity
+                IncludeTeamsActivity = $IncludeTeamsActivity
+                IncludeSharePointSharing = $IncludeSharePointSharing
+                IncludeSecurityAlerts = $IncludeSecurityAlerts
+                IncludeSecurityIncidents = $IncludeSecurityIncidents
+                IncludeMfaCoverage = $IncludeMfaCoverage
+            }
+            $parallelResults = Invoke-IndependentGraphCollectorsParallel -Params $parallelParams
+            if ($parallelResults.Keys.Count -gt 0) {
+                foreach ($k in $parallelResults.Keys) { $report[$k] = $parallelResults[$k] }
+                $graphParallelPhaseSucceeded = $true
+            } else {
+                Write-Warning "Parallel Graph collectors returned empty. Falling back to sequential."
+            }
+        } catch {
+            Write-Warning "Parallel Graph collection failed: $($_.Exception.Message). Falling back to sequential."
+        }
+        if (-not $graphParallelPhaseSucceeded) {
+            if ($IncludeAuditLogs) {
+                $statusMsg = "Collecting audit logs from Microsoft Graph..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
+                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                Write-Host "Collected $($report.AuditLogs.Count) audit log entries" -ForegroundColor Green
+            }
             if ($IncludeMfaCoverage) {
-                $statusMsg = "Evaluating MFA coverage (Security Defaults / CA / Per-user)..."
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                Write-Host $statusMsg -ForegroundColor Cyan
-                $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
-                Write-Host "MFA coverage evaluation complete" -ForegroundColor Green
-
-                # User security groups are only needed when MFA coverage is selected (used in unified export)
-                $statusMsg = "Collecting user security groups and roles..."
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                Write-Host $statusMsg -ForegroundColor Cyan
-                $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
-                Write-Host "Collected security groups data for $($report.UserSecurityGroups.Count) users" -ForegroundColor Green
-            } else {
-                $report.MfaCoverage = $null
-                $report.UserSecurityGroups = $null
+                try {
+                    $report.MfaCoverage = Get-MfaCoverageReport -SelectedUsers $SelectedUsers
+                    $report.UserSecurityGroups = Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers
+                } catch { Write-Warning "Failed MFA/Groups: $($_.Exception.Message)" }
             }
-        } catch {
-            Write-Warning "Failed to build MFA/Groups reports: $($_.Exception.Message)"
+            if ($IncludeConditionalAccessPolicies -or $IncludeAppRegistrations) {
+                $securityAnalysisModule = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
+                if (Test-Path $securityAnalysisModule) {
+                    Import-Module $securityAnalysisModule -Force -ErrorAction SilentlyContinue
+                    if ($IncludeConditionalAccessPolicies) {
+                        try { $report.ConditionalAccessPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop }
+                        catch { $report.ConditionalAccessPolicies = @(); $report.CAPoliciesError = $_.Exception.Message }
+                    }
+                    if ($IncludeAppRegistrations) {
+                        try { $report.AppRegistrations = Get-AppRegistrations -ErrorAction Stop }
+                        catch { $report.AppRegistrations = @(); $report.AppRegistrationsError = $_.Exception.Message }
+                    }
+                }
+            }
         }
     }
 
-    # Conditional Access Policies and App Registrations
-    if ($graphConnected -and ($IncludeConditionalAccessPolicies -or $IncludeAppRegistrations)) {
-        try {
-            # Import SecurityAnalysis module if available
-            $securityAnalysisModule = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
-            if (Test-Path $securityAnalysisModule) {
-                Import-Module $securityAnalysisModule -Force -ErrorAction SilentlyContinue
-                
-                # Collect Conditional Access Policies
-                if ($IncludeConditionalAccessPolicies) {
-                    try {
-                        $statusMsg = "Collecting Conditional Access policies..."
-                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                        Write-Host $statusMsg -ForegroundColor Cyan
-                        $report.ConditionalAccessPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop
-                        Write-Host "Collected $($report.ConditionalAccessPolicies.Count) Conditional Access policies" -ForegroundColor Green
-                    } catch {
-                        if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
-                            Write-Warning "Insufficient permissions to read Conditional Access policies. Requires 'Policy.Read.All' permission."
-                            $report.ConditionalAccessPolicies = @()
-                            $report.CAPoliciesError = "Permission denied - requires Policy.Read.All"
-                        } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*") {
-                            Write-Warning "Conditional Access requires Azure AD Premium P1 license."
-                            $report.ConditionalAccessPolicies = @()
-                            $report.CAPoliciesError = "License required - Azure AD Premium P1"
-                        } else {
-                            Write-Warning "Failed to collect Conditional Access policies: $($_.Exception.Message)"
-                            $report.ConditionalAccessPolicies = @()
-                            $report.CAPoliciesError = $_.Exception.Message
-                        }
-                    }
-                } else {
-                    $report.ConditionalAccessPolicies = @()
-                }
-                
-                # Collect App Registrations
-                if ($IncludeAppRegistrations) {
-                    try {
-                        $statusMsg = "Collecting app registrations..."
-                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                        Write-Host $statusMsg -ForegroundColor Cyan
-                        $report.AppRegistrations = Get-AppRegistrations -ErrorAction Stop
-                        Write-Host "Collected $($report.AppRegistrations.Count) app registrations" -ForegroundColor Green
-                    } catch {
-                        if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
-                            Write-Warning "Insufficient permissions to read app registrations. Requires 'Application.Read.All' permission."
-                            $report.AppRegistrations = @()
-                            $report.AppRegistrationsError = "Permission denied - requires Application.Read.All"
-                        } else {
-                            Write-Warning "Failed to collect app registrations: $($_.Exception.Message)"
-                            $report.AppRegistrations = @()
-                            $report.AppRegistrationsError = $_.Exception.Message
-                        }
-                    }
-                } else {
-                    $report.AppRegistrations = @()
-                }
-            } else {
-                Write-Warning "SecurityAnalysis module not found. CA Policies and App Registrations will not be collected."
-                if ($IncludeConditionalAccessPolicies) { $report.ConditionalAccessPolicies = @() }
-                if ($IncludeAppRegistrations) { $report.AppRegistrations = @() }
-            }
-        } catch {
-            Write-Warning "Failed to collect CA Policies or App Registrations: $($_.Exception.Message)"
-            if ($IncludeConditionalAccessPolicies -and -not $report.ConditionalAccessPolicies) { $report.ConditionalAccessPolicies = @() }
-            if ($IncludeAppRegistrations -and -not $report.AppRegistrations) { $report.AppRegistrations = @() }
-        }
-    } else {
-        # Both are disabled or not connected, set empty arrays
-        $report.ConditionalAccessPolicies = @()
-        $report.AppRegistrations = @()
-    }
+    if (-not $report.AuditLogs) { $report.AuditLogs = @() }
+    if (-not $report.ConditionalAccessPolicies) { $report.ConditionalAccessPolicies = @() }
+    if (-not $report.AppRegistrations) { $report.AppRegistrations = @() }
 
-    # SharePoint/OneDrive/Teams Activity and Security Data
-    if ($graphConnected) {
+    # SharePoint/OneDrive/Teams Activity and Security Data (sequential fallback when parallel Phase 3 failed)
+    if ($graphConnected -and -not $graphParallelPhaseSucceeded) {
         try {
             if ($IncludeSharePointActivity) {
                 try {
@@ -894,6 +1201,7 @@ function New-SecurityInvestigationReport {
             $report.SecurityIncidentsError = "Microsoft Graph not connected. Cannot collect security incidents."
         }
     }
+    }  # end if (-not $useParallelCollection)
 
     # Generate AI Investigation Prompt
     $statusMsg = "Generating AI investigation prompts..."
@@ -1609,7 +1917,9 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
         
         Write-Host "`nReport generation complete! All files saved to: $($report.OutputFolder)" -ForegroundColor Green
     }
-
+    if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
+        Write-Log -Message "Report generation complete. OutputFolder=$($report.OutputFolder)" -Level Info -Component ExportUtils
+    }
     return $report
 }
 
@@ -2159,7 +2469,9 @@ function Get-UnifiedAuditLogs {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [string]$StatusFile = $null
     )
 
     try {
@@ -2182,35 +2494,54 @@ function Get-UnifiedAuditLogs {
 
         $raw = New-Object System.Collections.Generic.List[object]
 
+        # Use SessionId + SessionCommand ReturnLargeSet for pagination (up to 50,000 results vs 5,000)
+        $sessionId = "UnifiedAuditLog_" + (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+
         # If SelectedUsers provided, filter by user
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             foreach ($user in $SelectedUsers) {
                 $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                 try {
-                    Write-Host "  Querying unified audit logs for: $upn" -ForegroundColor Gray
-                    # Search unified audit logs for this user
-                    $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -UserIds $upn -ResultSize 5000 -ErrorAction Stop
-                    if ($results) {
-                        foreach ($item in $results) {
-                            [void]$raw.Add($item)
+                    Write-Host "  Querying unified audit logs for: $upn (paginated, up to 50,000 results)..." -ForegroundColor Gray
+                    $userSessionId = "${sessionId}_$($upn.Replace('@','_').Replace('.','_'))"
+                    $pageCount = 0
+                    do {
+                        $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -UserIds $upn -ResultSize 5000 -SessionId $userSessionId -SessionCommand ReturnLargeSet -ErrorAction Stop
+                        if ($results -and $results.Count -gt 0) {
+                            foreach ($item in $results) {
+                                [void]$raw.Add($item)
+                            }
+                            $pageCount += $results.Count
+                            Write-Host "    Page: $($results.Count) entries (total for $upn : $pageCount)" -ForegroundColor Gray
+                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected for $upn..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                        } else {
+                            break
                         }
-                        Write-Host "  Found $($results.Count) audit log entries for $upn" -ForegroundColor Gray
-                    }
+                    } while ($results.Count -eq 5000)
+                    Write-Host "  Found $pageCount audit log entries for $upn" -ForegroundColor Gray
                 } catch {
                     Write-Warning "Failed to get unified audit logs for $upn : $($_.Exception.Message)"
                 }
             }
         } else {
-            # No selection - get all unified audit logs
+            # No selection - get all unified audit logs with pagination
             try {
-                Write-Host "  Querying unified audit logs for all users..." -ForegroundColor Gray
-                $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -ResultSize 5000 -ErrorAction Stop
-                if ($results) {
-                    foreach ($item in $results) {
-                        [void]$raw.Add($item)
+                Write-Host "  Querying unified audit logs for all users (paginated, up to 50,000 results)..." -ForegroundColor Gray
+                $pageCount = 0
+                do {
+                    $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -ResultSize 5000 -SessionId $sessionId -SessionCommand ReturnLargeSet -ErrorAction Stop
+                    if ($results -and $results.Count -gt 0) {
+                        foreach ($item in $results) {
+                            [void]$raw.Add($item)
+                        }
+                        $pageCount += $results.Count
+                        Write-Host "    Page: $($results.Count) entries (total: $pageCount)" -ForegroundColor Gray
+                        if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected (still running, can take 10-20 min)..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                    } else {
+                        break
                     }
-                    Write-Host "  Found $($results.Count) audit log entries" -ForegroundColor Gray
-                }
+                } while ($results.Count -eq 5000)
+                Write-Host "  Found $pageCount audit log entries" -ForegroundColor Gray
             } catch {
                 Write-Warning "Failed to get unified audit logs: $($_.Exception.Message)"
             }
@@ -5543,6 +5874,6 @@ function Get-DLPViolations {
 
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
-Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport
-Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents
+Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs
+Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents,Get-IntuneDeviceComplianceRecords
 Export-ModuleMember -Function Get-AnonymousSharePointSharing,Get-SharePointFileSharingLinks,Get-DLPViolations
