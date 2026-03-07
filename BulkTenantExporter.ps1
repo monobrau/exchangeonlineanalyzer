@@ -768,7 +768,7 @@ try {
     Write-Status "Importing modules..."
     Write-Host "Importing modules..." -ForegroundColor Cyan
     Import-Module "`$ScriptRoot\Modules\Logging.psm1" -Force -ErrorAction SilentlyContinue
-    try { Initialize-Logger -MinLevel Info -ConsoleOutput `$true -SessionId "Client`$ClientNumber" -Component ExportUtils | Out-Null } catch {}
+    try { Initialize-Logger -MinLevel Info -ConsoleOutput `$true -SessionId "Client`$ClientNumber" -CompanyName `$CompanyName -Component ExportUtils | Out-Null } catch {}
     Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
@@ -858,7 +858,7 @@ try {
             Write-Host "Command file detected! Reading command..." -ForegroundColor Yellow
             Write-Host "Command file path: `$commandFile" -ForegroundColor Cyan
             Start-Sleep -Milliseconds 300  # Brief delay to ensure file is fully written
-            `$command = Get-Content `$commandFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { `$_.Trim() }
+            `$command = (Get-Content `$commandFile -Raw -ErrorAction SilentlyContinue).Trim().TrimStart([char]0xFEFF)
             Write-Host "Command received: '`$command'" -ForegroundColor Cyan
             Write-Host "Command length: `$(`$command.Length)" -ForegroundColor Gray
             Remove-Item `$commandFile -Force -ErrorAction SilentlyContinue
@@ -1487,6 +1487,7 @@ try {
                 }
                 
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
+                if (Get-Command Set-LogContext -ErrorAction SilentlyContinue) { Set-LogContext -CompanyName `$CompanyName -TicketNumbers `$ticketNumbers }
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
                     `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
@@ -3441,12 +3442,24 @@ try {
         $resetAuthBtn.add_Click({
             $clientNum = $this.Tag
             if (-not $clientNum) { $clientNum = $capturedClientNum }
+            if (-not $clientNum) {
+                $script:authStatusTextBox.AppendText("ERROR: Could not determine client number for Reset Auth`r`n")
+                return
+            }
+            if (-not $script:clientAuthStates.ContainsKey($clientNum) -or -not $script:clientAuthControls.ContainsKey($clientNum)) {
+                $script:authStatusTextBox.AppendText("ERROR: Client $clientNum state not found. Try removing and re-adding the tenant.`r`n")
+                return
+            }
             $script:authStatusTextBox.AppendText("Resetting authentication for Client $clientNum...`r`n")
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
             
             # Send CANCEL_AUTH command to worker script to clear sessions and token caches
-            Send-CommandToSession -ClientNumber $clientNum -Command "CANCEL_AUTH" -TimeoutSeconds 30 | Out-Null
+            try {
+                Send-CommandToSession -ClientNumber $clientNum -Command "CANCEL_AUTH" -TimeoutSeconds 30 | Out-Null
+            } catch {
+                $script:authStatusTextBox.AppendText("WARNING: Send-CommandToSession failed - $($_.Exception.Message). Continuing with local UI reset...`r`n")
+            }
             
             # Clear all tenant information from state
             $script:clientAuthStates[$clientNum].GraphAuthenticated = $false
@@ -3674,7 +3687,9 @@ try {
         Write-Host "Send-CommandToSession: Writing command file: $commandFile" -ForegroundColor Cyan
         Write-Host "Send-CommandToSession: Command to write: $Command" -ForegroundColor Cyan
         try {
-            $Command | Out-File -FilePath $commandFile -Encoding UTF8 -Force
+            # Use UTF-8 without BOM to avoid command matching issues (BOM can break -eq "CANCEL_AUTH")
+            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+            [System.IO.File]::WriteAllText($commandFile, $Command, $utf8NoBom)
             Write-Host "Send-CommandToSession: Command file written successfully" -ForegroundColor Green
             
             # Verify file was written

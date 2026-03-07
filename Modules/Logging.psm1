@@ -18,6 +18,8 @@ $script:LogConfig = @{
     MaxFileSizeMB  = 10
     RetainDays     = 30
     SessionId      = $null
+    CompanyName    = $null
+    TicketNumbers  = $null  # array or single string, joined for display
     Component      = $null
     Initialized    = $false
     _fileLock      = $null
@@ -54,6 +56,10 @@ function Initialize-Logger {
         Keep logs for this many days; older files are deleted
     .PARAMETER SessionId
         Optional session identifier (e.g. "Client1" for BulkTenantExporter)
+    .PARAMETER CompanyName
+        Optional company/client name for log line identification
+    .PARAMETER TicketNumbers
+        Optional ticket number(s) - array or string - for log line identification
     .PARAMETER Component
         Optional component name (e.g. "ExportUtils", "BulkTenantExporter")
     #>
@@ -66,6 +72,8 @@ function Initialize-Logger {
         [int]$MaxFileSizeMB = 10,
         [int]$RetainDays = 30,
         [string]$SessionId = $null,
+        [string]$CompanyName = $null,
+        [array]$TicketNumbers = @(),
         [string]$Component = $null
     )
     try {
@@ -79,6 +87,8 @@ function Initialize-Logger {
         $script:LogConfig.MaxFileSizeMB = $MaxFileSizeMB
         $script:LogConfig.RetainDays = $RetainDays
         $script:LogConfig.SessionId = $SessionId
+        $script:LogConfig.CompanyName = $CompanyName
+        $script:LogConfig.TicketNumbers = if ($TicketNumbers) { @($TicketNumbers) } else { @() }
         $script:LogConfig.Component = $Component
         $script:LogConfig.Initialized = $true
         if ($null -eq $script:LogConfig._fileLock) {
@@ -92,6 +102,20 @@ function Initialize-Logger {
         $script:LogConfig.Initialized = $false
         return $false
     }
+}
+
+function Get-LogContextString {
+    $parts = @()
+    if ($script:LogConfig.CompanyName -and -not [string]::IsNullOrWhiteSpace($script:LogConfig.CompanyName)) {
+        $parts += $script:LogConfig.CompanyName.Trim()
+    }
+    $tickets = $script:LogConfig.TicketNumbers
+    if ($tickets -and $tickets.Count -gt 0) {
+        $ticketStr = ($tickets | ForEach-Object { $_.ToString().Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ', '
+        if ($ticketStr) { $parts += $ticketStr }
+    }
+    if ($parts.Count -eq 0) { return $null }
+    return $parts -join ' | '
 }
 
 function Remove-ExpiredLogFiles {
@@ -155,6 +179,7 @@ function Write-Log {
     $comp = if ($Component) { $Component } elseif ($script:LogConfig.Component) { $script:LogConfig.Component } else { 'Main' }
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
     $sessionId = $script:LogConfig.SessionId
+    $contextStr = Get-LogContextString
     $logPath = Get-CurrentLogFilePath
     $acquired = $false
     try {
@@ -170,12 +195,15 @@ function Write-Log {
                     Level     = $Level
                     Component = $comp
                     SessionId = $sessionId
+                    Company   = $script:LogConfig.CompanyName
+                    Ticket    = if ($script:LogConfig.TicketNumbers -and $script:LogConfig.TicketNumbers.Count -gt 0) { ($script:LogConfig.TicketNumbers -join ', ') } else { $null }
                     Message   = $Message
                 } + $Data
                 $line = $entry | ConvertTo-Json -Compress
             } else {
                 $sessionPart = if ($sessionId) { "[$sessionId] " } else { '' }
-                $line = "[$timestamp] [$Level] $sessionPart[$comp] $Message"
+                $contextPart = if ($contextStr) { "[$contextStr] " } else { '' }
+                $line = "[$timestamp] [$Level] $sessionPart$contextPart[$comp] $Message"
             }
             Add-Content -Path $logPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
             # Check rotation
@@ -221,6 +249,27 @@ function Set-LogSession {
     $script:LogConfig.SessionId = $SessionId
 }
 
+function Set-LogContext {
+    <#
+    .SYNOPSIS
+        Set company and ticket identifiers for log line identification.
+    .PARAMETER CompanyName
+        Company or client name.
+    .PARAMETER TicketNumbers
+        Ticket number(s) - array or single string.
+    #>
+    param(
+        [string]$CompanyName = $null,
+        [array]$TicketNumbers = @()
+    )
+    if ($CompanyName -and -not [string]::IsNullOrWhiteSpace($CompanyName)) {
+        $script:LogConfig.CompanyName = $CompanyName.Trim()
+    }
+    if ($TicketNumbers) {
+        $script:LogConfig.TicketNumbers = @($TicketNumbers | ForEach-Object { $_.ToString().Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+}
+
 function Close-Logger {
     try {
         if ($script:LogConfig._fileLock) {
@@ -235,4 +284,4 @@ function Get-LogPath {
     return (Get-CurrentLogFilePath)
 }
 
-Export-ModuleMember -Function Initialize-Logger, Write-Log, Set-LogLevel, Set-LogComponent, Set-LogSession, Close-Logger, Get-LogPath, Get-DefaultLogPath
+Export-ModuleMember -Function Initialize-Logger, Write-Log, Set-LogLevel, Set-LogComponent, Set-LogSession, Set-LogContext, Close-Logger, Get-LogPath, Get-DefaultLogPath

@@ -451,6 +451,7 @@ function New-SecurityInvestigationReport {
         # Ignore Windows Forms errors when running outside GUI context
     }
     if ($ProgressCallback) { try { & $ProgressCallback "Starting report generation..." } catch {} }
+    if (Get-Command Set-LogContext -ErrorAction SilentlyContinue) { Set-LogContext -CompanyName $CompanyName -TicketNumbers $TicketNumbers }
     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Starting report generation" -Level Info -Component ExportUtils }
 
     $report = @{}
@@ -579,13 +580,15 @@ function New-SecurityInvestigationReport {
                 IncludeSecurityAlerts = $IncludeSecurityAlerts
                 IncludeSecurityIncidents = $IncludeSecurityIncidents
                 SessionId = $SessionId
+                CompanyName = $CompanyName
+                TicketNumbers = $TicketNumbers
                 StatusFile = $StatusFile
             }
 
             $exchangeScript = {
                 param($ExportUtilsPath, $Params)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
-                try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId | Out-Null } catch {}
+                try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
                 # Reuse cached Exchange connection if available (EXO v2 token cache)
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: connecting..." -Level Info -Component ExchangeRS }
@@ -649,7 +652,7 @@ function New-SecurityInvestigationReport {
             $graphScript = {
                 param($ExportUtilsPath, $Params)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
-                try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId | Out-Null } catch {}
+                try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
                 # Reuse cached Graph token (MSAL cache may be process-wide)
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: connecting..." -Level Info -Component GraphRS }
@@ -2095,7 +2098,9 @@ function Get-ExchangeMessageTrace {
 function Get-ExchangeInboxRules {
     param(
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [int]$ThrottleLimit = 10
     )
     
     try {
@@ -2125,64 +2130,105 @@ function Get-ExchangeInboxRules {
         }
 
         $allRules = New-Object System.Collections.Generic.List[object]
-        foreach ($mbx in $mailboxes) {
-            $upn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
-            try {
-                # Try to get all rules including hidden/system-managed ones
-                # Some rules like "Junk E-Mail Rule" may be hidden or system-managed
-                $rules = @()
+        $upns = $mailboxes | ForEach-Object { if ($_.UserPrincipalName) { $_.UserPrincipalName } else { $_.PrimarySmtpAddress } }
+
+        if ($upns.Count -le 3) {
+            # Sequential for small sets
+            foreach ($upn in $upns) {
                 try {
-                    # First try with IncludeHidden parameter if it exists (Exchange Online)
-                    $rules = Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop
+                    $rules = @()
+                    try { $rules = Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop }
+                    catch { try { $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop } catch { Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"; continue } }
+                    foreach ($r in $rules) {
+                        $isHidden = $false
+                        if ($r.PSObject.Properties.Name -contains 'IsHidden') { $isHidden = $r.IsHidden }
+                        elseif ($r.PSObject.Properties.Name -contains 'Hidden') { $isHidden = $r.Hidden }
+                        elseif ($r.PSObject.Properties.Name -contains 'SystemManaged') { $isHidden = $r.SystemManaged }
+                        $isSystemRule = $r.Name -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)'
+                        [void]$allRules.Add([pscustomobject]@{
+                            MailboxOwner        = $upn
+                            Name                = $r.Name
+                            Enabled             = $r.Enabled
+                            Priority            = $r.Priority
+                            FromAddressContains = ($r.FromAddressContainsWords -join ';')
+                            SubjectContains     = ($r.SubjectContainsWords -join ';')
+                            SentTo              = ($r.SentTo -join ';')
+                            RedirectTo          = ($r.RedirectTo -join ';')
+                            ForwardTo           = ($r.ForwardTo -join ';')
+                            ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
+                            DeleteMessage       = $r.DeleteMessage
+                            StopProcessing      = $r.StopProcessingRules
+                            IsHidden            = $isHidden
+                            IsSystemManaged     = $isSystemRule
+                            Description         = ($r.Description -join ' ')
+                        })
+                    }
                 } catch {
-                    # If IncludeHidden doesn't work, try without it (fallback)
-                    try {
-                        $rules = Get-InboxRule -Mailbox $upn -ErrorAction Stop
-                    } catch {
-                        Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
-                        continue
-                    }
+                    Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
                 }
-                
-                foreach ($r in $rules) {
-                    # Check if rule is hidden/system-managed
-                    $isHidden = $false
-                    if ($r.PSObject.Properties.Name -contains 'IsHidden') {
-                        $isHidden = $r.IsHidden
-                    } elseif ($r.PSObject.Properties.Name -contains 'Hidden') {
-                        $isHidden = $r.Hidden
-                    } elseif ($r.PSObject.Properties.Name -contains 'SystemManaged') {
-                        $isHidden = $r.SystemManaged
-                    }
-                    
-                    # Check if rule name indicates it's a system rule (like "Junk E-Mail Rule")
-                    $isSystemRule = $false
-                    if ($r.Name -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)') {
-                        $isSystemRule = $true
-                    }
-                    
-                    $obj = [pscustomobject]@{
-                        MailboxOwner        = $upn
-                        Name                = $r.Name
-                        Enabled             = $r.Enabled
-                        Priority            = $r.Priority
-                        FromAddressContains = ($r.FromAddressContainsWords -join ';')
-                        SubjectContains     = ($r.SubjectContainsWords -join ';')
-                        SentTo              = ($r.SentTo -join ';')
-                        RedirectTo          = ($r.RedirectTo -join ';')
-                        ForwardTo           = ($r.ForwardTo -join ';')
-                        ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
-                        DeleteMessage       = $r.DeleteMessage
-                        StopProcessing      = $r.StopProcessingRules
-                        IsHidden            = $isHidden
-                        IsSystemManaged     = $isSystemRule
-                        Description         = ($r.Description -join ' ')
-                    }
-                    [void]$allRules.Add($obj)
-                }
-            } catch {
-                Write-Warning "Get-InboxRule failed for ${upn}: $($_.Exception.Message)"
             }
+        } else {
+            # Parallel runspaces for larger sets (10 concurrent by default)
+            $throttle = [Math]::Max(1, [Math]::Min($ThrottleLimit, 20))
+            $fetchScript = {
+                param($Upn)
+                $result = @()
+                try {
+                    Connect-ExchangeOnline -ShowBanner:$false -ErrorAction SilentlyContinue | Out-Null
+                    $rules = @()
+                    try { $rules = Get-InboxRule -Mailbox $Upn -IncludeHidden -ErrorAction Stop }
+                    catch { try { $rules = Get-InboxRule -Mailbox $Upn -ErrorAction Stop } catch { return $result } }
+                    foreach ($r in $rules) {
+                        $isHidden = $false
+                        if ($r.PSObject.Properties.Name -contains 'IsHidden') { $isHidden = $r.IsHidden }
+                        elseif ($r.PSObject.Properties.Name -contains 'Hidden') { $isHidden = $r.Hidden }
+                        elseif ($r.PSObject.Properties.Name -contains 'SystemManaged') { $isHidden = $r.SystemManaged }
+                        $isSystemRule = $r.Name -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)'
+                        $result += [pscustomobject]@{
+                            MailboxOwner        = $Upn
+                            Name                = $r.Name
+                            Enabled             = $r.Enabled
+                            Priority            = $r.Priority
+                            FromAddressContains = ($r.FromAddressContainsWords -join ';')
+                            SubjectContains     = ($r.SubjectContainsWords -join ';')
+                            SentTo              = ($r.SentTo -join ';')
+                            RedirectTo          = ($r.RedirectTo -join ';')
+                            ForwardTo           = ($r.ForwardTo -join ';')
+                            ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
+                            DeleteMessage       = $r.DeleteMessage
+                            StopProcessing      = $r.StopProcessingRules
+                            IsHidden            = $isHidden
+                            IsSystemManaged     = $isSystemRule
+                            Description         = ($r.Description -join ' ')
+                        }
+                    }
+                } catch {}
+                return $result
+            }
+            $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+            try { $iss.ImportPSModule('ExchangeOnlineManagement') } catch {}
+            $runspacePool = [runspacefactory]::CreateRunspacePool(1, $throttle, $iss, $Host)
+            $runspacePool.Open()
+            $jobs = New-Object System.Collections.Generic.List[object]
+            foreach ($upn in $upns) {
+                $ps = [PowerShell]::Create()
+                $ps.RunspacePool = $runspacePool
+                $null = $ps.AddScript($fetchScript).AddArgument($upn)
+                $asyncResult = $ps.BeginInvoke()
+                $jobs.Add([pscustomobject]@{ PowerShell = $ps; UPN = $upn; AsyncResult = $asyncResult })
+            }
+            foreach ($j in $jobs) {
+                try {
+                    $rules = $j.PowerShell.EndInvoke($j.AsyncResult)
+                    if ($rules) { foreach ($r in $rules) { [void]$allRules.Add($r) } }
+                } catch {
+                    Write-Warning "Get-InboxRule failed for $($j.UPN): $($_.Exception.Message)"
+                } finally {
+                    $j.PowerShell.Dispose()
+                }
+            }
+            $runspacePool.Close()
+            $runspacePool.Dispose()
         }
 
         return [System.Collections.ArrayList]$allRules
