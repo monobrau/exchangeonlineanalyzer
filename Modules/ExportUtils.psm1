@@ -1,3 +1,85 @@
+# Safe DoEvents - no-op when running in worker/console context (System.Windows.Forms not loaded)
+function Invoke-DoEventsSafe {
+    try { [System.Windows.Forms.Application]::DoEvents() } catch { }
+}
+
+# POC: Get Graph access token from current MgGraph context for token passing (avoids extra auth prompts in runspaces)
+function Get-GraphAccessToken {
+    param(
+        [Parameter(Mandatory=$false)]
+        [scriptblock]$DiagnosticCallback = $null
+    )
+    $log = { param($msg) if ($DiagnosticCallback) { & $DiagnosticCallback $msg } }
+    $token = $null
+    $method = $null
+
+    # Method 1: Direct AccessToken property (some SDK versions)
+    try {
+        $ctx = Get-MgContext -ErrorAction Stop
+        if ($ctx -and $ctx.PSObject.Properties['AccessToken']) {
+            $token = $ctx.AccessToken
+            $method = 'AccessToken'
+        } else {
+            & $log "Get-MgContext.AccessToken: property not found"
+        }
+    } catch {
+        & $log "Get-MgContext.AccessToken: $($_.Exception.Message)"
+    }
+
+    # Method 2: TokenCache.AccessToken (RestrictedSender pattern)
+    if (-not $token) {
+        try {
+            $cache = Get-MgContext -ErrorAction Stop | Select-Object -ExpandProperty TokenCache -ErrorAction SilentlyContinue
+            if ($cache -and $cache.PSObject.Properties['AccessToken']) {
+                $token = $cache.AccessToken
+                $method = 'TokenCache'
+            } else {
+                & $log "TokenCache.AccessToken: property not found or null"
+            }
+        } catch {
+            & $log "TokenCache.AccessToken: $($_.Exception.Message)"
+        }
+    }
+
+    # Method 3: Extract from Invoke-MgGraphRequest HttpResponseMessage (GitHub #2023 workaround)
+    if (-not $token) {
+        try {
+            $resp = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/v1.0/me' -Method GET -OutputType HttpResponseMessage -ErrorAction Stop
+            if ($resp -and $resp.RequestMessage -and $resp.RequestMessage.Headers -and $resp.RequestMessage.Headers.Authorization) {
+                $param = $resp.RequestMessage.Headers.Authorization.Parameter
+                if ($param -and $param.Length -gt 10) {
+                    $token = $param
+                    $method = 'HttpResponseMessage'
+                }
+            } else {
+                & $log "HttpResponseMessage: Authorization header not found"
+            }
+        } catch {
+            & $log "HttpResponseMessage: $($_.Exception.Message)"
+        }
+    }
+
+    # Method 4: Try TokenCache with different property paths (SDK v2.x variations)
+    if (-not $token) {
+        try {
+            $ctx = Get-MgContext -ErrorAction Stop
+            $raw = $ctx | ConvertTo-Json -Depth 5 -Compress -ErrorAction SilentlyContinue
+            if ($ctx.TokenCache) {
+                $tc = $ctx.TokenCache
+                if ($tc.AccessToken) { $token = $tc.AccessToken; $method = 'TokenCache.AccessToken' }
+                elseif ($tc.PSObject.Properties['AccessToken']) { $token = $tc.AccessToken; $method = 'TokenCache.AccessToken' }
+            }
+            if (-not $token) { & $log "TokenCache variations: no AccessToken found" }
+        } catch {
+            & $log "TokenCache variations: $($_.Exception.Message)"
+        }
+    }
+
+    if ($method) { & $log "Token acquired via: $method" }
+    else { & $log "All token extraction methods failed" }
+    return $token
+}
+
 # Returns:
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
 function Get-MfaCoverageReport {
@@ -437,7 +519,11 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [string]$SessionId = $null,
         [Parameter(Mandatory=$false)]
-        [string]$StatusFile = $null
+        [string]$StatusFile = $null,
+        [Parameter(Mandatory=$false)]
+        [switch]$NoParallel = $false,
+        [Parameter(Mandatory=$false)]
+        [string]$GraphAccessToken = $null
     )
 
     try {
@@ -547,9 +633,12 @@ function New-SecurityInvestigationReport {
         Write-Log -Message "Connections verified. Exchange=$exchangeConnected Graph=$graphConnected" -Level Info -Component ExportUtils
     }
 
-    # Collect data - run Exchange and Graph collectors in parallel when both connections exist
-    # Runspaces attempt to reuse MSAL/EXO token cache (process-wide); fallback to sequential if empty
-    $useParallelCollection = $exchangeConnected -and $graphConnected
+    # Collect data - parallel when GUI context; or when worker has Graph token (token passing avoids extra auth prompts)
+    $hasTokenForParallel = $GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)
+    $useParallelCollection = $exchangeConnected -and $graphConnected -and (
+        ($MainForm -and $StatusLabel -and -not $NoParallel -and -not $StatusFile) -or
+        ($hasTokenForParallel -and $StatusFile -and -not $NoParallel)
+    )
     $exchangeResult = @{}
     $graphResult = @{}
 
@@ -561,6 +650,7 @@ function New-SecurityInvestigationReport {
                 MessageTraceDaysBack = $MessageTraceDaysBack
                 SignInLogsDaysBack = $SignInLogsDaysBack
                 SelectedUsers = $SelectedUsers
+                UseSequentialInboxRules = (-not $MainForm -or -not $StatusLabel)  # Worker/runspace: avoid parallel inbox rules to prevent extra auth prompts
                 IncludeMessageTrace = $IncludeMessageTrace
                 IncludeInboxRules = $IncludeInboxRules
                 IncludeTransportRules = $IncludeTransportRules
@@ -583,7 +673,12 @@ function New-SecurityInvestigationReport {
                 CompanyName = $CompanyName
                 TicketNumbers = $TicketNumbers
                 StatusFile = $StatusFile
+                GraphAccessToken = $GraphAccessToken
             }
+
+            # When token passing (worker): Exchange runs in main thread (reuse session, no extra auth); Graph in runspace with token
+            # When GUI: both run in runspaces (Exchange runspace may prompt if cache not shared)
+            $useHybridParallel = $hasTokenForParallel
 
             $exchangeScript = {
                 param($ExportUtilsPath, $Params)
@@ -605,7 +700,7 @@ function New-SecurityInvestigationReport {
                 if ($Params.IncludeInboxRules) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting inbox rules..." -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: collecting inbox rules..." } catch {}
-                    $r.InboxRules = Get-ExchangeInboxRules -SelectedUsers $Params.SelectedUsers
+                    $r.InboxRules = Get-ExchangeInboxRules -SelectedUsers $Params.SelectedUsers -ForceSequential $Params.UseSequentialInboxRules
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: inbox rules done ($($r.InboxRules.Count) entries)" -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: inbox rules done ($($r.InboxRules.Count) entries)" } catch {}
                 }
@@ -654,10 +749,21 @@ function New-SecurityInvestigationReport {
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
-                # Reuse cached Graph token (MSAL cache may be process-wide)
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: connecting..." -Level Info -Component GraphRS }
                 try { & $writeStatus "Graph runspace: connecting..." } catch {}
-                Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+                # POC: Use token passing when available to avoid extra auth prompts
+                if ($Params.GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($Params.GraphAccessToken)) {
+                    try {
+                        $secToken = ConvertTo-SecureString $Params.GraphAccessToken -AsPlainText -Force
+                        Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop | Out-Null
+                        if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Graph runspace: connected via token (no auth prompt)" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 }
+                    } catch {
+                        if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Graph runspace: token failed ($($_.Exception.Message)), falling back to Connect-MgGraph" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 }
+                        Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+                    }
+                } else {
+                    Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+                }
                 $r = @{}
                 if ($Params.IncludeAuditLogs) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: collecting audit logs..." -Level Info -Component GraphRS }
@@ -719,41 +825,68 @@ function New-SecurityInvestigationReport {
                 try { $iss.ImportPSModule($mod) } catch { }
             }
 
-            $exchangeRunspace = [runspacefactory]::CreateRunspace($iss)
-            $exchangeRunspace.Open()
-            $exchangePs = [PowerShell]::Create()
-            $exchangePs.Runspace = $exchangeRunspace
-            $null = $exchangePs.AddScript($exchangeScript).AddArgument($exportUtilsPath).AddArgument($params)
-
-            $graphRunspace = [runspacefactory]::CreateRunspace($iss)
-            $graphRunspace.Open()
-            $graphPs = [PowerShell]::Create()
-            $graphPs.Runspace = $graphRunspace
-            $null = $graphPs.AddScript($graphScript).AddArgument($exportUtilsPath).AddArgument($params)
-
             $statusMsg = "Collecting Exchange and Graph data in parallel... This may take several minutes."
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
             if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
             if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Parallel collection started (Exchange + Graph)" -Level Info -Component ExportUtils }
-            [System.Windows.Forms.Application]::DoEvents()
+            Invoke-DoEventsSafe
             Write-Host $statusMsg -ForegroundColor Cyan
 
-            $exchangeHandle = $exchangePs.BeginInvoke()
-            $graphHandle = $graphPs.BeginInvoke()
+            $exchangeResult = @{}
+            $graphResult = @{}
 
-            $exchangeResultRaw = $exchangePs.EndInvoke($exchangeHandle)
-            $waitMsg = "Exchange data collected. Waiting for Graph..."
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $waitMsg }
-            if ($ProgressCallback) { try { & $ProgressCallback $waitMsg } catch {} }
-            if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange data collected. Waiting for Graph..." -Level Info -Component ExportUtils }
-            [System.Windows.Forms.Application]::DoEvents()
-            $graphResultRaw = $graphPs.EndInvoke($graphHandle)
+            if ($useHybridParallel) {
+                # Hybrid: Graph in runspace (token), Exchange in main thread (reuse session - no extra auth)
+                $graphRunspace = [runspacefactory]::CreateRunspace($iss)
+                $graphRunspace.Open()
+                $graphPs = [PowerShell]::Create()
+                $graphPs.Runspace = $graphRunspace
+                $null = $graphPs.AddScript($graphScript).AddArgument($exportUtilsPath).AddArgument($params)
+                $graphHandle = $graphPs.BeginInvoke()
 
-            $exchangePs.Dispose(); $exchangeRunspace.Dispose()
-            $graphPs.Dispose(); $graphRunspace.Dispose()
+                # Exchange in main thread (reuses existing session)
+                $writeStatus = { param($m) if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 } }
+                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers }
+                if ($IncludeInboxRules) { try { & $writeStatus "Exchange (main): collecting inbox rules..." } catch {}; $exchangeResult.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential $true }
+                if ($IncludeTransportRules) { $exchangeResult.TransportRules = Get-ExchangeTransportRules }
+                if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
+                if ($IncludeMailboxForwarding) { $exchangeResult.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers }
+                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
+                try { & $writeStatus "Exchange (main): complete" } catch {}
 
-            $exchangeResult = if ($exchangeResultRaw -is [hashtable]) { $exchangeResultRaw } elseif ($exchangeResultRaw -and $exchangeResultRaw.Count -gt 0) { $exchangeResultRaw[0] } else { @{} }
-            $graphResult = if ($graphResultRaw -is [hashtable]) { $graphResultRaw } elseif ($graphResultRaw -and $graphResultRaw.Count -gt 0) { $graphResultRaw[0] } else { @{} }
+                $graphResultRaw = $graphPs.EndInvoke($graphHandle)
+                $graphPs.Dispose(); $graphRunspace.Dispose()
+                $graphResult = if ($graphResultRaw -is [hashtable]) { $graphResultRaw } elseif ($graphResultRaw -and $graphResultRaw.Count -gt 0) { $graphResultRaw[0] } else { @{} }
+            } else {
+                # GUI mode: both runspaces (Exchange runspace may prompt)
+                $exchangeRunspace = [runspacefactory]::CreateRunspace($iss)
+                $exchangeRunspace.Open()
+                $exchangePs = [PowerShell]::Create()
+                $exchangePs.Runspace = $exchangeRunspace
+                $null = $exchangePs.AddScript($exchangeScript).AddArgument($exportUtilsPath).AddArgument($params)
+
+                $graphRunspace = [runspacefactory]::CreateRunspace($iss)
+                $graphRunspace.Open()
+                $graphPs = [PowerShell]::Create()
+                $graphPs.Runspace = $graphRunspace
+                $null = $graphPs.AddScript($graphScript).AddArgument($exportUtilsPath).AddArgument($params)
+
+                $exchangeHandle = $exchangePs.BeginInvoke()
+                $graphHandle = $graphPs.BeginInvoke()
+
+                $exchangeResultRaw = $exchangePs.EndInvoke($exchangeHandle)
+                $waitMsg = "Exchange data collected. Waiting for Graph..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $waitMsg }
+                if ($ProgressCallback) { try { & $ProgressCallback $waitMsg } catch {} }
+                Invoke-DoEventsSafe
+                $graphResultRaw = $graphPs.EndInvoke($graphHandle)
+
+                $exchangePs.Dispose(); $exchangeRunspace.Dispose()
+                $graphPs.Dispose(); $graphRunspace.Dispose()
+
+                $exchangeResult = if ($exchangeResultRaw -is [hashtable]) { $exchangeResultRaw } elseif ($exchangeResultRaw -and $exchangeResultRaw.Count -gt 0) { $exchangeResultRaw[0] } else { @{} }
+                $graphResult = if ($graphResultRaw -is [hashtable]) { $graphResultRaw } elseif ($graphResultRaw -and $graphResultRaw.Count -gt 0) { $graphResultRaw[0] } else { @{} }
+            }
 
             # If runspaces returned empty (no connection reuse), fall back to sequential
             if (($exchangeResult.Keys.Count -eq 0 -and $exchangeConnected) -or ($graphResult.Keys.Count -eq 0 -and $graphConnected)) {
@@ -787,55 +920,55 @@ function New-SecurityInvestigationReport {
                 $statusMsg = "Collecting message trace data (last $MessageTraceDaysBack days)... This may take several minutes."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
                 Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
             }
 
             if ($IncludeInboxRules) {
                 $statusMsg = "Exporting inbox rules..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers
+                $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential:(-not $MainForm -or -not $StatusLabel)
                 Write-Host "Collected $($report.InboxRules.Count) inbox rules" -ForegroundColor Green
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
             }
 
             if ($IncludeTransportRules) {
                 $statusMsg = "Collecting transport rules..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.TransportRules = Get-ExchangeTransportRules
                 Write-Host "Collected $($report.TransportRules.Count) transport rules" -ForegroundColor Green
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
             }
 
             if ($IncludeMailFlowConnectors) {
                 $statusMsg = "Collecting mail flow connectors..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailFlowConnectors = Get-MailFlowConnectors
                 Write-Host "Collected $($report.MailFlowConnectors.Count) mail flow connectors" -ForegroundColor Green
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
             }
 
             if ($IncludeMailboxForwarding) {
                 $statusMsg = "Collecting mailbox forwarding and delegation..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
                 $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers
                 Write-Host "Collected mailbox forwarding data for $($report.MailboxForwarding.Count) mailboxes" -ForegroundColor Green
-                [System.Windows.Forms.Application]::DoEvents()
+                Invoke-DoEventsSafe
             }
 
             if ($IncludeUnifiedAuditLogs) {
@@ -843,11 +976,11 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting unified audit logs (last $MessageTraceDaysBack days)... This may take several minutes."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                    [System.Windows.Forms.Application]::DoEvents()
+                    Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
                     $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
                     Write-Host "Collected $($report.UnifiedAuditLogs.Count) unified audit log entries" -ForegroundColor Green
-                    [System.Windows.Forms.Application]::DoEvents()
+                    Invoke-DoEventsSafe
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
                         Write-Warning "Insufficient permissions to read unified audit logs. Requires 'View-Only Audit Logs' role."
@@ -878,13 +1011,13 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This may take several minutes."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                    [System.Windows.Forms.Application]::DoEvents()
+                    Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
                     $report.SignInLogs = Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers
                     if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                         Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
                     }
-                    [System.Windows.Forms.Application]::DoEvents()
+                    Invoke-DoEventsSafe
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
                         Write-Warning "Insufficient permissions to read sign-in logs. Requires 'AuditLog.Read.All' permission."
@@ -915,7 +1048,7 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting Intune device compliance records..."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                    [System.Windows.Forms.Application]::DoEvents()
+                    Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
                     
                     # Extract DeviceIds from sign-in logs if available
@@ -940,7 +1073,7 @@ function New-SecurityInvestigationReport {
                         Write-Host "No Intune device records found" -ForegroundColor Yellow
                         $report.IntuneDevices = @()
                     }
-                    [System.Windows.Forms.Application]::DoEvents()
+                    Invoke-DoEventsSafe
                 } catch {
                     Write-Warning "Failed to collect Intune device records: $($_.Exception.Message)"
                     $report.IntuneDevices = @()
@@ -958,14 +1091,15 @@ function New-SecurityInvestigationReport {
         $report.IntuneDevices = @()
     }
 
-    # Phase 3: Independent Graph collectors - try parallel (runspaces use Connect-MgGraph -NoWelcome for cache reuse), fallback sequential
+    # Phase 3: Independent Graph collectors - skip parallel when NoParallel/StatusFile (runspaces trigger extra auth)
     $graphParallelPhaseSucceeded = $false
     if ($graphConnected) {
+        if (-not $NoParallel -and -not $StatusFile) {
         try {
             $statusMsg = "Collecting independent Graph data in parallel... This may take several minutes."
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
             if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-            [System.Windows.Forms.Application]::DoEvents()
+            Invoke-DoEventsSafe
             Write-Host $statusMsg -ForegroundColor Cyan
             $parallelParams = @{
                 DaysBack = $DaysBack
@@ -990,6 +1124,7 @@ function New-SecurityInvestigationReport {
             }
         } catch {
             Write-Warning "Parallel Graph collection failed: $($_.Exception.Message). Falling back to sequential."
+        }
         }
         if (-not $graphParallelPhaseSucceeded) {
             if ($IncludeAuditLogs) {
@@ -2100,7 +2235,9 @@ function Get-ExchangeInboxRules {
         [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @(),
         [Parameter(Mandatory=$false)]
-        [int]$ThrottleLimit = 10
+        [int]$ThrottleLimit = 10,
+        [Parameter(Mandatory=$false)]
+        [switch]$ForceSequential = $false
     )
     
     try {
@@ -2132,8 +2269,8 @@ function Get-ExchangeInboxRules {
         $allRules = New-Object System.Collections.Generic.List[object]
         $upns = $mailboxes | ForEach-Object { if ($_.UserPrincipalName) { $_.UserPrincipalName } else { $_.PrimarySmtpAddress } }
 
-        if ($upns.Count -le 3) {
-            # Sequential for small sets
+        if ($upns.Count -le 3 -or $ForceSequential) {
+            # Sequential for small sets or when ForceSequential (avoids extra auth prompts in worker/runspace context)
             foreach ($upn in $upns) {
                 try {
                     $rules = @()
@@ -5918,7 +6055,7 @@ function Get-DLPViolations {
     }
 }
 
-Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
+Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,Get-GraphAccessToken,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
 Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs
 Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents,Get-IntuneDeviceComplianceRecords

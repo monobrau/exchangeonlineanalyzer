@@ -1191,62 +1191,26 @@ try {
                     Write-Host "Search terms received: `$(`$searchTerms -join ', ')" -ForegroundColor Cyan
                     Write-Status "Validating users for search terms: `$(`$searchTerms -join ', ')"
                     
-                    # Perform user search using improved search logic
+                    # Perform user search - minimal API calls to avoid extra auth prompts
                     `$allFoundUsers = @()
                     foreach (`$searchTerm in `$searchTerms) {
                         Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
                         `$users = @()
                         try {
-                            # Try server-side filtering first (startsWith) - try multiple case variations
-                            `$users1 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTerm') or startsWith(UserPrincipalName,'`$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            `$searchTermLower = `$searchTerm.ToLower()
-                            `$searchTermUpper = `$searchTerm.ToUpper()
-                            `$searchTermTitle = (Get-Culture).TextInfo.ToTitleCase(`$searchTermLower)
-                            `$users2 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermLower') or startsWith(UserPrincipalName,'`$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            `$users3 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermUpper') or startsWith(UserPrincipalName,'`$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            `$users4 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermTitle') or startsWith(UserPrincipalName,'`$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            `$users = @(`$users1) + @(`$users2) + @(`$users3) + @(`$users4) | Sort-Object UserPrincipalName -Unique
-                            Write-Host "    Found `$(`$users.Count) users with startsWith filter (tried multiple case variations)" -ForegroundColor Gray
-                        } catch {
-                            Write-Host "    startsWith filter failed: `$(`$_.Exception.Message), trying alternatives..." -ForegroundColor Yellow
-                        }
-                        
-                        if (`$users.Count -eq 0) {
-                            # Try alternative search methods
-                            try {
-                                # Try exact match (case-sensitive first, then variations)
-                                `$usersAlt1 = Get-MgUser -Filter "DisplayName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                `$usersAlt1 += Get-MgUser -Filter "DisplayName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                `$usersAlt1 = `$usersAlt1 | Sort-Object UserPrincipalName -Unique
-                                
-                                `$usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '`$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                `$usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '`$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                `$usersAlt2 = `$usersAlt2 | Sort-Object UserPrincipalName -Unique
-                                
-                                # Try case-insensitive search by getting all users and filtering client-side
-                                Write-Host "    Fetching all users for client-side filtering..." -ForegroundColor Gray
-                                try {
-                                    `$allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
-                                    Write-Host "    Retrieved `$(`$allUsers.Count) total users from tenant" -ForegroundColor Gray
-                                    
-                                    # Use case-insensitive matching with -ilike
-                                    `$searchTermPattern = "*`$searchTerm*"
-                                    `$usersAlt3 = `$allUsers | Where-Object { 
-                                        (`$_.DisplayName -and `$_.DisplayName -ilike `$searchTermPattern) -or 
-                                        (`$_.UserPrincipalName -and `$_.UserPrincipalName -ilike `$searchTermPattern)
-                                    }
-                                    Write-Host "    Client-side filtering: Found `$(`$usersAlt3.Count) users matching '`$searchTerm'" -ForegroundColor Gray
-                                } catch {
-                                    Write-Warning "Failed to retrieve all users for client-side filtering: `$(`$_.Exception.Message)"
-                                    `$usersAlt3 = @()
-                                }
-                                
-                                # Combine all results
-                                `$users = @(`$usersAlt1) + @(`$usersAlt2) + @(`$usersAlt3) | Sort-Object UserPrincipalName -Unique
-                                Write-Host "    Combined alternative searches: Found `$(`$users.Count) users" -ForegroundColor Gray
-                            } catch {
-                                Write-Warning "Could not search for users matching '`$searchTerm': `$(`$_.Exception.Message)"
+                            # Single startsWith call (original + lowercase covers most cases; avoid multiple calls)
+                            `$escaped = `$searchTerm.Replace("'","''")
+                            `$users = Get-MgUser -Filter "startsWith(DisplayName,'`$escaped') or startsWith(UserPrincipalName,'`$escaped')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            if (`$users.Count -eq 0) {
+                                `$escapedLower = `$searchTerm.ToLower().Replace("'","''")
+                                `$users = Get-MgUser -Filter "startsWith(DisplayName,'`$escapedLower') or startsWith(UserPrincipalName,'`$escapedLower')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
                             }
+                            if (`$users.Count -eq 0) {
+                                # Exact match fallback (2 calls max)
+                                `$users = Get-MgUser -Filter "DisplayName eq '`$escaped' or UserPrincipalName eq '`$escaped'" -Top 10 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            }
+                            Write-Host "    Found `$(`$users.Count) user(s)" -ForegroundColor Gray
+                        } catch {
+                            Write-Warning "Search failed for '`$searchTerm': `$(`$_.Exception.Message)"
                         }
                         if (`$users.Count -gt 0) {
                             `$allFoundUsers += `$users
@@ -1488,9 +1452,21 @@ try {
                 
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
                 if (Get-Command Set-LogContext -ErrorAction SilentlyContinue) { Set-LogContext -CompanyName `$CompanyName -TicketNumbers `$ticketNumbers }
+                # POC: Get Graph token for parallel collection (avoids extra auth prompts in runspaces)
+                `$graphToken = `$null
+                if (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
+                    try {
+                        `$diag = { param(`$m) Write-Status `$m; if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken: `$m" -Level Debug } }
+                        `$graphToken = Get-GraphAccessToken -DiagnosticCallback `$diag
+                    } catch {
+                        Write-Status "Graph token acquisition failed: `$(`$_.Exception.Message)"
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken failed: `$(`$_.Exception.Message)" -Level Warning }
+                    }
+                }
+                if (`$graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel:(-not `$graphToken) -GraphAccessToken `$graphToken -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
