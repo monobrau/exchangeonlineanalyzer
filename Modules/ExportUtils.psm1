@@ -519,6 +519,8 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeUnifiedAuditLogs = $true,
         [Parameter(Mandatory=$false)]
+        [array]$UnifiedAuditLogRecordTypes = $null,
+        [Parameter(Mandatory=$false)]
         [scriptblock]$ProgressCallback = $null,
         [Parameter(Mandatory=$false)]
         [string]$SessionId = $null,
@@ -661,6 +663,7 @@ function New-SecurityInvestigationReport {
                 IncludeMailFlowConnectors = $IncludeMailFlowConnectors
                 IncludeMailboxForwarding = $IncludeMailboxForwarding
                 IncludeUnifiedAuditLogs = $IncludeUnifiedAuditLogs
+                UnifiedAuditLogRecordTypes = $UnifiedAuditLogRecordTypes
                 IncludeAuditLogs = $IncludeAuditLogs
                 IncludeSignInLogs = $IncludeSignInLogs
                 IncludeIntuneDevices = $IncludeIntuneDevices
@@ -734,7 +737,7 @@ function New-SecurityInvestigationReport {
                     try {
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting unified audit logs..." -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: collecting unified audit logs... (this may take 10+ minutes)" } catch {}
-                        $r.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile
+                        $r.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" } catch {}
                     }
@@ -857,7 +860,7 @@ function New-SecurityInvestigationReport {
                 if ($IncludeTransportRules) { $exchangeResult.TransportRules = Get-ExchangeTransportRules }
                 if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
                 if ($IncludeMailboxForwarding) { $exchangeResult.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers }
-                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
+                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
                 try { & $writeStatus "Exchange (main): complete" } catch {}
 
                 $graphResultRaw = $graphPs.EndInvoke($graphHandle)
@@ -984,7 +987,7 @@ function New-SecurityInvestigationReport {
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
+                    $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -RecordTypes $UnifiedAuditLogRecordTypes
                     Write-Host "Collected $($report.UnifiedAuditLogs.Count) unified audit log entries" -ForegroundColor Green
                     Invoke-DoEventsSafe
                 } catch {
@@ -1459,6 +1462,28 @@ function New-SecurityInvestigationReport {
                     $report.FilePaths.UnifiedAuditLogsJson = $json
                     Write-Warning "Failed to export unified audit logs to CSV, exported to JSON instead"
                 }
+            } elseif ($report.UnifiedAuditLogs -ne $null) {
+                # No error, but also no results - create informational file
+                $infoFile = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix_NoResults.txt"
+                $infoMsg = @"
+Unified Audit Logs Query Completed - No Results Found
+
+Query executed successfully but no audit log entries were found matching the specified criteria.
+
+Date Range: Last $($report.DaysAnalyzed) days
+Query Time: $($report.Timestamp)
+
+Possible reasons:
+- No audit log entries exist for the specified time period
+- RecordType filters may have excluded all entries
+- Selected users may not have any audit log activity
+- Audit logging may not be enabled for the queried activities
+
+Note: Unified audit logs require Exchange Online connection and 'View-Only Audit Logs' role.
+"@
+                $infoMsg | Out-File -FilePath $infoFile -Encoding utf8
+                $report.FilePaths.UnifiedAuditLogsInfo = $infoFile
+                Write-Host "Unified audit log query completed - no results found (see UnifiedAuditLogs$ticketSuffix_NoResults.txt)" -ForegroundColor Yellow
             }
 
             # Sign-in Logs export
@@ -2662,7 +2687,9 @@ function Get-UnifiedAuditLogs {
         [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @(),
         [Parameter(Mandatory=$false)]
-        [string]$StatusFile = $null
+        [string]$StatusFile = $null,
+        [Parameter(Mandatory=$false)]
+        [array]$RecordTypes = $null
     )
 
     try {
@@ -2688,53 +2715,140 @@ function Get-UnifiedAuditLogs {
         # Use SessionId + SessionCommand ReturnLargeSet for pagination (up to 50,000 results vs 5,000)
         $sessionId = "UnifiedAuditLog_" + (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 
+        # All available RecordTypes (if all are selected, we skip filtering)
+        $allAvailableRecordTypes = @(
+            'ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated',
+            'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation',
+            'OneDrive', 'MicrosoftTeams', 'AzureActiveDirectory',
+            'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
+        )
+
+        # RecordType parameter only accepts a single value, so if multiple RecordTypes provided, query each separately
+        # However, if ALL available types are selected, skip filtering entirely for efficiency
+        $recordTypesToQuery = @()
+        if ($RecordTypes -and $RecordTypes.Count -gt 0) {
+            # Normalize: remove duplicates and compare unique sets
+            $uniqueSelected = $RecordTypes | Select-Object -Unique
+            $uniqueAvailable = $allAvailableRecordTypes | Select-Object -Unique
+            
+            # Check if all available types are selected (order doesn't matter)
+            $allSelected = $true
+            foreach ($availableType in $uniqueAvailable) {
+                if ($uniqueSelected -notcontains $availableType) {
+                    $allSelected = $false
+                    break
+                }
+            }
+            
+            # If all types are selected, query without RecordType filter for efficiency
+            if ($allSelected -and $uniqueSelected.Count -ge $uniqueAvailable.Count) {
+                # All types selected - query without RecordType filter
+                $recordTypesToQuery = @($null)
+                Write-Host "  All RecordTypes selected - querying all audit log types (no filter)" -ForegroundColor Gray
+            } else {
+                # Some types selected - query each separately
+                $recordTypesToQuery = $uniqueSelected
+                Write-Host "  Filtering by RecordTypes ($($uniqueSelected.Count) types): $($uniqueSelected -join ', ')" -ForegroundColor Gray
+            }
+        } else {
+            # No RecordType filter - query all types
+            $recordTypesToQuery = @($null)
+        }
+
         # If SelectedUsers provided, filter by user
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             foreach ($user in $SelectedUsers) {
                 $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                $userTotalCount = 0
+                foreach ($recordType in $recordTypesToQuery) {
+                    try {
+                        $recordTypeLabel = if ($recordType) { " (RecordType: $recordType)" } else { " (all RecordTypes)" }
+                        Write-Host "  Querying unified audit logs for: $upn$recordTypeLabel (paginated, up to 50,000 results)..." -ForegroundColor Gray
+                        $userSessionId = "${sessionId}_$($upn.Replace('@','_').Replace('.','_'))"
+                        if ($recordType) {
+                            $userSessionId = "${userSessionId}_$($recordType.Replace(' ','_'))"
+                        }
+                        $pageCount = 0
+                        do {
+                            $searchParams = @{
+                                StartDate = $startDate
+                                EndDate = $endDate
+                                UserIds = $upn
+                                ResultSize = 5000
+                                SessionId = $userSessionId
+                                SessionCommand = 'ReturnLargeSet'
+                                ErrorAction = 'Stop'
+                            }
+                            if ($recordType) {
+                                $searchParams['RecordType'] = $recordType
+                            }
+                            $results = Search-UnifiedAuditLog @searchParams
+                            if ($results -and $results.Count -gt 0) {
+                                foreach ($item in $results) {
+                                    [void]$raw.Add($item)
+                                }
+                                $pageCount += $results.Count
+                                Write-Host "    Page: $($results.Count) entries (total for $upn$recordTypeLabel : $pageCount)" -ForegroundColor Gray
+                                if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected for $upn$recordTypeLabel..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                            } else {
+                                break
+                            }
+                        } while ($results.Count -eq 5000)
+                        $userTotalCount += $pageCount
+                        if ($pageCount -gt 0) {
+                            Write-Host "  Found $pageCount audit log entries for $upn$recordTypeLabel" -ForegroundColor Gray
+                        }
+                    } catch {
+                        Write-Warning "Failed to get unified audit logs for $upn$recordTypeLabel : $($_.Exception.Message)"
+                        if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: Failed to get unified audit logs for $upn$recordTypeLabel : $($_.Exception.Message)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                    }
+                }
+                if ($userTotalCount -gt 0) {
+                    Write-Host "  Total: $userTotalCount audit log entries for $upn" -ForegroundColor Green
+                }
+            }
+        } else {
+            # No selection - get all unified audit logs with pagination
+            foreach ($recordType in $recordTypesToQuery) {
                 try {
-                    Write-Host "  Querying unified audit logs for: $upn (paginated, up to 50,000 results)..." -ForegroundColor Gray
-                    $userSessionId = "${sessionId}_$($upn.Replace('@','_').Replace('.','_'))"
+                    $recordTypeLabel = if ($recordType) { " (RecordType: $recordType)" } else { " (all RecordTypes)" }
+                    Write-Host "  Querying unified audit logs for all users$recordTypeLabel (paginated, up to 50,000 results)..." -ForegroundColor Gray
+                    $typeSessionId = $sessionId
+                    if ($recordType) {
+                        $typeSessionId = "${sessionId}_$($recordType.Replace(' ','_'))"
+                    }
                     $pageCount = 0
                     do {
-                        $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -UserIds $upn -ResultSize 5000 -SessionId $userSessionId -SessionCommand ReturnLargeSet -ErrorAction Stop
+                        $searchParams = @{
+                            StartDate = $startDate
+                            EndDate = $endDate
+                            ResultSize = 5000
+                            SessionId = $typeSessionId
+                            SessionCommand = 'ReturnLargeSet'
+                            ErrorAction = 'Stop'
+                        }
+                        if ($recordType) {
+                            $searchParams['RecordType'] = $recordType
+                        }
+                        $results = Search-UnifiedAuditLog @searchParams
                         if ($results -and $results.Count -gt 0) {
                             foreach ($item in $results) {
                                 [void]$raw.Add($item)
                             }
                             $pageCount += $results.Count
-                            Write-Host "    Page: $($results.Count) entries (total for $upn : $pageCount)" -ForegroundColor Gray
-                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected for $upn..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                            Write-Host "    Page: $($results.Count) entries (total$recordTypeLabel : $pageCount)" -ForegroundColor Gray
+                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected$recordTypeLabel (still running, can take 10-20 min)..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
                         } else {
                             break
                         }
                     } while ($results.Count -eq 5000)
-                    Write-Host "  Found $pageCount audit log entries for $upn" -ForegroundColor Gray
-                } catch {
-                    Write-Warning "Failed to get unified audit logs for $upn : $($_.Exception.Message)"
-                }
-            }
-        } else {
-            # No selection - get all unified audit logs with pagination
-            try {
-                Write-Host "  Querying unified audit logs for all users (paginated, up to 50,000 results)..." -ForegroundColor Gray
-                $pageCount = 0
-                do {
-                    $results = Search-UnifiedAuditLog -StartDate $startDate -EndDate $endDate -ResultSize 5000 -SessionId $sessionId -SessionCommand ReturnLargeSet -ErrorAction Stop
-                    if ($results -and $results.Count -gt 0) {
-                        foreach ($item in $results) {
-                            [void]$raw.Add($item)
-                        }
-                        $pageCount += $results.Count
-                        Write-Host "    Page: $($results.Count) entries (total: $pageCount)" -ForegroundColor Gray
-                        if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected (still running, can take 10-20 min)..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
-                    } else {
-                        break
+                    if ($pageCount -gt 0) {
+                        Write-Host "  Found $pageCount audit log entries$recordTypeLabel" -ForegroundColor Gray
                     }
-                } while ($results.Count -eq 5000)
-                Write-Host "  Found $pageCount audit log entries" -ForegroundColor Gray
-            } catch {
-                Write-Warning "Failed to get unified audit logs: $($_.Exception.Message)"
+                } catch {
+                    Write-Warning "Failed to get unified audit logs$recordTypeLabel : $($_.Exception.Message)"
+                    if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: Failed to get unified audit logs$recordTypeLabel : $($_.Exception.Message)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                }
             }
         }
 
@@ -2777,9 +2891,25 @@ function Get-UnifiedAuditLogs {
 
         Write-Host "  Total unified audit log entries collected: $($flattened.Count)" -ForegroundColor Gray
         
+        if ($flattened.Count -eq 0) {
+            Write-Host "  No unified audit log entries found for the specified criteria." -ForegroundColor Yellow
+            if ($RecordTypes -and $RecordTypes.Count -gt 0) {
+                Write-Host "  RecordTypes queried: $($RecordTypes -join ', ')" -ForegroundColor Gray
+            }
+            if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+                Write-Host "  Users queried: $($SelectedUsers.Count)" -ForegroundColor Gray
+            }
+            Write-Host "  Date range: $($startDate.ToString('yyyy-MM-dd HH:mm:ss')) to $($endDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Gray
+        }
+        
         return [System.Collections.ArrayList]$flattened
     } catch {
-        Write-Error "Failed to collect unified audit logs: $($_.Exception.Message)"
+        $errorMsg = "Failed to collect unified audit logs: $($_.Exception.Message)"
+        Write-Error $errorMsg
+        Write-Warning $errorMsg
+        if ($StatusFile) { 
+            "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $errorMsg" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 
+        }
         return @()
     }
 }
