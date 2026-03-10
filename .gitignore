@@ -68,3 +68,6 @@ desktop.ini
 # Generated Scripts
 BulkTenantWorker.ps1
 
+# Build output
+Release/
+

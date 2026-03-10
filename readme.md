@@ -2,17 +2,17 @@
 
 A comprehensive PowerShell-based GUI tool for analyzing Exchange Online inbox rules, managing user accounts, monitoring security configurations, and investigating Entra ID (Azure AD) accounts. This tool provides administrators with powerful capabilities to detect suspicious inbox rules, manage user access, export detailed reports, and perform comprehensive Entra ID investigations.
 
-## 🔧 **Version 8.3 - Now Available!**
-**✅ Sign-in Logs Collection** - Added sign-in logs export to Security Investigation Report with time range selector (1/7/30 days)
-**✅ Security Analysis Module** - New module for risky user detection, Conditional Access policy analysis, and app registration audit
-**✅ Enhanced Security Investigation** - User selection filtering for targeted reports, improved grid displays, and better UI organization
-**✅ Graceful Licensing Handling** - Sign-in logs and security features handle licensing requirements with clear error messages
+## 🔧 **Version 8.4 - Now Available!**
+**✅ Bulk Tenant Validation Fix** - Fixed user validation in client auth console (null-safety in search terms and rate limiting)
+**✅ Exchange Online Auth Speed** - Faster Connect-ExchangeOnline with -SkipLoadingCmdletHelp, reduced pre-connect delay
+**✅ Security Incidents Off by Default** - Bulk exporter no longer requires SecurityIncident.Read.All; works across 250+ tenants without permission changes
+**✅ Response Handling Fix** - Corrected Get-Content pipeline that could corrupt validation responses
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
 ![Exchange Online](https://img.shields.io/badge/Exchange-Online-orange)
 ![Microsoft Graph](https://img.shields.io/badge/Microsoft-Graph-green)
 ![Entra ID](https://img.shields.io/badge/Entra-ID-purple)
-![Version](https://img.shields.io/badge/Version-8.3-blue)
+![Version](https://img.shields.io/badge/Version-8.4-blue)
 
 ## 🚀 Entra Portal Shortcuts (v8.1)
 
@@ -160,6 +160,13 @@ Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
    
    # Standalone bulk tenant exporter
    .\BulkTenantExporter.ps1
+   ```
+
+4. **Build EXE (Optional)**
+   ```powershell
+   Install-Module ps2exe -Scope CurrentUser
+   .\Build-Exe.ps1
+   # Output: Release\ExchangeOnlineAnalyzer.exe, Release\BulkTenantExporter.exe
    ```
 
 ## 💻 Usage
@@ -361,7 +368,13 @@ Enable verbose output by modifying the script's debug settings or checking conso
 
 ## 📝 Version History
 
-### v8.3 (Current)
+### v8.4 (Current)
+- ✅ **Bulk Tenant Validation Fix**: Fixed "method on null" error in user validation; null-safety in search terms, rate limiting, and worker script
+- ✅ **Exchange Online Auth Speed**: Added -SkipLoadingCmdletHelp when available; reduced pre-connect sleep from 1000ms to 500ms
+- ✅ **Security Incidents Off by Default**: Bulk exporter excludes Security Incidents from default and Select All; no extra permissions needed for 250+ tenants
+- ✅ **Response Handling**: Fixed Get-Content pipeline that could corrupt validation responses; use .Trim() on string directly
+
+### v8.3
 - ✅ **Client Auth Console Improvements**: Enhanced minimizable tenant display with proper visual item hiding
 - ✅ **MFA Coverage Enhancement**: Made MFA coverage optional and selected by default; fixed user security groups collection
 - ✅ **Extended Email Trace Support**: Added support for up to 90 days of email traces in bulk exporters

@@ -33,6 +33,11 @@ if (-not $script:scriptRoot) {
 
 # Import Logging module first (contains Safe-ImportModule utility)
 Import-Module "$script:scriptRoot\Modules\Logging.psm1" -Global -ErrorAction Stop
+# Import SecurityHelpers for input validation and sanitization
+$securityHelpersPath = Join-Path $script:scriptRoot 'Scripts\Common\SecurityHelpers.psm1'
+if (Test-Path $securityHelpersPath) {
+    Import-Module $securityHelpersPath -Force -ErrorAction SilentlyContinue
+}
 
 # Function to search and validate users from search terms
 function Search-AndValidateUsers {
@@ -203,10 +208,11 @@ $script:readinessCheckCount = @{}
 $script:clientAuthStates = @{}
 $script:clientAuthControls = @{}
 $script:clientCacheDirs = @{}
-$script:clientValidatedUsers = @{}  # Store validated UserPrincipalNames per tenant (keyed by ClientNumber)
-$script:clientSearchTerms = @{}  # Store search terms per tenant when validation can't complete (keyed by ClientNumber)
-$script:clientTickets = @{}  # Store ConnectWise ticket content per tenant (keyed by ClientNumber)
-$script:clientReportFolders = @{}  # Store report output folder paths per tenant (keyed by ClientNumber)
+    $script:clientValidatedUsers = @{}  # Store validated UserPrincipalNames per tenant (keyed by ClientNumber)
+    $script:clientSearchTerms = @{}  # Store search terms per tenant when validation can't complete (keyed by ClientNumber)
+    $script:clientTickets = @{}  # Store ConnectWise ticket content per tenant (keyed by ClientNumber)
+    $script:clientReportFolders = @{}  # Store report output folder paths per tenant (keyed by ClientNumber)
+    $script:clientReadinessChecked = @{}  # PERFORMANCE: Cache readiness check to avoid repeated checks
 
 # Create Bulk Tenant Exporter form
 $bulkForm = New-Object System.Windows.Forms.Form
@@ -276,12 +282,12 @@ $bulkConfigGroupBox.Controls.AddRange(@($bulkPresetLabel, $bulkPresetComboBox, $
 $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
 $bulkReportsGroupBox.Text = "Select Reports to Export"
 $bulkReportsGroupBox.Location = New-Object System.Drawing.Point(15, 230)
-$bulkReportsGroupBox.Size = New-Object System.Drawing.Size(400, 320)
+$bulkReportsGroupBox.Size = New-Object System.Drawing.Size(420, 360)
 
 # Create scrollable panel inside GroupBox
 $bulkReportsScrollPanel = New-Object System.Windows.Forms.Panel
 $bulkReportsScrollPanel.Location = New-Object System.Drawing.Point(10, 20)
-$bulkReportsScrollPanel.Size = New-Object System.Drawing.Size(380, 290)
+$bulkReportsScrollPanel.Size = New-Object System.Drawing.Size(400, 330)
 $bulkReportsScrollPanel.AutoScroll = $true
 $bulkReportsScrollPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::None
 
@@ -301,154 +307,215 @@ $bulkDeselectAllBtn.Size = New-Object System.Drawing.Size(90, 25)
 $bulkMessageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMessageTraceCheckBox.Text = "Message Trace"
 $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(10, 40)
-$bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkMessageTraceCheckBox.Checked = $true
 
 $bulkUnifiedAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkUnifiedAuditLogsCheckBox.Text = "Email Audit Logs (Unified Audit Log - requires View-Only Audit Logs)"
 $bulkUnifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 65)
 $bulkUnifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkUnifiedAuditLogsCheckBox.Checked = $true
+$bulkUnifiedAuditLogsCheckBox.Checked = $false
+
+$bulkUnifiedAuditLogTypesBtn = New-Object System.Windows.Forms.Button
+$bulkUnifiedAuditLogTypesBtn.Text = "Configure record types..."
+$bulkUnifiedAuditLogTypesBtn.Location = New-Object System.Drawing.Point(10, 87)
+$bulkUnifiedAuditLogTypesBtn.Size = New-Object System.Drawing.Size(150, 22)
+$bulkUnifiedAuditLogTypesBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$script:unifiedAuditLogRecordTypes = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated')
+$bulkUnifiedAuditLogTypesBtn.add_Click({
+    $allTypes = @(
+        'ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated',
+        'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation',
+        'OneDrive', 'MicrosoftTeams', 'AzureActiveDirectory',
+        'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
+    )
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Unified Audit Log - Record Types"
+    $dlg.Size = New-Object System.Drawing.Size(320, 380)
+    $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $clb = New-Object System.Windows.Forms.CheckedListBox
+    $clb.Location = New-Object System.Drawing.Point(10, 10)
+    $clb.Size = New-Object System.Drawing.Size(285, 280)
+    $clb.CheckOnClick = $true
+    foreach ($t in $allTypes) {
+        $idx = $clb.Items.Add($t)
+        if ($script:unifiedAuditLogRecordTypes -contains $t) { $clb.SetItemChecked($idx, $true) }
+    }
+    $okBtn = New-Object System.Windows.Forms.Button
+    $okBtn.Text = "OK"
+    $okBtn.Location = New-Object System.Drawing.Point(130, 300)
+    $okBtn.Size = New-Object System.Drawing.Size(75, 28)
+    $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dlg.AcceptButton = $okBtn
+    $cancelBtn = New-Object System.Windows.Forms.Button
+    $cancelBtn.Text = "Cancel"
+    $cancelBtn.Location = New-Object System.Drawing.Point(215, 300)
+    $cancelBtn.Size = New-Object System.Drawing.Size(75, 28)
+    $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.CancelButton = $cancelBtn
+    $selectDefaultBtn = New-Object System.Windows.Forms.Button
+    $selectDefaultBtn.Text = "Exchange only (default)"
+    $selectDefaultBtn.Location = New-Object System.Drawing.Point(10, 300)
+    $selectDefaultBtn.Size = New-Object System.Drawing.Size(110, 28)
+    $selectDefaultBtn.add_Click({
+        for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+            $clb.SetItemChecked($i, $clb.Items[$i] -in @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated'))
+        }
+    })
+    $dlg.Controls.AddRange(@($clb, $okBtn, $cancelBtn, $selectDefaultBtn))
+    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:unifiedAuditLogRecordTypes = @()
+        for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+            if ($clb.GetItemChecked($i)) { $script:unifiedAuditLogRecordTypes += $clb.Items[$i] }
+        }
+        if ($script:unifiedAuditLogRecordTypes.Count -eq 0) {
+            $script:unifiedAuditLogRecordTypes = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated')
+        }
+    }
+})
 
 $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkInboxRulesCheckBox.Text = "Inbox Rules"
-$bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
-$bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 115)
+$bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkInboxRulesCheckBox.Checked = $true
 
 $bulkTransportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkTransportRulesCheckBox.Text = "Transport Rules"
 $bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 115)
-$bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkTransportRulesCheckBox.Checked = $true
 
 $bulkMailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailFlowCheckBox.Text = "Mail Flow Connectors"
-$bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 140)
-$bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 165)
+$bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkMailFlowCheckBox.Checked = $true
 
 $bulkMailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailboxForwardingCheckBox.Text = "Mailbox Forwarding & Delegation"
-$bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 165)
-$bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 190)
+$bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkMailboxForwardingCheckBox.Checked = $true
 
 # Entra ID / Identity & Access Reports
 $bulkAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAuditLogsCheckBox.Text = "Audit Logs (Graph)"
-$bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 190)
+$bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
 $bulkAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAuditLogsCheckBox.Checked = $true
 
 $bulkSignInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSignInLogsCheckBox.Text = "Sign-In Logs"
 $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
-$bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkSignInLogsCheckBox.Checked = $true
 
 $bulkMfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMfaCoverageCheckBox.Text = "MFA Coverage"
-$bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 240)
+$bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 290)
 $bulkMfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMfaCoverageCheckBox.Checked = $true
 
 $bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
-$bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 265)
-$bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 315)
+$bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkCaPoliciesCheckBox.Checked = $true
 
 $bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAppRegistrationsCheckBox.Text = "App Registrations"
-$bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 290)
+$bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 340)
 $bulkAppRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAppRegistrationsCheckBox.Checked = $true
 
 # Security Reports
 $bulkSecurityAlertsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSecurityAlertsCheckBox.Text = "Security Alerts (requires E5/SecurityAlert.Read.All)"
-$bulkSecurityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 315)
-$bulkSecurityAlertsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSecurityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
+$bulkSecurityAlertsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkSecurityAlertsCheckBox.Checked = $true
 
 $bulkSecurityIncidentsCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkSecurityIncidentsCheckBox.Text = "Security Incidents (requires E5/SecurityIncident.Read.All)"
-$bulkSecurityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 340)
-$bulkSecurityIncidentsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-$bulkSecurityIncidentsCheckBox.Checked = $true
+    $bulkSecurityIncidentsCheckBox.Text = "Security Incidents (requires E5/SecurityIncident.Read.All)"
+    $bulkSecurityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 390)
+    $bulkSecurityIncidentsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+    $bulkSecurityIncidentsCheckBox.Checked = $false  # Off by default - requires extra permission for 250 tenants
 
 $bulkDLPViolationsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkDLPViolationsCheckBox.Text = "DLP Violations (requires AuditLog.Read.All)"
 $bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
-$bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkDLPViolationsCheckBox.Checked = $true
 
 # Collaboration Reports (SharePoint/OneDrive/Teams)
 $bulkSharePointActivityCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointActivityCheckBox.Text = "SharePoint Activity (requires E5/Reports.Read.All)"
-$bulkSharePointActivityCheckBox.Location = New-Object System.Drawing.Point(10, 390)
+$bulkSharePointActivityCheckBox.Location = New-Object System.Drawing.Point(10, 440)
 $bulkSharePointActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointActivityCheckBox.Checked = $true
 
 $bulkOneDriveActivityCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkOneDriveActivityCheckBox.Text = "OneDrive Activity (requires E5/Reports.Read.All)"
 $bulkOneDriveActivityCheckBox.Location = New-Object System.Drawing.Point(10, 415)
-$bulkOneDriveActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkOneDriveActivityCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkOneDriveActivityCheckBox.Checked = $true
 
 $bulkTeamsActivityCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkTeamsActivityCheckBox.Text = "Teams Activity (requires E5/Reports.Read.All)"
-$bulkTeamsActivityCheckBox.Location = New-Object System.Drawing.Point(10, 440)
+$bulkTeamsActivityCheckBox.Location = New-Object System.Drawing.Point(10, 490)
 $bulkTeamsActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkTeamsActivityCheckBox.Checked = $true
 
 $bulkSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointSharingCheckBox.Text = "SharePoint Sharing Links"
-$bulkSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 465)
-$bulkSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 515)
+$bulkSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkSharePointSharingCheckBox.Checked = $true
 
 $bulkAnonymousSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAnonymousSharePointSharingCheckBox.Text = "Anonymous SharePoint Sharing (requires AuditLog.Read.All)"
-$bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 490)
-$bulkAnonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 540)
+$bulkAnonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkAnonymousSharePointSharingCheckBox.Checked = $true
 
 $bulkSharePointFileSharingLinksCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointFileSharingLinksCheckBox.Text = "SharePoint File Sharing Links"
-$bulkSharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 515)
+$bulkSharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 565)
 $bulkSharePointFileSharingLinksCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointFileSharingLinksCheckBox.Checked = $true
 
 # Device Management Reports
 $bulkIntuneDevicesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkIntuneDevicesCheckBox.Text = "Intune Device Records (requires DeviceManagementManagedDevices.Read.All)"
-$bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 540)
-$bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 590)
+$bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkIntuneDevicesCheckBox.Checked = $true
 
 # Detailed File Action Logs
 $bulkSharePointOneDriveFileActionsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointOneDriveFileActionsCheckBox.Text = "SharePoint/OneDrive File Actions (detailed audit log - requires View-Only Audit Logs)"
-$bulkSharePointOneDriveFileActionsCheckBox.Location = New-Object System.Drawing.Point(10, 565)
-$bulkSharePointOneDriveFileActionsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+$bulkSharePointOneDriveFileActionsCheckBox.Location = New-Object System.Drawing.Point(10, 615)
+$bulkSharePointOneDriveFileActionsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
 
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
 $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
-$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 215)
+$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 265)
 $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
 $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
-$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 213)
+$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 263)
 $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
 $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
 $bulkSignInLogsDaysComboBox.SelectedIndex = 1  # Default to 7 days
+$bulkSignInLogsDaysLabel.Enabled = $bulkSignInLogsCheckBox.Checked
 $bulkSignInLogsDaysComboBox.Enabled = $bulkSignInLogsCheckBox.Checked
 
 $bulkSignInLogsCheckBox.add_CheckedChanged({
+    $bulkSignInLogsDaysLabel.Enabled = $bulkSignInLogsCheckBox.Checked
     $bulkSignInLogsDaysComboBox.Enabled = $bulkSignInLogsCheckBox.Checked
 })
 
@@ -500,7 +567,7 @@ $bulkSelectAllBtn.add_Click({
     $bulkTeamsActivityCheckBox.Checked = $true
     $bulkSharePointSharingCheckBox.Checked = $true
     $bulkSecurityAlertsCheckBox.Checked = $true
-    $bulkSecurityIncidentsCheckBox.Checked = $true
+    $bulkSecurityIncidentsCheckBox.Checked = $false  # Excluded from Select All - requires SecurityIncident.Read.All
     $bulkIntuneDevicesCheckBox.Checked = $true
     $bulkUnifiedAuditLogsCheckBox.Checked = $true
     $bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
@@ -536,7 +603,7 @@ $bulkDeselectAllBtn.add_Click({
 $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkSelectAllBtn, $bulkDeselectAllBtn,
     # Exchange Online / Email Reports
-    $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
+    $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkUnifiedAuditLogTypesBtn, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
     $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox,
     # Entra ID / Identity & Access Reports
     $bulkAuditLogsCheckBox, $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox, $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
@@ -643,6 +710,7 @@ $bulkStartButton.add_Click({
         IncludeDLPViolations = $bulkDLPViolationsCheckBox.Checked
         IncludeIntuneDevices = $bulkIntuneDevicesCheckBox.Checked
         IncludeUnifiedAuditLogs = $bulkUnifiedAuditLogsCheckBox.Checked
+        UnifiedAuditLogRecordTypes = $script:unifiedAuditLogRecordTypes
         IncludeSharePointOneDriveFileActions = $bulkSharePointOneDriveFileActionsCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days
@@ -696,67 +764,188 @@ param(
     [string[]]`$SelectedUsers = @()
 )
 
+# CRITICAL: Set error action preference immediately after param block
+`$ErrorActionPreference = "Continue"
+
+# Pause immediately to see if script starts at all
+Write-Host "==========================================" -ForegroundColor Green
+Write-Host "Worker script starting..." -ForegroundColor Green
+Write-Host "==========================================" -ForegroundColor Green
+Write-Host "Parameters received:" -ForegroundColor Green
+Write-Host "  ClientNumber: `$ClientNumber" -ForegroundColor Gray
+Write-Host "  ScriptRoot: `$ScriptRoot" -ForegroundColor Gray
+Write-Host "  StatusFile: `$StatusFile" -ForegroundColor Gray
+Write-Host "  ResultFile: `$ResultFile" -ForegroundColor Gray
+Write-Host "  CommandDir: `$CommandDir" -ForegroundColor Gray
+Start-Sleep -Seconds 3
+
 function Write-Status {
     param([string]`$Message)
-    `$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "[`$timestamp] `$Message" | Out-File -FilePath `$StatusFile -Append -Encoding UTF8
-    Write-Host "[Client `$ClientNumber] `$Message" -ForegroundColor Cyan
+    try {
+        `$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        "[`$timestamp] `$Message" | Out-File -FilePath `$StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+        Write-Host "[Client `$ClientNumber] `$Message" -ForegroundColor Cyan
+    } catch {
+        Write-Host "[Client `$ClientNumber] `$Message" -ForegroundColor Cyan
+    }
 }
 
 function Write-CommandResponse {
     param([string]`$Response)
-    `$responseFile = Join-Path `$CommandDir "Client`$(`$ClientNumber)_Response.txt"
-    `$Response | Out-File -FilePath `$responseFile -Encoding UTF8 -Force
+    try {
+        `$responseFile = Join-Path `$CommandDir "Client`$(`$ClientNumber)_Response.txt"
+        `$Response | Out-File -FilePath `$responseFile -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "WARNING: Could not write command response: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
+# Write initial error to result file immediately in case of early failure
+Write-Host "Writing initial status to result file..." -ForegroundColor Gray
 try {
-    # Set window title
-    try {
-        `$Host.UI.RawUI.WindowTitle = "Client `$ClientNumber - Waiting for Authentication Commands"
-    } catch {}
-    
+    if (`$ResultFile) {
+        "STARTING" | Out-File -FilePath `$ResultFile -Encoding UTF8 -ErrorAction SilentlyContinue
+        Write-Host "Result file written successfully" -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: ResultFile parameter is null!" -ForegroundColor Red
+    }
+} catch {
+    Write-Host "WARNING: Could not write result file: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "ResultFile value: `$ResultFile" -ForegroundColor Yellow
+}
+Start-Sleep -Seconds 1
+
+Write-Host "Entering main try block..." -ForegroundColor Green
+try {
+    # DEBUGGING: Pause at start to see any immediate errors
     Write-Host "==========================================" -ForegroundColor Cyan
     Write-Host "CLIENT `$ClientNumber - PowerShell Session" -ForegroundColor Cyan
     Write-Host "==========================================" -ForegroundColor Cyan
     Write-Host "PowerShell session starting for Client `$ClientNumber..." -ForegroundColor Yellow
+    Write-Host "ScriptRoot: `$ScriptRoot" -ForegroundColor Gray
+    Write-Host "StatusFile: `$StatusFile" -ForegroundColor Gray
+    Write-Host "ResultFile: `$ResultFile" -ForegroundColor Gray
+    Write-Host "CommandDir: `$CommandDir" -ForegroundColor Gray
     Write-Host ""
+    
+    # Set window title
+    try {
+        `$Host.UI.RawUI.WindowTitle = "Client `$ClientNumber - Waiting for Authentication Commands"
+        Write-Host "Window title set successfully" -ForegroundColor Gray
+    } catch {
+        Write-Host "WARNING: Could not set window title: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+    }
+    
+    # Initialize status file IMMEDIATELY
+    try {
+        "STARTING" | Out-File -FilePath `$ResultFile -Encoding UTF8 -ErrorAction Stop
+        Write-Host "Result file initialized: `$ResultFile" -ForegroundColor Green
+    } catch {
+        `$errMsg = "CRITICAL: Could not write result file: `$(`$_.Exception.Message)"
+        Write-Host `$errMsg -ForegroundColor Red
+        Write-Host "Result file path: `$ResultFile" -ForegroundColor Red
+        Write-Host "Directory exists: `$((Test-Path (Split-Path `$ResultFile -Parent)))" -ForegroundColor Red
+        Start-Sleep -Seconds 10
+        exit 1
+    }
     
     # Initialize status file
     try {
-        "STARTING" | Out-File -FilePath `$ResultFile -Encoding UTF8 -ErrorAction Stop
-        Write-Host "Status file initialized: `$ResultFile" -ForegroundColor Gray
+        Write-Status "Client `$ClientNumber PowerShell session started"
+        Write-Host "Status file initialized successfully" -ForegroundColor Green
     } catch {
         Write-Host "WARNING: Could not write status file: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Status file path: `$StatusFile" -ForegroundColor Yellow
     }
     
-    Write-Status "Client `$ClientNumber PowerShell session started"
     Write-Host "This window is associated with Client `$ClientNumber" -ForegroundColor Yellow
     Write-Host "Waiting for authentication commands from GUI..." -ForegroundColor Yellow
     Write-Host ""
     
     # Create isolated cache directory for this client
-    `$cacheDir = Join-Path `$env:TEMP "ExchangeOnlineAnalyzer_Client`$ClientNumber_Cache_`$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-    `$null = New-Item -ItemType Directory -Path `$cacheDir -Force -ErrorAction Stop
-    `$env:IDENTITY_SERVICE_CACHE_DIR = `$cacheDir
-    `$env:MSAL_CACHE_DIR = `$cacheDir
-    `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
-    `$env:MSAL_DISABLE_BROKER = "1"
-    `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
-    Write-Status "Using isolated cache directory: `$cacheDir"
-    Write-Host "Cache directory: `$cacheDir" -ForegroundColor Gray
-    Write-Host ""
+    Write-Host "Creating cache directory..." -ForegroundColor Gray
+    try {
+        `$cacheDir = Join-Path `$env:TEMP "ExchangeOnlineAnalyzer_Client`$ClientNumber_Cache_`$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        `$null = New-Item -ItemType Directory -Path `$cacheDir -Force -ErrorAction Stop
+        `$env:IDENTITY_SERVICE_CACHE_DIR = `$cacheDir
+        `$env:MSAL_CACHE_DIR = `$cacheDir
+        `$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+        `$env:MSAL_DISABLE_BROKER = "1"
+        `$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+        Write-Status "Using isolated cache directory: `$cacheDir"
+        Write-Host "Cache directory created: `$cacheDir" -ForegroundColor Green
+        Write-Host ""
+    } catch {
+        `$errMsg = "CRITICAL: Failed to create cache directory: `$(`$_.Exception.Message)"
+        Write-Host `$errMsg -ForegroundColor Red
+        Write-Status `$errMsg
+        "ERROR: `$errMsg" | Out-File -FilePath `$ResultFile -Encoding UTF8 -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 10
+        exit 1
+    }
     
     # Import required modules
     Write-Status "Importing modules..."
     Write-Host "Importing modules..." -ForegroundColor Cyan
-    Import-Module "`$ScriptRoot\Modules\Logging.psm1" -Force -ErrorAction SilentlyContinue
-    try { Initialize-Logger -MinLevel Info -ConsoleOutput `$true -SessionId "Client`$ClientNumber" -CompanyName `$CompanyName -Component ExportUtils | Out-Null } catch {}
-    Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
+    Write-Host "ScriptRoot path: `$ScriptRoot" -ForegroundColor Gray
+    
+    # Check if ScriptRoot exists
+    if (-not (Test-Path `$ScriptRoot)) {
+        `$errorMsg = "CRITICAL: ScriptRoot directory does not exist: `$ScriptRoot"
+        Write-Host `$errorMsg -ForegroundColor Red
+        Write-Status `$errorMsg
+        "ERROR: `$errorMsg" | Out-File -FilePath `$ResultFile -Encoding UTF8 -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 10
+        exit 1
+    }
+    
+    # Import Logging module
+    Write-Host "Importing Logging module..." -ForegroundColor Gray
+    try {
+        `$loggingPath = Join-Path `$ScriptRoot "Modules\Logging.psm1"
+        if (Test-Path `$loggingPath) {
+            Import-Module `$loggingPath -Force -ErrorAction SilentlyContinue
+            Write-Host "Logging module imported" -ForegroundColor Green
+        } else {
+            Write-Host "WARNING: Logging.psm1 not found at `$loggingPath" -ForegroundColor Yellow
+        }
+        try { Initialize-Logger -MinLevel Info -ConsoleOutput `$true -SessionId "Client`$ClientNumber" -CompanyName `$CompanyName -Component ExportUtils | Out-Null } catch {}
+    } catch {
+        Write-Host "WARNING: Failed to import Logging module: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+    }
+    
+    # ROBUSTNESS: Better error handling for critical module import
+    Write-Host "Importing ExportUtils module..." -ForegroundColor Gray
+    try {
+        `$exportUtilsPath = Join-Path `$ScriptRoot "Modules\ExportUtils.psm1"
+        if (-not (Test-Path `$exportUtilsPath)) {
+            throw "ExportUtils.psm1 not found at `$exportUtilsPath"
+        }
+        Import-Module `$exportUtilsPath -Force -ErrorAction Stop
+        Write-Host "ExportUtils module imported successfully" -ForegroundColor Green
+    } catch {
+        `$errorMsg = "CRITICAL: Failed to import ExportUtils.psm1 - `$(`$_.Exception.Message)"
+        Write-Host `$errorMsg -ForegroundColor Red
+        Write-Host "Full error: `$(`$_.Exception | Out-String)" -ForegroundColor Red
+        Write-Status `$errorMsg
+        "ERROR: `$errorMsg`n`nFull details:`n`$(`$_.Exception | Out-String)" | Out-File -FilePath `$ResultFile -Encoding UTF8 -ErrorAction SilentlyContinue
+        Write-Host "Press any key to exit..."
+        try {
+            `$null = `$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        } catch {
+            Start-Sleep -Seconds 10
+        }
+        exit 1
+    }
+    
+    Write-Host "Importing GraphOnline module..." -ForegroundColor Gray
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
+    Write-Host "Importing BrowserIntegration module..." -ForegroundColor Gray
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
-    # Import Settings module for memberberry integration and AI readme generation
+    Write-Host "Importing Settings module..." -ForegroundColor Gray
     Import-Module "`$ScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
     Write-Status "Modules imported successfully"
+    Write-Host "All modules imported successfully" -ForegroundColor Green
     Write-Host ""
     
     # CRITICAL: Disconnect any existing Graph session before starting
@@ -802,11 +991,12 @@ try {
             IncludeTeamsActivity = if (`$null -ne `$jsonObj.IncludeTeamsActivity) { `$jsonObj.IncludeTeamsActivity } else { `$true }
             IncludeSharePointSharing = if (`$null -ne `$jsonObj.IncludeSharePointSharing) { `$jsonObj.IncludeSharePointSharing } else { `$true }
             IncludeSecurityAlerts = if (`$null -ne `$jsonObj.IncludeSecurityAlerts) { `$jsonObj.IncludeSecurityAlerts } else { `$true }
-            IncludeSecurityIncidents = if (`$null -ne `$jsonObj.IncludeSecurityIncidents) { `$jsonObj.IncludeSecurityIncidents } else { `$true }
+            IncludeSecurityIncidents = if (`$null -ne `$jsonObj.IncludeSecurityIncidents) { `$jsonObj.IncludeSecurityIncidents } else { `$false }
             IncludeAnonymousSharePointSharing = if (`$null -ne `$jsonObj.IncludeAnonymousSharePointSharing) { `$jsonObj.IncludeAnonymousSharePointSharing } else { `$true }
             IncludeSharePointFileSharingLinks = if (`$null -ne `$jsonObj.IncludeSharePointFileSharingLinks) { `$jsonObj.IncludeSharePointFileSharingLinks } else { `$true }
             IncludeDLPViolations = if (`$null -ne `$jsonObj.IncludeDLPViolations) { `$jsonObj.IncludeDLPViolations } else { `$true }
-            IncludeUnifiedAuditLogs = if (`$null -ne `$jsonObj.IncludeUnifiedAuditLogs) { `$jsonObj.IncludeUnifiedAuditLogs } else { `$true }
+            IncludeUnifiedAuditLogs = if (`$null -ne `$jsonObj.IncludeUnifiedAuditLogs) { `$jsonObj.IncludeUnifiedAuditLogs } else { `$false }
+            UnifiedAuditLogRecordTypes = if (`$jsonObj.UnifiedAuditLogRecordTypes) { @(`$jsonObj.UnifiedAuditLogRecordTypes) } else { `$null }
             IncludeSharePointOneDriveFileActions = if (`$null -ne `$jsonObj.IncludeSharePointOneDriveFileActions) { `$jsonObj.IncludeSharePointOneDriveFileActions } else { `$true }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
@@ -826,6 +1016,9 @@ try {
     Write-Host "Command file: `$commandFile" -ForegroundColor Gray
     Write-Host "Polling every `$pollInterval ms for commands..." -ForegroundColor Gray
     Write-Host ""
+    Write-Host "Worker script is now running and ready!" -ForegroundColor Green
+    Write-Host "This window will stay open. Do not close it manually." -ForegroundColor Yellow
+    Write-Host ""
     
     Write-Status "Command polling loop started - ready to receive commands"
     `$pollCount = 0
@@ -840,9 +1033,19 @@ try {
             Write-Host "Command file detected! Reading command..." -ForegroundColor Yellow
             Write-Host "Command file path: `$commandFile" -ForegroundColor Cyan
             Start-Sleep -Milliseconds 300  # Brief delay to ensure file is fully written
-            `$command = (Get-Content `$commandFile -Raw -ErrorAction SilentlyContinue).Trim().TrimStart([char]0xFEFF)
-            Write-Host "Command received: '`$command'" -ForegroundColor Cyan
-            Write-Host "Command length: `$(`$command.Length)" -ForegroundColor Gray
+            # SECURITY: Use safe command file reading with validation
+            if (Get-Command Read-CommandFile -ErrorAction SilentlyContinue) {
+                `$command = Read-CommandFile -CommandFilePath `$commandFile
+            } else {
+                `$command = (Get-Content `$commandFile -Raw -ErrorAction SilentlyContinue).Trim().TrimStart([char]0xFEFF)
+            }
+            if (`$command) {
+                `$commandType = if (`$command -match '^([^|]+)') { `$Matches[1] } else { "Unknown" }
+                Write-Host "Command type: `$commandType" -ForegroundColor Cyan
+                Write-Host "Command length: `$(`$command.Length)" -ForegroundColor Gray
+            } else {
+                Write-Host "No valid command found in file" -ForegroundColor Yellow
+            }
             Remove-Item `$commandFile -Force -ErrorAction SilentlyContinue
             Write-Host "Command file removed" -ForegroundColor Gray
             
@@ -1105,20 +1308,24 @@ try {
                 # Disconnect any existing Exchange session to ensure fresh authentication per tenant
                 Disconnect-ExchangeOnline -Confirm:`$false -ErrorAction SilentlyContinue
                 Get-PSSession | Where-Object { `$_.ConfigurationName -eq "Microsoft.Exchange" } | Remove-PSSession -ErrorAction SilentlyContinue
-                Start-Sleep -Milliseconds 1000  # Allow session to fully release before re-auth
+                Start-Sleep -Milliseconds 500  # Allow session to release before re-auth (reduced from 1000ms)
                 
                 # Exchange Online Authentication
                 Write-Host ""
                 Write-Host "Connecting to Exchange Online..." -ForegroundColor Yellow
-                Write-Host "A browser window will open for authentication - this may take 10-30 seconds to appear." -ForegroundColor Yellow
+                Write-Host "A browser window will open for authentication - typically 15-60 seconds total." -ForegroundColor Yellow
                 Write-Host "Please wait for the browser popup and complete the sign-in." -ForegroundColor Yellow
                 Write-Host ""
-                Write-Status "Waiting for browser popup to appear (this may take 10-30 seconds)..."
+                Write-Status "Waiting for browser popup (typically 15-60 seconds)..."
     
                 try {
-                    # Note: Connect-ExchangeOnline may take time to show the browser popup
-                    # Use -DisableWAM to prevent WAM (Web Account Manager) issues with newer module versions
-                    Connect-ExchangeOnline -ShowBanner:`$false -DisableWAM -ErrorAction Stop
+                    # Note: Connect-ExchangeOnline may take 15-60s (browser popup + sign-in)
+                    # -DisableWAM prevents WAM issues; -SkipLoadingCmdletHelp speeds up connection (ExchangeOnlineManagement v3.3+)
+                    `$connectParams = @{ ShowBanner = `$false; DisableWAM = `$true; ErrorAction = 'Stop' }
+                    if ((Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.Keys -contains 'SkipLoadingCmdletHelp') {
+                        `$connectParams['SkipLoadingCmdletHelp'] = `$true
+                    }
+                    Connect-ExchangeOnline @connectParams
                     `$exchangeAuthenticated = `$true
                     Write-Status "Exchange Online authentication successful!"
                     Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
@@ -1154,15 +1361,17 @@ try {
                         try {
                             `$searchTermsArray = `$searchTermsJson | ConvertFrom-Json -ErrorAction Stop
                             if (`$searchTermsArray -is [array]) {
-                                `$searchTerms = `$searchTermsArray
-                            } elseif (`$searchTermsArray -is [string]) {
+                                `$searchTerms = @(`$searchTermsArray | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) })
+                            } elseif (`$searchTermsArray -is [string] -and -not [string]::IsNullOrWhiteSpace(`$searchTermsArray)) {
                                 `$searchTerms = @(`$searchTermsArray)
+                            } elseif (`$searchTermsArray -ne `$null) {
+                                `$searchTerms = @(`$searchTermsArray | Where-Object { `$_ -ne `$null -and -not [string]::IsNullOrWhiteSpace(`$_) })
                             } else {
-                                `$searchTerms = @(`$searchTermsArray)
+                                `$searchTerms = @()
                             }
                         } catch {
                             # If JSON parsing fails, try splitting as comma-separated string
-                            `$searchTerms = `$searchTermsJson -split ',' | ForEach-Object { `$_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) }
+                            `$searchTerms = @(`$searchTermsJson -split ',' | ForEach-Object { if (`$_ -ne `$null) { `$_.Trim() } } | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) })
                         }
                     } else {
                         Write-Warning "No search terms found in VALIDATE_USERS command"
@@ -1181,12 +1390,12 @@ try {
                         try {
                             # Single startsWith call (original + lowercase covers most cases; avoid multiple calls)
                             `$escaped = `$searchTerm.Replace("'","''")
-                            `$users = Get-MgUser -Filter "startsWith(DisplayName,'`$escaped') or startsWith(UserPrincipalName,'`$escaped')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            if (`$users.Count -eq 0) {
+                            `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escaped') or startsWith(UserPrincipalName,'`$escaped')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
+                            if (-not `$users -or `$users.Count -eq 0) {
                                 `$escapedLower = `$searchTerm.ToLower().Replace("'","''")
-                                `$users = Get-MgUser -Filter "startsWith(DisplayName,'`$escapedLower') or startsWith(UserPrincipalName,'`$escapedLower')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escapedLower') or startsWith(UserPrincipalName,'`$escapedLower')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
                             }
-                            if (`$users.Count -eq 0) {
+                            if (-not `$users -or `$users.Count -eq 0) {
                                 # Exact match fallback (2 calls max)
                                 `$users = Get-MgUser -Filter "DisplayName eq '`$escaped' or UserPrincipalName eq '`$escaped'" -Top 10 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
                             }
@@ -1450,15 +1659,22 @@ try {
                 if (`$graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel:(-not `$graphToken) -GraphAccessToken `$graphToken -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel:(-not `$graphToken) -GraphAccessToken `$graphToken -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -UnifiedAuditLogRecordTypes `$reportSelections.UnifiedAuditLogRecordTypes -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
-                    `$errMsg = if (`$_.Exception.Message) { `$_.Exception.Message } else { `$_.ToString() }
-                    Write-Status "ERROR: Failed to generate report - `$errMsg"
-                    Write-Host "ERROR: Failed to generate report - `$errMsg" -ForegroundColor Red
-                    Write-Host "Error details: `$(`$_.Exception | Out-String)" -ForegroundColor Red
-                    Write-CommandResponse "GENERATE_REPORTS_FAILED:`$errMsg"
+                    # SECURITY: Use safe error handling - don't expose full exception details
+                    if (Get-Command Get-SafeErrorMessage -ErrorAction SilentlyContinue) {
+                        `$safeError = Get-SafeErrorMessage -Error `$_ -UserMessage "Failed to generate report"
+                        Write-Status "ERROR: Failed to generate report - `$safeError"
+                        Write-Host "ERROR: Failed to generate report - `$safeError" -ForegroundColor Red
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:`$safeError"
+                    } else {
+                        `$errMsg = if (`$_.Exception.Message) { `$_.Exception.Message } else { "Report generation failed" }
+                        Write-Status "ERROR: Failed to generate report"
+                        Write-Host "ERROR: Failed to generate report" -ForegroundColor Red
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:`$errMsg"
+                    }
                     continue
                 }
                 
@@ -1593,12 +1809,70 @@ try {
     }
     
 } catch {
-    `$errorMsg = `$_.Exception.Message
-    Write-Status "ERROR: `$errorMsg"
-    Write-Host "`nERROR: `$errorMsg" -ForegroundColor Red
-    "ERROR: `$errorMsg" | Out-File -FilePath `$ResultFile -Encoding UTF8
-    Write-Host "Press any key to exit..."
-    `$null = `$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    Write-Host "`n==========================================" -ForegroundColor Red
+    Write-Host "FATAL ERROR OCCURRED IN TRY BLOCK" -ForegroundColor Red
+    Write-Host "==========================================" -ForegroundColor Red
+    
+    `$errorMsg = if (`$_.Exception.Message) { `$_.Exception.Message } else { "Unknown error" }
+    `$errorDetails = if (`$_.Exception) { `$_.Exception | Out-String } else { "No exception details available" }
+    `$errorLocation = if (`$_.InvocationInfo) { `$_.InvocationInfo.PositionMessage } else { "Unknown location" }
+    
+    Write-Host "ERROR: `$errorMsg" -ForegroundColor Red
+    Write-Host "`nFull error details:" -ForegroundColor Red
+    Write-Host `$errorDetails -ForegroundColor Red
+    Write-Host "`nError location:" -ForegroundColor Red
+    Write-Host `$errorLocation -ForegroundColor Red
+    Write-Host "`n==========================================" -ForegroundColor Red
+    
+    try {
+        Write-Status "ERROR: `$errorMsg"
+    } catch {
+        Write-Host "Could not write to status file: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+    }
+    
+    try {
+        if (`$ResultFile) {
+            "ERROR: `$errorMsg`n`nFull details:`n`$errorDetails`n`nLocation:`n`$errorLocation" | Out-File -FilePath `$ResultFile -Encoding UTF8 -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Host "Could not write to result file: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+    }
+    
+    Write-Host "`nWindow will stay open for 60 seconds so you can read the error..." -ForegroundColor Yellow
+    Write-Host "Press any key to exit immediately, or wait 60 seconds..." -ForegroundColor Yellow
+    
+    # Wait for keypress or timeout - longer timeout
+    try {
+        `$keyPressed = `$false
+        `$startTime = Get-Date
+        while (((Get-Date) - `$startTime).TotalSeconds -lt 60) {
+            if (`$Host.UI.RawUI.KeyAvailable) {
+                `$null = `$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                `$keyPressed = `$true
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not `$keyPressed) {
+            Write-Host "`nTimeout reached, exiting..." -ForegroundColor Gray
+        }
+    } catch {
+        Write-Host "Key input not available, waiting 60 seconds..." -ForegroundColor Gray
+        Start-Sleep -Seconds 60
+    }
+    exit 1
+}
+
+# Catch any errors that occur OUTSIDE the try block (shouldn't happen but just in case)
+trap {
+    Write-Host "`n==========================================" -ForegroundColor Red
+    Write-Host "FATAL ERROR OUTSIDE TRY BLOCK" -ForegroundColor Red
+    Write-Host "==========================================" -ForegroundColor Red
+    Write-Host "ERROR: `$(`$_.Exception.Message)" -ForegroundColor Red
+    Write-Host "`nFull error:" -ForegroundColor Red
+    Write-Host (`$_.Exception | Out-String) -ForegroundColor Red
+    Write-Host "`nWindow will stay open for 60 seconds..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 60
     exit 1
 }
 "@
@@ -1607,11 +1881,31 @@ try {
     $workerScriptFile = Join-Path $tempDir "BulkTenantWorker.ps1"
     try {
         $workerScriptContent | Out-File -FilePath $workerScriptFile -Encoding UTF8 -ErrorAction Stop
-            } catch {
-                [System.Windows.Forms.MessageBox]::Show("Failed to create worker script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        Write-Host "Worker script saved to: $workerScriptFile" -ForegroundColor Gray
+        
+        # Validate the script syntax before launching
+        Write-Host "Validating worker script syntax..." -ForegroundColor Gray
+        $syntaxErrors = $null
+        try {
+            $null = [System.Management.Automation.PSParser]::Tokenize($workerScriptContent, [ref]$syntaxErrors)
+            if ($syntaxErrors.Count -gt 0) {
+                $errorMsg = "Worker script has syntax errors:`n$($syntaxErrors | ForEach-Object { "Line $($_.Token.StartLine): $($_.Message)" } | Out-String)"
+                Write-Host $errorMsg -ForegroundColor Red
+                [System.Windows.Forms.MessageBox]::Show($errorMsg, "Syntax Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                 $bulkForm.ShowDialog() | Out-Null
                 return
             }
+            Write-Host "Worker script syntax is valid" -ForegroundColor Green
+        } catch {
+            Write-Host "Could not validate syntax (non-critical): $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } catch {
+        $errorMsg = "Failed to create worker script: $($_.Exception.Message)"
+        Write-Host $errorMsg -ForegroundColor Red
+        [System.Windows.Forms.MessageBox]::Show($errorMsg, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $bulkForm.ShowDialog() | Out-Null
+        return
+    }
 
     # Create command directory for inter-process communication
     $commandDir = Join-Path $tempDir "Commands"
@@ -1863,12 +2157,9 @@ try {
         $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Blue
         $controls.UserValidationLabel.Visible = $true
 
-        # Auto-validate (since field was empty and we populated it)
-        try {
-            $controls.ValidateUsersButton.PerformClick()
-        } catch {
-            Write-Host "Warning: Auto-validation failed: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
+        # PERFORMANCE: Don't auto-validate immediately - let user click Validate button
+        # Auto-validation can be slow and blocks the UI, so we just populate the field
+        # User can click Validate when ready
 
         return $true
     }
@@ -1882,6 +2173,7 @@ try {
         $resultFile = Join-Path $script:tempDir "Client${ClientNumber}_Result.txt"
         
         # Build process arguments - use $script:scriptRoot instead of $PSScriptRoot
+        # SECURITY: Properly escape all arguments to prevent command injection
         # Pass SelectedUsers as comma-separated string if provided
         $selectedUsersArg = ""
         if ($script:selectedUsers -and $script:selectedUsers.Count -gt 0) {
@@ -1889,25 +2181,186 @@ try {
             $escapedUsers = $script:selectedUsers | ForEach-Object { $_.Replace("'", "''") }
             $selectedUsersArg = " -SelectedUsers @('$($escapedUsers -join "','")')"
         }
-        $processArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$script:workerScriptFile`" -ClientNumber $ClientNumber -ScriptRoot `"$script:scriptRoot`" -InvestigatorName `"$script:investigator`" -CompanyName `"$script:company`" -DaysBack $script:days -ReportSelectionsFile `"$script:reportSelectionsFile`" -StatusFile `"$statusFile`" -ResultFile `"$resultFile`" -CommandDir `"$script:commandDir`"$selectedUsersArg"
+        # SECURITY: Escape all user-controlled arguments
+        if (Get-Command Escape-PowerShellArgument -ErrorAction SilentlyContinue) {
+            $investigatorEscaped = Escape-PowerShellArgument -Argument $script:investigator
+            $companyEscaped = Escape-PowerShellArgument -Argument $script:company
+            $scriptRootEscaped = Escape-PowerShellArgument -Argument $script:scriptRoot
+            $workerScriptEscaped = Escape-PowerShellArgument -Argument $script:workerScriptFile
+            $reportSelectionsEscaped = Escape-PowerShellArgument -Argument $script:reportSelectionsFile
+            $statusFileEscaped = Escape-PowerShellArgument -Argument $statusFile
+            $resultFileEscaped = Escape-PowerShellArgument -Argument $resultFile
+            $commandDirEscaped = Escape-PowerShellArgument -Argument $script:commandDir
+            # Build process arguments - use -Command wrapper to catch errors and keep window open
+            $commandWrapper = @"
+& {
+    `$ErrorActionPreference = 'Continue'
+    Write-Host '==========================================' -ForegroundColor Cyan
+    Write-Host 'Worker Script Wrapper Starting' -ForegroundColor Cyan
+    Write-Host '==========================================' -ForegroundColor Cyan
+    Start-Sleep -Seconds 2
+    try {
+        Write-Host 'Loading worker script: $workerScriptEscaped' -ForegroundColor Yellow
+        & '$workerScriptEscaped' -ClientNumber $ClientNumber -ScriptRoot $scriptRootEscaped -InvestigatorName $investigatorEscaped -CompanyName $companyEscaped -DaysBack $script:days -ReportSelectionsFile $reportSelectionsEscaped -StatusFile $statusFileEscaped -ResultFile $resultFileEscaped -CommandDir $commandDirEscaped$selectedUsersArg
+    } catch {
+        Write-Host '==========================================' -ForegroundColor Red
+        Write-Host 'FATAL ERROR IN WORKER SCRIPT' -ForegroundColor Red
+        Write-Host '==========================================' -ForegroundColor Red
+        Write-Host `$_.Exception.Message -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Full Error:' -ForegroundColor Red
+        Write-Host (`$_.Exception | Out-String) -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Stack Trace:' -ForegroundColor Red
+        Write-Host `$_.ScriptStackTrace -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Window will stay open for 60 seconds...' -ForegroundColor Yellow
+        Start-Sleep -Seconds 60
+        exit 1
+    }
+}
+"@
+            # Escape the command wrapper for PowerShell
+            $commandWrapperEscaped = $commandWrapper -replace '"', '`"' -replace '\$', '`$'
+            $processArgs = "-NoProfile -ExecutionPolicy Bypass -Command $commandWrapperEscaped"
+        } else {
+            # Fallback to basic escaping if SecurityHelpers not available
+            # Use -Command wrapper to catch errors and keep window open
+            $commandWrapper = @"
+& {
+    `$ErrorActionPreference = 'Continue'
+    Write-Host '==========================================' -ForegroundColor Cyan
+    Write-Host 'Worker Script Wrapper Starting' -ForegroundColor Cyan
+    Write-Host '==========================================' -ForegroundColor Cyan
+    Start-Sleep -Seconds 2
+    try {
+        Write-Host 'Loading worker script: $script:workerScriptFile' -ForegroundColor Yellow
+        & '$script:workerScriptFile' -ClientNumber $ClientNumber -ScriptRoot '$script:scriptRoot' -InvestigatorName '$script:investigator' -CompanyName '$script:company' -DaysBack $script:days -ReportSelectionsFile '$script:reportSelectionsFile' -StatusFile '$statusFile' -ResultFile '$resultFile' -CommandDir '$script:commandDir'$selectedUsersArg
+    } catch {
+        Write-Host '==========================================' -ForegroundColor Red
+        Write-Host 'FATAL ERROR IN WORKER SCRIPT' -ForegroundColor Red
+        Write-Host '==========================================' -ForegroundColor Red
+        Write-Host `$_.Exception.Message -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Full Error:' -ForegroundColor Red
+        Write-Host (`$_.Exception | Out-String) -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Stack Trace:' -ForegroundColor Red
+        Write-Host `$_.ScriptStackTrace -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Window will stay open for 60 seconds...' -ForegroundColor Yellow
+        Start-Sleep -Seconds 60
+        exit 1
+    }
+}
+"@
+            # Escape the command wrapper for PowerShell
+            $commandWrapperEscaped = $commandWrapper -replace '"', '`"' -replace '\$', '`$'
+            $processArgs = "-NoProfile -ExecutionPolicy Bypass -Command $commandWrapperEscaped"
+        }
 
+        # Verify worker script file exists before launching
+        if (-not (Test-Path $script:workerScriptFile)) {
+            $errorMsg = "CRITICAL: Worker script file does not exist: $script:workerScriptFile"
+            Write-Host $errorMsg -ForegroundColor Red
+            $script:authStatusTextBox.AppendText("ERROR: $errorMsg`r`n")
+            [System.Windows.Forms.MessageBox]::Show($errorMsg, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return $false
+        }
+        
+        Write-Host "Worker script file verified: $script:workerScriptFile" -ForegroundColor Gray
+        
+        # Create a wrapper script that catches errors and keeps window open
+        # Build the SelectedUsers array string for the wrapper
+        $selectedUsersArrayStr = "@()"
+        if ($script:selectedUsers -and $script:selectedUsers.Count -gt 0) {
+            $userStrings = $script:selectedUsers | ForEach-Object { "'$($_.Replace("'", "''"))'" }
+            $selectedUsersArrayStr = "@($($userStrings -join ','))"
+        }
+        
+        $wrapperScriptContent = @"
+`$ErrorActionPreference = 'Continue'
+Write-Host '==========================================' -ForegroundColor Cyan
+Write-Host 'Worker Script Wrapper Starting' -ForegroundColor Cyan
+Write-Host '==========================================' -ForegroundColor Cyan
+Start-Sleep -Seconds 2
+
+`$workerScript = '$script:workerScriptFile'
+`$clientNum = $ClientNumber
+`$scriptRoot = '$script:scriptRoot'
+`$investigator = '$script:investigator'
+`$company = '$script:company'
+`$days = $script:days
+`$reportSelections = '$script:reportSelectionsFile'
+`$statusFile = '$statusFile'
+`$resultFile = '$resultFile'
+`$commandDir = '$script:commandDir'
+`$selectedUsers = $selectedUsersArrayStr
+
+Write-Host "Worker script: `$workerScript" -ForegroundColor Gray
+Write-Host "Client number: `$clientNum" -ForegroundColor Gray
+Write-Host "ScriptRoot: `$scriptRoot" -ForegroundColor Gray
+
+try {
+    Write-Host 'Loading worker script...' -ForegroundColor Yellow
+    if (-not (Test-Path `$workerScript)) {
+        throw "Worker script not found: `$workerScript"
+    }
+    & `$workerScript -ClientNumber `$clientNum -ScriptRoot `$scriptRoot -InvestigatorName `$investigator -CompanyName `$company -DaysBack `$days -ReportSelectionsFile `$reportSelections -StatusFile `$statusFile -ResultFile `$resultFile -CommandDir `$commandDir -SelectedUsers `$selectedUsers
+} catch {
+    Write-Host '==========================================' -ForegroundColor Red
+    Write-Host 'FATAL ERROR IN WORKER SCRIPT' -ForegroundColor Red
+    Write-Host '==========================================' -ForegroundColor Red
+    Write-Host `$_.Exception.Message -ForegroundColor Red
+    Write-Host ''
+    Write-Host 'Full Error:' -ForegroundColor Red
+    Write-Host (`$_.Exception | Out-String) -ForegroundColor Red
+    Write-Host ''
+    Write-Host 'Stack Trace:' -ForegroundColor Red
+    Write-Host `$_.ScriptStackTrace -ForegroundColor Red
+    Write-Host ''
+    Write-Host 'Window will stay open for 60 seconds...' -ForegroundColor Yellow
+    Start-Sleep -Seconds 60
+    exit 1
+}
+"@
+        $wrapperScriptFile = Join-Path $script:tempDir "WorkerWrapper_Client${ClientNumber}.ps1"
+        try {
+            $wrapperScriptContent | Out-File -FilePath $wrapperScriptFile -Encoding UTF8 -ErrorAction Stop
+            Write-Host "Wrapper script created: $wrapperScriptFile" -ForegroundColor Gray
+        } catch {
+            Write-Host "WARNING: Could not create wrapper script: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        
         try {
             # Try PowerShell 7 (pwsh.exe) first, fall back to Windows PowerShell (powershell.exe)
             $psExe = "pwsh.exe"
             if (-not (Get-Command $psExe -ErrorAction SilentlyContinue)) {
                 $psExe = "powershell.exe"
             }
+            Write-Host "Using PowerShell executable: $psExe" -ForegroundColor Gray
 
-            # Use Hidden window style - windows are hidden unless debugging is needed
-            $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Hidden
+            # Use wrapper script instead of direct execution
+            if (Test-Path $wrapperScriptFile) {
+                $processArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$wrapperScriptFile`""
+            } else {
+                # Fallback to original method
+                Write-Host "Wrapper script not found, using direct execution" -ForegroundColor Yellow
+            }
+
+            # DEBUGGING: Use Normal window style temporarily to see errors
+            # TODO: Change back to Hidden after debugging
+            Write-Host "Launching PowerShell process with visible window for debugging..." -ForegroundColor Gray
+            
+            $process = Start-Process -FilePath $psExe -ArgumentList $processArgs -PassThru -WindowStyle Normal
             $script:clientProcesses[$ClientNumber] = $process
             Write-Host "Launched Client $ClientNumber PowerShell window (PID: $($process.Id))" -ForegroundColor Green
             $script:authStatusTextBox.AppendText("Launched Client $ClientNumber PowerShell window (PID: $($process.Id))`r`n")
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
             
-            # Wait a moment for PowerShell session to initialize
-            Start-Sleep -Seconds 2
+            # Wait longer for PowerShell session to initialize and show any errors
+            Start-Sleep -Seconds 5
             
             # Verify process is still running
             try {
@@ -1916,6 +2369,31 @@ try {
             } catch {
                 Write-Host "  WARNING: Process may have exited immediately!" -ForegroundColor Yellow
                 $script:authStatusTextBox.AppendText("WARNING: Client $ClientNumber process may have exited immediately!`r`n")
+                
+                # Check result file for error details
+                if (Test-Path $resultFile) {
+                    try {
+                        $resultContent = Get-Content $resultFile -Raw -ErrorAction SilentlyContinue
+                        if ($resultContent) {
+                            $script:authStatusTextBox.AppendText("Error details from result file: $resultContent`r`n")
+                            Write-Host "Error details: $resultContent" -ForegroundColor Red
+                        }
+                    } catch {}
+                }
+                
+                # Check status file for error details
+                if (Test-Path $statusFile) {
+                    try {
+                        $statusContent = Get-Content $statusFile -Tail 10 -ErrorAction SilentlyContinue
+                        if ($statusContent) {
+                            $script:authStatusTextBox.AppendText("Last status messages:`r`n$($statusContent -join "`r`n")`r`n")
+                            Write-Host "Last status messages:" -ForegroundColor Yellow
+                            $statusContent | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+                        }
+                    } catch {}
+                }
+                
+                
                 $script:authStatusTextBox.ScrollToCaret()
                 [System.Windows.Forms.Application]::DoEvents()
                 return $false
@@ -2686,13 +3164,43 @@ try {
                 [System.Windows.Forms.Application]::DoEvents()
                 
                 # Send VALIDATE_USERS command to worker script (which has the Graph context)
-                $searchTerms = $controls.UserSearchTextBox.Text
-                $searchTermsArray = ($searchTerms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                # SECURITY: Rate limiting and input validation (with fallback if helpers throw)
+                try {
+                    if (Get-Command Test-RateLimit -ErrorAction SilentlyContinue) {
+                        $rateLimit = Test-RateLimit -Key "user-validation-client-$clientNum" -MaxRequests 10 -WindowSeconds 60
+                        if ($rateLimit -and -not $rateLimit.Allowed) {
+                            [System.Windows.Forms.MessageBox]::Show($rateLimit.Message, "Rate Limit Exceeded", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                            $this.Enabled = $true
+                            return
+                        }
+                    }
+                } catch {
+                    Write-Host "Rate limit check skipped: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+                # SECURITY: Validate and sanitize search terms (with fallback if helpers throw)
+                $searchTerms = if ($controls.UserSearchTextBox.Text) { $controls.UserSearchTextBox.Text } else { "" }
+                try {
+                    $rawTerms = @($searchTerms -split ',' | ForEach-Object { if ($_ -ne $null) { $_.Trim() } else { "" } } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                    if (Get-Command Validate-SearchTerms -ErrorAction SilentlyContinue) {
+                        $searchTermsArray = Validate-SearchTerms -SearchTerms $rawTerms
+                    } else {
+                        $searchTermsArray = $rawTerms
+                    }
+                } catch {
+                    Write-Host "Validate-SearchTerms fallback: $($_.Exception.Message)" -ForegroundColor Yellow
+                    $searchTermsArray = @($searchTerms -split ',' | ForEach-Object { if ($_ -ne $null) { $_.Trim() } else { "" } } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                }
+                if (-not $searchTermsArray -or $searchTermsArray.Count -eq 0) {
+                    [System.Windows.Forms.MessageBox]::Show("Please enter at least one valid search term (email or name).", "No Search Terms", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    $this.Enabled = $true
+                    return
+                }
                 $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
                 
                 $command = "VALIDATE_USERS|SEARCH_TERMS:$searchTermsJson"
-                Write-Host "Sending VALIDATE_USERS command to Client $clientNum with search terms: $searchTerms" -ForegroundColor Cyan
-                $script:authStatusTextBox.AppendText("Client $clientNum : Validating users: $searchTerms`r`n")
+                # SECURITY: Don't log user input verbatim - log count instead
+                Write-Host "Sending VALIDATE_USERS command to Client $clientNum with $($searchTermsArray.Count) search term(s)" -ForegroundColor Cyan
+                $script:authStatusTextBox.AppendText("Client $clientNum : Validating users ($($searchTermsArray.Count) term(s))`r`n")
                 
                 $response = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 60
                 
@@ -2724,7 +3232,7 @@ try {
                         if (Test-Path $responseFile) {
                             Start-Sleep -Milliseconds 200
                             try {
-                                $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                $finalResponse = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                                 # Check if we got a final response (not VALIDATE_USERS_STARTED)
                                 if ($finalResponse -and $finalResponse -ne "VALIDATE_USERS_STARTED" -and $finalResponse -notmatch "^VALIDATE_USERS_STARTED") {
                                     $script:authStatusTextBox.AppendText("Client ${clientNum}: Final validation response received`r`n")
@@ -2877,7 +3385,7 @@ try {
                 $script:authStatusTextBox.AppendText("Client ${clientNum}: No immediate response, checking response file: $responseFile`r`n")
                 if (Test-Path $responseFile) {
                     try {
-                        $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                        $response = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                         $script:authStatusTextBox.AppendText("Client ${clientNum}: Read response from file: $response`r`n")
                         $script:authStatusTextBox.ScrollToCaret()
                         [System.Windows.Forms.Application]::DoEvents()
@@ -2928,7 +3436,7 @@ try {
                     if (Test-Path $responseFile) {
                         Start-Sleep -Milliseconds 200
                         try {
-                            $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                            $finalResponse = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                             # Check if we got a final response (not GRAPH_AUTH_STARTED)
                             if ($finalResponse -and $finalResponse -ne "GRAPH_AUTH_STARTED" -and $finalResponse -notmatch "^GRAPH_AUTH_STARTED") {
                                 $script:authStatusTextBox.AppendText("Client ${clientNum}: Final response received: $finalResponse`r`n")
@@ -3029,7 +3537,7 @@ try {
                 $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
                 if (Test-Path $responseFile) {
                     try {
-                        $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                        $response = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                         $script:authStatusTextBox.AppendText("Client ${clientNum}: Read Exchange auth response from file: $response`r`n")
                         $script:authStatusTextBox.ScrollToCaret()
                         [System.Windows.Forms.Application]::DoEvents()
@@ -3041,7 +3549,7 @@ try {
             
             # If we got EXCHANGE_AUTH_STARTED, continue polling for the final result
             if ($response -eq "EXCHANGE_AUTH_STARTED") {
-                $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication started. Waiting for browser popup...`r`n")
+                $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication started. Waiting for browser popup (typically 15-60s)...`r`n")
                 $script:authStatusTextBox.ScrollToCaret()
                 [System.Windows.Forms.Application]::DoEvents()
                 
@@ -3070,7 +3578,7 @@ try {
                     if (Test-Path $responseFile) {
                         Start-Sleep -Milliseconds 200
                         try {
-                            $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                            $finalResponse = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                             if ($finalResponse -and $finalResponse -ne "EXCHANGE_AUTH_STARTED" -and $finalResponse -notmatch "^EXCHANGE_AUTH_STARTED") {
                                 $script:authStatusTextBox.AppendText("Client ${clientNum}: Final Exchange auth response: $finalResponse`r`n")
                                 $script:authStatusTextBox.ScrollToCaret()
@@ -3128,7 +3636,28 @@ try {
                 $script:clientAuthControls[$clientNum].ExtractEmailsButton.Enabled = $true
 
                 # Attempt auto-population of emails from ticket (both auths now complete)
-                Attempt-AutoPopulateEmails -ClientNumber $clientNum
+                # PERFORMANCE: Run this asynchronously using a timer to avoid blocking the UI thread
+                $capturedClientNum = $clientNum  # Capture client number for closure
+                $autoPopulateTimer = New-Object System.Windows.Forms.Timer
+                $autoPopulateTimer.Interval = 100  # Small delay to let UI update first
+                $autoPopulateTimer.add_Tick({
+                    try {
+                        $autoPopulateTimer.Stop()
+                        $autoPopulateTimer.Dispose()
+                        if ($null -ne $capturedClientNum) {
+                            Attempt-AutoPopulateEmails -ClientNumber $capturedClientNum
+                        }
+                    } catch {
+                        # Silently ignore errors - non-critical feature
+                        try {
+                            if ($autoPopulateTimer) {
+                                $autoPopulateTimer.Stop()
+                                $autoPopulateTimer.Dispose()
+                            }
+                        } catch {}
+                    }
+                })
+                $autoPopulateTimer.Start()
             } elseif ($response -like "EXCHANGE_AUTH_FAILED:*") {
                 $errorMsg = $response -replace "EXCHANGE_AUTH_FAILED:", ""
                 $this.Enabled = $true
@@ -3209,8 +3738,13 @@ try {
                         Write-Warning "Filter-TicketContent function not found, using raw content"
                     }
                 } catch {
-                    Write-Warning "Failed to process ticket content: $($_.Exception.Message)"
-                    Write-Host "Exception details: $($_.Exception | Out-String)" -ForegroundColor Red
+                    # SECURITY: Use safe error handling - don't expose full exception details
+                    if (Get-Command Get-SafeErrorMessage -ErrorAction SilentlyContinue) {
+                        $safeError = Get-SafeErrorMessage -Error $_ -UserMessage "Failed to process ticket content"
+                        Write-Warning "Failed to process ticket content: $safeError"
+                    } else {
+                        Write-Warning "Failed to process ticket content: $($_.Exception.Message)"
+                    }
                     $filteredTicketContent = $ticketContent
                 }
             } else {
@@ -3643,7 +4177,12 @@ try {
             # Verify file was written
             Start-Sleep -Milliseconds 100
             if (Test-Path $commandFile) {
-                $fileContent = Get-Content $commandFile -Raw -ErrorAction SilentlyContinue
+                # SECURITY: Use safe command file reading with validation
+                if (Get-Command Read-CommandFile -ErrorAction SilentlyContinue) {
+                    $fileContent = Read-CommandFile -CommandFilePath $commandFile
+                } else {
+                    $fileContent = Get-Content $commandFile -Raw -ErrorAction SilentlyContinue
+                }
                 Write-Host "Send-CommandToSession: Verified file exists, content: '$fileContent'" -ForegroundColor Gray
             } else {
                 Write-Host "Send-CommandToSession: WARNING - File was written but doesn't exist!" -ForegroundColor Red
@@ -3675,7 +4214,7 @@ try {
                 Write-Host "Send-CommandToSession: Response file detected!" -ForegroundColor Yellow
                 Start-Sleep -Milliseconds 200  # Brief delay to ensure file is fully written
                 try {
-                    $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                    $response = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                     if ($response) {
                         Write-Host "Send-CommandToSession: Response received: $response" -ForegroundColor Green
                         return $response
@@ -3697,7 +4236,7 @@ try {
 
     # Timer to periodically update status from status files
     $statusUpdateTimer = New-Object System.Windows.Forms.Timer
-    $statusUpdateTimer.Interval = 2000  # Update every 2 seconds
+    $statusUpdateTimer.Interval = 3000  # Update every 3 seconds (reduced frequency for performance)
     $statusUpdateTimer.add_Tick({
         try {
             # Check if form is still valid before processing
@@ -3708,157 +4247,248 @@ try {
                 return
             }
             
+            if ($null -eq $script:clientAuthControls) {
+                return
+            }
+            
             foreach ($clientNum in $script:clientAuthControls.Keys) {
                 try {
+                    if ($null -eq $script:tempDir -or -not (Test-Path $script:tempDir)) {
+                        continue
+                    }
+                    
                     $statusFile = Join-Path $script:tempDir "Client${clientNum}_Status.txt"
-                    if (Test-Path $statusFile) {
-                        # Read last few lines of status file (read more to catch warnings)
-                        $statusLines = Get-Content $statusFile -Tail 15 -ErrorAction SilentlyContinue
-                        if ($statusLines) {
-                            $latestStatus = $statusLines | Select-Object -Last 1
-                            # Extract just the message part (after timestamp)
-                            if ($latestStatus -match '\]\s+(.+)') {
-                                $statusMessage = $matches[1]
-                                $controls = $script:clientAuthControls[$clientNum]
-                                if ($controls -and $controls.StatusLabel -and -not $controls.StatusLabel.IsDisposed) {
-                                    # Check for sign-in logs license warning in status file
-                                    $signInLogsWarning = $false
-                                    $warningText = ""
-                                    foreach ($line in $statusLines) {
-                                        if ($line -match 'License required.*Sign-in logs|Azure AD Premium.*Sign-in logs|Sign-in logs require.*Premium|free tenants.*limited.*7 days|WARNING.*License required.*Sign-in') {
-                                            $signInLogsWarning = $true
-                                            # Extract the warning message
-                                            if ($line -match '\]\s+(.+)') {
-                                                $warningText = $matches[1]
-                                            } else {
-                                                $warningText = "Sign-in logs require Azure AD Premium license - pull manually"
-                                            }
-                                            break
-                                        }
-                                    }
-                                    
-                                    # Show/hide warning label based on license warning
-                                    if ($signInLogsWarning -and $controls.WarningLabel -and -not $controls.WarningLabel.IsDisposed) {
-                                        try {
-                                            if (-not $controls.WarningLabel.Visible -or $controls.WarningLabel.Text -ne "⚠ WARNING: $warningText") {
-                                                $controls.WarningLabel.Text = "⚠ WARNING: Sign-in logs require Azure AD Premium license - pull manually"
-                                                $controls.WarningLabel.ForeColor = [System.Drawing.Color]::Orange
-                                                $controls.WarningLabel.Visible = $true
-                                            }
-                                        } catch {}
-                                    }
-                                    
-                                    # Check if worker script is ready and enable Graph Auth button if needed
-                                    # Wait for "Command polling loop started" to ensure the loop is actually running
-                                    if ($statusMessage -match 'Command polling loop started|Ready!.*Waiting for Graph Auth|Modules imported successfully') {
-                                        if ($controls.GraphButton -and -not $controls.GraphButton.IsDisposed -and -not $controls.GraphButton.Enabled) {
-                                            try {
-                                                # Small delay to ensure polling loop has started
-                                                Start-Sleep -Milliseconds 500
-                                                $controls.GraphButton.Enabled = $true
-                                                $controls.GraphButton.Text = "Graph Auth"
-                                                if ($script:authStatusTextBox -and -not $script:authStatusTextBox.IsDisposed) {
-                                                    $script:authStatusTextBox.AppendText("Client $clientNum is ready for authentication (detected by status timer).`r`n")
-                                                    $script:authStatusTextBox.ScrollToCaret()
-                                                }
-                                            } catch {}
-                                        }
-                                    }
-                                    
-                                    # Check for report generation completion
-                                    $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
-                                    if (Test-Path $responseFile) {
-                                        try {
-                                            $responseContent = Get-Content $responseFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { $_.Trim() }
-                                            if ($responseContent -match '^GENERATE_REPORTS_SUCCESS:(.+)$') {
-                                                $reportFolder = $matches[1].Trim()
-                                                if (-not [string]::IsNullOrWhiteSpace($reportFolder) -and (Test-Path $reportFolder)) {
-                                                    # Store report folder and show View Reports button
-                                                    $script:clientReportFolders[$clientNum] = $reportFolder
-                                                    if ($controls.ViewReportsButton -and -not $controls.ViewReportsButton.IsDisposed) {
-                                                        $controls.ViewReportsButton.Visible = $true
-                                                        $controls.ViewReportsButton.Enabled = $true
-                                                    }
-                                                    # Also enable Open Reports button in minimized view
-                                                    if ($controls.OpenReportsButton -and -not $controls.OpenReportsButton.IsDisposed) {
-                                                        $controls.OpenReportsButton.Enabled = $true
-                                                    }
-                                                }
-                                            }
-                                        } catch {
-                                            # Ignore errors reading response file
-                                        }
-                                    }
-
-                                    # Update Graph/Exchange status indicators for minimized view
-                                    if ($controls.GraphStatusLabel -and -not $controls.GraphStatusLabel.IsDisposed) {
-                                        if ($script:clientAuthStates[$clientNum].GraphAuthenticated) {
-                                            $controls.GraphStatusLabel.Text = "Graph: ✓"
-                                            $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Green
+                    if (-not (Test-Path $statusFile)) {
+                        continue
+                    }
+                    
+                    # PERFORMANCE: Read only last 5 lines instead of 15 to reduce I/O
+                    # Only read more if we detect an error or need to check for warnings
+                    $statusLines = Get-Content $statusFile -Tail 5 -ErrorAction SilentlyContinue
+                    if (-not $statusLines -or $statusLines.Count -eq 0) {
+                        continue
+                    }
+                    
+                    $latestStatus = $statusLines | Select-Object -Last 1
+                    # Extract just the message part (after timestamp)
+                    $statusMessage = $null
+                    if ($latestStatus -and $latestStatus -match '\]\s+(.+)') {
+                        $statusMessage = $matches[1]
+                    }
+                    
+                    if ([string]::IsNullOrWhiteSpace($statusMessage)) {
+                        continue
+                    }
+                    
+                    $controls = $null
+                    if ($script:clientAuthControls -and $script:clientAuthControls.ContainsKey($clientNum)) {
+                        $controls = $script:clientAuthControls[$clientNum]
+                    }
+                    
+                    if ($null -eq $controls) {
+                        continue
+                    }
+                    
+                    if ($controls.StatusLabel -and -not $controls.StatusLabel.IsDisposed -and $statusMessage) {
+                        # PERFORMANCE: Only check for warnings if we haven't already shown one
+                        # This avoids re-reading the file and re-checking every time
+                        $signInLogsWarning = $false
+                        $warningText = ""
+                        if ($controls.WarningLabel -and -not $controls.WarningLabel.IsDisposed) {
+                            if (-not ($controls.WarningLabel.Visible -and $controls.WarningLabel.Text -like "*Sign-in logs*")) {
+                                # Only check if warning not already shown - read more lines if needed
+                                $allStatusLines = Get-Content $statusFile -Tail 20 -ErrorAction SilentlyContinue
+                                foreach ($line in $allStatusLines) {
+                                    if ($line -match 'License required.*Sign-in logs|Azure AD Premium.*Sign-in logs|Sign-in logs require.*Premium|free tenants.*limited.*7 days|WARNING.*License required.*Sign-in') {
+                                        $signInLogsWarning = $true
+                                        # Extract the warning message
+                                        if ($line -match '\]\s+(.+)') {
+                                            $warningText = $matches[1]
                                         } else {
-                                            $controls.GraphStatusLabel.Text = "Graph: ○"
-                                            $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                                            $warningText = "Sign-in logs require Azure AD Premium license - pull manually"
                                         }
+                                        break
                                     }
-
-                                    if ($controls.ExchangeStatusLabel -and -not $controls.ExchangeStatusLabel.IsDisposed) {
-                                        if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                                            $controls.ExchangeStatusLabel.Text = "Exchange: ✓"
-                                            $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Green
-                                        } else {
-                                            $controls.ExchangeStatusLabel.Text = "Exchange: ○"
-                                            $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Gray
-                                        }
+                                }
+                            }
+                        }
+                        
+                        # Show/hide warning label based on license warning
+                        if ($signInLogsWarning -and $controls.WarningLabel -and -not $controls.WarningLabel.IsDisposed) {
+                            try {
+                                if (-not $controls.WarningLabel.Visible -or $controls.WarningLabel.Text -ne "⚠ WARNING: $warningText") {
+                                    $controls.WarningLabel.Text = "⚠ WARNING: Sign-in logs require Azure AD Premium license - pull manually"
+                                    $controls.WarningLabel.ForeColor = [System.Drawing.Color]::Orange
+                                    $controls.WarningLabel.Visible = $true
+                                }
+                            } catch {
+                                # Silently ignore errors updating warning label
+                            }
+                        }
+                        
+                        # PERFORMANCE: Only check readiness once per client (cache the check)
+                        # Check if worker script is ready and enable Graph Auth button if needed
+                        # Wait for "Command polling loop started" to ensure the loop is actually running
+                        if ($null -eq $script:clientReadinessChecked) {
+                            $script:clientReadinessChecked = @{}
+                        }
+                        if (-not $script:clientReadinessChecked.ContainsKey($clientNum)) {
+                            $script:clientReadinessChecked[$clientNum] = $false
+                        }
+                        
+                        if (-not $script:clientReadinessChecked[$clientNum] -and 
+                            ($statusMessage -match 'Command polling loop started|Ready!.*Waiting for Graph Auth|Modules imported successfully')) {
+                            if ($controls.GraphButton -and -not $controls.GraphButton.IsDisposed -and -not $controls.GraphButton.Enabled) {
+                                try {
+                                    $controls.GraphButton.Enabled = $true
+                                    $controls.GraphButton.Text = "Graph Auth"
+                                    $script:clientReadinessChecked[$clientNum] = $true
+                                    if ($script:authStatusTextBox -and -not $script:authStatusTextBox.IsDisposed) {
+                                        $script:authStatusTextBox.AppendText("Client $clientNum is ready for authentication (detected by status timer).`r`n")
+                                        $script:authStatusTextBox.ScrollToCaret()
                                     }
-
-                                    # Update border panel color based on overall status
-                                    if ($controls.BorderPanel -and -not $controls.BorderPanel.IsDisposed) {
-                                        $borderColor = [System.Drawing.Color]::Gray  # Default: Not started
-
-                                        if ($script:clientAuthStates[$clientNum].GraphAuthenticated -and $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                                            # Both auths complete
-                                            if ($statusMessage -match 'error|failed|ERROR|FAILED') {
-                                                $borderColor = [System.Drawing.Color]::Red  # Error state
-                                            } elseif ($statusMessage -match 'generating|processing|running|starting') {
-                                                $borderColor = [System.Drawing.Color]::Orange  # Processing
-                                            } elseif ($statusMessage -match 'successful|complete|SUCCESS') {
-                                                $borderColor = [System.Drawing.Color]::Green  # Complete
-                                            } else {
-                                                $borderColor = [System.Drawing.Color]::Green  # Both auths done
+                                } catch {
+                                    # Silently ignore errors enabling button
+                                }
+                            }
+                        }
+                        
+                        # PERFORMANCE: Only check for report completion if not already found
+                        # This avoids reading the file every 2 seconds once we've found it
+                        if ($null -eq $script:clientReportFolders) {
+                            $script:clientReportFolders = @{}
+                        }
+                        if (-not $script:clientReportFolders.ContainsKey($clientNum)) {
+                            if ($script:commandDir -and (Test-Path $script:commandDir)) {
+                                $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
+                                if (Test-Path $responseFile) {
+                                    try {
+                                        $responseContent = (Get-Content $responseFile -Raw -ErrorAction SilentlyContinue).Trim()
+                                        if ($responseContent -and $responseContent -match '^GENERATE_REPORTS_SUCCESS:(.+)$') {
+                                            $reportFolder = $matches[1].Trim()
+                                            if (-not [string]::IsNullOrWhiteSpace($reportFolder) -and (Test-Path $reportFolder)) {
+                                                # Store report folder and show View Reports button
+                                                $script:clientReportFolders[$clientNum] = $reportFolder
+                                                if ($controls.ViewReportsButton -and -not $controls.ViewReportsButton.IsDisposed) {
+                                                    $controls.ViewReportsButton.Visible = $true
+                                                    $controls.ViewReportsButton.Enabled = $true
+                                                }
+                                                # Also enable Open Reports button in minimized view
+                                                if ($controls.OpenReportsButton -and -not $controls.OpenReportsButton.IsDisposed) {
+                                                    $controls.OpenReportsButton.Enabled = $true
+                                                }
                                             }
-                                        } elseif ($script:clientAuthStates[$clientNum].GraphAuthenticated -or $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                                            # Partial auth
-                                            if ($statusMessage -match 'error|failed|ERROR|FAILED') {
-                                                $borderColor = [System.Drawing.Color]::Red  # Error state
-                                            } else {
-                                                $borderColor = [System.Drawing.Color]::Orange  # Partial auth or processing
-                                            }
-                                        } elseif ($statusMessage -match 'error|failed|ERROR|FAILED') {
-                                            $borderColor = [System.Drawing.Color]::Red  # Error state
                                         }
-
-                                        $controls.BorderPanel.BackColor = $borderColor
+                                    } catch {
+                                        # Ignore errors reading response file
                                     }
+                                }
+                            }
+                        }
+
+                        # Update Graph/Exchange status indicators for minimized view
+                        if ($controls.GraphStatusLabel -and -not $controls.GraphStatusLabel.IsDisposed) {
+                            try {
+                                $isGraphAuth = $false
+                                if ($script:clientAuthStates -and $script:clientAuthStates.ContainsKey($clientNum)) {
+                                    $state = $script:clientAuthStates[$clientNum]
+                                    if ($state -and $state.GraphAuthenticated) {
+                                        $isGraphAuth = $true
+                                    }
+                                }
+                                if ($isGraphAuth) {
+                                    $controls.GraphStatusLabel.Text = "Graph: ✓"
+                                    $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Green
+                                } else {
+                                    $controls.GraphStatusLabel.Text = "Graph: ○"
+                                    $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                                }
+                            } catch {
+                                # Silently ignore errors updating Graph status
+                            }
+                        }
+
+                        if ($controls.ExchangeStatusLabel -and -not $controls.ExchangeStatusLabel.IsDisposed) {
+                            try {
+                                $isExchangeAuth = $false
+                                if ($script:clientAuthStates -and $script:clientAuthStates.ContainsKey($clientNum)) {
+                                    $state = $script:clientAuthStates[$clientNum]
+                                    if ($state -and $state.ExchangeAuthenticated) {
+                                        $isExchangeAuth = $true
+                                    }
+                                }
+                                if ($isExchangeAuth) {
+                                    $controls.ExchangeStatusLabel.Text = "Exchange: ✓"
+                                    $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Green
+                                } else {
+                                    $controls.ExchangeStatusLabel.Text = "Exchange: ○"
+                                    $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                                }
+                            } catch {
+                                # Silently ignore errors updating Exchange status
+                            }
+                        }
+
+                        # Update border panel color based on overall status
+                        if ($controls.BorderPanel -and -not $controls.BorderPanel.IsDisposed) {
+                            $borderColor = [System.Drawing.Color]::Gray  # Default: Not started
+                            
+                            $state = $null
+                            if ($script:clientAuthStates -and $script:clientAuthStates.ContainsKey($clientNum)) {
+                                $state = $script:clientAuthStates[$clientNum]
+                            }
+
+                            if ($state -and $state.GraphAuthenticated -and $state.ExchangeAuthenticated) {
+                                # Both auths complete
+                                if ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                    $borderColor = [System.Drawing.Color]::Red  # Error state
+                                } elseif ($statusMessage -match 'generating|processing|running|starting') {
+                                    $borderColor = [System.Drawing.Color]::Orange  # Processing
+                                } elseif ($statusMessage -match 'successful|complete|SUCCESS') {
+                                    $borderColor = [System.Drawing.Color]::Green  # Complete
+                                } else {
+                                    $borderColor = [System.Drawing.Color]::Green  # Both auths done
+                                }
+                            } elseif ($state -and ($state.GraphAuthenticated -or $state.ExchangeAuthenticated)) {
+                                # Partial auth
+                                if ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                    $borderColor = [System.Drawing.Color]::Red  # Error state
+                                } else {
+                                    $borderColor = [System.Drawing.Color]::Orange  # Partial auth or processing
+                                }
+                            } elseif ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                $borderColor = [System.Drawing.Color]::Red  # Error state
+                            }
+
+                            $controls.BorderPanel.BackColor = $borderColor
+                        }
+                        
+                        # PERFORMANCE: Only update if status has changed to avoid flickering and unnecessary UI updates
+                        # Also cache the last status message to avoid regex matching every time
+                        if ($controls.StatusLabel -and -not $controls.StatusLabel.IsDisposed) {
+                            try {
+                                if ($controls.StatusLabel.Text -ne $statusMessage) {
+                                    # Update status label with latest message
+                                    $controls.StatusLabel.Text = $statusMessage
                                     
-                                    # Only update if status has changed to avoid flickering
-                                    if ($controls.StatusLabel.Text -ne $statusMessage) {
-                                        # Update status label with latest message
-                                        $controls.StatusLabel.Text = $statusMessage
-                                        
-                                        # Color code based on status
-                                        if ($statusMessage -match 'successful|complete|SUCCESS|authenticated') {
+                                    # PERFORMANCE: Use simpler string matching instead of regex where possible
+                                    if ($statusMessage) {
+                                        $statusLower = $statusMessage.ToLower()
+                                        if ($statusLower.Contains('successful') -or $statusLower.Contains('complete') -or $statusLower.Contains('authenticated')) {
                                             $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Green
-                                        } elseif ($statusMessage -match 'error|failed|ERROR|FAILED') {
+                                        } elseif ($statusLower.Contains('error') -or $statusLower.Contains('failed')) {
                                             $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Red
-                                        } elseif ($statusMessage -match 'generating|processing|running|starting') {
+                                        } elseif ($statusLower.Contains('generating') -or $statusLower.Contains('processing') -or $statusLower.Contains('running') -or $statusLower.Contains('starting')) {
                                             $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                                        } elseif ($statusMessage -match 'Ready!|Waiting for Graph Auth') {
+                                        } elseif ($statusLower.Contains('ready') -or $statusLower.Contains('waiting for graph auth')) {
                                             $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                                        } elseif ($statusMessage -match 'waiting|polling') {
+                                        } elseif ($statusLower.Contains('waiting') -or $statusLower.Contains('polling')) {
                                             $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Gray
                                         }
                                     }
                                 }
+                            } catch {
+                                # Silently ignore errors updating status label
                             }
                         }
                     }

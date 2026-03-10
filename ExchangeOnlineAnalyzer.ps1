@@ -60,6 +60,11 @@ Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SignInManagement.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
+# Import SecurityHelpers for input validation and sanitization
+$securityHelpersPath = Join-Path $PSScriptRoot 'Scripts\Common\SecurityHelpers.psm1'
+if (Test-Path $securityHelpersPath) {
+    Import-Module $securityHelpersPath -Force -ErrorAction SilentlyContinue
+}
 
 # Initialize logging (file + console, Documents\ExchangeOnlineAnalyzer\Logs)
 try {
@@ -195,7 +200,17 @@ function Load-MailboxesOptimized {
             # PERFORMANCE: Skip detailed analysis for large tenants - user can use "Analyze Selected" for details
             if ($mbx.RecipientTypeDetails -eq "UserMailbox" -and $shouldAnalyzeRules) {
                 try {
-                    $rules = Get-InboxRule -Mailbox $mbx.UserPrincipalName -IncludeHidden -ErrorAction SilentlyContinue
+                    # ROBUSTNESS: Log errors instead of SilentlyContinue
+                    $rules = try {
+                        Get-InboxRule -Mailbox $mbx.UserPrincipalName -IncludeHidden -ErrorAction Stop
+                    } catch {
+                        $errorMsg = "Failed to get inbox rules for $($mbx.UserPrincipalName): $($_.Exception.Message)"
+                        Write-Warning $errorMsg
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
+                            Write-Log -Message $errorMsg -Level Warning -Data @{ UserPrincipalName = $mbx.UserPrincipalName }
+                        }
+                        $null
+                    }
                     if ($rules) {
                         $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
                         $rulesCount = $analysis.TotalRules.ToString()
@@ -428,7 +443,17 @@ function Analyze-MailboxBatch {
                 
                 # Check rules (only if likely to have them)
                 try {
-                    $rules = Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction SilentlyContinue
+                    # ROBUSTNESS: Log errors instead of SilentlyContinue
+                    $rules = try {
+                        Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop
+                    } catch {
+                        $errorMsg = "Failed to get inbox rules for $upn: $($_.Exception.Message)"
+                        Write-Warning $errorMsg
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
+                            Write-Log -Message $errorMsg -Level Warning -Data @{ UserPrincipalName = $upn }
+                        }
+                        $null
+                    }
                     if ($rules -and $rules.Count -gt 0) {
                         $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
                         $result.RulesCount = $analysis.TotalRules.ToString()
@@ -5328,7 +5353,17 @@ $analyzeSelectedButton.add_Click({
             # Analyze rules only for user mailboxes (shared mailboxes don't have user-created inbox rules)
             if ($mailboxType -eq "UserMailbox") {
                 try {
-                    $rules = Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction SilentlyContinue
+                    # ROBUSTNESS: Log errors instead of SilentlyContinue
+                    $rules = try {
+                        Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop
+                    } catch {
+                        $errorMsg = "Failed to get inbox rules for $upn: $($_.Exception.Message)"
+                        Write-Warning $errorMsg
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
+                            Write-Log -Message $errorMsg -Level Warning -Data @{ UserPrincipalName = $upn }
+                        }
+                        $null
+                    }
                     if ($rules) {
                         $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
                         $userMailboxGrid.Rows[$rowIndex].Cells["TotalRules"].Value = $analysis.TotalRules.ToString()
@@ -6033,7 +6068,66 @@ $securityInvestigationButton.add_Click({
         $unifiedAuditLogsCheckBox.Text = "Email Audit Logs (Unified Audit Log - requires View-Only Audit Logs)"
         $unifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 540)
         $unifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
-        $unifiedAuditLogsCheckBox.Checked = $true
+        $unifiedAuditLogsCheckBox.Checked = $false
+
+        $unifiedAuditLogTypesBtn = New-Object System.Windows.Forms.Button
+        $unifiedAuditLogTypesBtn.Text = "Configure record types..."
+        $unifiedAuditLogTypesBtn.Location = New-Object System.Drawing.Point(200, 538)
+        $unifiedAuditLogTypesBtn.Size = New-Object System.Drawing.Size(150, 22)
+        $unifiedAuditLogTypesBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $script:unifiedAuditLogRecordTypes = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated')
+        $unifiedAuditLogTypesBtn.add_Click({
+            $allTypes = @(
+                'ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated',
+                'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation',
+                'OneDrive', 'MicrosoftTeams', 'AzureActiveDirectory',
+                'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
+            )
+            $dlg = New-Object System.Windows.Forms.Form
+            $dlg.Text = "Unified Audit Log - Record Types"
+            $dlg.Size = New-Object System.Drawing.Size(320, 380)
+            $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+            $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+            $clb = New-Object System.Windows.Forms.CheckedListBox
+            $clb.Location = New-Object System.Drawing.Point(10, 10)
+            $clb.Size = New-Object System.Drawing.Size(285, 280)
+            $clb.CheckOnClick = $true
+            foreach ($t in $allTypes) {
+                $idx = $clb.Items.Add($t)
+                if ($script:unifiedAuditLogRecordTypes -contains $t) { $clb.SetItemChecked($idx, $true) }
+            }
+            $okBtn = New-Object System.Windows.Forms.Button
+            $okBtn.Text = "OK"
+            $okBtn.Location = New-Object System.Drawing.Point(130, 300)
+            $okBtn.Size = New-Object System.Drawing.Size(75, 28)
+            $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $dlg.AcceptButton = $okBtn
+            $cancelBtn = New-Object System.Windows.Forms.Button
+            $cancelBtn.Text = "Cancel"
+            $cancelBtn.Location = New-Object System.Drawing.Point(215, 300)
+            $cancelBtn.Size = New-Object System.Drawing.Size(75, 28)
+            $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+            $dlg.CancelButton = $cancelBtn
+            $selectDefaultBtn = New-Object System.Windows.Forms.Button
+            $selectDefaultBtn.Text = "Exchange only (default)"
+            $selectDefaultBtn.Location = New-Object System.Drawing.Point(10, 300)
+            $selectDefaultBtn.Size = New-Object System.Drawing.Size(110, 28)
+            $selectDefaultBtn.add_Click({
+                for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+                    $clb.SetItemChecked($i, $clb.Items[$i] -in @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated'))
+                }
+            })
+            $dlg.Controls.AddRange(@($clb, $okBtn, $cancelBtn, $selectDefaultBtn))
+            if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                $script:unifiedAuditLogRecordTypes = @()
+                for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+                    if ($clb.GetItemChecked($i)) { $script:unifiedAuditLogRecordTypes += $clb.Items[$i] }
+                }
+                if ($script:unifiedAuditLogRecordTypes.Count -eq 0) {
+                    $script:unifiedAuditLogRecordTypes = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated')
+                }
+            }
+        })
 
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
@@ -6140,7 +6234,7 @@ $securityInvestigationButton.add_Click({
         $reportsScrollPanel.Controls.AddRange(@(
             $selectAllReportsBtn, $deselectAllReportsBtn,
             # Exchange Online / Email Reports
-            $messageTraceCheckBox, $unifiedAuditLogsCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
+            $messageTraceCheckBox, $unifiedAuditLogsCheckBox, $unifiedAuditLogTypesBtn, $inboxRulesCheckBox, $transportRulesCheckBox,
             $mailFlowCheckBox, $mailboxForwardingCheckBox,
             # Entra ID / Identity & Access Reports
             $auditLogsCheckBox, $signInLogsCheckBox, $mfaCoverageCheckBox, $caPoliciesCheckBox, $appRegistrationsCheckBox,
@@ -6269,6 +6363,7 @@ $securityInvestigationButton.add_Click({
                     IncludeDLPViolations = $dlpViolationsCheckBox.Checked
                     IncludeIntuneDevices = $intuneDevicesCheckBox.Checked
                     IncludeUnifiedAuditLogs = $unifiedAuditLogsCheckBox.Checked
+                    UnifiedAuditLogRecordTypes = $script:unifiedAuditLogRecordTypes
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -6306,7 +6401,7 @@ $securityInvestigationButton.add_Click({
                 if (Get-Command Set-LogContext -ErrorAction SilentlyContinue) { Set-LogContext -CompanyName $company }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeIntuneDevices $reportSelections.IncludeIntuneDevices -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs $reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
+                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeIntuneDevices $reportSelections.IncludeIntuneDevices -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs $reportSelections.IncludeUnifiedAuditLogs -UnifiedAuditLogRecordTypes $reportSelections.UnifiedAuditLogRecordTypes -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
 
                 if ($securityReport) {
                     $progressLabel.Text = "OK: Security investigation completed successfully!"
@@ -7086,9 +7181,19 @@ if (Test-Path `$ReportSelectionsFile) {
             Write-Host "Command file detected! Reading command..." -ForegroundColor Yellow
             Write-Host "Command file path: `$commandFile" -ForegroundColor Cyan
             Start-Sleep -Milliseconds 300  # Brief delay to ensure file is fully written
-            `$command = Get-Content `$commandFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { `$_.Trim() }
-            Write-Host "Command received: '`$command'" -ForegroundColor Cyan
-            Write-Host "Command length: `$(`$command.Length)" -ForegroundColor Gray
+            # SECURITY: Use safe command file reading with validation
+            if (Get-Command Read-CommandFile -ErrorAction SilentlyContinue) {
+                `$command = Read-CommandFile -CommandFilePath `$commandFile
+            } else {
+                `$command = Get-Content `$commandFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { `$_.Trim() }
+            }
+            if (`$command) {
+                `$commandType = if (`$command -match '^([^|]+)') { `$Matches[1] } else { "Unknown" }
+                Write-Host "Command type: `$commandType" -ForegroundColor Cyan
+                Write-Host "Command length: `$(`$command.Length)" -ForegroundColor Gray
+            } else {
+                Write-Host "No valid command found in file" -ForegroundColor Yellow
+            }
             Remove-Item `$commandFile -Force -ErrorAction SilentlyContinue
             Write-Host "Command file removed" -ForegroundColor Gray
             
@@ -7368,15 +7473,18 @@ if (Test-Path `$ReportSelectionsFile) {
                 # Exchange Online Authentication
     Write-Host ""
                 Write-Host "Connecting to Exchange Online..." -ForegroundColor Yellow
-                Write-Host "A browser window will open for authentication - this may take 10-30 seconds to appear." -ForegroundColor Yellow
+                Write-Host "A browser window will open for authentication - typically 15-60 seconds total." -ForegroundColor Yellow
                 Write-Host "Please wait for the browser popup and complete the sign-in." -ForegroundColor Yellow
                 Write-Host ""
-                Write-Status "Waiting for browser popup to appear (this may take 10-30 seconds)..."
+                Write-Status "Waiting for browser popup to appear (typically 15-60 seconds)..."
     
     try {
-                    # Note: Connect-ExchangeOnline may take time to show the browser popup
-                    # Use -DisableWAM to prevent WAM (Web Account Manager) issues with newer module versions
-        Connect-ExchangeOnline -ShowBanner:`$false -DisableWAM -ErrorAction Stop
+                    # Connect-ExchangeOnline may take 15-60s; -SkipLoadingCmdletHelp speeds up connection (v3.3+)
+                    `$connectParams = @{ ShowBanner = `$false; DisableWAM = `$true; ErrorAction = 'Stop' }
+                    if ((Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.Keys -contains 'SkipLoadingCmdletHelp') {
+                        `$connectParams['SkipLoadingCmdletHelp'] = `$true
+                    }
+                    Connect-ExchangeOnline @connectParams
                     `$exchangeAuthenticated = `$true
                     Write-Status "Exchange Online authentication successful!"
         Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
@@ -7412,15 +7520,17 @@ if (Test-Path `$ReportSelectionsFile) {
                         try {
                             `$searchTermsArray = `$searchTermsJson | ConvertFrom-Json -ErrorAction Stop
                             if (`$searchTermsArray -is [array]) {
-                                `$searchTerms = `$searchTermsArray
-                            } elseif (`$searchTermsArray -is [string]) {
+                                `$searchTerms = @(`$searchTermsArray | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) })
+                            } elseif (`$searchTermsArray -is [string] -and -not [string]::IsNullOrWhiteSpace(`$searchTermsArray)) {
                                 `$searchTerms = @(`$searchTermsArray)
+                            } elseif (`$searchTermsArray -ne `$null) {
+                                `$searchTerms = @(`$searchTermsArray | Where-Object { `$_ -ne `$null -and -not [string]::IsNullOrWhiteSpace(`$_) })
                             } else {
-                                `$searchTerms = @(`$searchTermsArray)
+                                `$searchTerms = @()
                             }
                         } catch {
                             # If JSON parsing fails, try splitting as comma-separated string
-                            `$searchTerms = `$searchTermsJson -split ',' | ForEach-Object { `$_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) }
+                            `$searchTerms = @(`$searchTermsJson -split ',' | ForEach-Object { if (`$_ -ne `$null) { `$_.Trim() } } | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) })
                         }
                     } else {
                         Write-Warning "No search terms found in VALIDATE_USERS command"
@@ -7431,28 +7541,36 @@ if (Test-Path `$ReportSelectionsFile) {
                     Write-Host "Search terms received: `$(`$searchTerms -join ', ')" -ForegroundColor Cyan
                     Write-Status "Validating users for search terms: `$(`$searchTerms -join ', ')"
                     
+                    if (`$searchTerms.Count -eq 0) {
+                        Write-Warning "No valid search terms after parsing"
+                        Write-CommandResponse "VALIDATE_USERS_FAILED:No valid search terms provided"
+                        continue
+                    }
+                    
                     # Perform user search - minimal API calls to avoid extra auth prompts
                     `$allFoundUsers = @()
                     foreach (`$searchTerm in `$searchTerms) {
+                        if ([string]::IsNullOrWhiteSpace(`$searchTerm)) { continue }
                         Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
                         `$users = @()
                         try {
                             # Single startsWith call (original + lowercase covers most cases; avoid multiple calls)
                             `$escaped = `$searchTerm.Replace("'","''")
-                            `$users = Get-MgUser -Filter "startsWith(DisplayName,'`$escaped') or startsWith(UserPrincipalName,'`$escaped')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            if (`$users.Count -eq 0) {
+                            `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escaped') or startsWith(UserPrincipalName,'`$escaped')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
+                            if (-not `$users -or `$users.Count -eq 0) {
                                 `$escapedLower = `$searchTerm.ToLower().Replace("'","''")
-                                `$users = Get-MgUser -Filter "startsWith(DisplayName,'`$escapedLower') or startsWith(UserPrincipalName,'`$escapedLower')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escapedLower') or startsWith(UserPrincipalName,'`$escapedLower')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
                             }
-                            if (`$users.Count -eq 0) {
+                            if (-not `$users -or `$users.Count -eq 0) {
                                 # Exact match fallback (2 calls max)
-                                `$users = Get-MgUser -Filter "DisplayName eq '`$escaped' or UserPrincipalName eq '`$escaped'" -Top 10 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users = @(Get-MgUser -Filter "DisplayName eq '`$escaped' or UserPrincipalName eq '`$escaped'" -Top 10 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
                             }
-                            Write-Host "    Found `$(`$users.Count) user(s)" -ForegroundColor Gray
+                            `$userCount = if (`$users) { `$users.Count } else { 0 }
+                            Write-Host "    Found `$userCount user(s)" -ForegroundColor Gray
                         } catch {
                             Write-Warning "Search failed for '`$searchTerm': `$(`$_.Exception.Message)"
                         }
-                        if (`$users.Count -gt 0) {
+                        if (`$users -and `$users.Count -gt 0) {
                             `$allFoundUsers += `$users
                         }
                     }
@@ -7523,10 +7641,17 @@ if (Test-Path `$ReportSelectionsFile) {
                         Write-Host "Ticket data parsed successfully: `$(`$ticketNumbers.Count) ticket number(s): `$(`$ticketNumbers -join ', ')" -ForegroundColor Cyan
                         Write-Status "Ticket data parsed successfully: `$(`$ticketNumbers.Count) ticket number(s): `$(`$ticketNumbers -join ', ')"
                     } catch {
-                        Write-Warning "Could not parse ticket data from command: `$(`$_.Exception.Message)"
-                        Write-Host "Ticket data JSON that failed to parse: `$ticketDataJson" -ForegroundColor Yellow
-                        Write-Host "Full command was: `$command" -ForegroundColor Yellow
-                        Write-Host "Exception details: `$(`$_.Exception | Out-String)" -ForegroundColor Red
+                        # SECURITY: Use safe error handling - don't expose full exception details
+                        if (Get-Command Get-SafeErrorMessage -ErrorAction SilentlyContinue) {
+                            $safeError = Get-SafeErrorMessage -Error $_ -UserMessage "Failed to parse ticket data"
+                            Write-Warning "Could not parse ticket data from command: $safeError"
+                            Write-Host "Ticket data JSON parsing failed (length: $($ticketDataJson.Length) chars)" -ForegroundColor Yellow
+                            $commandType = if ($command -match '^([^|]+)') { $Matches[1] } else { "Unknown" }
+                            Write-Host "Command type: $commandType" -ForegroundColor Yellow
+                        } else {
+                            Write-Warning "Could not parse ticket data from command: $($_.Exception.Message)"
+                            Write-Host "Ticket data JSON parsing failed" -ForegroundColor Yellow
+                        }
                     }
                 } else {
                     Write-Host "No TICKET_DATA found in command. Command: `$command" -ForegroundColor Gray
@@ -7570,10 +7695,17 @@ if (Test-Path `$ReportSelectionsFile) {
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
-                    Write-Status "ERROR: Failed to generate report - `$(`$_.Exception.Message)"
-                    Write-Host "ERROR: Failed to generate report - `$(`$_.Exception.Message)" -ForegroundColor Red
-                    Write-Host "Error details: `$(`$_.Exception | Out-String)" -ForegroundColor Red
-                    Write-CommandResponse "GENERATE_REPORTS_FAILED:`$(`$_.Exception.Message)"
+                    # SECURITY: Use safe error handling - don't expose full exception details
+                    if (Get-Command Get-SafeErrorMessage -ErrorAction SilentlyContinue) {
+                        $safeError = Get-SafeErrorMessage -Error $_ -UserMessage "Failed to generate report"
+                        Write-Status "ERROR: Failed to generate report - $safeError"
+                        Write-Host "ERROR: Failed to generate report - $safeError" -ForegroundColor Red
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:$safeError"
+                    } else {
+                        Write-Status "ERROR: Failed to generate report"
+                        Write-Host "ERROR: Failed to generate report" -ForegroundColor Red
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:Report generation failed"
+                    }
                     continue
                 }
                 
@@ -8905,13 +9037,43 @@ if (Test-Path `$ReportSelectionsFile) {
                         [System.Windows.Forms.Application]::DoEvents()
                         
                         # Send VALIDATE_USERS command to worker script (which has the Graph context)
-                        $searchTerms = $controls.UserSearchTextBox.Text
-                        $searchTermsArray = ($searchTerms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        # SECURITY: Rate limiting and input validation (with fallback if helpers throw)
+                        try {
+                            if (Get-Command Test-RateLimit -ErrorAction SilentlyContinue) {
+                                $rateLimit = Test-RateLimit -Key "user-validation-client-$clientNum" -MaxRequests 10 -WindowSeconds 60
+                                if ($rateLimit -and -not $rateLimit.Allowed) {
+                                    [System.Windows.Forms.MessageBox]::Show($rateLimit.Message, "Rate Limit Exceeded", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                                    $this.Enabled = $true
+                                    return
+                                }
+                            }
+                        } catch {
+                            Write-Host "Rate limit check skipped: $($_.Exception.Message)" -ForegroundColor Yellow
+                        }
+                        # SECURITY: Validate and sanitize search terms (with fallback if helpers throw)
+                        $searchTerms = if ($controls.UserSearchTextBox.Text) { $controls.UserSearchTextBox.Text } else { "" }
+                        try {
+                            $rawTerms = @($searchTerms -split ',' | ForEach-Object { if ($_ -ne $null) { $_.Trim() } else { "" } } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                            if (Get-Command Validate-SearchTerms -ErrorAction SilentlyContinue) {
+                                $searchTermsArray = Validate-SearchTerms -SearchTerms $rawTerms
+                            } else {
+                                $searchTermsArray = $rawTerms
+                            }
+                        } catch {
+                            Write-Host "Validate-SearchTerms fallback: $($_.Exception.Message)" -ForegroundColor Yellow
+                            $searchTermsArray = @($searchTerms -split ',' | ForEach-Object { if ($_ -ne $null) { $_.Trim() } else { "" } } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        }
+                        if (-not $searchTermsArray -or $searchTermsArray.Count -eq 0) {
+                            [System.Windows.Forms.MessageBox]::Show("Please enter at least one valid search term (email or name).", "No Search Terms", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                            $this.Enabled = $true
+                            return
+                        }
                         $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
                         
                         $command = "VALIDATE_USERS|SEARCH_TERMS:$searchTermsJson"
-                        Write-Host "Sending VALIDATE_USERS command to Client $clientNum with search terms: $searchTerms" -ForegroundColor Cyan
-                        $script:authStatusTextBox.AppendText("Client $clientNum : Validating users: $searchTerms`r`n")
+                        # SECURITY: Don't log user input verbatim - log count instead
+                        Write-Host "Sending VALIDATE_USERS command to Client $clientNum with $($searchTermsArray.Count) search term(s)" -ForegroundColor Cyan
+                        $script:authStatusTextBox.AppendText("Client $clientNum : Validating users ($($searchTermsArray.Count) term(s))`r`n")
                         
                         $response = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 60
                         
@@ -8943,7 +9105,7 @@ if (Test-Path `$ReportSelectionsFile) {
                                 if (Test-Path $responseFile) {
                                     Start-Sleep -Milliseconds 200
                                     try {
-                                        $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                        $finalResponse = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                                         # Check if we got a final response (not VALIDATE_USERS_STARTED)
                                         if ($finalResponse -and $finalResponse -ne "VALIDATE_USERS_STARTED" -and $finalResponse -notmatch "^VALIDATE_USERS_STARTED") {
                                             $script:authStatusTextBox.AppendText("Client ${clientNum}: Final validation response received`r`n")
@@ -9069,6 +9231,11 @@ if (Test-Path `$ReportSelectionsFile) {
                     
                     if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
                         try {
+                            # SECURITY: Validate ticket content size and sanitize
+                            if (Get-Command Validate-TicketContent -ErrorAction SilentlyContinue) {
+                                $validation = Validate-TicketContent -TicketContent $ticketContent
+                                $ticketContent = $validation.Content
+                            }
                             # Settings module already imported globally
                             if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
                                 $ticketNumbers = Extract-TicketNumbers -TicketContent $ticketContent
@@ -9079,7 +9246,13 @@ if (Test-Path `$ReportSelectionsFile) {
                                 $filteredTicketContent = $ticketContent
                             }
                         } catch {
-                            Write-Warning "Failed to process ticket content: $($_.Exception.Message)"
+                            # SECURITY: Use safe error handling
+                            if (Get-Command Get-SafeErrorMessage -ErrorAction SilentlyContinue) {
+                                $safeError = Get-SafeErrorMessage -Error $_ -UserMessage "Failed to process ticket content"
+                                Write-Warning "Failed to process ticket content: $safeError"
+                            } else {
+                                Write-Warning "Failed to process ticket content: $($_.Exception.Message)"
+                            }
                             $filteredTicketContent = $ticketContent
                         }
                     }
@@ -9253,7 +9426,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:authStatusTextBox.AppendText("Client ${clientNum}: No immediate response, checking response file: $responseFile`r`n")
                         if (Test-Path $responseFile) {
                             try {
-                                $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                $response = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                                 $script:authStatusTextBox.AppendText("Client ${clientNum}: Read response from file: $response`r`n")
                                 $script:authStatusTextBox.ScrollToCaret()
                                 [System.Windows.Forms.Application]::DoEvents()
@@ -9304,7 +9477,7 @@ if (Test-Path `$ReportSelectionsFile) {
                             if (Test-Path $responseFile) {
                                 Start-Sleep -Milliseconds 200
                                 try {
-                                    $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                    $finalResponse = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                                     # Check if we got a final response (not GRAPH_AUTH_STARTED)
                                     if ($finalResponse -and $finalResponse -ne "GRAPH_AUTH_STARTED" -and $finalResponse -notmatch "^GRAPH_AUTH_STARTED") {
                                         $script:authStatusTextBox.AppendText("Client ${clientNum}: Final response received: $finalResponse`r`n")
@@ -9404,7 +9577,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
                         if (Test-Path $responseFile) {
                             try {
-                                $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                $response = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                                 $script:authStatusTextBox.AppendText("Client ${clientNum}: Read Exchange auth response from file: $response`r`n")
                                 $script:authStatusTextBox.ScrollToCaret()
                                 [System.Windows.Forms.Application]::DoEvents()
@@ -9445,7 +9618,7 @@ if (Test-Path `$ReportSelectionsFile) {
                             if (Test-Path $responseFile) {
                                 Start-Sleep -Milliseconds 200
                                 try {
-                                    $finalResponse = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                                    $finalResponse = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                                     if ($finalResponse -and $finalResponse -ne "EXCHANGE_AUTH_STARTED" -and $finalResponse -notmatch "^EXCHANGE_AUTH_STARTED") {
                                         $script:authStatusTextBox.AppendText("Client ${clientNum}: Final Exchange auth response: $finalResponse`r`n")
                                         $script:authStatusTextBox.ScrollToCaret()
@@ -9753,7 +9926,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         Write-Host "Send-CommandToSession: Response file detected!" -ForegroundColor Yellow
                         Start-Sleep -Milliseconds 200  # Brief delay to ensure file is fully written
                         try {
-                            $response = Get-Content $responseFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+                            $response = (Get-Content $responseFile -Raw -ErrorAction Stop).Trim()
                             if ($response) {
                                 Write-Host "Send-CommandToSession: Response received: $response" -ForegroundColor Green
                                 return $response
@@ -9832,7 +10005,7 @@ if (Test-Path `$ReportSelectionsFile) {
                                             $responseFile = Join-Path $script:commandDir "Client${clientNum}_Response.txt"
                                             if (Test-Path $responseFile) {
                                                 try {
-                                                    $responseContent = Get-Content $responseFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { $_.Trim() }
+                                                    $responseContent = (Get-Content $responseFile -Raw -ErrorAction SilentlyContinue).Trim()
                                                     if ($responseContent -match '^GENERATE_REPORTS_SUCCESS:(.+)$') {
                                                         $reportFolder = $matches[1].Trim()
                                                         if (-not [string]::IsNullOrWhiteSpace($reportFolder) -and (Test-Path $reportFolder)) {
@@ -10912,7 +11085,31 @@ $entraResetPasswordButton.add_Click({
             if ($newPassword.Length -lt 8) { throw "Generated password is too short (length: $($newPassword.Length))" }
         } catch {
             [System.Windows.Forms.MessageBox]::Show("Failed to generate password: $($_.Exception.Message)`n`nUsing fallback...", "Password Generation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            try { $newPassword = "TempPass" + (Get-Random -Minimum 1000 -Maximum 9999) + "!" } catch { $statusLabel.Text = "Password generation failed"; return }
+            # SECURITY: Use secure password generation instead of predictable pattern
+            try {
+                $securityHelpersPath = Join-Path $PSScriptRoot 'Scripts\Common\SecurityHelpers.psm1'
+                if (Test-Path $securityHelpersPath) {
+                    Import-Module $securityHelpersPath -Force -ErrorAction SilentlyContinue
+                    if (Get-Command New-SecurePassword -ErrorAction SilentlyContinue) {
+                        $newPassword = New-SecurePassword -Length 16
+                    } else {
+                        $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+                        $newPassword = ""
+                        for ($i = 0; $i -lt 16; $i++) {
+                            $newPassword += $chars[(Get-Random -Maximum $chars.Length)]
+                        }
+                    }
+                } else {
+                    $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+                    $newPassword = ""
+                    for ($i = 0; $i -lt 16; $i++) {
+                        $newPassword += $chars[(Get-Random -Maximum $chars.Length)]
+                    }
+                }
+            } catch { 
+                $statusLabel.Text = "Password generation failed"; 
+                return 
+            }
         }
         $requireChange = $true
     } else {
@@ -12331,15 +12528,46 @@ function New-XKCDPassword {
             throw "Generated password is too short (length: $($password.Length))"
         }
         
-        Write-Host "Generated XKCD password: $password (length: $($password.Length))" -ForegroundColor Green
+        # SECURITY: Never log passwords - only log success message
+        Write-Host "Password generated successfully (length: $($password.Length))" -ForegroundColor Green
         return $password
         
     } catch {
         Write-Host "Error in New-XKCDPassword: $($_.Exception.Message)" -ForegroundColor Red
         
-        # Fallback to simple password generation
-        $fallbackPassword = "Secure" + (Get-Random -Minimum 1000 -Maximum 9999) + "!"
-        Write-Host "Using fallback password: $fallbackPassword" -ForegroundColor Yellow
+        # SECURITY: Use secure password generation instead of predictable pattern
+        try {
+            $securityHelpersPath = Join-Path $PSScriptRoot 'Scripts\Common\SecurityHelpers.psm1'
+            if (Test-Path $securityHelpersPath) {
+                Import-Module $securityHelpersPath -Force -ErrorAction SilentlyContinue
+                if (Get-Command New-SecurePassword -ErrorAction SilentlyContinue) {
+                    $fallbackPassword = New-SecurePassword -Length 16
+                } else {
+                    # Fallback if module not available
+                    $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+                    $fallbackPassword = ""
+                    for ($i = 0; $i -lt 16; $i++) {
+                        $fallbackPassword += $chars[(Get-Random -Maximum $chars.Length)]
+                    }
+                }
+            } else {
+                # Fallback if module not available
+                $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+                $fallbackPassword = ""
+                for ($i = 0; $i -lt 16; $i++) {
+                    $fallbackPassword += $chars[(Get-Random -Maximum $chars.Length)]
+                }
+            }
+        } catch {
+            # Final fallback
+            $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+            $fallbackPassword = ""
+            for ($i = 0; $i -lt 16; $i++) {
+                $fallbackPassword += $chars[(Get-Random -Maximum $chars.Length)]
+            }
+        }
+        # SECURITY: Never log passwords
+        Write-Host "Using secure fallback password generation" -ForegroundColor Yellow
         return $fallbackPassword
     }
 }
