@@ -289,7 +289,7 @@ function Get-ConditionalAccessPolicies {
                     # Check for overly broad user assignments
                     if ($policy.Conditions.Users -and $policy.Conditions.Users.IncludeUsers -contains "All") {
                         $analysis.HasSuspiciousConditions = $true
-                        $analysis.SuspiciousIndicators += "Policy applies to ALL users"
+                        [void]$analysis.SuspiciousIndicators.Add("Policy applies to ALL users")
                         $analysis.RiskScore += 3
                     }
                     
@@ -297,7 +297,7 @@ function Get-ConditionalAccessPolicies {
                     if ($policy.Conditions.Users -and $policy.Conditions.Users.ExcludeUsers) {
                         $excludeCount = $policy.Conditions.Users.ExcludeUsers.Count
                         if ($excludeCount -gt 5) {
-                            $analysis.SuspiciousIndicators += "Many excluded users ($excludeCount) - potential bypass"
+                            [void]$analysis.SuspiciousIndicators.Add("Many excluded users ($excludeCount) - potential bypass")
                             $analysis.RiskScore += 2
                         }
                     }
@@ -306,14 +306,14 @@ function Get-ConditionalAccessPolicies {
                     if ($policy.Conditions.Locations -and $policy.Conditions.Locations.IncludeLocations) {
                         $includeLocations = $policy.Conditions.Locations.IncludeLocations
                         if ($includeLocations -contains "All") {
-                            $analysis.SuspiciousIndicators += "Policy applies to ALL locations"
+                            [void]$analysis.SuspiciousIndicators.Add("Policy applies to ALL locations")
                             $analysis.RiskScore += 2
                         }
                     }
                     
                     # Check for device conditions that might bypass MFA
                     if ($policy.Conditions.Devices -and $policy.Conditions.Devices.ExcludeDevices) {
-                        $analysis.SuspiciousIndicators += "Device exclusions may bypass security"
+                        [void]$analysis.SuspiciousIndicators.Add("Device exclusions may bypass security")
                         $analysis.RiskScore += 1
                     }
                 }
@@ -324,14 +324,14 @@ function Get-ConditionalAccessPolicies {
                     $requiresMfa = $policy.GrantControls.BuiltInControls -contains "mfa"
                     if (-not $requiresMfa) {
                         $analysis.HasSuspiciousControls = $true
-                        $analysis.SuspiciousIndicators += "Policy does NOT require MFA"
+                        [void]$analysis.SuspiciousIndicators.Add("Policy does NOT require MFA")
                         $analysis.RiskScore += 5
                     }
                     
                     # Check for session controls that might be too permissive
                     if ($policy.SessionControls) {
                         if ($policy.SessionControls.SignInFrequency -and $policy.SessionControls.SignInFrequency.Value -gt 24) {
-                            $analysis.SuspiciousIndicators += "Long sign-in frequency ($($policy.SessionControls.SignInFrequency.Value) hours) - reduced security"
+                            [void]$analysis.SuspiciousIndicators.Add("Long sign-in frequency ($($policy.SessionControls.SignInFrequency.Value) hours) - reduced security")
                             $analysis.RiskScore += 2
                         }
                     }
@@ -434,30 +434,31 @@ function Get-AppRegistrations {
                     HasHighPrivilegePermissions = $false
                     HasSuspiciousPermissions = $false
                     HasUserConsent = $false
-                    SuspiciousIndicators = @()
+                    SuspiciousIndicators = [System.Collections.ArrayList]::new()
                     RiskScore = 0
                 }
                 
                 # Check required permissions
-                $highPrivilegeScopes = @(
-                    "User.ReadWrite.All",
-                    "Directory.ReadWrite.All",
-                    "Mail.ReadWrite",
-                    "Mail.Send",
-                    "Mailbox.ReadWrite",
-                    "Files.ReadWrite.All",
-                    "Sites.ReadWrite.All",
-                    "Calendars.ReadWrite",
-                    "Contacts.ReadWrite",
-                    "Notes.ReadWrite.All",
-                    "Tasks.ReadWrite",
-                    "Group.ReadWrite.All",
-                    "RoleManagement.ReadWrite.Directory",
-                    "Application.ReadWrite.All",
-                    "Policy.ReadWrite.All"
-                )
+                # Use hashtable for O(1) lookups instead of O(n) array search
+                $highPrivilegeScopes = @{
+                    "User.ReadWrite.All" = $true
+                    "Directory.ReadWrite.All" = $true
+                    "Mail.ReadWrite" = $true
+                    "Mail.Send" = $true
+                    "Mailbox.ReadWrite" = $true
+                    "Files.ReadWrite.All" = $true
+                    "Sites.ReadWrite.All" = $true
+                    "Calendars.ReadWrite" = $true
+                    "Contacts.ReadWrite" = $true
+                    "Notes.ReadWrite.All" = $true
+                    "Tasks.ReadWrite" = $true
+                    "Group.ReadWrite.All" = $true
+                    "RoleManagement.ReadWrite.Directory" = $true
+                    "Application.ReadWrite.All" = $true
+                    "Policy.ReadWrite.All" = $true
+                }
                 
-                $requiredPermissions = @()
+                $requiredPermissions = [System.Collections.ArrayList]::new()
                 if ($app.RequiredResourceAccess) {
                     foreach ($resourceAccess in $app.RequiredResourceAccess) {
                         # Use cached service principal instead of making new calls
@@ -467,16 +468,25 @@ function Get-AppRegistrations {
                         }
                         
                         if ($sp) {
+                            # Pre-build hashtable lookup for AppRoles by ID to avoid O(n) Where-Object in nested loop
+                            $appRolesById = @{}
+                            if ($sp.AppRoles) {
+                                foreach ($role in $sp.AppRoles) {
+                                    $appRolesById[$role.Id] = $role
+                                }
+                            }
+                            
                             foreach ($permission in $resourceAccess.ResourceAccess) {
-                                $appRole = $sp.AppRoles | Where-Object { $_.Id -eq $permission.Id }
-                                if ($appRole) {
+                                # O(1) lookup instead of O(n) Where-Object
+                                if ($appRolesById.ContainsKey($permission.Id)) {
+                                    $appRole = $appRolesById[$permission.Id]
                                     $permName = $appRole.Value
-                                    $requiredPermissions += $permName
+                                    [void]$requiredPermissions.Add($permName)
                                     
-                                    # Check for high privilege permissions
-                                    if ($highPrivilegeScopes -contains $permName) {
+                                    # Check for high privilege permissions - O(1) lookup
+                                    if ($highPrivilegeScopes.ContainsKey($permName)) {
                                         $analysis.HasHighPrivilegePermissions = $true
-                                        $analysis.SuspiciousIndicators += "High privilege permission: $permName"
+                                        [void]$analysis.SuspiciousIndicators.Add("High privilege permission: $permName")
                                         $analysis.RiskScore += 3
                                     }
                                     
@@ -495,7 +505,7 @@ function Get-AppRegistrations {
                     foreach ($scope in $app.Api.Oauth2PermissionScopes) {
                         if ($scope.UserConsentDisplayName) {
                             $analysis.HasUserConsent = $true
-                            $analysis.SuspiciousIndicators += "Allows user consent: $($scope.Value)"
+                            [void]$analysis.SuspiciousIndicators.Add("Allows user consent: $($scope.Value)")
                             $analysis.RiskScore += 2
                         }
                     }
@@ -509,7 +519,7 @@ function Get-AppRegistrations {
                         $analysis.RiskScore += 1
                     }
                 } else {
-                    $analysis.SuspiciousIndicators += "No verified publisher domain"
+                    [void]$analysis.SuspiciousIndicators.Add("No verified publisher domain")
                     $analysis.RiskScore += 2
                 }
                 
@@ -525,7 +535,7 @@ function Get-AppRegistrations {
                     $hasCertificates = $true
                 }
                 if (-not $hasCertificates -and $app.PasswordCredentials) {
-                    $analysis.SuspiciousIndicators += "Uses password credentials (less secure than certificates)"
+                    [void]$analysis.SuspiciousIndicators.Add("Uses password credentials (less secure than certificates)")
                     $analysis.RiskScore += 1
                 }
                 
@@ -533,7 +543,7 @@ function Get-AppRegistrations {
                 if ($app.Web -and $app.Web.RedirectUris) {
                     foreach ($uri in $app.Web.RedirectUris) {
                         if ($uri -like "*localhost*" -or $uri -like "*127.0.0.1*" -or $uri -notlike "https://*") {
-                            $analysis.SuspiciousIndicators += "Suspicious redirect URI: $uri"
+                            [void]$analysis.SuspiciousIndicators.Add("Suspicious redirect URI: $uri")
                             $analysis.RiskScore += 2
                         }
                     }

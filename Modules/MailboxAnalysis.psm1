@@ -90,6 +90,57 @@ function Get-AutoDetectedDomains {
     return $detectedDomains
 }
 
+# PERFORMANCE: Combined function to get both delegates and permissions in one API call
+function Get-MailboxDelegatesAndPermissions {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$UserPrincipalName
+    )
+    
+    try {
+        # Single API call to get all permissions
+        $permissions = Get-MailboxPermission -Identity $UserPrincipalName -ErrorAction SilentlyContinue | 
+                     Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" }
+        
+        # Extract delegates (FullAccess only)
+        $delegateNames = [System.Collections.ArrayList]::new()
+        $fullAccessUsers = [System.Collections.ArrayList]::new()
+        $sendAsUsers = [System.Collections.ArrayList]::new()
+        
+        foreach ($perm in $permissions) {
+            if ($perm.AccessRights -contains "FullAccess") {
+                [void]$fullAccessUsers.Add($perm.User)
+                [void]$delegateNames.Add($perm.User)
+            }
+            if ($perm.AccessRights -contains "SendAs") {
+                [void]$sendAsUsers.Add($perm.User)
+            }
+        }
+        
+        # Remove duplicates and sort
+        $uniqueDelegates = ($delegateNames | Sort-Object -Unique) -join ", "
+        $uniqueFullAccess = ($fullAccessUsers | Sort-Object -Unique) -join ", "
+        $uniqueSendAs = ($sendAsUsers | Sort-Object -Unique) -join ", "
+        
+        $delegates = if ($uniqueDelegates) { $uniqueDelegates } else { "None" }
+        
+        $resultParts = [System.Collections.ArrayList]::new()
+        if ($uniqueFullAccess) { [void]$resultParts.Add("FullAccess: $uniqueFullAccess") }
+        if ($uniqueSendAs) { [void]$resultParts.Add("SendAs: $uniqueSendAs") }
+        $fullAccess = if ($resultParts.Count -gt 0) { ($resultParts -join "; ") } else { "None" }
+        
+        return @{
+            Delegates = $delegates
+            FullAccess = $fullAccess
+        }
+    } catch {
+        return @{
+            Delegates = "Error"
+            FullAccess = "Error"
+        }
+    }
+}
+
 function Analyze-MailboxDelegates {
     param(
         [Parameter(Mandatory=$true)]
@@ -97,15 +148,8 @@ function Analyze-MailboxDelegates {
     )
     
     try {
-        $delegates = Get-MailboxPermission -Identity $UserPrincipalName -ErrorAction SilentlyContinue | 
-                    Where-Object { $_.AccessRights -contains "FullAccess" -and $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" }
-        
-        if ($delegates -and $delegates.Count -gt 0) {
-            $delegateNames = $delegates | ForEach-Object { $_.User } | Sort-Object -Unique
-            return ($delegateNames -join ", ")
-        } else {
-            return "None"
-        }
+        $result = Get-MailboxDelegatesAndPermissions -UserPrincipalName $UserPrincipalName
+        return $result.Delegates
     } catch {
         return "Error"
     }
@@ -118,25 +162,11 @@ function Analyze-MailboxPermissions {
     )
     
     try {
-        # Get mailbox permissions (FullAccess, SendAs, etc.)
-        $permissions = Get-MailboxPermission -Identity $UserPrincipalName -ErrorAction SilentlyContinue | 
-                     Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" }
-        
-        $fullAccessUsers = $permissions | Where-Object { $_.AccessRights -contains "FullAccess" } | ForEach-Object { $_.User }
-        $sendAsUsers = $permissions | Where-Object { $_.AccessRights -contains "SendAs" } | ForEach-Object { $_.User }
-        
-        $result = @()
-        if ($fullAccessUsers) { $result += "FullAccess: $($fullAccessUsers -join ', ')" }
-        if ($sendAsUsers) { $result += "SendAs: $($sendAsUsers -join ', ')" }
-        
-        if ($result.Count -gt 0) {
-            return ($result -join "; ")
-        } else {
-            return "None"
-        }
+        $result = Get-MailboxDelegatesAndPermissions -UserPrincipalName $UserPrincipalName
+        return $result.FullAccess
     } catch {
         return "Error"
     }
 }
 
-Export-ModuleMember -Function Test-ExternalForwarding,Get-InternalDomains,Analyze-MailboxRules,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains 
+Export-ModuleMember -Function Test-ExternalForwarding,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains,Get-MailboxDelegatesAndPermissions 

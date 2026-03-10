@@ -284,4 +284,59 @@ function Get-LogPath {
     return (Get-CurrentLogFilePath)
 }
 
-Export-ModuleMember -Function Initialize-Logger, Write-Log, Set-LogLevel, Set-LogComponent, Set-LogSession, Set-LogContext, Close-Logger, Get-LogPath, Get-DefaultLogPath
+function Safe-ImportModule {
+    <#
+    .SYNOPSIS
+        Safely imports a PowerShell module with error handling.
+    
+    .DESCRIPTION
+        Imports a module, removing any existing version first to force reload.
+        Handles errors gracefully with user-friendly messages.
+    
+    .PARAMETER ModulePath
+        Full path to the module file (.psm1)
+    
+    .PARAMETER ShowSuccessMessage
+        If true, displays a success message (default: false)
+    
+    .EXAMPLE
+        Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\Settings.psm1"
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ModulePath,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$ShowSuccessMessage
+    )
+    
+    try {
+        # Get the module name from the path
+        $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($ModulePath)
+        
+        # Remove the module if it's already loaded to force reload
+        if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
+            Remove-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
+        }
+        
+        Import-Module $ModulePath -Global -ErrorAction Stop
+        
+        if ($ShowSuccessMessage) {
+            Write-Host "Successfully imported module: $moduleName" -ForegroundColor Green
+        }
+    } catch {
+        $errorMsg = "Failed to import module: $ModulePath`nError: $($_.Exception.Message)"
+        
+        # Try to show MessageBox if Windows Forms is available, otherwise use Write-Error
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show($errorMsg, "Module Import Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        } catch {
+            Write-Error $errorMsg
+        }
+        
+        exit 1
+    }
+}
+
+Export-ModuleMember -Function Initialize-Logger, Write-Log, Set-LogLevel, Set-LogComponent, Set-LogSession, Set-LogContext, Close-Logger, Get-LogPath, Get-DefaultLogPath, Safe-ImportModule

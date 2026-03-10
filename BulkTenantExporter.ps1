@@ -31,27 +31,8 @@ if (-not $script:scriptRoot) {
     $script:scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
-# Function to safely import modules
-function Safe-ImportModule {
-    param([string]$modulePath)
-    
-    try {
-        $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($modulePath)
-        
-        # Remove the module if it's already loaded to force reload
-        if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
-            Remove-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
-        }
-        
-        Import-Module $modulePath -Global -ErrorAction Stop
-        Write-Host "Successfully imported module: $moduleName" -ForegroundColor Green
-    } catch {
-        $errorMsg = "Failed to import module: $modulePath`nError: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show($errorMsg, "Module Import Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        Write-Error $errorMsg
-        exit 1
-    }
-}
+# Import Logging module first (contains Safe-ImportModule utility)
+Import-Module "$script:scriptRoot\Modules\Logging.psm1" -Global -ErrorAction Stop
 
 # Function to search and validate users from search terms
 function Search-AndValidateUsers {
@@ -71,7 +52,7 @@ function Search-AndValidateUsers {
         return @()
     }
     
-    $allFoundUsers = @()
+    $allFoundUsers = [System.Collections.ArrayList]::new()
     
     # Check if Graph is connected
     try {
@@ -174,7 +155,9 @@ function Search-AndValidateUsers {
         
         # Add found users to the collection (will deduplicate later)
         if ($users.Count -gt 0) {
-            $allFoundUsers += $users
+            foreach ($user in $users) {
+                [void]$allFoundUsers.Add($user)
+            }
         }
     }
     
@@ -189,11 +172,10 @@ function Search-AndValidateUsers {
 
 # Import required modules
 Write-Host "Loading required modules..." -ForegroundColor Cyan
-Safe-ImportModule "$script:scriptRoot\Modules\Logging.psm1"
-Safe-ImportModule "$script:scriptRoot\Modules\ExportUtils.psm1"
-Safe-ImportModule "$script:scriptRoot\Modules\GraphOnline.psm1"
-Safe-ImportModule "$script:scriptRoot\Modules\BrowserIntegration.psm1"
-Safe-ImportModule "$script:scriptRoot\Modules\Settings.psm1"
+Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\ExportUtils.psm1"
+Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\GraphOnline.psm1"
+Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\BrowserIntegration.psm1"
+Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\Settings.psm1"
 Write-Host "All modules loaded successfully." -ForegroundColor Green
 
 # Initialize logging
@@ -1192,7 +1174,7 @@ try {
                     Write-Status "Validating users for search terms: `$(`$searchTerms -join ', ')"
                     
                     # Perform user search - minimal API calls to avoid extra auth prompts
-                    `$allFoundUsers = @()
+                    `$allFoundUsers = [System.Collections.ArrayList]::new()
                     foreach (`$searchTerm in `$searchTerms) {
                         Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
                         `$users = @()
@@ -1213,7 +1195,9 @@ try {
                             Write-Warning "Search failed for '`$searchTerm': `$(`$_.Exception.Message)"
                         }
                         if (`$users.Count -gt 0) {
-                            `$allFoundUsers += `$users
+                            foreach (`$user in `$users) {
+                                [void]`$allFoundUsers.Add(`$user)
+                            }
                         }
                     }
                     
@@ -1329,7 +1313,7 @@ try {
                         Write-Status "User filtering enabled with search terms. Validating users..."
                         
                         # Validate search terms using Graph API
-                        `$allFoundUsers = @()
+                        `$allFoundUsers = [System.Collections.ArrayList]::new()
                         foreach (`$searchTerm in `$searchTerms) {
                             Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
                             `$users = @()
@@ -1853,13 +1837,7 @@ try {
             return $false
         }
 
-        # Import Settings module to access Extract-EmailsFromTicket
-        try {
-            Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
-        } catch {
-            Write-Host "Warning: Failed to load Settings module: $($_.Exception.Message)" -ForegroundColor Yellow
-            return $false
-        }
+        # Settings module already imported globally
 
         # Extract emails from ticket content
         $emails = @()
@@ -2439,13 +2417,7 @@ try {
                 return
             }
 
-            # Import Settings module to access Extract-EmailsFromTicket
-            try {
-                Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
-            } catch {
-                [System.Windows.Forms.MessageBox]::Show("Failed to load Settings module: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                return
-            }
+            # Settings module already imported globally
 
             # Extract emails from ticket content
             $emails = @()
@@ -2502,7 +2474,7 @@ try {
                     }
                 }
 
-                Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                # Settings module already imported globally
                 if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
                     if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
                         $ticketNums = Extract-TicketNumbers -TicketContent $ticketContent
@@ -3337,7 +3309,7 @@ try {
                 $onlyInTicketChecked = $controls.OnlyUsersInTicketCheckBox -and $controls.OnlyUsersInTicketCheckBox.Checked
                 if ($onlyInTicketChecked -and -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
                     try {
-                        Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                        # Settings module already imported globally
                         if (Get-Command Select-UsersInTicketContent -ErrorAction SilentlyContinue) {
                             $usersToSend = Select-UsersInTicketContent -Users $selectedUsers -TicketContent $filteredTicketContent
                             if ($usersToSend.Count -lt $selectedUsers.Count) {
@@ -3618,11 +3590,11 @@ try {
 
     # Generate All Reports button click handler - sends GENERATE_REPORTS to all authenticated tenants
     $generateAllReportsBtn.add_Click({
-        $authenticatedClients = @()
+        $authenticatedClients = [System.Collections.ArrayList]::new()
         foreach ($clientNum in $script:clientAuthStates.Keys) {
             $state = $script:clientAuthStates[$clientNum]
             if ($state.GraphAuthenticated -and $state.ExchangeAuthenticated) {
-                $authenticatedClients += $clientNum
+                [void]$authenticatedClients.Add($clientNum)
             }
         }
         if ($authenticatedClients.Count -eq 0) {

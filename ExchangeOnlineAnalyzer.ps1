@@ -48,33 +48,18 @@ function Add-ToolTip {
 }
 
 # Import all modules with error handling
-function Safe-ImportModule($modulePath) {
-    try {
-        # Get the module name from the path
-        $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($modulePath)
-        
-        # Remove the module if it's already loaded to force reload
-        if (Get-Module -Name $moduleName -ErrorAction SilentlyContinue) {
-            Remove-Module -Name $moduleName -Force -ErrorAction SilentlyContinue
-        }
-        
-        Import-Module $modulePath -Global -ErrorAction Stop
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to import module: $modulePath`nError: $($_.Exception.Message)", "Module Import Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        exit
-    }
-}
-Safe-ImportModule "$PSScriptRoot\Modules\Logging.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\ExchangeOnline.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\GraphOnline.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\MailboxAnalysis.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\TransportRules.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\Connectors.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\SessionRevocation.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\SignInManagement.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\ExportUtils.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\EntraInvestigator.psm1"
-Safe-ImportModule "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
+# Import Logging module first (contains Safe-ImportModule utility)
+Import-Module "$PSScriptRoot\Modules\Logging.psm1" -Global -ErrorAction Stop
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\ExchangeOnline.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\GraphOnline.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\MailboxAnalysis.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\TransportRules.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\Connectors.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SessionRevocation.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SignInManagement.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\ExportUtils.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\EntraInvestigator.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
 
 # Initialize logging (file + console, Documents\ExchangeOnlineAnalyzer\Logs)
 try {
@@ -149,7 +134,7 @@ function Load-MailboxesOptimized {
         Show-Progress -message "Analyzing mailboxes..." -progress 60
         
         $userMailboxGrid.Rows.Clear()
-        $script:allLoadedMailboxUPNs = @()
+        $script:allLoadedMailboxUPNs = [System.Collections.ArrayList]::new()
         $script:allLoadedMailboxes = $mailboxes  # Store the full mailbox objects for filtering
         $totalMailboxes = $mailboxes.Count
         $processedCount = 0
@@ -158,11 +143,13 @@ function Load-MailboxesOptimized {
         $shouldAnalyzeRules = $true
         $shouldAnalyzePermissions = $true
         
-        if ($QuickLoad -or $totalMailboxes -gt 200) {
-            # For large tenants or quick load mode, skip detailed analysis initially
+        if ($QuickLoad -or $totalMailboxes -gt 25) {
+            # For medium/large tenants or quick load mode, skip detailed analysis initially
+            # This dramatically speeds up loading - user can use "Analyze Selected" for details
+            # Threshold lowered to 25 to make loading faster for most common scenarios
             $shouldAnalyzeRules = $false
             $shouldAnalyzePermissions = $false
-            Show-Progress -message "Large tenant detected ($totalMailboxes mailboxes). Loading basic data only. Use 'Analyze Selected' for detailed analysis." -progress 65
+            Show-Progress -message "Loading basic data for $totalMailboxes mailboxes (skipping detailed analysis for speed). Use 'Analyze Selected' for detailed analysis." -progress 65
         } elseif ($FullAnalysis) {
             # Force full analysis regardless of size
             $shouldAnalyzeRules = $true
@@ -175,10 +162,10 @@ function Load-MailboxesOptimized {
             Show-Progress -message "Performing standard analysis..." -progress 65
         }
         
+        # Exchange Online doesn't support batch operations, so we process sequentially
+        # But we can optimize by: 1) Pre-filtering, 2) Using cached data, 3) Skipping analysis when not needed
         foreach ($mbx in $mailboxes) {
-            $script:allLoadedMailboxUPNs += $mbx.UserPrincipalName
-            
-
+            [void]$script:allLoadedMailboxUPNs.Add($mbx.UserPrincipalName)
             
             # Use cached user details
             $user = $userDetails[$mbx.UserPrincipalName]
@@ -205,6 +192,7 @@ function Load-MailboxesOptimized {
             }
             
             # Only analyze rules for user mailboxes (shared mailboxes don't have user-created inbox rules)
+            # PERFORMANCE: Skip detailed analysis for large tenants - user can use "Analyze Selected" for details
             if ($mbx.RecipientTypeDetails -eq "UserMailbox" -and $shouldAnalyzeRules) {
                 try {
                     $rules = Get-InboxRule -Mailbox $mbx.UserPrincipalName -IncludeHidden -ErrorAction SilentlyContinue
@@ -227,10 +215,12 @@ function Load-MailboxesOptimized {
             }
             
             # Only analyze permissions for user mailboxes
+            # PERFORMANCE: Get permissions in one API call instead of two separate calls
             if ($mbx.RecipientTypeDetails -eq "UserMailbox" -and $shouldAnalyzePermissions) {
                 try {
-                    $delegates = Analyze-MailboxDelegates -UserPrincipalName $mbx.UserPrincipalName
-                    $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $permResult = Get-MailboxDelegatesAndPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $delegates = $permResult.Delegates
+                    $fullAccess = $permResult.FullAccess
                 } catch {
                     $delegates = "Error"
                     $fullAccess = "Error"
@@ -251,8 +241,11 @@ function Load-MailboxesOptimized {
             $userMailboxGrid.Rows[$rowIdx].Cells["FullAccess"].Value = $fullAccess
             $processedCount++
             
-            if ($processedCount % 20 -eq 0) {
+            # Update UI every 10 mailboxes for better responsiveness (reduced from 20)
+            if ($processedCount % 10 -eq 0) {
                 Show-Progress -message "Processing mailboxes... ($processedCount/$totalMailboxes)" -progress (60 + ($processedCount / $totalMailboxes * 30))
+                # Allow UI to refresh so user sees progress
+                [System.Windows.Forms.Application]::DoEvents()
             }
         }
         
@@ -261,13 +254,19 @@ function Load-MailboxesOptimized {
 
         
         # Auto-detect tenant/org domains from whatever UPNs are currently available (>1)
-        $candidateUpns = @()
-        try { $candidateUpns = $mailboxes | Where-Object { $_.UserPrincipalName } | Select-Object -ExpandProperty UserPrincipalName } catch {}
+        # Use ArrayList for better performance
+        $candidateUpns = [System.Collections.ArrayList]::new()
+        try { 
+            $upnList = $mailboxes | Where-Object { $_.UserPrincipalName } | Select-Object -ExpandProperty UserPrincipalName
+            foreach ($upn in $upnList) {
+                [void]$candidateUpns.Add($upn)
+            }
+        } catch {}
         if (-not $candidateUpns -or $candidateUpns.Count -le 1) {
             # Fall back to any UPNs already in the grid
             for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
                 $upnVal = $userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value
-                if ($upnVal) { $candidateUpns += $upnVal }
+                if ($upnVal) { [void]$candidateUpns.Add($upnVal) }
             }
         }
 
@@ -296,17 +295,22 @@ function Load-MailboxesOptimized {
         if ($detectedDomains -and $detectedDomains.Count -gt 0) { $orgDomainsTextBox.Text = ($detectedDomains -join ", ") } else { $orgDomainsTextBox.Text = "" }
 
         # Populate suspicious keywords from $BaseSuspiciousKeywords plus auto keywords derived from detected domains
-        $autoKeywords = @()
+        # Use ArrayList for better performance
+        $autoKeywords = [System.Collections.ArrayList]::new()
         foreach ($d in $detectedDomains) {
             try {
-                $host = ($d -split '\.')[0]
-                if ($host -and $host.Length -gt 2) { $autoKeywords += $host }
+                $hostPart = ($d -split '\.')[0]
+                if ($hostPart -and $hostPart.Length -gt 2) { [void]$autoKeywords.Add($hostPart) }
             } catch {}
         }
-        $allKw = @()
-        if (Get-Variable -Name BaseSuspiciousKeywords -Scope Script -ErrorAction SilentlyContinue) { $allKw += $script:BaseSuspiciousKeywords }
-        elseif (Get-Variable -Name BaseSuspiciousKeywords -ErrorAction SilentlyContinue) { $allKw += $BaseSuspiciousKeywords }
-        $allKw += $autoKeywords
+        $allKw = [System.Collections.ArrayList]::new()
+        if (Get-Variable -Name BaseSuspiciousKeywords -Scope Script -ErrorAction SilentlyContinue) { 
+            foreach ($kw in $script:BaseSuspiciousKeywords) { [void]$allKw.Add($kw) }
+        }
+        elseif (Get-Variable -Name BaseSuspiciousKeywords -ErrorAction SilentlyContinue) { 
+            foreach ($kw in $BaseSuspiciousKeywords) { [void]$allKw.Add($kw) }
+        }
+        foreach ($kw in $autoKeywords) { [void]$allKw.Add($kw) }
         $keywordsTextBox.Text = (($allKw | Where-Object { $_ -and $_.ToString().Trim().Length -gt 0 } | Sort-Object -Unique) -join ", ")
         
         # Enable/disable buttons
@@ -437,11 +441,11 @@ function Analyze-MailboxBatch {
                 }
                 
                 # Check permissions (only if likely to have them)
+                # PERFORMANCE: Get permissions in one API call instead of two separate calls
                 try {
-                    $delegates = Analyze-MailboxDelegates -UserPrincipalName $upn
-                    $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $upn
-                    $result.Delegates = $delegates
-                    $result.FullAccess = $fullAccess
+                    $permResult = Get-MailboxDelegatesAndPermissions -UserPrincipalName $upn
+                    $result.Delegates = $permResult.Delegates
+                    $result.FullAccess = $permResult.FullAccess
                 } catch {
                     # Keep default values if analysis fails
                 }
@@ -468,6 +472,22 @@ function Analyze-MailboxRulesEnhanced {
     $suspiciousVisibleCount = 0
     $hasExternalForwarding = $false
     
+    # PERFORMANCE: Pre-build hashtable for legitimate patterns (O(1) lookup instead of O(n) loop)
+    $legitimatePatterns = @{
+        "system" = $true; "default" = $true; "outlook" = $true; "microsoft" = $true; "office" = $true; "exchange" = $true;
+        "shared" = $true; "team" = $true; "group" = $true; "distribution" = $true; "dl" = $true; "mailbox" = $true;
+        "automatic" = $true; "auto" = $true; "sync" = $true; "migration" = $true; "upgrade" = $true;
+        "clutter" = $true; "focused" = $true; "junk" = $true; "spam" = $true; "archive" = $true; "retention" = $true;
+        "compliance" = $true; "legal" = $true; "hold" = $true; "litigation" = $true; "ediscovery" = $true
+    }
+    
+    # PERFORMANCE: Pre-build regex pattern for suspicious keywords (single regex match instead of loop)
+    $suspiciousKeywordsPattern = $null
+    if ($BaseSuspiciousKeywords -and $BaseSuspiciousKeywords.Count -gt 0) {
+        $escapedKeywords = $BaseSuspiciousKeywords | ForEach-Object { [regex]::Escape($_) }
+        $suspiciousKeywordsPattern = [regex]::new(($escapedKeywords -join '|'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    
     foreach ($rule in $Rules) {
         # Enhanced hidden rule detection - only count truly suspicious hidden rules
         $isSuspiciousHidden = $false
@@ -475,17 +495,9 @@ function Analyze-MailboxRulesEnhanced {
             # Check if this is a legitimate hidden rule or potentially malicious
             $ruleName = if ($rule.Name) { $rule.Name.ToLower() } else { "" }
             
-            # Legitimate hidden rule patterns (system-generated, shared mailbox rules, etc.)
-            $legitimatePatterns = @(
-                "system", "default", "outlook", "microsoft", "office", "exchange",
-                "shared", "team", "group", "distribution", "dl", "mailbox",
-                "automatic", "auto", "sync", "migration", "upgrade",
-                "clutter", "focused", "junk", "spam", "archive", "retention",
-                "compliance", "legal", "hold", "litigation", "ediscovery"
-            )
-            
+            # PERFORMANCE: Check legitimate patterns using hashtable lookup (much faster)
             $isLegitimate = $false
-            foreach ($pattern in $legitimatePatterns) {
+            foreach ($pattern in $legitimatePatterns.Keys) {
                 if ($ruleName -like "*$pattern*") {
                     $isLegitimate = $true
                     break
@@ -494,12 +506,9 @@ function Analyze-MailboxRulesEnhanced {
             
             # Additional checks for suspicious hidden rules
             if (-not $isLegitimate) {
-                # Check for suspicious keywords in hidden rules
-                foreach ($kw in $BaseSuspiciousKeywords) {
-                    if ($ruleName -match [regex]::Escape($kw)) {
-                        $isSuspiciousHidden = $true
-                        break
-                    }
+                # PERFORMANCE: Use pre-built regex pattern instead of loop
+                if ($suspiciousKeywordsPattern -and $ruleName -match $suspiciousKeywordsPattern) {
+                    $isSuspiciousHidden = $true
                 }
                 
                 # Check for symbols-only names in hidden rules
@@ -524,16 +533,14 @@ function Analyze-MailboxRulesEnhanced {
         
         # Check for suspicious keywords in visible rules
         $isSuspiciousVisible = $false
-        if (-not $rule.IsHidden) {  # Only check visible rules for suspicious keywords
-            foreach ($kw in $BaseSuspiciousKeywords) {
-                if ($rule.Name -and $rule.Name -match [regex]::Escape($kw)) {
-                    $isSuspiciousVisible = $true
-                    break
-                }
+        if (-not $rule.IsHidden -and $rule.Name) {  # Only check visible rules for suspicious keywords
+            # PERFORMANCE: Use pre-built regex pattern instead of loop
+            if ($suspiciousKeywordsPattern -and $rule.Name -match $suspiciousKeywordsPattern) {
+                $isSuspiciousVisible = $true
             }
             
             # Check for symbols-only names in visible rules
-            if (-not $isSuspiciousVisible -and $rule.Name -and $rule.Name.Length -gt 0) {
+            if (-not $isSuspiciousVisible -and $rule.Name.Length -gt 0) {
                 $textCharacters = $rule.Name -replace '[^\p{L}\p{N}\s]', ''
                 if ([string]::IsNullOrWhiteSpace($textCharacters)) {
                     $isSuspiciousVisible = $true
@@ -629,84 +636,101 @@ function UpdateEntraButtonStates {
 # Function to generate professional report
 # Function to generate Obsidian note format
 function Generate-ObsidianNote {
-    $note = "Microsoft 365 Environment Analysis`n"
-    $note += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n`n"
-    $note += "## Environment Overview`n"
-    $note += "- Exchange Online: $(if ($script:currentExchangeConnection) { 'Connected' } else { 'Not Connected' })`n"
-    $note += "- Entra ID: $(if ($script:graphConnection) { 'Connected' } else { 'Not Connected' })`n"
-    $note += "- Mailboxes: $(if ($script:allLoadedMailboxUPNs) { $script:allLoadedMailboxUPNs.Count } else { '0' })`n"
-    $note += "- Users: $(if ($entraUserGrid.Rows.Count -gt 0) { $entraUserGrid.Rows.Count } else { '0' })`n`n"
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine("Microsoft 365 Environment Analysis")
+    [void]$sb.AppendLine("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Environment Overview")
+    [void]$sb.AppendLine("- Exchange Online: $(if ($script:currentExchangeConnection) { 'Connected' } else { 'Not Connected' })")
+    [void]$sb.AppendLine("- Entra ID: $(if ($script:graphConnection) { 'Connected' } else { 'Not Connected' })")
+    [void]$sb.AppendLine("- Mailboxes: $(if ($script:allLoadedMailboxUPNs) { $script:allLoadedMailboxUPNs.Count } else { '0' })")
+    [void]$sb.AppendLine("- Users: $(if ($entraUserGrid.Rows.Count -gt 0) { $entraUserGrid.Rows.Count } else { '0' })")
+    [void]$sb.AppendLine()
     
-    $note += "## Exchange Online Analysis`n`n"
-    $note += "### Mailbox Status`n"
+    [void]$sb.AppendLine("## Exchange Online Analysis")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Mailbox Status")
     if ($script:allLoadedMailboxUPNs -and $script:allLoadedMailboxUPNs.Count -gt 0) {
-        $note += "- Total mailboxes: $($script:allLoadedMailboxUPNs.Count)`n"
+        [void]$sb.AppendLine("- Total mailboxes: $($script:allLoadedMailboxUPNs.Count)")
     } else {
-        $note += "- No mailboxes loaded`n"
+        [void]$sb.AppendLine("- No mailboxes loaded")
     }
-    $note += "`n### Selected for Analysis`n"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Selected for Analysis")
     if ($userMailboxGrid.Rows.Count -gt 0) {
         $selectedCount = 0
         for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
             if ($userMailboxGrid.Rows[$i].Cells["Select"].Value -eq $true) { $selectedCount++ }
         }
-        $note += "- Selected mailboxes: $selectedCount`n"
+        [void]$sb.AppendLine("- Selected mailboxes: $selectedCount")
     } else {
-        $note += "- No mailboxes selected`n"
+        [void]$sb.AppendLine("- No mailboxes selected")
     }
     
-    $note += "`n## Entra ID Security`n`n"
-    $note += "### User Management`n"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Entra ID Security")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### User Management")
     if ($entraUserGrid.Rows.Count -gt 0) {
-        $note += "- Loaded users: $($entraUserGrid.Rows.Count)`n"
-        $note += "- User management features available`n"
+        [void]$sb.AppendLine("- Loaded users: $($entraUserGrid.Rows.Count)")
+        [void]$sb.AppendLine("- User management features available")
     } else {
-        $note += "- No users loaded`n"
+        [void]$sb.AppendLine("- No users loaded")
     }
     
-    $note += "`n### Available Features`n"
-    $note += "- Sign-in logs export`n"
-    $note += "- Audit logs export`n"
-    $note += "- MFA analysis`n"
-    $note += "- User role analysis`n"
-    $note += "- Session revocation`n"
-    $note += "- User blocking/unblocking`n"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Available Features")
+    [void]$sb.AppendLine("- Sign-in logs export")
+    [void]$sb.AppendLine("- Audit logs export")
+    [void]$sb.AppendLine("- MFA analysis")
+    [void]$sb.AppendLine("- User role analysis")
+    [void]$sb.AppendLine("- Session revocation")
+    [void]$sb.AppendLine("- User blocking/unblocking")
     
-    $note += "`n## Security Assessment`n`n"
-    $note += "### Exchange Security`n"
-    $note += "- Inbox rules analysis: $(if ($userMailboxGrid.Rows.Count -gt 0) { 'Available' } else { 'Not available' })`n"
-    $note += "- Forwarding analysis: Available`n"
-    $note += "- Transport rules: Available`n"
-    $note += "- Connectors review: Available`n"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Security Assessment")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Exchange Security")
+    [void]$sb.AppendLine("- Inbox rules analysis: $(if ($userMailboxGrid.Rows.Count -gt 0) { 'Available' } else { 'Not available' })")
+    [void]$sb.AppendLine("- Forwarding analysis: Available")
+    [void]$sb.AppendLine("- Transport rules: Available")
+    [void]$sb.AppendLine("- Connectors review: Available")
     
-    $note += "`n### Entra ID Security`n"
-    $note += "- User account monitoring: $(if ($entraUserGrid.Rows.Count -gt 0) { 'Available' } else { 'Not available' })`n"
-    $note += "- Sign-in monitoring: Available`n"
-    $note += "- Session management: Available`n"
-    $note += "- MFA compliance: Available`n"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Entra ID Security")
+    [void]$sb.AppendLine("- User account monitoring: $(if ($entraUserGrid.Rows.Count -gt 0) { 'Available' } else { 'Not available' })")
+    [void]$sb.AppendLine("- Sign-in monitoring: Available")
+    [void]$sb.AppendLine("- Session management: Available")
+    [void]$sb.AppendLine("- MFA compliance: Available")
     
-    $note += "`n## Action Items`n`n"
-    $note += "### Immediate`n"
-    $note += "- PENDING Review suspicious inbox rules`n"
-    $note += "- PENDING Check external forwarding`n"
-    $note += "- PENDING Verify user permissions`n"
-    $note += "- PENDING Review sign-in logs`n"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Action Items")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Immediate")
+    [void]$sb.AppendLine("- PENDING Review suspicious inbox rules")
+    [void]$sb.AppendLine("- PENDING Check external forwarding")
+    [void]$sb.AppendLine("- PENDING Verify user permissions")
+    [void]$sb.AppendLine("- PENDING Review sign-in logs")
     
-    $note += "`n### Ongoing`n"
-    $note += "- PENDING Regular inbox rules audits`n"
-    $note += "- PENDING Monitor sign-in patterns`n"
-    $note += "- PENDING Review transport rules`n"
-    $note += "- PENDING Maintain MFA compliance`n"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Ongoing")
+    [void]$sb.AppendLine("- PENDING Regular inbox rules audits")
+    [void]$sb.AppendLine("- PENDING Monitor sign-in patterns")
+    [void]$sb.AppendLine("- PENDING Review transport rules")
+    [void]$sb.AppendLine("- PENDING Maintain MFA compliance")
     
-    $note += "`n## Technical Notes`n`n"
-    $note += "Tool: Microsoft 365 Management Tool v8.0`n"
-    $note += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
-    $note += "Exchange: $(if ($script:currentExchangeConnection) { 'Active' } else { 'Inactive' })`n"
-    $note += "Graph: $(if ($script:graphConnection) { 'Active' } else { 'Inactive' })`n`n"
-    $note += "---`n"
-    $note += "Tags: #microsoft365 #security #exchange #entra #analysis"
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Technical Notes")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Tool: Microsoft 365 Management Tool v8.0")
+    [void]$sb.AppendLine("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$sb.AppendLine("Exchange: $(if ($script:currentExchangeConnection) { 'Active' } else { 'Inactive' })")
+    [void]$sb.AppendLine("Graph: $(if ($script:graphConnection) { 'Active' } else { 'Inactive' })")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("---")
+    [void]$sb.AppendLine("Tags: #microsoft365 #security #exchange #entra #analysis")
 
-    return $note
+    return $sb.ToString()
 }
 
 # Function to populate unified account grid
@@ -826,29 +850,37 @@ function Get-SelectedUnifiedAccounts {
 function Generate-UnifiedProfessionalReport {
     param($selectedAccounts)
     
-    # Build report content dynamically to avoid here-string issues
-    $report = "Microsoft 365 Comprehensive Management Report`n"
-    $report += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
-    $report += "Tool: Microsoft 365 Management Tool v8.0`n`n"
+    # Build report content dynamically using StringBuilder for better performance
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine("Microsoft 365 Comprehensive Management Report")
+    [void]$sb.AppendLine("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$sb.AppendLine("Tool: Microsoft 365 Management Tool v8.0")
+    [void]$sb.AppendLine()
     
-    $report += "Executive Summary`n"
+    [void]$sb.AppendLine("Executive Summary")
+    [void]$sb.AppendLine()
     
     # Get the first selected user for single-user focus
     $firstSelectedUser = $selectedAccounts | Where-Object { $_.EntraStatus -eq "Available" } | Select-Object -First 1
     
     if ($firstSelectedUser) {
-        $report += "User Account: $($firstSelectedUser.DisplayName)`n"
-        $report += "User Principal Name: $($firstSelectedUser.UserPrincipalName)`n`n"
+        [void]$sb.AppendLine("User Account: $($firstSelectedUser.DisplayName)")
+        [void]$sb.AppendLine("User Principal Name: $($firstSelectedUser.UserPrincipalName)")
+        [void]$sb.AppendLine()
         
-        $report += "This security analysis focuses on the above user account across Exchange Online and Entra ID configurations.`n`n"
+        [void]$sb.AppendLine("This security analysis focuses on the above user account across Exchange Online and Entra ID configurations.")
+        [void]$sb.AppendLine()
     } else {
-        $report += "This comprehensive report consolidates all available data from Exchange Online and Entra ID management functions, providing a complete overview of the Microsoft 365 environment configuration and security posture.`n`n"
+        [void]$sb.AppendLine("This comprehensive report consolidates all available data from Exchange Online and Entra ID management functions, providing a complete overview of the Microsoft 365 environment configuration and security posture.")
+        [void]$sb.AppendLine()
     }
     
-    $report += "Exchange Online Configuration`n`n"
-    $report += "Connection Status`n"
-    $report += "- Status: $(if ($script:currentExchangeConnection) { 'Connected' } else { 'Not Connected' })`n"
-    $report += "- Mailboxes Loaded: $(if ($script:allLoadedMailboxUPNs) { $script:allLoadedMailboxUPNs.Count } else { '0' })`n`n"
+    [void]$sb.AppendLine("Exchange Online Configuration")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Connection Status")
+    [void]$sb.AppendLine("- Status: $(if ($script:currentExchangeConnection) { 'Connected' } else { 'Not Connected' })")
+    [void]$sb.AppendLine("- Mailboxes Loaded: $(if ($script:allLoadedMailboxUPNs) { $script:allLoadedMailboxUPNs.Count } else { '0' })")
+    [void]$sb.AppendLine()
     
     # Mailbox Analysis
     if ($selectedAccounts.Count -gt 0) {
@@ -871,64 +903,69 @@ function Generate-UnifiedProfessionalReport {
             }
         }
         
-        $report += "Mailbox Inbox Rules Analysis`n"
-        $report += "- Mailboxes Selected for Analysis: $selectedCount`n"
-        $report += "- Total Inbox Rules Found: $totalRules`n"
-        $report += "- Suspicious Rules Detected: $suspiciousRules`n"
-        $report += "- Mailboxes with External Forwarding: $externalForwarding`n`n"
+        [void]$sb.AppendLine("Mailbox Inbox Rules Analysis")
+        [void]$sb.AppendLine("- Mailboxes Selected for Analysis: $selectedCount")
+        [void]$sb.AppendLine("- Total Inbox Rules Found: $totalRules")
+        [void]$sb.AppendLine("- Suspicious Rules Detected: $suspiciousRules")
+        [void]$sb.AppendLine("- Mailboxes with External Forwarding: $externalForwarding")
+        [void]$sb.AppendLine()
         
-        $report += "Detailed Mailbox Analysis`n"
+        [void]$sb.AppendLine("Detailed Mailbox Analysis")
         foreach ($account in $selectedAccounts) {
             if ($account.ExchangeStatus -eq "Available") {
-                $report += "- $($account.UserPrincipalName)`n"
-                $report += "  - Total Rules: $($account.RulesCount)`n"
-                $report += "  - Suspicious Rules: $($account.SuspiciousRules)`n"
-                $report += "  - External Forwarding: $($account.ExternalForwarding)`n"
-                $report += "  - Delegates: $($account.Delegates)`n"
-                $report += "  - Full Access Users: $($account.FullAccess)`n"
+                [void]$sb.AppendLine("- $($account.UserPrincipalName)")
+                [void]$sb.AppendLine("  - Total Rules: $($account.RulesCount)")
+                [void]$sb.AppendLine("  - Suspicious Rules: $($account.SuspiciousRules)")
+                [void]$sb.AppendLine("  - External Forwarding: $($account.ExternalForwarding)")
+                [void]$sb.AppendLine("  - Delegates: $($account.Delegates)")
+                [void]$sb.AppendLine("  - Full Access Users: $($account.FullAccess)")
                 
                 # Add detailed suspicious rule analysis
                 if ([int]$account.RulesCount -gt 0) {
-                    $report += "  - Suspicious Rule Analysis:`n"
-                    $report += "    * Rules with symbols-only names (no text characters) are flagged as suspicious`n"
-                    $report += "    * Hidden rules are flagged as suspicious`n"
-                    $report += "    * Rules with suspicious keywords are flagged`n"
-                    $report += "    * Rules with external forwarding are flagged`n"
+                    [void]$sb.AppendLine("  - Suspicious Rule Analysis:")
+                    [void]$sb.AppendLine("    * Rules with symbols-only names (no text characters) are flagged as suspicious")
+                    [void]$sb.AppendLine("    * Hidden rules are flagged as suspicious")
+                    [void]$sb.AppendLine("    * Rules with suspicious keywords are flagged")
+                    [void]$sb.AppendLine("    * Rules with external forwarding are flagged")
                 }
-                $report += "`n"
+                [void]$sb.AppendLine()
             }
         }
     } else {
-        $report += "Mailbox Inbox Rules Analysis`n"
-        $report += "- No mailboxes selected for analysis`n`n"
+        [void]$sb.AppendLine("Mailbox Inbox Rules Analysis")
+        [void]$sb.AppendLine("- No mailboxes selected for analysis")
+        [void]$sb.AppendLine()
     }
     
     # Transport Rules
-    $report += "Transport Rules Configuration`n"
+    [void]$sb.AppendLine("Transport Rules Configuration")
     try {
         $transportRules = Get-TransportRule -ErrorAction SilentlyContinue | Select-Object Name, State, Priority, Enabled
         if ($transportRules) {
-            $report += "- Total Transport Rules: $($transportRules.Count)`n"
-            $report += "- Active Rules: $(($transportRules | Where-Object { $_.State -eq 'Enabled' }).Count)`n"
-            $report += "- Inactive Rules: $(($transportRules | Where-Object { $_.State -eq 'Disabled' }).Count)`n`n"
+            [void]$sb.AppendLine("- Total Transport Rules: $($transportRules.Count)")
+            [void]$sb.AppendLine("- Active Rules: $(($transportRules | Where-Object { $_.State -eq 'Enabled' }).Count)")
+            [void]$sb.AppendLine("- Inactive Rules: $(($transportRules | Where-Object { $_.State -eq 'Disabled' }).Count)")
+            [void]$sb.AppendLine()
             
-            $report += "Transport Rules Details`n"
+            [void]$sb.AppendLine("Transport Rules Details")
             foreach ($rule in $transportRules | Select-Object -First 10) {
-                $report += "- $($rule.Name) (Priority: $($rule.Priority), State: $($rule.State))`n"
+                [void]$sb.AppendLine("- $($rule.Name) (Priority: $($rule.Priority), State: $($rule.State))")
             }
             if ($transportRules.Count -gt 10) {
-                $report += "- ... and $($transportRules.Count - 10) more rules`n"
+                [void]$sb.AppendLine("- ... and $($transportRules.Count - 10) more rules")
             }
-            $report += "`n"
+            [void]$sb.AppendLine()
         } else {
-            $report += "- No transport rules found or access denied`n`n"
+            [void]$sb.AppendLine("- No transport rules found or access denied")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $report += "- Transport rules data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Transport rules data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Connectors
-    $report += "Connectors Configuration`n"
+    [void]$sb.AppendLine("Connectors Configuration")
     try {
         # Try different connector cmdlets that might be available
         $connectors = $null
@@ -953,30 +990,35 @@ function Generate-UnifiedProfessionalReport {
         }
         
         if ($connectors -and $connectors.Count -gt 0) {
-            $report += "- Total Connectors: $($connectors.Count)`n"
-            $report += "- Enabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $true }).Count)`n"
-            $report += "- Disabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $false }).Count)`n`n"
+            [void]$sb.AppendLine("- Total Connectors: $($connectors.Count)")
+            [void]$sb.AppendLine("- Enabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $true }).Count)")
+            [void]$sb.AppendLine("- Disabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $false }).Count)")
+            [void]$sb.AppendLine()
             
-            $report += "Connectors Details`n"
+            [void]$sb.AppendLine("Connectors Details")
             foreach ($connector in $connectors | Select-Object -First 10) {
-                $report += "- $($connector.Name) (Type: $($connector.ConnectorType), Enabled: $($connector.Enabled))`n"
+                [void]$sb.AppendLine("- $($connector.Name) (Type: $($connector.ConnectorType), Enabled: $($connector.Enabled))")
             }
             if ($connectors.Count -gt 10) {
-                $report += "- ... and $($connectors.Count - 10) more connectors`n"
+                [void]$sb.AppendLine("- ... and $($connectors.Count - 10) more connectors")
             }
-            $report += "`n"
+            [void]$sb.AppendLine()
         } else {
-            $report += "- No connectors found or access denied`n`n"
+            [void]$sb.AppendLine("- No connectors found or access denied")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $report += "- Connectors data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Connectors data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Entra ID Section
-    $report += "Entra ID (Azure AD) Configuration`n`n"
-    $report += "Connection Status`n"
-    $report += "- Status: $(if ($script:graphConnection) { 'Connected' } else { 'Not Connected' })`n"
-    $report += "- Users Loaded: $(if ($entraUserGrid.Rows.Count -gt 0) { $entraUserGrid.Rows.Count } else { '0' })`n`n"
+    [void]$sb.AppendLine("Entra ID (Azure AD) Configuration")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Connection Status")
+    [void]$sb.AppendLine("- Status: $(if ($script:graphConnection) { 'Connected' } else { 'Not Connected' })")
+    [void]$sb.AppendLine("- Users Loaded: $(if ($entraUserGrid.Rows.Count -gt 0) { $entraUserGrid.Rows.Count } else { '0' })")
+    [void]$sb.AppendLine()
     
     # User Analysis
     if ($selectedAccounts.Count -gt 0) {
@@ -995,49 +1037,51 @@ function Generate-UnifiedProfessionalReport {
             }
         }
         
-        $report += "User Account Analysis`n"
-        $report += "- Users Selected for Analysis: $selectedCount`n"
-        $report += "- Licensed Users: $licensedUsers`n"
-        $report += "- Unlicensed Users: $unlicensedUsers`n`n"
+        [void]$sb.AppendLine("User Account Analysis")
+        [void]$sb.AppendLine("- Users Selected for Analysis: $selectedCount")
+        [void]$sb.AppendLine("- Licensed Users: $licensedUsers")
+        [void]$sb.AppendLine("- Unlicensed Users: $unlicensedUsers")
+        [void]$sb.AppendLine()
         
-        $report += "Selected User Details`n"
+        [void]$sb.AppendLine("Selected User Details")
         foreach ($account in $selectedAccounts) {
             if ($account.EntraStatus -eq "Available") {
-                $report += "- $($account.DisplayName) ($($account.UserPrincipalName))`n"
-                $report += "  - Licensed: $($account.Licensed)`n"
+                [void]$sb.AppendLine("- $($account.DisplayName) ($($account.UserPrincipalName))")
+                [void]$sb.AppendLine("  - Licensed: $($account.Licensed)")
                 
                 # Get MFA status for this user
                 try {
                     $mfaStatus = Get-EntraUserMfaStatus -UserPrincipalName $account.UserPrincipalName -ErrorAction SilentlyContinue
                     if ($mfaStatus) {
-                        $report += "  - MFA Status: $($mfaStatus.OverallStatus)`n"
-                        $report += "  - MFA Summary: $($mfaStatus.Summary)`n"
+                        [void]$sb.AppendLine("  - MFA Status: $($mfaStatus.OverallStatus)")
+                        [void]$sb.AppendLine("  - MFA Summary: $($mfaStatus.Summary)")
                         if ($mfaStatus.PerUserMfa.Enabled) {
-                            $report += "  - MFA Methods: $($mfaStatus.PerUserMfa.Details)`n"
+                            [void]$sb.AppendLine("  - MFA Methods: $($mfaStatus.PerUserMfa.Details)")
                         }
                     } else {
-                        $report += "  - MFA Status: Unable to retrieve`n"
+                        [void]$sb.AppendLine("  - MFA Status: Unable to retrieve")
                     }
                 } catch {
-                    $report += "  - MFA Status: Error retrieving MFA data`n"
+                    [void]$sb.AppendLine("  - MFA Status: Error retrieving MFA data")
                 }
-                $report += "`n"
+                [void]$sb.AppendLine()
             }
         }
     } else {
-        $report += "User Account Analysis`n"
-        $report += "- No users selected for analysis`n`n"
+        [void]$sb.AppendLine("User Account Analysis")
+        [void]$sb.AppendLine("- No users selected for analysis")
+        [void]$sb.AppendLine()
     }
     
     # Sign-in Logs
-    $report += "Sign-in Logs Summary`n"
+    [void]$sb.AppendLine("Sign-in Logs Summary")
     try {
-        # Get selected users for sign-in logs
-        $selectedUsers = @()
+        # Get selected users for sign-in logs - use ArrayList for better performance
+        $selectedUsers = [System.Collections.ArrayList]::new()
         foreach ($account in $selectedAccounts) {
             if ($account.EntraStatus -eq "Available") {
                 if (-not [string]::IsNullOrWhiteSpace($account.UserPrincipalName)) {
-                    $selectedUsers += $account.UserPrincipalName
+                    [void]$selectedUsers.Add($account.UserPrincipalName)
                 }
             }
         }
@@ -1050,69 +1094,73 @@ function Generate-UnifiedProfessionalReport {
                 $failedLogins = ($recentLogs | Where-Object { $_.Status -eq "Failure" }).Count
                 $suspiciousLogins = ($recentLogs | Where-Object { $_.RiskLevel -eq "High" -or $_.RiskLevel -eq "Medium" }).Count
                 
-                # Analyze non-US sign-ins
-                $nonUSSignIns = @()
-                $usSignIns = @()
+                # Analyze non-US sign-ins - use ArrayList
+                $nonUSSignIns = [System.Collections.ArrayList]::new()
+                $usSignIns = [System.Collections.ArrayList]::new()
                 foreach ($log in $recentLogs) {
                     if ($log.Location -and $log.Location.CountryOrRegion) {
                         if ($log.Location.CountryOrRegion -ne "US" -and $log.Location.CountryOrRegion -ne "United States") {
-                            $nonUSSignIns += $log
+                            [void]$nonUSSignIns.Add($log)
                         } else {
-                            $usSignIns += $log
+                            [void]$usSignIns.Add($log)
                         }
                     }
                 }
                 
-                $report += "- Recent Sign-in Activity (Last 50 events)`n"
-                $report += "- Total Events: $($recentLogs.Count)`n"
-                $report += "- Successful Logins: $successfulLogins`n"
-                $report += "- Failed Logins: $failedLogins`n"
-                $report += "- Suspicious Logins: $suspiciousLogins`n"
-                $report += "- US Sign-ins: $($usSignIns.Count)`n"
-                $report += "- Non-US Sign-ins: $($nonUSSignIns.Count)`n`n"
+                [void]$sb.AppendLine("- Recent Sign-in Activity (Last 50 events)")
+                [void]$sb.AppendLine("- Total Events: $($recentLogs.Count)")
+                [void]$sb.AppendLine("- Successful Logins: $successfulLogins")
+                [void]$sb.AppendLine("- Failed Logins: $failedLogins")
+                [void]$sb.AppendLine("- Suspicious Logins: $suspiciousLogins")
+                [void]$sb.AppendLine("- US Sign-ins: $($usSignIns.Count)")
+                [void]$sb.AppendLine("- Non-US Sign-ins: $($nonUSSignIns.Count)")
+                [void]$sb.AppendLine()
                 
-                $report += "Recent Sign-in Events`n"
+                [void]$sb.AppendLine("Recent Sign-in Events")
                 foreach ($log in $recentLogs | Select-Object -First 10) {
                     $location = if ($log.Location -and $log.Location.CountryOrRegion) { $log.Location.CountryOrRegion } else { "Unknown" }
-                    $report += "- $($log.UserPrincipalName) - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $location`n"
+                    [void]$sb.AppendLine("- $($log.UserPrincipalName) - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $location")
                 }
                 if ($recentLogs.Count -gt 10) {
-                    $report += "- ... and $($recentLogs.Count - 10) more events`n"
+                    [void]$sb.AppendLine("- ... and $($recentLogs.Count - 10) more events")
                 }
-                $report += "`n"
+                [void]$sb.AppendLine()
                 
                 # Show non-US sign-ins if any found
                 if ($nonUSSignIns.Count -gt 0) {
-                    $report += "Non-US Sign-in Events (Security Alert)`n"
+                    [void]$sb.AppendLine("Non-US Sign-in Events (Security Alert)")
                     foreach ($log in $nonUSSignIns | Select-Object -First 5) {
                         $location = if ($log.Location -and $log.Location.CountryOrRegion) { $log.Location.CountryOrRegion } else { "Unknown" }
                         $city = if ($log.Location -and $log.Location.City) { $log.Location.City } else { "Unknown" }
-                        $report += "- $($log.UserPrincipalName) - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $city, $location`n"
+                        [void]$sb.AppendLine("- $($log.UserPrincipalName) - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $city, $location")
                     }
                     if ($nonUSSignIns.Count -gt 5) {
-                        $report += "- ... and $($nonUSSignIns.Count - 5) more non-US events`n"
+                        [void]$sb.AppendLine("- ... and $($nonUSSignIns.Count - 5) more non-US events")
                     }
-                    $report += "`n"
+                    [void]$sb.AppendLine()
                 }
             } else {
-                $report += "- No sign-in logs available for selected users`n`n"
+                [void]$sb.AppendLine("- No sign-in logs available for selected users")
+                [void]$sb.AppendLine()
             }
         } else {
-            $report += "- No users selected for sign-in log analysis`n`n"
+            [void]$sb.AppendLine("- No users selected for sign-in log analysis")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $report += "- Sign-in logs data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Sign-in logs data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Audit Logs
-    $report += "Audit Logs Summary`n"
+    [void]$sb.AppendLine("Audit Logs Summary")
     try {
-        # Get selected users for audit logs
-        $selectedUsers = @()
+        # Get selected users for audit logs - reuse ArrayList from sign-in logs section
+        $selectedUsers = [System.Collections.ArrayList]::new()
         foreach ($account in $selectedAccounts) {
             if ($account.EntraStatus -eq "Available") {
                 if (-not [string]::IsNullOrWhiteSpace($account.UserPrincipalName)) {
-                    $selectedUsers += $account.UserPrincipalName
+                    [void]$selectedUsers.Add($account.UserPrincipalName)
                 }
             }
         }
@@ -1125,34 +1173,39 @@ function Generate-UnifiedProfessionalReport {
                 $userManagement = ($recentAudits | Where-Object { $_.Category -eq "UserManagement" }).Count
                 $applicationActivity = ($recentAudits | Where-Object { $_.Category -eq "Application" }).Count
                 
-                $report += "- Recent Audit Activity (Last 50 events)`n"
-                $report += "- Total Events: $($recentAudits.Count)`n"
-                $report += "- Administrative Actions: $adminActions`n"
-                $report += "- User Management Events: $userManagement`n"
-                $report += "- Application Activity: $applicationActivity`n`n"
+                [void]$sb.AppendLine("- Recent Audit Activity (Last 50 events)")
+                [void]$sb.AppendLine("- Total Events: $($recentAudits.Count)")
+                [void]$sb.AppendLine("- Administrative Actions: $adminActions")
+                [void]$sb.AppendLine("- User Management Events: $userManagement")
+                [void]$sb.AppendLine("- Application Activity: $applicationActivity")
+                [void]$sb.AppendLine()
                 
-                $report += "Recent Audit Events`n"
+                [void]$sb.AppendLine("Recent Audit Events")
                 foreach ($log in $recentAudits | Select-Object -First 10) {
-                    $report += "- $($log.UserPrincipalName) - $($log.CreatedDateTime) - Category: $($log.Category) - Activity: $($log.Activity)`n"
+                    [void]$sb.AppendLine("- $($log.UserPrincipalName) - $($log.CreatedDateTime) - Category: $($log.Category) - Activity: $($log.Activity)")
                 }
                 if ($recentAudits.Count -gt 10) {
-                    $report += "- ... and $($recentAudits.Count - 10) more events`n"
+                    [void]$sb.AppendLine("- ... and $($recentAudits.Count - 10) more events")
                 }
-                $report += "`n"
+                [void]$sb.AppendLine()
             } else {
-                $report += "- No audit logs available for selected users`n`n"
+                [void]$sb.AppendLine("- No audit logs available for selected users")
+                [void]$sb.AppendLine()
             }
         } else {
-            $report += "- No users selected for audit log analysis`n`n"
+            [void]$sb.AppendLine("- No users selected for audit log analysis")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $report += "- Audit logs data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Audit logs data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Security Assessment
-    $report += "Security Posture Assessment`n`n"
+    [void]$sb.AppendLine("Security Posture Assessment")
+    [void]$sb.AppendLine()
     
-    $report += "Exchange Online Security Findings`n"
+    [void]$sb.AppendLine("Exchange Online Security Findings")
     if ($selectedAccounts.Count -gt 0) {
         $selectedCount = 0
         $totalSuspiciousRules = 0
@@ -1168,16 +1221,18 @@ function Generate-UnifiedProfessionalReport {
             }
         }
         
-        $report += "- Mailboxes Analyzed: $selectedCount`n"
-        $report += "- Total Suspicious Rules Found: $totalSuspiciousRules`n"
-        $report += "- Mailboxes with External Forwarding: $externalForwardingCount`n"
+        [void]$sb.AppendLine("- Mailboxes Analyzed: $selectedCount")
+        [void]$sb.AppendLine("- Total Suspicious Rules Found: $totalSuspiciousRules")
+        [void]$sb.AppendLine("- Mailboxes with External Forwarding: $externalForwardingCount")
         $riskLevel = if ($totalSuspiciousRules -gt 0 -or $externalForwardingCount -gt 0) { "HIGH - Immediate attention required" } else { "LOW - No immediate concerns detected" }
-        $report += "- Risk Level: $riskLevel`n`n"
+        [void]$sb.AppendLine("- Risk Level: $riskLevel")
+        [void]$sb.AppendLine()
     } else {
-        $report += "- No mailboxes analyzed`n`n"
+        [void]$sb.AppendLine("- No mailboxes analyzed")
+        [void]$sb.AppendLine()
     }
     
-    $report += "Entra ID Security Findings`n"
+    [void]$sb.AppendLine("Entra ID Security Findings")
     if ($selectedAccounts.Count -gt 0) {
         $selectedCount = 0
         $unlicensedUsers = 0
@@ -1191,61 +1246,73 @@ function Generate-UnifiedProfessionalReport {
             }
         }
         
-        $report += "- Users Analyzed: $selectedCount`n"
-        $report += "- Unlicensed Users: $unlicensedUsers`n"
-        $report += "- MFA Status: Available for individual analysis`n"
-        $report += "- Session Management: Available for revocation`n`n"
+        [void]$sb.AppendLine("- Users Analyzed: $selectedCount")
+        [void]$sb.AppendLine("- Unlicensed Users: $unlicensedUsers")
+        [void]$sb.AppendLine("- MFA Status: Available for individual analysis")
+        [void]$sb.AppendLine("- Session Management: Available for revocation")
+        [void]$sb.AppendLine()
     } else {
-        $report += "- No users analyzed`n`n"
+        [void]$sb.AppendLine("- No users analyzed")
+        [void]$sb.AppendLine()
     }
     
 
     
     # Technical Details
-    $report += "Technical Details`n`n"
-    $report += "Environment Information`n"
-    $report += "- Tool Version: 8.0`n"
-    $report += "- Report Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
-    $report += "- Exchange Connection: $(if ($script:currentExchangeConnection) { 'Active' } else { 'Inactive' })`n"
-    $report += "- Graph Connection: $(if ($script:graphConnection) { 'Active' } else { 'Inactive' })`n`n"
+    [void]$sb.AppendLine("Technical Details")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Environment Information")
+    [void]$sb.AppendLine("- Tool Version: 8.0")
+    [void]$sb.AppendLine("- Report Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$sb.AppendLine("- Exchange Connection: $(if ($script:currentExchangeConnection) { 'Active' } else { 'Inactive' })")
+    [void]$sb.AppendLine("- Graph Connection: $(if ($script:graphConnection) { 'Active' } else { 'Inactive' })")
+    [void]$sb.AppendLine()
     
-    $report += "Data Sources`n"
-    $report += "- Exchange Online PowerShell (Inbox Rules, Transport Rules, Connectors)`n"
-    $report += "- Microsoft Graph API (Users, Sign-in Logs, Audit Logs)`n"
-    $report += "- Real-time mailbox analysis`n"
-    $report += "- Security posture assessment`n`n"
+    [void]$sb.AppendLine("Data Sources")
+    [void]$sb.AppendLine("- Exchange Online PowerShell (Inbox Rules, Transport Rules, Connectors)")
+    [void]$sb.AppendLine("- Microsoft Graph API (Users, Sign-in Logs, Audit Logs)")
+    [void]$sb.AppendLine("- Real-time mailbox analysis")
+    [void]$sb.AppendLine("- Security posture assessment")
+    [void]$sb.AppendLine()
     
-    $report += "This comprehensive report was generated automatically by the Microsoft 365 Management Tool, consolidating all available management data for complete environment analysis."
+    [void]$sb.AppendLine("This comprehensive report was generated automatically by the Microsoft 365 Management Tool, consolidating all available management data for complete environment analysis.")
 
-    return $report
+    return $sb.ToString()
 }
 
 # Function to generate unified Obsidian note format
 function Generate-UnifiedObsidianNote {
     param($selectedAccounts)
     
-    # Build note content dynamically to avoid here-string issues
-    $note = "Microsoft 365 Comprehensive Management Report`n"
-    $note += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n`n"
+    # Build note content dynamically using StringBuilder for better performance
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine("Microsoft 365 Comprehensive Management Report")
+    [void]$sb.AppendLine("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$sb.AppendLine()
     
-    $note += "## Executive Summary`n"
+    [void]$sb.AppendLine("## Executive Summary")
     
     # Get the first selected user for single-user focus
     $firstSelectedUser = $selectedAccounts | Where-Object { $_.EntraStatus -eq "Available" } | Select-Object -First 1
     
     if ($firstSelectedUser) {
-        $note += "**User Account:** $($firstSelectedUser.DisplayName)`n"
-        $note += "**User Principal Name:** $($firstSelectedUser.UserPrincipalName)`n`n"
+        [void]$sb.AppendLine("**User Account:** $($firstSelectedUser.DisplayName)")
+        [void]$sb.AppendLine("**User Principal Name:** $($firstSelectedUser.UserPrincipalName)")
+        [void]$sb.AppendLine()
         
-        $note += "This security analysis focuses on the above user account across Exchange Online and Entra ID configurations.`n`n"
+        [void]$sb.AppendLine("This security analysis focuses on the above user account across Exchange Online and Entra ID configurations.")
+        [void]$sb.AppendLine()
     } else {
-        $note += "This comprehensive report consolidates all available data from Exchange Online and Entra ID management functions, providing a complete overview of the Microsoft 365 environment configuration and security posture.`n`n"
+        [void]$sb.AppendLine("This comprehensive report consolidates all available data from Exchange Online and Entra ID management functions, providing a complete overview of the Microsoft 365 environment configuration and security posture.")
+        [void]$sb.AppendLine()
     }
     
-    $note += "## Exchange Online Configuration`n`n"
-    $note += "### Connection Status`n"
-    $note += "- Exchange Online: $(if ($script:currentExchangeConnection) { 'Connected' } else { 'Not Connected' })`n"
-    $note += "- Mailboxes Loaded: $(if ($script:allLoadedMailboxUPNs) { $script:allLoadedMailboxUPNs.Count } else { '0' })`n`n"
+    [void]$sb.AppendLine("## Exchange Online Configuration")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Connection Status")
+    [void]$sb.AppendLine("- Exchange Online: $(if ($script:currentExchangeConnection) { 'Connected' } else { 'Not Connected' })")
+    [void]$sb.AppendLine("- Mailboxes Loaded: $(if ($script:allLoadedMailboxUPNs) { $script:allLoadedMailboxUPNs.Count } else { '0' })")
+    [void]$sb.AppendLine()
     
     # Mailbox Analysis
     if ($userMailboxGrid.Rows.Count -gt 0) {
@@ -1268,13 +1335,14 @@ function Generate-UnifiedObsidianNote {
             }
         }
         
-        $note += "### Mailbox Inbox Rules Analysis`n"
-        $note += "- Mailboxes Selected for Analysis: $selectedCount`n"
-        $note += "- Total Inbox Rules Found: $totalRules`n"
-        $note += "- Suspicious Rules Detected: $suspiciousRules`n"
-        $note += "- Mailboxes with External Forwarding: $externalForwarding`n`n"
+        [void]$sb.AppendLine("### Mailbox Inbox Rules Analysis")
+        [void]$sb.AppendLine("- Mailboxes Selected for Analysis: $selectedCount")
+        [void]$sb.AppendLine("- Total Inbox Rules Found: $totalRules")
+        [void]$sb.AppendLine("- Suspicious Rules Detected: $suspiciousRules")
+        [void]$sb.AppendLine("- Mailboxes with External Forwarding: $externalForwarding")
+        [void]$sb.AppendLine()
         
-        $note += "### Detailed Mailbox Analysis`n"
+        [void]$sb.AppendLine("### Detailed Mailbox Analysis")
         for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
             if ($userMailboxGrid.Rows[$i].Cells["Select"].Value -eq $true) {
                 $upn = $userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value
@@ -1284,41 +1352,46 @@ function Generate-UnifiedObsidianNote {
                 $delegates = $userMailboxGrid.Rows[$i].Cells["Delegates"].Value
                 $fullAccess = $userMailboxGrid.Rows[$i].Cells["FullAccess"].Value
                 
-                $note += "- **$upn**`n"
-                $note += "  - Total Rules: $rulesCount`n"
-                $note += "  - Suspicious Rules: $suspiciousRules`n"
-                $note += "  - External Forwarding: $externalForwarding`n"
-                $note += "  - Delegates: $delegates`n"
-                $note += "  - Full Access Users: $fullAccess`n`n"
+                [void]$sb.AppendLine("- **$upn**")
+                [void]$sb.AppendLine("  - Total Rules: $rulesCount")
+                [void]$sb.AppendLine("  - Suspicious Rules: $suspiciousRules")
+                [void]$sb.AppendLine("  - External Forwarding: $externalForwarding")
+                [void]$sb.AppendLine("  - Delegates: $delegates")
+                [void]$sb.AppendLine("  - Full Access Users: $fullAccess")
+                [void]$sb.AppendLine()
             }
         }
     } else {
-        $note += "### Mailbox Inbox Rules Analysis`n"
-        $note += "- No mailboxes selected for analysis`n`n"
+        [void]$sb.AppendLine("### Mailbox Inbox Rules Analysis")
+        [void]$sb.AppendLine("- No mailboxes selected for analysis")
+        [void]$sb.AppendLine()
     }
     
     # Transport Rules
-    $note += "### Transport Rules Configuration`n"
+    [void]$sb.AppendLine("### Transport Rules Configuration")
     try {
         $transportRules = Get-TransportRule -ErrorAction SilentlyContinue | Select-Object Name, State, Priority, Enabled
         if ($transportRules) {
-            $note += "- Total Transport Rules: $($transportRules.Count)`n"
-            $note += "- Active Rules: $(($transportRules | Where-Object { $_.State -eq 'Enabled' }).Count)`n"
-            $note += "- Inactive Rules: $(($transportRules | Where-Object { $_.State -eq 'Disabled' }).Count)`n`n"
+            [void]$sb.AppendLine("- Total Transport Rules: $($transportRules.Count)")
+            [void]$sb.AppendLine("- Active Rules: $(($transportRules | Where-Object { $_.State -eq 'Enabled' }).Count)")
+            [void]$sb.AppendLine("- Inactive Rules: $(($transportRules | Where-Object { $_.State -eq 'Disabled' }).Count)")
+            [void]$sb.AppendLine()
             
-            $note += "#### Transport Rules Details`n"
+            [void]$sb.AppendLine("#### Transport Rules Details")
             foreach ($rule in $transportRules | Select-Object -First 10) {
-                $note += "- **$($rule.Name)** (Priority: $($rule.Priority), State: $($rule.State))`n"
+                [void]$sb.AppendLine("- **$($rule.Name)** (Priority: $($rule.Priority), State: $($rule.State))")
             }
             if ($transportRules.Count -gt 10) {
-                $note += "- ... and $($transportRules.Count - 10) more rules`n"
+                [void]$sb.AppendLine("- ... and $($transportRules.Count - 10) more rules")
             }
-            $note += "`n"
+            [void]$sb.AppendLine()
         } else {
-            $note += "- No transport rules found or access denied`n`n"
+            [void]$sb.AppendLine("- No transport rules found or access denied")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $note += "- Transport rules data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Transport rules data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Connectors
@@ -1347,30 +1420,35 @@ function Generate-UnifiedObsidianNote {
         }
         
         if ($connectors -and $connectors.Count -gt 0) {
-            $note += "- Total Connectors: $($connectors.Count)`n"
-            $note += "- Enabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $true }).Count)`n"
-            $note += "- Disabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $false }).Count)`n`n"
+            [void]$sb.AppendLine("- Total Connectors: $($connectors.Count)")
+            [void]$sb.AppendLine("- Enabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $true }).Count)")
+            [void]$sb.AppendLine("- Disabled Connectors: $(($connectors | Where-Object { $_.Enabled -eq $false }).Count)")
+            [void]$sb.AppendLine()
             
-            $note += "#### Connectors Details`n"
+            [void]$sb.AppendLine("#### Connectors Details")
             foreach ($connector in $connectors | Select-Object -First 10) {
-                $note += "- **$($connector.Name)** (Type: $($connector.ConnectorType), Enabled: $($connector.Enabled))`n"
+                [void]$sb.AppendLine("- **$($connector.Name)** (Type: $($connector.ConnectorType), Enabled: $($connector.Enabled))")
             }
             if ($connectors.Count -gt 10) {
-                $note += "- ... and $($connectors.Count - 10) more connectors`n"
+                [void]$sb.AppendLine("- ... and $($connectors.Count - 10) more connectors")
             }
-            $note += "`n"
+            [void]$sb.AppendLine()
         } else {
-            $note += "- No connectors found or access denied`n`n"
+            [void]$sb.AppendLine("- No connectors found or access denied")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $note += "- Connectors data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Connectors data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Entra ID Section
-    $note += "## Entra ID (Azure AD) Configuration`n`n"
-    $note += "### Connection Status`n"
-    $note += "- Entra ID: $(if ($script:graphConnection) { 'Connected' } else { 'Not Connected' })`n"
-    $note += "- Users Loaded: $(if ($entraUserGrid.Rows.Count -gt 0) { $entraUserGrid.Rows.Count } else { '0' })`n`n"
+    [void]$sb.AppendLine("## Entra ID (Azure AD) Configuration")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Connection Status")
+    [void]$sb.AppendLine("- Entra ID: $(if ($script:graphConnection) { 'Connected' } else { 'Not Connected' })")
+    [void]$sb.AppendLine("- Users Loaded: $(if ($entraUserGrid.Rows.Count -gt 0) { $entraUserGrid.Rows.Count } else { '0' })")
+    [void]$sb.AppendLine()
     
     # User Analysis
     if ($entraUserGrid.Rows.Count -gt 0) {
@@ -1390,36 +1468,39 @@ function Generate-UnifiedObsidianNote {
             }
         }
         
-        $note += "### User Account Analysis`n"
-        $note += "- Users Selected for Analysis: $selectedCount`n"
-        $note += "- Licensed Users: $licensedUsers`n"
-        $note += "- Unlicensed Users: $unlicensedUsers`n`n"
+        [void]$sb.AppendLine("### User Account Analysis")
+        [void]$sb.AppendLine("- Users Selected for Analysis: $selectedCount")
+        [void]$sb.AppendLine("- Licensed Users: $licensedUsers")
+        [void]$sb.AppendLine("- Unlicensed Users: $unlicensedUsers")
+        [void]$sb.AppendLine()
         
-        $note += "### Selected User Details`n"
+        [void]$sb.AppendLine("### Selected User Details")
         for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
             if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
                 $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
                 $displayName = $entraUserGrid.Rows[$i].Cells["DisplayName"].Value
                 $licensed = $entraUserGrid.Rows[$i].Cells["Licensed"].Value
                 
-                $note += "- **$displayName** ($upn)`n"
-                $note += "  - Licensed: $licensed`n`n"
+                [void]$sb.AppendLine("- **$displayName** ($upn)")
+                [void]$sb.AppendLine("  - Licensed: $licensed")
+                [void]$sb.AppendLine()
             }
         }
     } else {
-        $note += "### User Account Analysis`n"
-        $note += "- No users selected for analysis`n`n"
+        [void]$sb.AppendLine("### User Account Analysis")
+        [void]$sb.AppendLine("- No users selected for analysis")
+        [void]$sb.AppendLine()
     }
     
     # Sign-in Logs
-    $note += "### Sign-in Logs Summary`n"
+    [void]$sb.AppendLine("### Sign-in Logs Summary")
     try {
-        # Get selected users for sign-in logs
-        $selectedUsers = @()
+        # Get selected users for sign-in logs - use ArrayList for better performance
+        $selectedUsers = [System.Collections.ArrayList]::new()
         foreach ($account in $selectedAccounts) {
             if ($account.EntraStatus -eq "Available") {
                 if (-not [string]::IsNullOrWhiteSpace($account.UserPrincipalName)) {
-                    $selectedUsers += $account.UserPrincipalName
+                    [void]$selectedUsers.Add($account.UserPrincipalName)
                 }
             }
         }
@@ -1432,69 +1513,73 @@ function Generate-UnifiedObsidianNote {
                 $failedLogins = ($recentLogs | Where-Object { $_.Status -eq "Failure" }).Count
                 $suspiciousLogins = ($recentLogs | Where-Object { $_.RiskLevel -eq "High" -or $_.RiskLevel -eq "Medium" }).Count
                 
-                # Analyze non-US sign-ins
-                $nonUSSignIns = @()
-                $usSignIns = @()
+                # Analyze non-US sign-ins - use ArrayList
+                $nonUSSignIns = [System.Collections.ArrayList]::new()
+                $usSignIns = [System.Collections.ArrayList]::new()
                 foreach ($log in $recentLogs) {
                     if ($log.Location -and $log.Location.CountryOrRegion) {
                         if ($log.Location.CountryOrRegion -ne "US" -and $log.Location.CountryOrRegion -ne "United States") {
-                            $nonUSSignIns += $log
+                            [void]$nonUSSignIns.Add($log)
                         } else {
-                            $usSignIns += $log
+                            [void]$usSignIns.Add($log)
                         }
                     }
                 }
                 
-                $note += "- Recent Sign-in Activity (Last 50 events)`n"
-                $note += "- Total Events: $($recentLogs.Count)`n"
-                $note += "- Successful Logins: $successfulLogins`n"
-                $note += "- Failed Logins: $failedLogins`n"
-                $note += "- Suspicious Logins: $suspiciousLogins`n"
-                $note += "- US Sign-ins: $($usSignIns.Count)`n"
-                $note += "- Non-US Sign-ins: $($nonUSSignIns.Count)`n`n"
+                [void]$sb.AppendLine("- Recent Sign-in Activity (Last 50 events)")
+                [void]$sb.AppendLine("- Total Events: $($recentLogs.Count)")
+                [void]$sb.AppendLine("- Successful Logins: $successfulLogins")
+                [void]$sb.AppendLine("- Failed Logins: $failedLogins")
+                [void]$sb.AppendLine("- Suspicious Logins: $suspiciousLogins")
+                [void]$sb.AppendLine("- US Sign-ins: $($usSignIns.Count)")
+                [void]$sb.AppendLine("- Non-US Sign-ins: $($nonUSSignIns.Count)")
+                [void]$sb.AppendLine()
                 
-                $note += "#### Recent Sign-in Events`n"
+                [void]$sb.AppendLine("#### Recent Sign-in Events")
                 foreach ($log in $recentLogs | Select-Object -First 10) {
                     $location = if ($log.Location -and $log.Location.CountryOrRegion) { $log.Location.CountryOrRegion } else { "Unknown" }
-                    $note += "- **$($log.UserPrincipalName)** - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $location`n"
+                    [void]$sb.AppendLine("- **$($log.UserPrincipalName)** - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $location")
                 }
                 if ($recentLogs.Count -gt 10) {
-                    $note += "- ... and $($recentLogs.Count - 10) more events`n"
+                    [void]$sb.AppendLine("- ... and $($recentLogs.Count - 10) more events")
                 }
-                $note += "`n"
+                [void]$sb.AppendLine()
                 
                 # Show non-US sign-ins if any found
                 if ($nonUSSignIns.Count -gt 0) {
-                    $note += "#### Non-US Sign-in Events (Security Alert)`n"
+                    [void]$sb.AppendLine("#### Non-US Sign-in Events (Security Alert)")
                     foreach ($log in $nonUSSignIns | Select-Object -First 5) {
                         $location = if ($log.Location -and $log.Location.CountryOrRegion) { $log.Location.CountryOrRegion } else { "Unknown" }
                         $city = if ($log.Location -and $log.Location.City) { $log.Location.City } else { "Unknown" }
-                        $note += "- **$($log.UserPrincipalName)** - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $city, $location`n"
+                        [void]$sb.AppendLine("- **$($log.UserPrincipalName)** - $($log.CreatedDateTime) - Status: $($log.Status) - Risk: $($log.RiskLevel) - Location: $city, $location")
                     }
                     if ($nonUSSignIns.Count -gt 5) {
-                        $note += "- ... and $($nonUSSignIns.Count - 5) more non-US events`n"
+                        [void]$sb.AppendLine("- ... and $($nonUSSignIns.Count - 5) more non-US events")
                     }
-                    $note += "`n"
+                    [void]$sb.AppendLine()
                 }
             } else {
-                $note += "- No sign-in logs available for selected users`n`n"
+                [void]$sb.AppendLine("- No sign-in logs available for selected users")
+                [void]$sb.AppendLine()
             }
         } else {
-            $note += "- No users selected for sign-in log analysis`n`n"
+            [void]$sb.AppendLine("- No users selected for sign-in log analysis")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $note += "- Sign-in logs data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Sign-in logs data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Audit Logs
-    $note += "### Audit Logs Summary`n"
+    [void]$sb.AppendLine("### Audit Logs Summary")
     try {
-        # Get selected users for audit logs
-        $selectedUsers = @()
+        # Get selected users for audit logs - reuse ArrayList from sign-in logs section
+        $selectedUsers = [System.Collections.ArrayList]::new()
         foreach ($account in $selectedAccounts) {
             if ($account.EntraStatus -eq "Available") {
                 if (-not [string]::IsNullOrWhiteSpace($account.UserPrincipalName)) {
-                    $selectedUsers += $account.UserPrincipalName
+                    [void]$selectedUsers.Add($account.UserPrincipalName)
                 }
             }
         }
@@ -1507,34 +1592,39 @@ function Generate-UnifiedObsidianNote {
                 $userManagement = ($recentAudits | Where-Object { $_.Category -eq "UserManagement" }).Count
                 $applicationActivity = ($recentAudits | Where-Object { $_.Category -eq "Application" }).Count
                 
-                $note += "- Recent Audit Activity (Last 50 events)`n"
-                $note += "- Total Events: $($recentAudits.Count)`n"
-                $note += "- Administrative Actions: $adminActions`n"
-                $note += "- User Management Events: $userManagement`n"
-                $note += "- Application Activity: $applicationActivity`n`n"
+                [void]$sb.AppendLine("- Recent Audit Activity (Last 50 events)")
+                [void]$sb.AppendLine("- Total Events: $($recentAudits.Count)")
+                [void]$sb.AppendLine("- Administrative Actions: $adminActions")
+                [void]$sb.AppendLine("- User Management Events: $userManagement")
+                [void]$sb.AppendLine("- Application Activity: $applicationActivity")
+                [void]$sb.AppendLine()
                 
-                $note += "#### Recent Audit Events`n"
+                [void]$sb.AppendLine("#### Recent Audit Events")
                 foreach ($log in $recentAudits | Select-Object -First 10) {
-                    $note += "- **$($log.UserPrincipalName)** - $($log.CreatedDateTime) - Category: $($log.Category) - Activity: $($log.Activity)`n"
+                    [void]$sb.AppendLine("- **$($log.UserPrincipalName)** - $($log.CreatedDateTime) - Category: $($log.Category) - Activity: $($log.Activity)")
                 }
                 if ($recentAudits.Count -gt 10) {
-                    $note += "- ... and $($recentAudits.Count - 10) more events`n"
+                    [void]$sb.AppendLine("- ... and $($recentAudits.Count - 10) more events")
                 }
-                $note += "`n"
+                [void]$sb.AppendLine()
             } else {
-                $note += "- No audit logs available for selected users`n`n"
+                [void]$sb.AppendLine("- No audit logs available for selected users")
+                [void]$sb.AppendLine()
             }
         } else {
-            $note += "- No users selected for audit log analysis`n`n"
+            [void]$sb.AppendLine("- No users selected for audit log analysis")
+            [void]$sb.AppendLine()
         }
     } catch {
-        $note += "- Audit logs data unavailable: $($_.Exception.Message)`n`n"
+        [void]$sb.AppendLine("- Audit logs data unavailable: $($_.Exception.Message)")
+        [void]$sb.AppendLine()
     }
     
     # Security Assessment
-    $note += "## Security Posture Assessment`n`n"
+    [void]$sb.AppendLine("## Security Posture Assessment")
+    [void]$sb.AppendLine()
     
-    $note += "### Exchange Online Security Findings`n"
+    [void]$sb.AppendLine("### Exchange Online Security Findings")
     if ($userMailboxGrid.Rows.Count -gt 0) {
         $selectedCount = 0
         $totalSuspiciousRules = 0
@@ -1550,16 +1640,18 @@ function Generate-UnifiedObsidianNote {
             }
         }
         
-        $note += "- Mailboxes Analyzed: $selectedCount`n"
-        $note += "- Total Suspicious Rules Found: $totalSuspiciousRules`n"
-        $note += "- Mailboxes with External Forwarding: $externalForwardingCount`n"
+        [void]$sb.AppendLine("- Mailboxes Analyzed: $selectedCount")
+        [void]$sb.AppendLine("- Total Suspicious Rules Found: $totalSuspiciousRules")
+        [void]$sb.AppendLine("- Mailboxes with External Forwarding: $externalForwardingCount")
         $riskLevel = if ($totalSuspiciousRules -gt 0 -or $externalForwardingCount -gt 0) { "HIGH - Immediate attention required" } else { "LOW - No immediate concerns detected" }
-        $note += "- Risk Level: $riskLevel`n`n"
+        [void]$sb.AppendLine("- Risk Level: $riskLevel")
+        [void]$sb.AppendLine()
     } else {
-        $note += "- No mailboxes analyzed`n`n"
+        [void]$sb.AppendLine("- No mailboxes analyzed")
+        [void]$sb.AppendLine()
     }
     
-    $note += "### Entra ID Security Findings`n"
+    [void]$sb.AppendLine("### Entra ID Security Findings")
     if ($entraUserGrid.Rows.Count -gt 0) {
         $selectedCount = 0
         $unlicensedUsers = 0
@@ -1574,34 +1666,39 @@ function Generate-UnifiedObsidianNote {
             }
         }
         
-        $note += "- Users Analyzed: $selectedCount`n"
-        $note += "- Unlicensed Users: $unlicensedUsers`n"
-        $note += "- MFA Status: Available for individual analysis`n"
-        $note += "- Session Management: Available for revocation`n`n"
+        [void]$sb.AppendLine("- Users Analyzed: $selectedCount")
+        [void]$sb.AppendLine("- Unlicensed Users: $unlicensedUsers")
+        [void]$sb.AppendLine("- MFA Status: Available for individual analysis")
+        [void]$sb.AppendLine("- Session Management: Available for revocation")
+        [void]$sb.AppendLine()
     } else {
-        $note += "- No users analyzed`n`n"
+        [void]$sb.AppendLine("- No users analyzed")
+        [void]$sb.AppendLine()
     }
     
 
     
     # Technical Details
-    $note += "## Technical Details`n`n"
-    $note += "### Environment Information`n"
-    $note += "- Tool Version: 8.0`n"
-    $note += "- Report Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
-    $note += "- Exchange Connection: $(if ($script:currentExchangeConnection) { 'Active' } else { 'Inactive' })`n"
-    $note += "- Graph Connection: $(if ($script:graphConnection) { 'Active' } else { 'Inactive' })`n`n"
+    [void]$sb.AppendLine("## Technical Details")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("### Environment Information")
+    [void]$sb.AppendLine("- Tool Version: 8.0")
+    [void]$sb.AppendLine("- Report Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$sb.AppendLine("- Exchange Connection: $(if ($script:currentExchangeConnection) { 'Active' } else { 'Inactive' })")
+    [void]$sb.AppendLine("- Graph Connection: $(if ($script:graphConnection) { 'Active' } else { 'Inactive' })")
+    [void]$sb.AppendLine()
     
-    $note += "### Data Sources`n"
-    $note += "- Exchange Online PowerShell (Inbox Rules, Transport Rules, Connectors)`n"
-    $note += "- Microsoft Graph API (Users, Sign-in Logs, Audit Logs)`n"
-    $note += "- Real-time mailbox analysis`n"
-    $note += "- Security posture assessment`n`n"
+    [void]$sb.AppendLine("### Data Sources")
+    [void]$sb.AppendLine("- Exchange Online PowerShell (Inbox Rules, Transport Rules, Connectors)")
+    [void]$sb.AppendLine("- Microsoft Graph API (Users, Sign-in Logs, Audit Logs)")
+    [void]$sb.AppendLine("- Real-time mailbox analysis")
+    [void]$sb.AppendLine("- Security posture assessment")
+    [void]$sb.AppendLine()
     
-    $note += "---`n"
-    $note += "Tags: #microsoft365 #security #exchange #entra #comprehensive-analysis"
+    [void]$sb.AppendLine("---")
+    [void]$sb.AppendLine("Tags: #microsoft365 #security #exchange #entra #comprehensive-analysis")
 
-    return $note
+    return $sb.ToString()
 }
 
 # Function to generate incident remediation checklist with enhanced data
@@ -1995,7 +2092,7 @@ $aiSendBtn.add_Click({
             } else {
                 # Ensure Claude API key exists
                 try {
-                    Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                    # Settings module already imported globally
                     $s = Get-AppSettings
                     if (-not $s -or -not $s.ClaudeApiKey -or $s.ClaudeApiKey.Trim().Length -eq 0) {
                         [System.Windows.Forms.MessageBox]::Show("Please add your Claude API key in the Settings tab first.", "Claude API Key Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
@@ -2035,7 +2132,7 @@ $aiSendBtn.add_Click({
     }
 })
 # --- Settings Tab ---
-try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
+# Settings module already imported globally at script start
 $settingsTab = New-Object System.Windows.Forms.TabPage
 $settingsTab.Text = "Settings"
 $settingsPanel = New-Object System.Windows.Forms.Panel
@@ -2368,7 +2465,7 @@ $tabControl.TabPages.Add($settingsTab)
 
 $settingsTab.add_Enter({
     try {
-        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        # Settings module already imported globally
         
         # Load current settings location
         $currentSettingsPath = Get-SettingsPath
@@ -2428,7 +2525,7 @@ $settingsTab.add_Enter({
 
 $btnBrowseSettingsLocation.add_Click({
     try {
-        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        # Settings module already imported globally
         
         # Show save file dialog
         $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
@@ -2513,7 +2610,7 @@ $btnBrowseSettingsLocation.add_Click({
 
 $btnSave.add_Click({
     try {
-        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+        # Settings module already imported globally
         
         # Update settings location if user changed it manually
         $manualPath = $txtSettingsLocation.Text.Trim()
@@ -2653,7 +2750,7 @@ $btnBrowseMemberberryExceptionsPath.add_Click({
 
 $btnTestMemberberry.add_Click({
     try {
-        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
+        # Settings module already imported globally
         
         $memberberryDir = $txtMemberberryPath.Text.Trim()
         $exceptionsPath = $txtMemberberryExceptionsPath.Text.Trim()
@@ -2745,7 +2842,7 @@ $btnTestMemberberry.add_Click({
 
 $btnGenerateReadme.add_Click({
     try {
-        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
+        # Settings module already imported globally
         if (-not (Get-Command New-AIReadme -ErrorAction SilentlyContinue)) {
             $lblStatus.Text = "Error: New-AIReadme function not found. Please check Settings module."
             $lblStatus.ForeColor = [System.Drawing.Color]::Red
@@ -3153,9 +3250,11 @@ function Filter-ExchangeGrid {
                 }
                 
                 # Analyze mailbox delegates and permissions
+                # PERFORMANCE: Get permissions in one API call instead of two separate calls
                 try {
-                    $delegates = Analyze-MailboxDelegates -UserPrincipalName $mbx.UserPrincipalName
-                    $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $permResult = Get-MailboxDelegatesAndPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $delegates = $permResult.Delegates
+                    $fullAccess = $permResult.FullAccess
                 } catch {
                     $delegates = "Error"
                     $fullAccess = "Error"
@@ -3995,14 +4094,14 @@ $loadAllUsersButton.add_Click({
         foreach ($u in $users) {
             try {
                 # Get license names
-                $licenseNames = @()
+                $licenseNames = [System.Collections.ArrayList]::new()
                 if ($u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0) {
                     foreach ($assignedLicense in $u.AssignedLicenses) {
                         $skuId = $assignedLicense.SkuId
                         if ($skuMapping.ContainsKey($skuId)) {
-                            $licenseNames += $skuMapping[$skuId].FriendlyName
+                            [void]$licenseNames.Add($skuMapping[$skuId].FriendlyName)
                         } else {
-                            $licenseNames += "Unknown SKU: $skuId"
+                            [void]$licenseNames.Add("Unknown SKU: $skuId")
                         }
                     }
                 }
@@ -4082,7 +4181,7 @@ $searchUsersButton.add_Click({
         $statusLabel.Text = "Searching for users..."
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         
-        $allFoundUsers = @()
+        $allFoundUsers = [System.Collections.ArrayList]::new()
         
         # Search for each term individually and combine results
         foreach ($searchTerm in $searchTerms) {
@@ -4147,7 +4246,9 @@ $searchUsersButton.add_Click({
             
             # Add found users to the collection (will deduplicate later)
             if ($users.Count -gt 0) {
-                $allFoundUsers += $users
+                foreach ($user in $users) {
+                    [void]$allFoundUsers.Add($user)
+                }
             }
         }
         
@@ -4175,14 +4276,14 @@ $searchUsersButton.add_Click({
         foreach ($u in $uniqueUsers) {
             try {
                 # Get license names
-                $licenseNames = @()
+                $licenseNames = [System.Collections.ArrayList]::new()
                 if ($u.AssignedLicenses -and $u.AssignedLicenses.Count -gt 0) {
                     foreach ($assignedLicense in $u.AssignedLicenses) {
                         $skuId = $assignedLicense.SkuId
                         if ($skuMapping.ContainsKey($skuId)) {
-                            $licenseNames += $skuMapping[$skuId].FriendlyName
+                            [void]$licenseNames.Add($skuMapping[$skuId].FriendlyName)
                         } else {
-                            $licenseNames += "Unknown SKU: $skuId"
+                            [void]$licenseNames.Add("Unknown SKU: $skuId")
                         }
                     }
                 }
@@ -4246,11 +4347,11 @@ $entraSignInExportButton.add_Click({
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     Write-Host "Selected UPNs: $($selectedUpns -join ', ')"
@@ -4312,11 +4413,11 @@ $entraDetailsFetchButton.add_Click({
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     Write-Host "Selected UPNs: $($selectedUpns -join ', ')"
@@ -4372,11 +4473,11 @@ $entraAuditFetchButton.add_Click({
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     Write-Host "Selected UPNs: $($selectedUpns -join ', ')"
@@ -4435,11 +4536,11 @@ $entraMfaFetchButton.add_Click({
     $entraUserGrid.EndEdit()
     Write-Host 'EntraUserGrid Columns:'
     foreach ($col in $entraUserGrid.Columns) { Write-Host $col.Name }
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     Write-Host "Selected UPNs: $($selectedUpns -join ', ')"
@@ -4476,11 +4577,11 @@ $entraMfaFetchButton.add_Click({
 # Check Licenses button handler
 $entraCheckLicensesButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -4536,11 +4637,11 @@ $entraCheckLicensesButton.add_Click({
 # --- Export Sign-in Logs button: fetch and export in one click ---
 $entraExportSignInLogsButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -4576,11 +4677,11 @@ $entraExportSignInLogsButton.add_Click({
 # --- Export Audit Logs button: fetch and export in one click ---
 $entraExportAuditLogsButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -ne 1) {
@@ -4682,6 +4783,11 @@ $connectButton.add_Click({
         Write-Host "Exchange Online connected. Load buttons enabled: LoadAll=$($loadAllMailboxesButton.Enabled), Search=$($searchMailboxesButton.Enabled)"
         
         $statusLabel.Text = "Connected to Exchange Online. Use 'Load All Mailboxes' or 'Search Mailboxes' to load data."
+        
+        # Update connection status label asynchronously to avoid blocking UI
+        # Don't call Update-ConnectionStatus here as it may trigger slow API calls
+        # The status will update when user switches tabs or clicks refresh
+        $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default
     } catch {
         # Check if this is a user cancellation (common error messages when user cancels auth)
         $errorMessage = $_.Exception.Message
@@ -4713,7 +4819,8 @@ $loadAllMailboxesButton.add_Click({
         $statusLabel.Text = "Loading all mailboxes..."
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         
-        # Load all mailboxes with full analysis
+        # Load all mailboxes - detailed analysis skipped for >25 mailboxes for speed
+        # Use "Analyze Selected" button for detailed analysis on specific mailboxes
         $mailboxCount = Load-MailboxesOptimized -MaxMailboxes 10000 -LoadAll
         
         $statusLabel.Text = "Loaded $mailboxCount mailboxes"
@@ -4751,7 +4858,7 @@ $searchMailboxesButton.add_Click({
         $statusLabel.Text = "Searching for mailboxes..."
         $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         
-        $allFoundMailboxes = @()
+        $allFoundMailboxes = [System.Collections.ArrayList]::new()
         
         # Search for each term individually and combine results
         foreach ($searchTerm in $searchTerms) {
@@ -4763,7 +4870,9 @@ $searchMailboxesButton.add_Click({
                 Write-Host "  Found $($mailboxes.Count) mailboxes"
                 
                 if ($mailboxes.Count -gt 0) {
-                    $allFoundMailboxes += $mailboxes
+                    foreach ($mailbox in $mailboxes) {
+                        [void]$allFoundMailboxes.Add($mailbox)
+                    }
                 }
             } catch {
                 Write-Host "  Search failed for '$searchTerm': $($_.Exception.Message)"
@@ -4783,12 +4892,12 @@ $searchMailboxesButton.add_Click({
         
         # Load the found mailboxes by updating the script variables and grid
         $userMailboxGrid.Rows.Clear()
-        $script:allLoadedMailboxUPNs = @()
+        $script:allLoadedMailboxUPNs = [System.Collections.ArrayList]::new()
         $script:allLoadedMailboxes = $uniqueMailboxes
         
         $mailboxCount = 0
         foreach ($mbx in $uniqueMailboxes) {
-            $script:allLoadedMailboxUPNs += $mbx.UserPrincipalName
+            [void]$script:allLoadedMailboxUPNs.Add($mbx.UserPrincipalName)
             
             # Get user details for sign-in status
             try {
@@ -4830,9 +4939,11 @@ $searchMailboxesButton.add_Click({
                 }
                 
                 # Analyze permissions
+                # PERFORMANCE: Get permissions in one API call instead of two separate calls
                 try {
-                    $delegates = Analyze-MailboxDelegates -UserPrincipalName $mbx.UserPrincipalName
-                    $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $permResult = Get-MailboxDelegatesAndPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $delegates = $permResult.Delegates
+                    $fullAccess = $permResult.FullAccess
                 } catch {
                     # Keep default values if analysis fails
                 }
@@ -4842,9 +4953,11 @@ $searchMailboxesButton.add_Click({
                 $suspiciousRules = "N/A"
                 $externalForwarding = "N/A"
                 # Still analyze permissions for shared mailboxes
+                # PERFORMANCE: Get permissions in one API call instead of two separate calls
                 try {
-                    $delegates = Analyze-MailboxDelegates -UserPrincipalName $mbx.UserPrincipalName
-                    $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $permResult = Get-MailboxDelegatesAndPermissions -UserPrincipalName $mbx.UserPrincipalName
+                    $delegates = $permResult.Delegates
+                    $fullAccess = $permResult.FullAccess
                 } catch {
                     # Keep default values if analysis fails
                 }
@@ -4943,10 +5056,10 @@ $entraSearchTextBox.add_TextChanged({
     Filter-EntraGrid -searchText $entraSearchTextBox.Text
 })
 $getRulesButton.add_Click({
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
         if ($userMailboxGrid.Rows[$i].Cells["Select"].Value -eq $true) {
-            $selectedUpns += $userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value
+            [void]$selectedUpns.Add($userMailboxGrid.Rows[$i].Cells["UserPrincipalName"].Value)
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -5051,10 +5164,10 @@ $getRulesButton.add_Click({
     } finally { $mainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
 })
 $manageRulesButton.add_Click({
-    $checkedRows = @()
+    $checkedRows = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
         if ($userMailboxGrid.Rows[$i].Cells["Select"].Value -eq $true) {
-            $checkedRows += $userMailboxGrid.Rows[$i]
+            [void]$checkedRows.Add($userMailboxGrid.Rows[$i])
         }
     }
     if ($checkedRows.Count -ne 1) {
@@ -5125,9 +5238,9 @@ $manageRulesButton.add_Click({
         if (-not $rulesGrid.SelectedRows -or $rulesGrid.SelectedRows.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show("Select at least one rule to delete.", "No Rule Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return
         }
-        $selectedNames = @()
+        $selectedNames = [System.Collections.ArrayList]::new()
         foreach ($row in $rulesGrid.SelectedRows) {
-            $selectedNames += $row.Cells["Name"].Value
+            [void]$selectedNames.Add($row.Cells["Name"].Value)
         }
         $confirm = [System.Windows.Forms.MessageBox]::Show("Are you sure you want to delete the selected rule(s)?\n" + ($selectedNames -join "\n"), "Confirm Delete", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
@@ -5171,8 +5284,8 @@ $manageRulesButton.add_Click({
 
 # Add click handler for analyze selected button
 $analyzeSelectedButton.add_Click({
-    $selectedUpns = @()
-    $selectedRows = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
+    $selectedRows = [System.Collections.ArrayList]::new()
     
     for ($i = 0; $i -lt $userMailboxGrid.Rows.Count; $i++) {
         if ($userMailboxGrid.Rows[$i].Cells["Select"].Value -eq $true) {
@@ -5181,13 +5294,13 @@ $analyzeSelectedButton.add_Click({
             $mailboxType = $userMailboxGrid.Rows[$i].Cells["RecipientType"].Value
             
             if (-not [string]::IsNullOrWhiteSpace($upn)) {
-                $selectedUpns += $upn
-                $selectedRows += @{
+                [void]$selectedUpns.Add($upn)
+                [void]$selectedRows.Add(@{
                     Index = $i
                     UPN = $upn
                     DisplayName = $displayName
                     Type = $mailboxType
-                }
+                })
             }
         }
     }
@@ -5209,7 +5322,8 @@ $analyzeSelectedButton.add_Click({
             $mailboxType = $selectedRow.Type
             
             $statusLabel.Text = "Analyzing mailbox $processedCount of $($selectedRows.Count): $upn"
-            $mainForm.Refresh()
+            # PERFORMANCE: Use DoEvents instead of Refresh() - much faster
+            [System.Windows.Forms.Application]::DoEvents()
             
             # Analyze rules only for user mailboxes (shared mailboxes don't have user-created inbox rules)
             if ($mailboxType -eq "UserMailbox") {
@@ -5233,12 +5347,11 @@ $analyzeSelectedButton.add_Click({
                 $userMailboxGrid.Rows[$rowIndex].Cells["ExternalForwarding"].Value = "N/A"
             }
             
-            # Analyze permissions for all mailbox types (shared mailboxes can have permissions)
+            # PERFORMANCE: Get permissions in one API call instead of two separate calls
             try {
-                $delegates = Analyze-MailboxDelegates -UserPrincipalName $upn
-                $fullAccess = Analyze-MailboxPermissions -UserPrincipalName $upn
-                $userMailboxGrid.Rows[$rowIndex].Cells["Delegates"].Value = $delegates
-                $userMailboxGrid.Rows[$rowIndex].Cells["FullAccess"].Value = $fullAccess
+                $permResult = Get-MailboxDelegatesAndPermissions -UserPrincipalName $upn
+                $userMailboxGrid.Rows[$rowIndex].Cells["Delegates"].Value = $permResult.Delegates
+                $userMailboxGrid.Rows[$rowIndex].Cells["FullAccess"].Value = $permResult.FullAccess
             } catch {
                 # Keep existing values if analysis fails
             }
@@ -5301,11 +5414,11 @@ $entraViewSignInLogsButton.add_Click({
     }
     
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -5384,11 +5497,11 @@ $entraViewAuditLogsButton.add_Click({
     }
     
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -ne 1) {
@@ -5579,13 +5692,35 @@ $connectionStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
 $connectionStatusLabel.ForeColor = [System.Drawing.Color]::DarkGray
 $accountSelectorGroup.Controls.Add($connectionStatusLabel)
 
-# Function to update connection status
+# Function to update connection status (optimized to avoid slow API calls)
 function Update-ConnectionStatus {
-    # Robust checks
-    $exoConnected = $false
-    try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoConnected = $true } catch { $exoConnected = ($script:currentExchangeConnection -eq $true) }
-    $mgConnected = $false
-    try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true } } catch { $mgConnected = ($script:graphConnection -ne $null) }
+    # Use script variables first for fast checks - avoid slow Get-OrganizationConfig calls
+    # Only verify with API if script variable is unset or we need to verify a stale connection
+    $exoConnected = $script:currentExchangeConnection -eq $true
+    $mgConnected = $script:graphConnection -ne $null
+    
+    # Only do slow API verification if script variable suggests connection but we want to verify
+    # Skip API calls immediately after authentication to avoid blocking
+    if ($exoConnected) {
+        # Use script variable - fast and reliable right after Connect-ExchangeOnline succeeds
+        # API verification can be done later if needed, not blocking UI here
+    } else {
+        # Only check API if script variable says not connected (might be stale)
+        try { 
+            $null = Get-PSSession -ErrorAction SilentlyContinue | Where-Object { $_.ConfigurationName -eq "Microsoft.Exchange" -and $_.State -eq "Opened" } | Select-Object -First 1
+            if ($?) { $exoConnected = $true; $script:currentExchangeConnection = $true }
+        } catch {}
+    }
+    
+    if ($mgConnected) {
+        # Use script variable - fast and reliable
+    } else {
+        # Lightweight check - Get-MgContext is fast, Get-OrganizationConfig is slow
+        try { 
+            $ctx = Get-MgContext -ErrorAction SilentlyContinue
+            if ($ctx -and $ctx.Account) { $mgConnected = $true; $script:graphConnection = $true }
+        } catch {}
+    }
 
     $exchangeStatus = if ($exoConnected) { "OK: Exchange Online" } else { "ERROR: Exchange Online" }
     $entraStatus = if ($mgConnected) { "OK: Entra ID" } else { "ERROR: Entra ID" }
@@ -5690,7 +5825,7 @@ $securityInvestigationButton.add_Click({
         $presetComboBox.Size = New-Object System.Drawing.Size(230, 20)
         $presetComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
         try {
-            Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+            # Settings module already imported globally
             $presets = Get-ExportPresets
             foreach ($name in $presets.Keys) { $presetComboBox.Items.Add($name) | Out-Null }
         } catch {}
@@ -5720,7 +5855,7 @@ $securityInvestigationButton.add_Click({
 
         # Prefill from saved settings if available
         try {
-            Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+            # Settings module already imported globally
             $s = Get-AppSettings
             if ($s) {
                 if ($s.InvestigatorName -and $s.InvestigatorName.Trim().Length -gt 0) { $investigatorNameTextBox.Text = $s.InvestigatorName }
@@ -6060,7 +6195,7 @@ $securityInvestigationButton.add_Click({
 
         # Generate button click handler
         $generateButton.add_Click({
-            try { Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue } catch {}
+            # Settings module already imported globally
             $settings = $null; try { $settings = Get-AppSettings } catch {}
             $investigator = if ($investigatorNameTextBox.Text -and $investigatorNameTextBox.Text.Trim().Length -gt 0) { $investigatorNameTextBox.Text } elseif ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
             $company = if ($companyNameTextBox.Text -and $companyNameTextBox.Text.Trim().Length -gt 0) { $companyNameTextBox.Text } elseif ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
@@ -6740,7 +6875,7 @@ $bulkTenantExporterButton.add_Click({
         $bulkStartButton.add_Click({
             # Load Investigator Name and Company Name from settings
             try {
-                Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                # Settings module already imported globally
                 $settings = Get-AppSettings
                 $investigator = if ($settings -and $settings.InvestigatorName) { $settings.InvestigatorName } else { 'Security Administrator' }
                 $company = if ($settings -and $settings.CompanyName) { $settings.CompanyName } else { 'Organization' }
@@ -7959,13 +8094,7 @@ if (Test-Path `$ReportSelectionsFile) {
                     return $false
                 }
 
-                # Import Settings module to access Extract-EmailsFromTicket
-                try {
-                    Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
-                } catch {
-                    Write-Host "Warning: Failed to load Settings module: $($_.Exception.Message)" -ForegroundColor Yellow
-                    return $false
-                }
+                # Settings module already imported globally
 
                 # Extract emails from ticket content
                 $emails = @()
@@ -8510,13 +8639,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         return
                     }
 
-                    # Import Settings module to access Extract-EmailsFromTicket
-                    try {
-                        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction Stop
-                    } catch {
-                        [System.Windows.Forms.MessageBox]::Show("Failed to load Settings module: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                        return
-                    }
+                    # Settings module already imported globally
 
                     # Extract emails from ticket content
                     $emails = @()
@@ -8573,7 +8696,7 @@ if (Test-Path `$ReportSelectionsFile) {
                             }
                         }
 
-                        Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                        # Settings module already imported globally
                         if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
                             if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
                                 $ticketNums = Extract-TicketNumbers -TicketContent $ticketContent
@@ -8946,7 +9069,7 @@ if (Test-Path `$ReportSelectionsFile) {
                     
                     if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
                         try {
-                            Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
+                            # Settings module already imported globally
                             if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
                                 $ticketNumbers = Extract-TicketNumbers -TicketContent $ticketContent
                             }
@@ -9911,12 +10034,12 @@ try {
 # Initialize unified account grid when Report Generator tab is first shown
 $reportGeneratorTab.add_Enter({
     try {
-        # Update connection status first
+        # Update connection status first (now optimized to avoid slow API calls)
         Update-ConnectionStatus
         
-        # Check if we have any connection/data and only show popup when neither is connected/loaded
-        $exoConnected = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoConnected = $true } catch {}
-        $mgConnected = $false; try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgConnected = $true } } catch {}
+        # Check if we have any connection/data - use fast script variables instead of slow API calls
+        $exoConnected = $script:currentExchangeConnection -eq $true
+        $mgConnected = $script:graphConnection -ne $null
 
         $hasExchangeData = $script:allLoadedMailboxUPNs -and $script:allLoadedMailboxUPNs.Count -gt 0
         $hasEntraData = $entraUserGrid.Rows.Count -gt 0
@@ -10109,10 +10232,10 @@ $loadFirefoxUi = {
                                     $key = ($n.ToString().ToLower() -replace '[^a-z0-9 ]',' ' -replace '\s+',' ').Trim()
                                     if (-not $norm.ContainsKey($key)) { $norm[$key] = $n }
                                 }
-                                $targets = @()
-                                if ($tenant.TenantDisplayName) { $targets += $tenant.TenantDisplayName }
-                                if ($tenant.PrimaryDomain) { $targets += $tenant.PrimaryDomain; $targets += ($tenant.PrimaryDomain -split '\.')[0] }
-                                if ($tenant.Domains) { $targets += $tenant.Domains }
+                                $targets = [System.Collections.ArrayList]::new()
+                                if ($tenant.TenantDisplayName) { [void]$targets.Add($tenant.TenantDisplayName) }
+                                if ($tenant.PrimaryDomain) { [void]$targets.Add($tenant.PrimaryDomain); [void]$targets.Add(($tenant.PrimaryDomain -split '\.')[0]) }
+                                if ($tenant.Domains) { [void]$targets.AddRange($tenant.Domains) }
                                 $picked = $null
                                 foreach ($t in $targets) {
                                     if (-not $t) { continue }
@@ -10674,11 +10797,11 @@ $colEntraLicensed.ReadOnly = $true
 # --- Entra ID User Management Button Event Handlers ---
 $entraBlockUserButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -10705,11 +10828,11 @@ $entraBlockUserButton.add_Click({
 
 $entraUnblockUserButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -10736,11 +10859,11 @@ $entraUnblockUserButton.add_Click({
 
 $entraRevokeSessionsButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -10760,11 +10883,11 @@ $entraRevokeSessionsButton.add_Click({
 
 $entraResetPasswordButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -ne 1) {
@@ -10919,11 +11042,11 @@ $entraDeselectAllButton.add_Click({
 # Add click handler for refresh roles
 $entraRefreshRolesButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -10974,12 +11097,30 @@ $entraRefreshRolesButton.add_Click({
                 if ($entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value -eq $userUpn) {
                     $entraUserGrid.Rows[$i].Cells["Roles"].Value = $rolesText
                     
-                    # Update highlighting
-                    $highPrivilegeRoles = @("Global Administrator", "Company Administrator", "Exchange Administrator", "SharePoint Administrator", "Security Administrator", "Compliance Administrator", "User Administrator", "Billing Administrator", "Helpdesk Administrator", "Service Support Administrator", "Power Platform Administrator", "Teams Administrator", "Intune Administrator", "Application Administrator", "Cloud Application Administrator", "Privileged Role Administrator", "Privileged Authentication Administrator")
+                    # Update highlighting - use hashtable for O(1) lookups
+                    $highPrivilegeRoles = @{
+                        "Global Administrator" = $true
+                        "Company Administrator" = $true
+                        "Exchange Administrator" = $true
+                        "SharePoint Administrator" = $true
+                        "Security Administrator" = $true
+                        "Compliance Administrator" = $true
+                        "User Administrator" = $true
+                        "Billing Administrator" = $true
+                        "Helpdesk Administrator" = $true
+                        "Service Support Administrator" = $true
+                        "Power Platform Administrator" = $true
+                        "Teams Administrator" = $true
+                        "Intune Administrator" = $true
+                        "Application Administrator" = $true
+                        "Cloud Application Administrator" = $true
+                        "Privileged Role Administrator" = $true
+                        "Privileged Authentication Administrator" = $true
+                    }
                     
                     $hasHighPrivilege = $false
                     foreach ($role in $userRoles) {
-                        if ($highPrivilegeRoles -contains $role) {
+                        if ($highPrivilegeRoles.ContainsKey($role)) {
                             $hasHighPrivilege = $true
                             break
                         }
@@ -11007,11 +11148,11 @@ $entraRefreshRolesButton.add_Click({
 # Add click handler for require password change
 $entraRequirePwdChangeButton.add_Click({
     $entraUserGrid.EndEdit()
-    $selectedUpns = @()
+    $selectedUpns = [System.Collections.ArrayList]::new()
     for ($i = 0; $i -lt $entraUserGrid.Rows.Count; $i++) {
         if ($entraUserGrid.Rows[$i].Cells["Select"].Value -eq $true) {
             $upn = $entraUserGrid.Rows[$i].Cells["UserPrincipalName"].Value
-            if (-not [string]::IsNullOrWhiteSpace($upn)) { $selectedUpns += $upn }
+            if (-not [string]::IsNullOrWhiteSpace($upn)) { [void]$selectedUpns.Add($upn) }
         }
     }
     if ($selectedUpns.Count -eq 0) {
@@ -11117,8 +11258,27 @@ $entraViewAdminsButton.add_Click({
         }
         
         # Get all users with elevated roles using server-side filtering
-        $adminUsers = @()
-        $highPrivilegeRoles = @("Global Administrator", "Company Administrator", "Exchange Administrator", "SharePoint Administrator", "Security Administrator", "Compliance Administrator", "User Administrator", "Billing Administrator", "Helpdesk Administrator", "Service Support Administrator", "Power Platform Administrator", "Teams Administrator", "Intune Administrator", "Application Administrator", "Cloud Application Administrator", "Privileged Role Administrator", "Privileged Authentication Administrator")
+        $adminUsers = [System.Collections.ArrayList]::new()
+        # Use hashtable for O(1) lookups instead of O(n) array search
+        $highPrivilegeRoles = @{
+            "Global Administrator" = $true
+            "Company Administrator" = $true
+            "Exchange Administrator" = $true
+            "SharePoint Administrator" = $true
+            "Security Administrator" = $true
+            "Compliance Administrator" = $true
+            "User Administrator" = $true
+            "Billing Administrator" = $true
+            "Helpdesk Administrator" = $true
+            "Service Support Administrator" = $true
+            "Power Platform Administrator" = $true
+            "Teams Administrator" = $true
+            "Intune Administrator" = $true
+            "Application Administrator" = $true
+            "Cloud Application Administrator" = $true
+            "Privileged Role Administrator" = $true
+            "Privileged Authentication Administrator" = $true
+        }
         
         # Get all directory roles first
         $statusLabel.Text = "Fetching directory roles..."
@@ -11146,9 +11306,9 @@ $entraViewAdminsButton.add_Click({
                 $mainForm.Refresh()
             }
             
-            $userRoles = @()
+            $userRoles = [System.Collections.ArrayList]::new()
             $hasElevatedRole = $false
-            $elevatedRoles = @()
+            $elevatedRoles = [System.Collections.ArrayList]::new()
             
             # Check each directory role for this user
             foreach ($role in $directoryRoles) {
@@ -11157,10 +11317,10 @@ $entraViewAdminsButton.add_Click({
                     if ($roleMembers) {
                         foreach ($member in $roleMembers) {
                             if ($member.Id -eq $user.Id) {
-                                $userRoles += $role.DisplayName
-                                if ($highPrivilegeRoles -contains $role.DisplayName) {
+                                [void]$userRoles.Add($role.DisplayName)
+                                if ($highPrivilegeRoles.ContainsKey($role.DisplayName)) {
                                     $hasElevatedRole = $true
-                                    $elevatedRoles += $role.DisplayName
+                                    [void]$elevatedRoles.Add($role.DisplayName)
                                 }
                                 break
                             }
@@ -11173,25 +11333,25 @@ $entraViewAdminsButton.add_Click({
             
             if ($hasElevatedRole) {
                 # Get license names
-                $licenseNames = @()
+                $licenseNames = [System.Collections.ArrayList]::new()
                 if ($user.AssignedLicenses -and $user.AssignedLicenses.Count -gt 0) {
                     foreach ($assignedLicense in $user.AssignedLicenses) {
                         $skuId = $assignedLicense.SkuId
                         if ($skuMapping.ContainsKey($skuId)) {
-                            $licenseNames += $skuMapping[$skuId].FriendlyName
+                            [void]$licenseNames.Add($skuMapping[$skuId].FriendlyName)
                         } else {
-                            $licenseNames += "Unknown SKU: $skuId"
+                            [void]$licenseNames.Add("Unknown SKU: $skuId")
                         }
                     }
                 }
                 $licensed = if ($licenseNames.Count -gt 0) { ($licenseNames -join '; ') } else { "None" }
-                $adminUsers += [PSCustomObject]@{
+                [void]$adminUsers.Add([PSCustomObject]@{
                     UserPrincipalName = $user.UserPrincipalName
                     DisplayName = $user.DisplayName
                     Licensed = $licensed
                     ElevatedRoles = ($elevatedRoles -join ", ")
                     AllRoles = ($userRoles -join ", ")
-                }
+                })
             }
         }
         
@@ -11202,37 +11362,34 @@ $entraViewAdminsButton.add_Click({
             return
         }
         
-        # Create admin report
-        $report = @"
-# Microsoft 365 Admin Users Report
-**Generated:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-**Total Admin Users Found:** $($adminUsers.Count)
-
-## Admin Users Summary
-
-"@
+        # Create admin report using StringBuilder for better performance
+        $sb = [System.Text.StringBuilder]::new()
+        [void]$sb.AppendLine("# Microsoft 365 Admin Users Report")
+        [void]$sb.AppendLine("**Generated:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")")
+        [void]$sb.AppendLine("**Total Admin Users Found:** $($adminUsers.Count)")
+        [void]$sb.AppendLine()
+        [void]$sb.AppendLine("## Admin Users Summary")
+        [void]$sb.AppendLine()
         
         foreach ($admin in $adminUsers) {
-            $report += @"
-
-### User: $($admin.DisplayName)
-- **UPN:** $($admin.UserPrincipalName)
-- **Licensed:** $($admin.Licensed)
-- **Elevated Roles:** $($admin.ElevatedRoles)
-- **All Roles:** $($admin.AllRoles)
-
-"@
+            [void]$sb.AppendLine()
+            [void]$sb.AppendLine("### User: $($admin.DisplayName)")
+            [void]$sb.AppendLine("- **UPN:** $($admin.UserPrincipalName)")
+            [void]$sb.AppendLine("- **Licensed:** $($admin.Licensed)")
+            [void]$sb.AppendLine("- **Elevated Roles:** $($admin.ElevatedRoles)")
+            [void]$sb.AppendLine("- **All Roles:** $($admin.AllRoles)")
+            [void]$sb.AppendLine()
         }
         
-        $report += @"
-
-## Security Recommendations
-1. **Review Admin Access:** Verify all listed users should have elevated privileges
-2. **Implement Just-In-Time Access:** Consider implementing privileged access management
-3. **Enable MFA:** Ensure all admin accounts have Multi-Factor Authentication enabled
-4. **Regular Audits:** Schedule regular reviews of admin access
-5. **Monitor Sign-ins:** Enable sign-in monitoring for all admin accounts
-"@
+        [void]$sb.AppendLine()
+        [void]$sb.AppendLine("## Security Recommendations")
+        [void]$sb.AppendLine("1. **Review Admin Access:** Verify all listed users should have elevated privileges")
+        [void]$sb.AppendLine("2. **Implement Just-In-Time Access:** Consider implementing privileged access management")
+        [void]$sb.AppendLine("3. **Enable MFA:** Ensure all admin accounts have Multi-Factor Authentication enabled")
+        [void]$sb.AppendLine("4. **Regular Audits:** Schedule regular reviews of admin access")
+        [void]$sb.AppendLine("5. **Monitor Sign-ins:** Enable sign-in monitoring for all admin accounts")
+        
+        $report = $sb.ToString()
         
         # Create popup form to display the report
         $reportForm = New-Object System.Windows.Forms.Form

@@ -43,4 +43,4 @@ function Get-ExchangeOnlineSendingRestrictions {
     }
 }
 
-Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Connect-ExchangeOnlineAnalyzer,Disconnect-ExchangeOnlineAnalyzer 
+Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ExchangeOnlineSendingRestrictions 

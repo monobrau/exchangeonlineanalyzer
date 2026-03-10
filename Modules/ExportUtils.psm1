@@ -104,7 +104,7 @@ function Get-MfaCoverageReport {
         } catch {}
 
         # Filter enabled policies that require MFA
-        $mfaPolicies = @()
+        $mfaPolicies = [System.Collections.ArrayList]::new()
         foreach ($p in $caPolicies) {
             $enabled = ($p.state -eq 'enabled')
             if (-not $enabled) { continue }
@@ -114,11 +114,11 @@ function Get-MfaCoverageReport {
                 if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
                 # authenticationStrength also implies MFA, but skip for simplicity if missing
             }
-            if ($requiresMfa) { $mfaPolicies += $p }
+            if ($requiresMfa) { [void]$mfaPolicies.Add($p) }
         }
 
         # 3) Users and per-user evaluation - filter server-side if SelectedUsers provided
-        $users = @()
+        $users = [System.Collections.ArrayList]::new()
         try {
             # Directory roles map (for policy role assignment evaluation) - needed for CA policy evaluation
             $roles = @(); $roleIdToName = @{}
@@ -127,13 +127,13 @@ function Get-MfaCoverageReport {
 
             # If SelectedUsers provided, only query those users (server-side filtering)
             if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                $userPage = @()
+                $userPage = [System.Collections.ArrayList]::new()
                 foreach ($user in $SelectedUsers) {
                     $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                     try {
                         $u = Get-MgUser -UserId $upn -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
                         if ($u) {
-                            $userPage += $u
+                            [void]$userPage.Add($u)
                         }
                     } catch {
                         Write-Warning "User not found for MFA coverage: ${upn}: $($_.Exception.Message)"
@@ -164,13 +164,13 @@ function Get-MfaCoverageReport {
                 } catch {}
 
                 # Determine if any MFA CA policy applies to this user
-                $userGroups = @()
-                $userRoles = @()
+                $userGroups = [System.Collections.ArrayList]::new()
+                $userRoles = [System.Collections.ArrayList]::new()
                 try {
                     $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
                     foreach ($m in $mem) {
-                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { $userGroups += $m.Id }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { $userRoles += $m.Id }
+                        if ($m.'@odata.type' -eq '#microsoft.graph.group') { [void]$userGroups.Add($m.Id) }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { [void]$userRoles.Add($m.Id) }
                     }
                 } catch {}
 
@@ -186,13 +186,13 @@ function Get-MfaCoverageReport {
                     if ($usersCond) {
                         # Include
                         if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
-                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { if ($usersCond.includeGroups | Where-Object { $userGroups -contains $_ }) { $incUser = $true } } }
-                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { if ($usersCond.includeRoles | Where-Object { $userRoles -contains $_ }) { $incUser = $true } } }
+                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { foreach ($groupId in $usersCond.includeGroups) { if ($userGroups.ContainsKey($groupId)) { $incUser = $true; break } } } }
+                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { foreach ($roleId in $usersCond.includeRoles) { if ($userRoles.ContainsKey($roleId)) { $incUser = $true; break } } } }
 
                         # Exclude
                         if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
-                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { if ($usersCond.excludeGroups | Where-Object { $userGroups -contains $_ }) { $excluded = $true } } }
-                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { if ($usersCond.excludeRoles | Where-Object { $userRoles -contains $_ }) { $excluded = $true } } }
+                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { foreach ($groupId in $usersCond.excludeGroups) { if ($userGroups.ContainsKey($groupId)) { $excluded = $true; break } } } }
+                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { foreach ($roleId in $usersCond.excludeRoles) { if ($userRoles.ContainsKey($roleId)) { $excluded = $true; break } } } }
                     }
 
                     $applies = ($incAll -or $incUser)
@@ -200,14 +200,14 @@ function Get-MfaCoverageReport {
                 }
 
                 $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
-                $users += [pscustomobject]@{
+                [void]$users.Add([pscustomobject]@{
                     DisplayName        = $u.displayName
                     UserPrincipalName  = $u.userPrincipalName
                     PerUserMfaEnabled  = $directMfa
                     SecurityDefaults   = $secDefaultsEnabled
                     CARequiresMfa      = $userCaRequiresMfa
                     MfaCovered         = $covered
-                }
+                })
             }
         } catch {}
 
@@ -235,13 +235,13 @@ function Get-UserSecurityGroupsReport {
         foreach ($r in $roles) { $roleIdToName[$r.Id] = $r.DisplayName }
 
         # Users - filter server-side if SelectedUsers provided
-        $users = @()
+        $users = [System.Collections.ArrayList]::new()
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             foreach ($user in $SelectedUsers) {
                 $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                 try {
                     $u = Get-MgUser -UserId $upn -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
-                    if ($u) { $users += $u }
+                    if ($u) { [void]$users.Add($u) }
                 } catch {
                     Write-Warning "User not found: ${upn}: $($_.Exception.Message)"
                 }
@@ -379,6 +379,9 @@ function Format-InboxRuleXlsx {
 }
 
 # Runs independent Graph collectors in parallel (AuditLogs, CA, AppReg, SharePoint, OneDrive, Teams, Sharing, Alerts, Incidents, MFA)
+# NOTE: This function uses PowerShell runspaces for parallel execution. Each runspace runs in a separate PowerShell process
+# and does not have access to modules loaded in the parent session. Therefore, ExportUtils.psm1 must import itself
+# within each runspace scriptblock to make its functions available. This is intentional and necessary for parallel execution.
 function Invoke-IndependentGraphCollectorsParallel {
     param([hashtable]$Params)
     $r = @{}
@@ -386,6 +389,7 @@ function Invoke-IndependentGraphCollectorsParallel {
     $securityAnalysisPath = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
     $collectorScript = {
         param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath)
+        # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
         Import-Module $ExportUtilsPath -Force -ErrorAction Stop
         Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
         switch ($CollectorName) {
@@ -403,17 +407,17 @@ function Invoke-IndependentGraphCollectorsParallel {
             default { return $null }
         }
     }
-    $collectorNames = @()
-    if ($Params.IncludeAuditLogs) { $collectorNames += 'AuditLogs' }
-    if ($Params.IncludeConditionalAccessPolicies -and (Test-Path $securityAnalysisPath)) { $collectorNames += 'CAPolicies' }
-    if ($Params.IncludeAppRegistrations -and (Test-Path $securityAnalysisPath)) { $collectorNames += 'AppRegistrations' }
-    if ($Params.IncludeSharePointActivity) { $collectorNames += 'SharePointActivity' }
-    if ($Params.IncludeOneDriveActivity) { $collectorNames += 'OneDriveActivity' }
-    if ($Params.IncludeTeamsActivity) { $collectorNames += 'TeamsActivity' }
-    if ($Params.IncludeSharePointSharing) { $collectorNames += 'SharePointSharing' }
-    if ($Params.IncludeSecurityAlerts) { $collectorNames += 'SecurityAlerts' }
-    if ($Params.IncludeSecurityIncidents) { $collectorNames += 'SecurityIncidents' }
-    if ($Params.IncludeMfaCoverage) { $collectorNames += 'MfaCoverage', 'UserSecurityGroups' }
+    $collectorNames = [System.Collections.ArrayList]::new()
+    if ($Params.IncludeAuditLogs) { [void]$collectorNames.Add('AuditLogs') }
+    if ($Params.IncludeConditionalAccessPolicies -and (Test-Path $securityAnalysisPath)) { [void]$collectorNames.Add('CAPolicies') }
+    if ($Params.IncludeAppRegistrations -and (Test-Path $securityAnalysisPath)) { [void]$collectorNames.Add('AppRegistrations') }
+    if ($Params.IncludeSharePointActivity) { [void]$collectorNames.Add('SharePointActivity') }
+    if ($Params.IncludeOneDriveActivity) { [void]$collectorNames.Add('OneDriveActivity') }
+    if ($Params.IncludeTeamsActivity) { [void]$collectorNames.Add('TeamsActivity') }
+    if ($Params.IncludeSharePointSharing) { [void]$collectorNames.Add('SharePointSharing') }
+    if ($Params.IncludeSecurityAlerts) { [void]$collectorNames.Add('SecurityAlerts') }
+    if ($Params.IncludeSecurityIncidents) { [void]$collectorNames.Add('SecurityIncidents') }
+    if ($Params.IncludeMfaCoverage) { [void]$collectorNames.Add('MfaCoverage'); [void]$collectorNames.Add('UserSecurityGroups') }
     if ($collectorNames.Count -eq 0) { return $r }
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
     $iss.ImportPSModule($exportUtilsPath)
@@ -682,6 +686,7 @@ function New-SecurityInvestigationReport {
 
             $exchangeScript = {
                 param($ExportUtilsPath, $Params)
+                # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
@@ -746,6 +751,7 @@ function New-SecurityInvestigationReport {
 
             $graphScript = {
                 param($ExportUtilsPath, $Params)
+                # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
@@ -2487,6 +2493,8 @@ function Get-GraphAuditLogs {
     try {
         Write-Host "Collecting audit logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         # Ensure identity modules are available
+        # NOTE: Using defensive import pattern (check cmdlet existence before importing) rather than Import-GraphModulesOnDemand
+        # because GraphOnline.psm1 is not imported in this module. This pattern avoids unnecessary imports and works reliably.
         if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
             Import-Module Microsoft.Graph.Authentication -ErrorAction SilentlyContinue | Out-Null
@@ -2881,17 +2889,17 @@ function Get-GraphSignInLogs {
                             } catch {
                                 $deviceDetailJSON = "Error serializing DeviceDetail"
                             }
-                            $deviceParts = @()
-                            if ($signIn.DeviceDetail.Browser) { $deviceParts += $signIn.DeviceDetail.Browser }
-                            if ($signIn.DeviceDetail.OperatingSystem) { $deviceParts += $signIn.DeviceDetail.OperatingSystem }
+                            $deviceParts = [System.Collections.ArrayList]::new()
+                            if ($signIn.DeviceDetail.Browser) { [void]$deviceParts.Add($signIn.DeviceDetail.Browser) }
+                            if ($signIn.DeviceDetail.OperatingSystem) { [void]$deviceParts.Add($signIn.DeviceDetail.OperatingSystem) }
                             if ($deviceParts.Count -gt 0) { $deviceDetailSummary = $deviceParts -join " / " }
                         }
                         
                         # Extract Conditional Access Policies
                         $conditionalAccessPoliciesJSON = $null
-                        $caPolicyNames = @()
-                        $caPolicyResults = @()
-                        $caPolicyDetails = @()  # For detailed policy info
+                        $caPolicyNames = [System.Collections.ArrayList]::new()
+                        $caPolicyResults = [System.Collections.ArrayList]::new()
+                        $caPolicyDetails = [System.Collections.ArrayList]::new()  # For detailed policy info
                         
                         # Helper function to safely get property value
                         $getProperty = {
@@ -2983,9 +2991,9 @@ function Get-GraphSignInLogs {
                                         # Only add if we have a policy identifier (name or ID)
                                         if ($policyName -or $policyId) {
                                             if ($policyName) {
-                                                $caPolicyNames += $policyName
+                                                [void]$caPolicyNames.Add($policyName)
                                             } else {
-                                                $caPolicyNames += $policyId
+                                                [void]$caPolicyNames.Add($policyId)
                                             }
                                             
                                             # Format result for readability
@@ -2999,14 +3007,15 @@ function Get-GraphSignInLogs {
                                                 } elseif ($resultText -eq "notApplied" -or $resultText -eq "NotApplied" -or $resultText -eq "2") {
                                                     $resultText = "Not Applied"
                                                 }
-                                                $caPolicyResults += $resultText
+                                                [void]$caPolicyResults.Add($resultText)
                                                 
                                                 # Create detailed entry for blocked policies
-                                                $detailParts = @($policyName)
+                                                $detailParts = [System.Collections.ArrayList]::new()
+                                                [void]$detailParts.Add($policyName)
                                                 if ($resultText -eq "Failed") {
-                                                    $detailParts += "(BLOCKED)"
+                                                    [void]$detailParts.Add("(BLOCKED)")
                                                 } else {
-                                                    $detailParts += "($resultText)"
+                                                    [void]$detailParts.Add("($resultText)")
                                                 }
                                                 
                                                 # Add grant controls info if available
@@ -3020,14 +3029,14 @@ function Get-GraphSignInLogs {
                                                         $grantControlsStr = $appliedGrantControls.BuiltInControls -join ", "
                                                     }
                                                     if ($grantControlsStr) {
-                                                        $detailParts += "[$grantControlsStr]"
+                                                        [void]$detailParts.Add("[$grantControlsStr]")
                                                     }
                                                 }
                                                 
-                                                $caPolicyDetails += ($detailParts -join " ")
+                                                [void]$caPolicyDetails.Add($($detailParts -join " "))
                                             } else {
-                                                $caPolicyResults += "Unknown"
-                                                $caPolicyDetails += $policyName
+                                                [void]$caPolicyResults.Add("Unknown")
+                                                [void]$caPolicyDetails.Add($policyName)
                                             }
                                         }
                                     }
@@ -3039,15 +3048,15 @@ function Get-GraphSignInLogs {
                         
                         # Extract Authentication Details
                         $authenticationDetailsJSON = $null
-                        $authMethods = @()
+                        $authMethods = [System.Collections.ArrayList]::new()
                         if ($signIn.AuthenticationDetails -and $signIn.AuthenticationDetails.Count -gt 0) {
                             try {
                                 $authenticationDetailsJSON = $signIn.AuthenticationDetails | ConvertTo-Json -Depth 10 -Compress
                                 foreach ($authDetail in $signIn.AuthenticationDetails) {
                                     if ($authDetail.AuthenticationMethod) {
-                                        $authMethods += $authDetail.AuthenticationMethod
+                                        [void]$authMethods.Add($authDetail.AuthenticationMethod)
                                     } elseif ($authDetail.AuthenticationMethodDetail) {
-                                        $authMethods += $authDetail.AuthenticationMethodDetail
+                                        [void]$authMethods.Add($authDetail.AuthenticationMethodDetail)
                                     }
                                 }
                             } catch {
@@ -3070,10 +3079,10 @@ function Get-GraphSignInLogs {
                             ClientAppUsed = $signIn.ClientAppUsed
                             IPAddress = $signIn.IpAddress
                             Location = if ($signIn.Location) {
-                                $locParts = @()
-                                if ($signIn.Location.City) { $locParts += $signIn.Location.City }
-                                if ($signIn.Location.State) { $locParts += $signIn.Location.State }
-                                if ($signIn.Location.CountryOrRegion) { $locParts += $signIn.Location.CountryOrRegion }
+                                $locParts = [System.Collections.ArrayList]::new()
+                                if ($signIn.Location.City) { [void]$locParts.Add($signIn.Location.City) }
+                                if ($signIn.Location.State) { [void]$locParts.Add($signIn.Location.State) }
+                                if ($signIn.Location.CountryOrRegion) { [void]$locParts.Add($signIn.Location.CountryOrRegion) }
                                 if ($locParts.Count -gt 0) { $locParts -join ", " } else { "Unknown" }
                             } else { "Unknown" }
                             CountryOrRegion = if ($signIn.Location) { $signIn.Location.CountryOrRegion } else { $null }
@@ -3270,19 +3279,18 @@ function Get-MailboxForwardingAndDelegation {
             
             # Also get ALL mailboxes to check for delegates/forwarding that match selected users
             try {
+                # Pre-build hashtable of existing mailbox UPNs for O(1) lookup instead of O(n) nested loop
+                $existingMailboxUpns = @{}
+                foreach ($existingMbx in $mailboxes) {
+                    $existingUpn = if ($existingMbx.UserPrincipalName) { $existingMbx.UserPrincipalName } else { $existingMbx.PrimarySmtpAddress }
+                    $existingMailboxUpns[$existingUpn] = $true
+                }
+                
                 $allMailboxes = Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails UserMailbox,SharedMailbox -ErrorAction Stop
                 foreach ($mbx in $allMailboxes) {
                     $mbxUpn = if ($mbx.UserPrincipalName) { $mbx.UserPrincipalName } else { $mbx.PrimarySmtpAddress }
-                    # Skip if already added (owned by selected user)
-                    $alreadyAdded = $false
-                    foreach ($existingMbx in $mailboxes) {
-                        $existingUpn = if ($existingMbx.UserPrincipalName) { $existingMbx.UserPrincipalName } else { $existingMbx.PrimarySmtpAddress }
-                        if ($existingUpn -eq $mbxUpn) {
-                            $alreadyAdded = $true
-                            break
-                        }
-                    }
-                    if ($alreadyAdded) {
+                    # Skip if already added (owned by selected user) - O(1) lookup instead of O(n) loop
+                    if ($existingMailboxUpns.ContainsKey($mbxUpn)) {
                         continue
                     }
                     
@@ -4375,6 +4383,8 @@ function Get-TenantLicenseSkus {
             $canGetTenantSkus = $true
         } else {
             try {
+                # NOTE: Using defensive import pattern (check cmdlet existence after importing) for license SKU queries
+                # This module is only imported if needed, as it's not always available
                 Import-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction SilentlyContinue
                 if (Get-Command Get-MgSubscribedSku -ErrorAction SilentlyContinue) {
                     $canGetTenantSkus = $true
@@ -5297,6 +5307,7 @@ function Get-SharePointSharingLinks {
         }
         
         # Ensure Sites module is available
+        # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
         if (-not (Get-Command Get-MgSite -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Sites -ErrorAction SilentlyContinue | Out-Null
         }
@@ -5388,6 +5399,7 @@ function Get-SecurityAlerts {
         }
         
         # Ensure Security module is available
+        # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
         if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
         }
@@ -5492,6 +5504,7 @@ function Get-SecurityIncidents {
         }
         
         # Ensure Security module is available
+        # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
         if (-not (Get-Command Get-MgSecurityIncident -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
         }
@@ -5558,6 +5571,7 @@ function Get-AnonymousSharePointSharing {
         }
         
         # Ensure AuditLogs module is available
+        # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
         if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue | Out-Null
         }
@@ -5721,6 +5735,7 @@ function Get-SharePointFileSharingLinks {
         }
         
         # Ensure Sites module is available
+        # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
         if (-not (Get-Command Get-MgSite -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Sites -ErrorAction SilentlyContinue | Out-Null
         }
@@ -5882,6 +5897,7 @@ function Get-DLPViolations {
         
         try {
             # Ensure AuditLogs module is available
+            # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
             if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
                 Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue | Out-Null
             }
@@ -5921,6 +5937,7 @@ function Get-DLPViolations {
                 
                 # Also query Security API for DLP alerts
                 try {
+                    # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
                     if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
                         Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
                     }

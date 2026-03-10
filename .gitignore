@@ -11,6 +11,15 @@ test_*.txt
 *_simple*.txt
 *_memberberry*.txt
 
+# Test Scripts
+test_*.ps1
+verify_*.ps1
+
+# Test Readme Files
+test_*.md
+verify_*.md
+*_test*.md
+
 # Temporary Files
 *.tmp
 *.temp
