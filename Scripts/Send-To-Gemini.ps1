@@ -7,76 +7,74 @@ param(
     [Parameter(Mandatory=$false)][switch]$DebugOutput
 )
 
-function Get-LatestInvestigationFolder {
-    $base = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
-    if (-not (Test-Path $base)) { return $null }
-    $tenants = Get-ChildItem -Path $base -Directory | Sort-Object LastWriteTime -Descending
-    foreach ($t in $tenants) {
-        $runs = Get-ChildItem -Path $t.FullName -Directory | Sort-Object LastWriteTime -Descending
-        if ($runs -and $runs.Count -gt 0) { return $runs[0].FullName }
-    }
-    return $null
+# Constants
+$script:MaxFileSizeBytes = 20MB
+$script:MaxSafeProcessingSizeBytes = 15MB
+$script:MaxApiRetries = 3
+$script:BaseRetryDelaySeconds = 1
+$script:RetryableHttpStatusCodes = @(429, 503, 502)
+
+# Import shared modules
+$commonPath = Join-Path $PSScriptRoot 'Common'
+Import-Module (Join-Path $commonPath 'InvestigationHelpers.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'FileCollection.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'SettingsHelpers.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'FileProcessing.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'ApiHelpers.psm1') -Force -ErrorAction Stop
+
+# Find output folder if not provided
+if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { 
+    $OutputFolder = Get-LatestInvestigationFolder -VerboseOutput
 }
 
-if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { $OutputFolder = Get-LatestInvestigationFolder }
-$settingsPath = Join-Path $PSScriptRoot '..\Modules\Settings.psm1'
-try { if (Test-Path $settingsPath) { Import-Module $settingsPath -Force -ErrorAction SilentlyContinue } } catch {}
-if (-not $ApiKey) { try { $s = Get-AppSettings; if ($s -and $s.GeminiApiKey) { $ApiKey = $s.GeminiApiKey } } catch {} }
-if (-not $ApiKey) { Write-Error "Gemini API key is required. Provide -ApiKey or save it in Settings."; exit 1 }
+# Load settings module and get API key
+Import-SettingsModule -ScriptRoot $PSScriptRoot -VerboseOutput | Out-Null
+if (-not $ApiKey) { 
+    $ApiKey = Get-ApiKeyFromSettings -KeyName 'GeminiApiKey' -VerboseOutput
+}
+if (-not $ApiKey) { 
+    Write-Error "Gemini API key is required. Provide -ApiKey or save it in Settings."
+    exit 1
+}
 
-if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { Write-Error "Could not find Security Investigation output folder. Run the report first or pass -OutputFolder."; exit 1 }
+# Validate output folder
+if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { 
+    Write-Error "Could not find Security Investigation output folder. Run the report first or pass -OutputFolder."
+    exit 1
+}
 Write-Verbose ("Using output folder: {0}" -f $OutputFolder)
 
+# Prepare Gemini API endpoints
 $modelName = $Model
-if ($modelName -like 'models/*') { $modelName = $modelName.Substring(7) }
-$endpoints = @(
-    ("https://generativelanguage.googleapis.com/v1/models/{0}:generateContent?key={1}" -f $modelName, $ApiKey),
-    ("https://generativelanguage.googleapis.com/v1beta/models/{0}:generateContent?key={1}" -f $modelName, $ApiKey),
-    ("https://generativelanguage.googleapis.com/v1beta/{0}:generateContent?key={1}" -f $Model, $ApiKey)
+if ($modelName -like 'models/*') { 
+    $modelName = $modelName.Substring(7)
+}
+
+# SECURITY: Use Authorization header instead of URL query parameter
+$baseEndpoints = @(
+    "https://generativelanguage.googleapis.com/v1/models/{0}:generateContent" -f $modelName,
+    "https://generativelanguage.googleapis.com/v1beta/models/{0}:generateContent" -f $modelName,
+    "https://generativelanguage.googleapis.com/v1beta/{0}:generateContent" -f $Model
 )
-Write-Verbose ("Model endpoints (fallback order):`n - {0}`n - {1}`n - {2}" -f $endpoints[0], $endpoints[1], $endpoints[2])
-
-# Collect files to attach
-$files = @(
-    '_AI_Readme.txt',
-    'MessageTrace.csv',
-    'InboxRules.csv',
-    'TransportRules.csv',
-    'MailFlowConnectors.csv',
-    'GraphAuditLogs.csv',
-    'UserSecurityPosture.csv'
-)
-
-$existing = @()
-foreach ($f in $files) {
-    $p = Join-Path $OutputFolder $f
-    if (Test-Path $p) { $existing += $p }
+$headers = @{ 
+    'Authorization' = "Bearer $ApiKey"
+    'Content-Type' = 'application/json'
 }
-if ($ExtraFiles) {
-    foreach ($ef in $ExtraFiles) {
-        if ([string]::IsNullOrWhiteSpace($ef)) { continue }
-        try {
-            $rp = (Resolve-Path $ef -ErrorAction Stop).Path
-            if (Test-Path $rp) { $existing += $rp }
-        } catch {
-            Write-Warning ("Extra file not found: {0}" -f $ef)
-        }
-    }
-    $existing = $existing | Select-Object -Unique
-}
-if ($existing.Count -eq 0) { Write-Error "No known report files found in $OutputFolder."; exit 1 }
-Write-Verbose ("Attaching {0} file(s):" -f $existing.Count)
-foreach ($p in $existing) { Write-Verbose (" - {0} ({1} KB)" -f $p, [Math]::Round(((Get-Item $p).Length/1KB),0)) }
+Write-Verbose ("Model endpoints (fallback order):`n - {0}`n - {1}`n - {2}" -f $baseEndpoints[0], $baseEndpoints[1], $baseEndpoints[2])
 
-function Get-MimeType([string]$path) {
-    switch -regex ($path) {
-        '\.csv$' { 'text/csv'; break }
-        '\.txt$' { 'text/plain'; break }
-        default { 'application/octet-stream' }
-    }
+# Collect files to process
+$validatedFiles = Get-InvestigationReportFiles -OutputFolder $OutputFolder -ExtraFiles $ExtraFiles
+if ($validatedFiles.Count -eq 0) { 
+    Write-Error "No known report files found in $OutputFolder."
+    exit 1
 }
 
-# Build request parts. First include a concise instruction tying files together.
+Write-Verbose ("Attaching {0} file(s):" -f $validatedFiles.Count)
+foreach ($filePath in $validatedFiles) { 
+    Write-Verbose (" - {0} ({1} KB)" -f $filePath, [Math]::Round(((Get-Item $filePath).Length/1KB),0))
+}
+
+# Build request parts
 $intro = @"
 Please analyze the attached security investigation datasets and produce:
 - Executive summary (non-technical)
@@ -86,90 +84,168 @@ Please analyze the attached security investigation datasets and produce:
 Do not speculate beyond provided evidence. Use CSV content explicitly in references.
 "@
 
-$parts = @()
-$parts += @{ text = $intro }
+$requestParts = @()
+$requestParts += @{ text = $intro }
 
-foreach ($path in $existing) {
-    $mime = Get-MimeType $path
-    if ((Get-Item $path).Length -gt 20000000) {
-        Write-Warning "File exceeds 20MB REST payload limit for inlineData: $path (skipping)."
+foreach ($filePath in $validatedFiles) {
+    # Validate file can be processed
+    $validation = Test-FileIsProcessable -FilePath $filePath -MaxSizeBytes $script:MaxFileSizeBytes -MaxSafeProcessingSizeBytes $script:MaxSafeProcessingSizeBytes
+    if (-not $validation.IsValid) {
+        Write-Warning $validation.Reason
         continue
     }
-    $bytes = [System.IO.File]::ReadAllBytes($path)
-    $b64 = [Convert]::ToBase64String($bytes)
-    $parts += @{ inlineData = @{ mimeType = $mime; data = $b64 } }
-}
-
-$body = @{ contents = @(@{ role = 'user'; parts = $parts }) }
-$json = $body | ConvertTo-Json -Depth 6
-# Always save request JSON for troubleshooting
-$reqPath = Join-Path $OutputFolder 'Gemini_Request.json'
-$json | Out-File -FilePath $reqPath -Encoding utf8
-Write-Verbose ("Saved request JSON: {0}" -f $reqPath)
-
-$resp = $null
-$lastErr = $null
-$usedEndpoint = $null
-foreach ($ep in $endpoints) {
+    
+    # Read file and convert to base64 for Gemini API
     try {
-        Write-Verbose ("Submitting to: {0}" -f $ep)
-        $usedEndpoint = $ep
-        $resp = Invoke-RestMethod -Method POST -Uri $ep -ContentType 'application/json' -Body $json -ErrorAction Stop
-        break
+        $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
+        $base64Data = [Convert]::ToBase64String($fileBytes)
+        $mimeType = Get-FileMimeType -FilePath $filePath
+        $requestParts += @{ inlineData = @{ mimeType = $mimeType; data = $base64Data } }
     } catch {
-        $lastErr = $_
-        # If 404 Not Found, try next endpoint; otherwise stop early
-        $status = $null
-        try { $status = $_.Exception.Response.StatusCode.value__ } catch {}
-        if ($status -ne 404) { break }
+        Write-Warning "Failed to read file $filePath : $($_.Exception.Message)"
+        # Continue with other files rather than failing completely
     }
 }
-if (-not $resp) {
-    $errPath = Join-Path $OutputFolder 'Gemini_Error.txt'
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add("Endpoint: $usedEndpoint") | Out-Null
-    try {
-        $scName = $null; $scVal = $null
-        try { $scName = $lastErr.Exception.Response.StatusCode } catch {}
-        try { $scVal = $lastErr.Exception.Response.StatusCode.value__ } catch {}
-        if ($scName -or $scVal) { $lines.Add("Status: $scVal ($scName)") | Out-Null }
-    } catch {}
-    if ($lastErr -and $lastErr.Exception -and $lastErr.Exception.Message) { $lines.Add("Exception: " + $lastErr.Exception.Message) | Out-Null }
-    if ($lastErr.ErrorDetails -and $lastErr.ErrorDetails.Message) { $lines.Add("ErrorDetails: " + $lastErr.ErrorDetails.Message) | Out-Null }
 
-    # Try to capture response body across frameworks
-    try {
-        $body = $null
-        if ($lastErr.Exception.Response -is [System.Net.Http.HttpResponseMessage]) {
-            $body = $lastErr.Exception.Response.Content.ReadAsStringAsync().Result
-        } elseif ($lastErr.Exception.Response -and $lastErr.Exception.Response.GetResponseStream) {
-            $reader = New-Object System.IO.StreamReader($lastErr.Exception.Response.GetResponseStream())
-            $body = $reader.ReadToEnd()
-        }
-        if ($body) { $lines.Add("Body:") | Out-Null; $lines.Add($body) | Out-Null }
-    } catch {}
+# Build API request
+$requestBody = @{ contents = @(@{ role = 'user'; parts = $requestParts }) }
+$requestJson = $requestBody | ConvertTo-Json -Depth 6
 
-    $lines -join "`r`n" | Out-File -FilePath $errPath -Encoding utf8
-    Write-Error ("Gemini request failed. See {0}" -f $errPath)
+# Save request JSON with redacted API key
+$requestJsonPath = Join-Path $OutputFolder 'Gemini_Request.json'
+$requestJsonSafe = Remove-SensitiveDataFromJson -Json $requestJson
+$requestJsonSafe | Out-File -FilePath $requestJsonPath -Encoding utf8
+Write-Verbose ("Saved request JSON (API key redacted): {0}" -f $requestJsonPath)
+
+# Try each endpoint with retry logic
+$apiResponse = $null
+$lastError = $null
+$usedEndpoint = $null
+
+foreach ($endpoint in $baseEndpoints) {
+    # ROBUSTNESS: Add timeout to API calls
+    $apiResult = Invoke-RestMethodWithRetry `
+        -Headers $headers `
+        -Uri $endpoint `
+        -Body $requestJson `
+        -MaxRetries $script:MaxApiRetries `
+        -BaseRetryDelaySeconds $script:BaseRetryDelaySeconds `
+        -RetryableStatusCodes $script:RetryableHttpStatusCodes `
+        -TimeoutSeconds 300 `
+        -VerboseOutput
+    
+    if ($apiResult.Success) {
+        $apiResponse = $apiResult.Response
+        $usedEndpoint = $endpoint
+        break
+    }
+    
+    # Check if 404 - try next endpoint
+    $statusCode = $null
+    try { 
+        $statusCode = $apiResult.Error.Exception.Response.StatusCode.value__
+    } catch {}
+    
+    if ($statusCode -eq 404) {
+        # Try next endpoint
+        $lastError = $apiResult.Error
+        continue
+    }
+    
+    # For other errors, stop trying endpoints
+    $lastError = $apiResult.Error
+    break
+}
+
+if (-not $apiResponse) {
+    Write-ApiErrorLog `
+        -Error $lastError `
+        -Endpoint $usedEndpoint `
+        -OutputFolder $OutputFolder `
+        -ErrorFileName 'Gemini_Error.txt'
+    Write-Error ("Gemini request failed. See {0}" -f (Join-Path $OutputFolder 'Gemini_Error.txt'))
     exit 1
 }
 
-$text = $null
-try {
-    if ($resp.candidates -and $resp.candidates[0].content.parts[0].text) {
-        $text = $resp.candidates[0].content.parts[0].text
-    } elseif ($resp.candidates -and $resp.candidates[0].content.parts) {
-        $texts = @()
-        foreach ($p in $resp.candidates[0].content.parts) { if ($p.text) { $texts += $p.text } }
-        $text = ($texts -join "`n`n")
+# ROBUSTNESS: Parse API response with proper validation
+$responseText = $null
+
+# Import robustness helpers if available
+$robustnessHelpersPath = Join-Path $commonPath 'ApiRobustnessHelpers.psm1'
+if (Test-Path $robustnessHelpersPath) {
+    try {
+        Import-Module $robustnessHelpersPath -Force -ErrorAction SilentlyContinue
+        if (Get-Command Get-GeminiResponseText -ErrorAction SilentlyContinue) {
+            $responseText = Get-GeminiResponseText -ApiResponse $apiResponse
+        }
+    } catch {
+        Write-Warning "Failed to import ApiRobustnessHelpers, using fallback validation: $($_.Exception.Message)"
     }
-} catch {}
+}
 
-if ($DebugOutput) { $respJsonPath = Join-Path $OutputFolder 'Gemini_Response.raw.json'; ($resp | ConvertTo-Json -Depth 8) | Out-File -FilePath $respJsonPath -Encoding utf8; Write-Verbose ("Saved raw response JSON: {0}" -f $respJsonPath) }
-if (-not $text) { $text = ($resp | ConvertTo-Json -Depth 8) }
+# Fallback validation if helper not available
+if (-not $responseText) {
+    if (-not $apiResponse) {
+        Write-Error "API response is null"
+        exit 1
+    }
+    
+    if (-not $apiResponse.PSObject.Properties['candidates']) {
+        Write-Error "Invalid API response structure: 'candidates' property is missing"
+        exit 1
+    }
+    
+    if ($null -eq $apiResponse.candidates -or $apiResponse.candidates.Count -eq 0) {
+        Write-Error "Invalid API response structure: 'candidates' array is empty or null"
+        exit 1
+    }
+    
+    try {
+        $candidate = $apiResponse.candidates[0]
+        if (-not $candidate.PSObject.Properties['content']) {
+            Write-Error "Invalid API response structure: candidate missing 'content' property"
+            exit 1
+        }
+        
+        if (-not $candidate.content.PSObject.Properties['parts']) {
+            Write-Error "Invalid API response structure: content missing 'parts' property"
+            exit 1
+        }
+        
+        if ($candidate.content.parts.Count -eq 0) {
+            Write-Warning "API response has empty parts array"
+            $responseText = $null
+        } else {
+            $textParts = @()
+            foreach ($part in $candidate.content.parts) {
+                if ($part -and $part.PSObject.Properties['text'] -and $part.text) {
+                    $textParts += $part.text
+                }
+            }
+            $responseText = if ($textParts.Count -gt 0) { ($textParts -join "`n`n") } else { $null }
+        }
+    } catch {
+        Write-Error "Failed to parse API response: $($_.Exception.Message)"
+        exit 1
+    }
+}
 
-$outFile = Join-Path $OutputFolder $ResponseFile
-$text | Out-File -FilePath $outFile -Encoding utf8
-Write-Host ("Saved Gemini response to: {0}" -f $outFile) -ForegroundColor Green
+if ($DebugOutput) { 
+    $rawResponsePath = Join-Path $OutputFolder 'Gemini_Response.raw.json'
+    ($apiResponse | ConvertTo-Json -Depth 8) | Out-File -FilePath $rawResponsePath -Encoding utf8
+    Write-Verbose ("Saved raw response JSON: {0}" -f $rawResponsePath)
+}
 
+if (-not $responseText) { 
+    Write-Warning "No text content found in API response, saving raw JSON"
+    $responseText = ($apiResponse | ConvertTo-Json -Depth 8)
+    if ([string]::IsNullOrWhiteSpace($responseText)) {
+        Write-Error "API response contains no usable content"
+        exit 1
+    }
+}
 
+# Save response
+$responseFilePath = Join-Path $OutputFolder $ResponseFile
+$responseText | Out-File -FilePath $responseFilePath -Encoding utf8
+Write-Host ("Saved Gemini response to: {0}" -f $responseFilePath) -ForegroundColor Green

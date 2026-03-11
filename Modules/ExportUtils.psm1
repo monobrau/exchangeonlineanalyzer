@@ -766,6 +766,10 @@ function New-SecurityInvestigationReport {
                     } catch {
                         if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Graph runspace: token failed ($($_.Exception.Message)), falling back to Connect-MgGraph" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 }
                         Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+                    } finally {
+                        # Clear token from memory (security)
+                        $Params.GraphAccessToken = $null
+                        [System.GC]::Collect()
                     }
                 } else {
                     Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
@@ -863,6 +867,8 @@ function New-SecurityInvestigationReport {
                 $graphResultRaw = $graphPs.EndInvoke($graphHandle)
                 $graphPs.Dispose(); $graphRunspace.Dispose()
                 $graphResult = if ($graphResultRaw -is [hashtable]) { $graphResultRaw } elseif ($graphResultRaw -and $graphResultRaw.Count -gt 0) { $graphResultRaw[0] } else { @{} }
+                # Clear Graph token from memory (security)
+                if ($params.GraphAccessToken) { $params.GraphAccessToken = $null; [System.GC]::Collect() }
             } else {
                 # GUI mode: both runspaces (Exchange runspace may prompt)
                 $exchangeRunspace = [runspacefactory]::CreateRunspace($iss)
@@ -892,6 +898,8 @@ function New-SecurityInvestigationReport {
 
                 $exchangeResult = if ($exchangeResultRaw -is [hashtable]) { $exchangeResultRaw } elseif ($exchangeResultRaw -and $exchangeResultRaw.Count -gt 0) { $exchangeResultRaw[0] } else { @{} }
                 $graphResult = if ($graphResultRaw -is [hashtable]) { $graphResultRaw } elseif ($graphResultRaw -and $graphResultRaw.Count -gt 0) { $graphResultRaw[0] } else { @{} }
+                # Clear Graph token from memory (security)
+                if ($params.GraphAccessToken) { $params.GraphAccessToken = $null; [System.GC]::Collect() }
             }
 
             # If runspaces returned empty (no connection reuse), fall back to sequential

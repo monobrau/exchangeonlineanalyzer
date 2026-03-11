@@ -139,15 +139,15 @@ function Get-CurrentLogFilePath {
 function Write-Log {
     <#
     .SYNOPSIS
-        Write a log entry.
+        Write a log entry with automatic sanitization of sensitive data.
     .PARAMETER Message
-        Log message
+        Log message (will be sanitized)
     .PARAMETER Level
         Verbose, Debug, Info, Warning, Error
     .PARAMETER Component
         Override component for this entry
     .PARAMETER Data
-        Hashtable of additional structured data
+        Hashtable of additional structured data (will be sanitized)
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -157,6 +157,37 @@ function Write-Log {
         [string]$Component = $null,
         [hashtable]$Data = @{}
     )
+    
+    # SECURITY: Sanitize message and data before logging
+    $sanitizedMessage = $Message
+    $sanitizedData = @{}
+    
+    # Try to import SecurityHelpers for sanitization
+    $securityHelpersPath = Join-Path $PSScriptRoot '..\Scripts\Common\SecurityHelpers.psm1'
+    if (-not (Test-Path $securityHelpersPath)) {
+        $securityHelpersPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Scripts\Common\SecurityHelpers.psm1'
+    }
+    
+    if (Test-Path $securityHelpersPath) {
+        try {
+            Import-Module $securityHelpersPath -Force -ErrorAction SilentlyContinue
+            if (Get-Command Remove-SensitiveDataFromText -ErrorAction SilentlyContinue) {
+                $sanitizedMessage = Remove-SensitiveDataFromText -Text $Message
+                foreach ($key in $Data.Keys) {
+                    $value = if ($Data[$key] -is [string]) {
+                        Remove-SensitiveDataFromText -Text $Data[$key]
+                    } else {
+                        $Data[$key]
+                    }
+                    $sanitizedData[$key] = $value
+                }
+            }
+        } catch {
+            # If sanitization fails, continue with original values (better than not logging)
+        }
+    } else {
+        $sanitizedData = $Data
+    }
     if (-not $script:LogConfig.Initialized) {
         $minVal = Get-LogLevelValue -Level $script:LogConfig.MinLevel
         if ($null -eq $minVal) { $minVal = 2 }
@@ -169,7 +200,7 @@ function Write-Log {
                 'Info'    { 'Cyan' }
                 default   { 'Gray' }
             }
-            Write-Host "[$Level] $Message" -ForegroundColor $color
+            Write-Host "[$Level] $sanitizedMessage" -ForegroundColor $color
         }
         return
     }
@@ -197,8 +228,8 @@ function Write-Log {
                     SessionId = $sessionId
                     Company   = $script:LogConfig.CompanyName
                     Ticket    = if ($script:LogConfig.TicketNumbers -and $script:LogConfig.TicketNumbers.Count -gt 0) { ($script:LogConfig.TicketNumbers -join ', ') } else { $null }
-                    Message   = $Message
-                } + $Data
+                    Message   = $sanitizedMessage
+                } + $sanitizedData
                 $line = $entry | ConvertTo-Json -Compress
             } else {
                 $sessionPart = if ($sessionId) { "[$sessionId] " } else { '' }
@@ -215,7 +246,7 @@ function Write-Log {
         }
     } catch {
         # Fallback to console if file write fails
-        Write-Host "[$Level] $Message" -ForegroundColor $(if ($Level -eq 'Error') { 'Red' } else { 'Gray' })
+        Write-Host "[$Level] $sanitizedMessage" -ForegroundColor $(if ($Level -eq 'Error') { 'Red' } else { 'Gray' })
     } finally {
         if ($acquired -and $script:LogConfig._fileLock) {
             try { $script:LogConfig._fileLock.ReleaseMutex() } catch { }
@@ -229,7 +260,7 @@ function Write-Log {
             'Debug'   { 'DarkGray' }
             default   { 'Gray' }
         }
-        Write-Host "[$Level] $Message" -ForegroundColor $color
+        Write-Host "[$Level] $sanitizedMessage" -ForegroundColor $color
     }
 }
 

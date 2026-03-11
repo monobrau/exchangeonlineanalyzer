@@ -97,10 +97,51 @@ function Get-MailboxDelegatesAndPermissions {
         [string]$UserPrincipalName
     )
     
+    # ROBUSTNESS: Use API call wrapper with logging and error handling
+    $apiHelpersPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Scripts\Common\ApiRobustnessHelpers.psm1'
+    $useRobustWrapper = $false
+    if (Test-Path $apiHelpersPath) {
+        try {
+            Import-Module $apiHelpersPath -Force -ErrorAction SilentlyContinue
+            if (Get-Command Invoke-ApiCallWithLogging -ErrorAction SilentlyContinue) {
+                $useRobustWrapper = $true
+            }
+        } catch {
+            # Fall back to standard error handling
+        }
+    }
+    
     try {
-        # Single API call to get all permissions
-        $permissions = Get-MailboxPermission -Identity $UserPrincipalName -ErrorAction SilentlyContinue | 
-                     Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" }
+        # ROBUSTNESS: Use wrapper with logging instead of SilentlyContinue
+        if ($useRobustWrapper) {
+            $permissions = Invoke-ApiCallWithLogging -ScriptBlock {
+                Get-MailboxPermission -Identity $UserPrincipalName -ErrorAction Stop | 
+                Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" }
+            } -OperationName "Get-MailboxPermission" -ItemIdentifier $UserPrincipalName -ErrorAction 'Continue' -LogErrors $true
+        } else {
+            # Fallback: Log errors properly
+            try {
+                $permissions = Get-MailboxPermission -Identity $UserPrincipalName -ErrorAction Stop | 
+                             Where-Object { $_.User -notlike "*NT AUTHORITY*" -and $_.User -notlike "*S-1-*" }
+            } catch {
+                $errorMsg = "Failed to get mailbox permissions for $UserPrincipalName : $($_.Exception.Message)"
+                Write-Warning $errorMsg
+                if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
+                    Write-Log -Message $errorMsg -Level Warning -Data @{ UserPrincipalName = $UserPrincipalName }
+                }
+                return @{
+                    Delegates = "Error"
+                    FullAccess = "Error"
+                }
+            }
+        }
+        
+        if (-not $permissions) {
+            return @{
+                Delegates = "None"
+                FullAccess = "None"
+            }
+        }
         
         # Extract delegates (FullAccess only)
         $delegateNames = [System.Collections.ArrayList]::new()
@@ -134,6 +175,11 @@ function Get-MailboxDelegatesAndPermissions {
             FullAccess = $fullAccess
         }
     } catch {
+        $errorMsg = "Get-MailboxDelegatesAndPermissions failed for $UserPrincipalName : $($_.Exception.Message)"
+        Write-Warning $errorMsg
+        if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
+            Write-Log -Message $errorMsg -Level Error -Data @{ UserPrincipalName = $UserPrincipalName }
+        }
         return @{
             Delegates = "Error"
             FullAccess = "Error"
@@ -169,4 +215,116 @@ function Analyze-MailboxPermissions {
     }
 }
 
-Export-ModuleMember -Function Test-ExternalForwarding,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains,Get-MailboxDelegatesAndPermissions 
+function Analyze-MailboxRulesEnhanced {
+    <#
+    .SYNOPSIS
+        Analyzes mailbox rules with improved hidden rule detection.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [array]$Rules,
+        [Parameter(Mandatory=$true)]
+        [array]$BaseSuspiciousKeywords
+    )
+    
+    $totalRules = $Rules.Count
+    $suspiciousHiddenCount = 0
+    $suspiciousVisibleCount = 0
+    $hasExternalForwarding = $false
+    
+    # PERFORMANCE: Pre-build hashtable for legitimate patterns (O(1) lookup instead of O(n) loop)
+    $legitimatePatterns = @{
+        "system" = $true; "default" = $true; "outlook" = $true; "microsoft" = $true; "office" = $true; "exchange" = $true;
+        "shared" = $true; "team" = $true; "group" = $true; "distribution" = $true; "dl" = $true; "mailbox" = $true;
+        "automatic" = $true; "auto" = $true; "sync" = $true; "migration" = $true; "upgrade" = $true;
+        "clutter" = $true; "focused" = $true; "junk" = $true; "spam" = $true; "archive" = $true; "retention" = $true;
+        "compliance" = $true; "legal" = $true; "hold" = $true; "litigation" = $true; "ediscovery" = $true
+    }
+    
+    # PERFORMANCE: Pre-build regex pattern for suspicious keywords (single regex match instead of loop)
+    $suspiciousKeywordsPattern = $null
+    if ($BaseSuspiciousKeywords -and $BaseSuspiciousKeywords.Count -gt 0) {
+        $escapedKeywords = $BaseSuspiciousKeywords | ForEach-Object { [regex]::Escape($_) }
+        $suspiciousKeywordsPattern = [regex]::new(($escapedKeywords -join '|'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    
+    foreach ($rule in $Rules) {
+        # Enhanced hidden rule detection - only count truly suspicious hidden rules
+        $isSuspiciousHidden = $false
+        if ($rule.IsHidden) {
+            # Check if this is a legitimate hidden rule or potentially malicious
+            $ruleName = if ($rule.Name) { $rule.Name.ToLower() } else { "" }
+            
+            # PERFORMANCE: Check legitimate patterns using hashtable lookup (much faster)
+            $isLegitimate = $false
+            foreach ($pattern in $legitimatePatterns.Keys) {
+                if ($ruleName -like "*$pattern*") {
+                    $isLegitimate = $true
+                    break
+                }
+            }
+            
+            # Additional checks for suspicious hidden rules
+            if (-not $isLegitimate) {
+                # PERFORMANCE: Use pre-built regex pattern instead of loop
+                if ($suspiciousKeywordsPattern -and $ruleName -match $suspiciousKeywordsPattern) {
+                    $isSuspiciousHidden = $true
+                }
+                
+                # Check for symbols-only names in hidden rules
+                if (-not $isSuspiciousHidden -and $ruleName.Length -gt 0) {
+                    $textCharacters = $ruleName -replace '[^\p{L}\p{N}\s]', ''
+                    if ([string]::IsNullOrWhiteSpace($textCharacters)) {
+                        $isSuspiciousHidden = $true
+                    }
+                }
+                
+                # Check for external forwarding in hidden rules
+                if (-not $isSuspiciousHidden -and $rule.ForwardTo -and $rule.ForwardTo -match '@') {
+                    $isSuspiciousHidden = $true
+                }
+            }
+            
+            # Only count as suspicious hidden if it meets suspicious criteria
+            if ($isSuspiciousHidden) {
+                $suspiciousHiddenCount++
+            }
+        }
+        
+        # Check for suspicious keywords in visible rules
+        $isSuspiciousVisible = $false
+        if (-not $rule.IsHidden -and $rule.Name) {  # Only check visible rules for suspicious keywords
+            # PERFORMANCE: Use pre-built regex pattern instead of loop
+            if ($suspiciousKeywordsPattern -and $rule.Name -match $suspiciousKeywordsPattern) {
+                $isSuspiciousVisible = $true
+            }
+            
+            # Check for symbols-only names in visible rules
+            if (-not $isSuspiciousVisible -and $rule.Name.Length -gt 0) {
+                $textCharacters = $rule.Name -replace '[^\p{L}\p{N}\s]', ''
+                if ([string]::IsNullOrWhiteSpace($textCharacters)) {
+                    $isSuspiciousVisible = $true
+                }
+            }
+        }
+        
+        # Count suspicious rules (visible rules with suspicious characteristics)
+        if ($isSuspiciousVisible) {
+            $suspiciousVisibleCount++
+        }
+        
+        # Check for external forwarding
+        if ($rule.ForwardTo -and $rule.ForwardTo -match '@') {
+            $hasExternalForwarding = $true
+        }
+    }
+    
+    return @{
+        TotalRules = $totalRules
+        SuspiciousHidden = $suspiciousHiddenCount
+        SuspiciousVisible = $suspiciousVisibleCount
+        HasExternalForwarding = $hasExternalForwarding
+    }
+}
+
+Export-ModuleMember -Function Test-ExternalForwarding,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains,Get-MailboxDelegatesAndPermissions,Analyze-MailboxRulesEnhanced 

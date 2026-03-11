@@ -8,63 +8,58 @@ param(
     [Parameter(Mandatory=$false)][switch]$VerboseOutput
 )
 
-function Get-LatestInvestigationFolder {
-    $base = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
-    if (-not (Test-Path $base)) { return $null }
-    $candidates = @()
-    $tenants = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue
-    foreach ($t in $tenants) {
-        $runs = Get-ChildItem -Path $t.FullName -Directory -ErrorAction SilentlyContinue
-        if ($runs) { $candidates += $runs }
-    }
-    $legacy = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{8}_\d{6}$' }
-    if ($legacy) { $candidates += $legacy }
-    if (-not $candidates -or $candidates.Count -eq 0) { return $null }
-    return ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+# Constants
+$script:MaxFileSizeBytes = 20MB
+$script:MaxSafeProcessingSizeBytes = 15MB
+$script:MaxContentCharacters = 300000
+$script:MaxApiRetries = 3
+$script:BaseRetryDelaySeconds = 1
+$script:RetryableHttpStatusCodes = @(429, 503, 502)
+
+# Import shared modules
+$commonPath = Join-Path $PSScriptRoot 'Common'
+Import-Module (Join-Path $commonPath 'InvestigationHelpers.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'FileCollection.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'SettingsHelpers.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'FileProcessing.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $commonPath 'ApiHelpers.psm1') -Force -ErrorAction Stop
+
+# Find output folder if not provided
+if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { 
+    $OutputFolder = Get-LatestInvestigationFolder -IncludeLegacy -VerboseOutput:$VerboseOutput
 }
 
-if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { $OutputFolder = Get-LatestInvestigationFolder }
-
-$settingsPath = Join-Path $PSScriptRoot '..\Modules\Settings.psm1'
-try { if (Test-Path $settingsPath) { Import-Module $settingsPath -Force -ErrorAction SilentlyContinue } } catch {}
-if (-not $ApiKey) { try { $s = Get-AppSettings; if ($s -and $s.ClaudeApiKey) { $ApiKey = $s.ClaudeApiKey } } catch {} }
-if (-not $ApiKey) { Write-Error 'Claude API key is required. Save it in Settings or pass -ApiKey.'; exit 1 }
-
-if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { Write-Error 'Could not find Security Investigation output folder. Pass -OutputFolder or generate a report.'; exit 1 }
-if ($VerboseOutput) { Write-Host ("Using output folder: {0}" -f $OutputFolder) -ForegroundColor DarkGray }
-
-function Get-MimeType([string]$path) {
-    switch -regex ($path) {
-        '\.csv$' { 'text/csv'; break }
-        '\.txt$' { 'text/plain'; break }
-        default { 'application/octet-stream' }
-    }
+# Load settings module and get API key
+Import-SettingsModule -ScriptRoot $PSScriptRoot -VerboseOutput:$VerboseOutput | Out-Null
+if (-not $ApiKey) { 
+    $ApiKey = Get-ApiKeyFromSettings -KeyName 'ClaudeApiKey' -VerboseOutput:$VerboseOutput
+}
+if (-not $ApiKey) { 
+    Write-Error 'Claude API key is required. Save it in Settings or pass -ApiKey.'
+    exit 1
 }
 
-function Get-AttachPath { param([string]$path,[int]$maxRows)
-    if ($maxRows -gt 0 -and $path -match '\.csv$') {
-        $linesNeeded = $maxRows + 1 # header + rows
-        try {
-            $tmp = [System.IO.Path]::GetTempFileName()
-            Get-Content -Path $path -TotalCount $linesNeeded | Set-Content -Path $tmp -Encoding utf8
-            return $tmp
-        } catch { return $path }
-    }
-    return $path
+# Validate output folder
+if (-not $OutputFolder -or -not (Test-Path $OutputFolder)) { 
+    Write-Error 'Could not find Security Investigation output folder. Pass -OutputFolder or generate a report.'
+    exit 1
+}
+if ($VerboseOutput) { 
+    Write-Host ("Using output folder: {0}" -f $OutputFolder) -ForegroundColor DarkGray
 }
 
-$defaults = @('_AI_Readme.txt','MessageTrace.csv','InboxRules.csv','TransportRules.csv','MailFlowConnectors.csv','GraphAuditLogs.csv','UserSecurityPosture.csv')
-$files = @()
-foreach ($f in $defaults) { $p = Join-Path $OutputFolder $f; if (Test-Path $p) { $files += $p } }
-if ($ExtraFiles) {
-    foreach ($ef in $ExtraFiles) { if ($ef -and (Test-Path $ef)) { $files += (Resolve-Path $ef).Path } }
+# Collect files to process
+$validatedFiles = Get-InvestigationReportFiles -OutputFolder $OutputFolder -ExtraFiles $ExtraFiles
+if ($validatedFiles.Count -eq 0) { 
+    Write-Error 'No files to send.'
+    exit 1
 }
-$files = $files | Select-Object -Unique
-if ($files.Count -eq 0) { Write-Error 'No files to send.'; exit 1 }
 
 if ($VerboseOutput) {
-    Write-Host ("Attaching {0} file(s):" -f $files.Count) -ForegroundColor DarkGray
-    foreach ($p in $files) { Write-Host (" - {0} ({1} KB)" -f $p,[Math]::Round(((Get-Item $p).Length/1KB),0)) -ForegroundColor DarkGray }
+    Write-Host ("Attaching {0} file(s):" -f $validatedFiles.Count) -ForegroundColor DarkGray
+    foreach ($filePath in $validatedFiles) { 
+        Write-Host (" - {0} ({1} KB)" -f $filePath, [Math]::Round(((Get-Item $filePath).Length/1KB),0)) -ForegroundColor DarkGray
+    }
 }
 
 # Build Anthropic messages format
@@ -79,60 +74,143 @@ Do not speculate beyond provided evidence. Use CSV content explicitly in referen
 "@
 $contentParts += @{ type = 'text'; text = $intro }
 
-foreach ($p in $files) {
-    $attach = Get-AttachPath -path $p -maxRows $MaxCsvRows
-    if ((Get-Item $attach).Length -gt 20000000) { Write-Warning "File >20MB, skipping: $attach"; continue }
-    $name = [System.IO.Path]::GetFileName($p)
-    $text = try { Get-Content -Path $attach -Raw -Encoding UTF8 } catch { '' }
-    if (-not $text) { $text = "(empty file)" }
-    $maxChars = 300000
-    if ($text.Length -gt $maxChars) { $text = $text.Substring(0,$maxChars) + "`n...[truncated]" }
-    $contentParts += @{ type='text'; text=("=== {0} ===`n{1}" -f $name, $text) }
+$tempFilesToCleanup = @()
+foreach ($filePath in $validatedFiles) {
+    # Validate file can be processed
+    $validation = Test-FileIsProcessable -FilePath $filePath -MaxSizeBytes $script:MaxFileSizeBytes -MaxSafeProcessingSizeBytes $script:MaxSafeProcessingSizeBytes
+    if (-not $validation.IsValid) {
+        Write-Warning $validation.Reason
+        continue
+    }
+    
+    # Read and process file content
+    $fileContent = Read-FileContent -FilePath $filePath -MaxCsvRows $MaxCsvRows -MaxChars $script:MaxContentCharacters
+    
+    # Track temp files for cleanup
+    if ($fileContent.TempFilePath) {
+        $tempFilesToCleanup += $fileContent.TempFilePath
+    }
+    
+    # Format content for API
+    $fileName = [System.IO.Path]::GetFileName($filePath)
+    $contentParts += @{ type='text'; text=("=== {0} ===`n{1}" -f $fileName, $fileContent.Content) }
 }
 
-$req = @{ model = $Model; max_tokens = 2048; messages = @(@{ role = 'user'; content = $contentParts }) }
-$json = $req | ConvertTo-Json -Depth 8
-$reqPath = Join-Path $OutputFolder 'Claude_Request.json'
-$json | Out-File -FilePath $reqPath -Encoding utf8
-if ($VerboseOutput) { Write-Host ("Saved request JSON: {0}" -f $reqPath) -ForegroundColor DarkGray }
+# Clean up temporary files
+foreach ($tempFilePath in $tempFilesToCleanup) {
+    if (Test-Path $tempFilePath) {
+        try { Remove-Item $tempFilePath -Force -ErrorAction SilentlyContinue } catch {}
+    }
+}
 
-$headers = @{ 'x-api-key' = $ApiKey; 'anthropic-version' = '2023-06-01'; 'Content-Type' = 'application/json' }
-$url = 'https://api.anthropic.com/v1/messages'
+# Build API request
+$request = @{ 
+    model = $Model
+    max_tokens = 2048
+    messages = @(@{ role = 'user'; content = $contentParts })
+}
+$requestJson = $request | ConvertTo-Json -Depth 8
 
-$resp = $null; $err = $null
-try {
-    Write-Host ("Submitting to Claude: {0}" -f $url) -ForegroundColor DarkGray
-    $resp = Invoke-RestMethod -Method POST -Uri $url -Headers $headers -Body $json -ErrorAction Stop
-} catch { $err = $_ }
-if ($err) {
-    $errPath = Join-Path $OutputFolder 'Claude_Error.txt'
-    $lines = @()
-    $lines += "Endpoint: $url"
-    try { $sc = $err.Exception.Response.StatusCode; $sv = $err.Exception.Response.StatusCode.value__; $lines += "Status: $sv ($sc)" } catch {}
-    if ($err.Exception.Message) { $lines += "Exception: $($err.Exception.Message)" }
-    if ($err.ErrorDetails -and $err.ErrorDetails.Message) { $lines += "ErrorDetails: $($err.ErrorDetails.Message)" }
-    try {
-        $body = $null
-        if ($err.Exception.Response -is [System.Net.Http.HttpResponseMessage]) { $body = $err.Exception.Response.Content.ReadAsStringAsync().Result }
-        elseif ($err.Exception.Response -and $err.Exception.Response.GetResponseStream) { $reader = New-Object System.IO.StreamReader($err.Exception.Response.GetResponseStream()); $body = $reader.ReadToEnd() }
-        if ($body) { $lines += 'Body:'; $lines += $body }
-    } catch {}
-    ($lines -join "`r`n") | Out-File -FilePath $errPath -Encoding utf8
-    Write-Error ("Claude request failed. See {0}" -f $errPath)
+# Save request JSON with redacted API key
+$requestJsonPath = Join-Path $OutputFolder 'Claude_Request.json'
+$requestJsonSafe = Remove-SensitiveDataFromJson -Json $requestJson
+$requestJsonSafe | Out-File -FilePath $requestJsonPath -Encoding utf8
+if ($VerboseOutput) { 
+    Write-Host ("Saved request JSON (API key redacted): {0}" -f $requestJsonPath) -ForegroundColor DarkGray
+}
+
+# Prepare API call
+$headers = @{ 
+    'x-api-key' = $ApiKey
+    'anthropic-version' = '2023-06-01'
+    'Content-Type' = 'application/json'
+}
+$apiUrl = 'https://api.anthropic.com/v1/messages'
+
+# ROBUSTNESS: Invoke API with retry logic and timeout
+$apiResult = Invoke-RestMethodWithRetry `
+    -Headers $headers `
+    -Uri $apiUrl `
+    -Body $requestJson `
+    -MaxRetries $script:MaxApiRetries `
+    -BaseRetryDelaySeconds $script:BaseRetryDelaySeconds `
+    -RetryableStatusCodes $script:RetryableHttpStatusCodes `
+    -TimeoutSeconds 300 `
+    -VerboseOutput:$VerboseOutput
+
+if (-not $apiResult.Success) {
+    Write-ApiErrorLog `
+        -Error $apiResult.Error `
+        -Endpoint $apiUrl `
+        -OutputFolder $OutputFolder `
+        -ErrorFileName 'Claude_Error.txt'
+    Write-Error ("Claude request failed. See {0}" -f (Join-Path $OutputFolder 'Claude_Error.txt'))
     exit 1
 }
 
-$text = $null
-try {
-    if ($resp.content -and $resp.content.Count -gt 0) {
-        $parts = $resp.content | Where-Object { $_.type -eq 'text' }
-        if ($parts -and $parts[0].text) { $text = $parts[0].text }
+$apiResponse = $apiResult.Response
+
+# ROBUSTNESS: Parse API response with proper validation
+$responseText = $null
+
+# Import robustness helpers if available
+$robustnessHelpersPath = Join-Path $commonPath 'ApiRobustnessHelpers.psm1'
+if (Test-Path $robustnessHelpersPath) {
+    try {
+        Import-Module $robustnessHelpersPath -Force -ErrorAction SilentlyContinue
+        if (Get-Command Get-ClaudeResponseText -ErrorAction SilentlyContinue) {
+            $responseText = Get-ClaudeResponseText -ApiResponse $apiResponse
+        }
+    } catch {
+        Write-Warning "Failed to import ApiRobustnessHelpers, using fallback validation: $($_.Exception.Message)"
     }
-} catch {}
-if (-not $text) { $text = ($resp | ConvertTo-Json -Depth 8) }
+}
 
-$out = Join-Path $OutputFolder $ResponseFile
-$text | Out-File -FilePath $out -Encoding utf8
-Write-Host ("Saved Claude response to: {0}" -f $out) -ForegroundColor Green
+# Fallback validation if helper not available
+if (-not $responseText) {
+    if (-not $apiResponse) {
+        Write-Error "API response is null"
+        exit 1
+    }
+    
+    if (-not $apiResponse.PSObject.Properties['content']) {
+        Write-Error "Invalid API response structure: 'content' property is missing"
+        exit 1
+    }
+    
+    if ($null -eq $apiResponse.content -or $apiResponse.content.Count -eq 0) {
+        Write-Error "Invalid API response structure: 'content' array is empty or null"
+        exit 1
+    }
+    
+    try {
+        $textParts = $apiResponse.content | Where-Object { 
+            $_.PSObject.Properties['type'] -and $_.type -eq 'text' -and 
+            $_.PSObject.Properties['text'] -and $_.text 
+        }
+        
+        if (-not $textParts -or $textParts.Count -eq 0) {
+            Write-Warning "No text content found in API response content array"
+            $responseText = $null
+        } else {
+            $responseText = $textParts[0].text
+        }
+    } catch {
+        Write-Error "Failed to parse API response: $($_.Exception.Message)"
+        exit 1
+    }
+}
 
+if (-not $responseText) { 
+    Write-Warning "No text content found in API response, saving raw JSON"
+    $responseText = ($apiResponse | ConvertTo-Json -Depth 8)
+    if ([string]::IsNullOrWhiteSpace($responseText)) {
+        Write-Error "API response contains no usable content"
+        exit 1
+    }
+}
 
+# Save response
+$responseFilePath = Join-Path $OutputFolder $ResponseFile
+$responseText | Out-File -FilePath $responseFilePath -Encoding utf8
+Write-Host ("Saved Claude response to: {0}" -f $responseFilePath) -ForegroundColor Green

@@ -162,13 +162,6 @@ Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
    .\BulkTenantExporter.ps1
    ```
 
-4. **Build EXE (Optional)**
-   ```powershell
-   Install-Module ps2exe -Scope CurrentUser
-   .\Build-Exe.ps1
-   # Output: Release\ExchangeOnlineAnalyzer.exe, Release\BulkTenantExporter.exe
-   ```
-
 ## 💻 Usage
 
 ### Getting Started
