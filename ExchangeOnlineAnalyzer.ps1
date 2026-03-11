@@ -447,7 +447,7 @@ function Analyze-MailboxBatch {
                     $rules = try {
                         Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop
                     } catch {
-                        $errorMsg = "Failed to get inbox rules for $upn: $($_.Exception.Message)"
+                        $errorMsg = "Failed to get inbox rules for ${upn}: $($_.Exception.Message)"
                         Write-Warning $errorMsg
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
                             Write-Log -Message $errorMsg -Level Warning -Data @{ UserPrincipalName = $upn }
@@ -5248,7 +5248,7 @@ $analyzeSelectedButton.add_Click({
                     $rules = try {
                         Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop
                     } catch {
-                        $errorMsg = "Failed to get inbox rules for $upn: $($_.Exception.Message)"
+                        $errorMsg = "Failed to get inbox rules for ${upn}: $($_.Exception.Message)"
                         Write-Warning $errorMsg
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
                             Write-Log -Message $errorMsg -Level Warning -Data @{ UserPrincipalName = $upn }
@@ -6998,6 +6998,7 @@ try {
     Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+    if (Test-Path "`$ScriptRoot\Scripts\Common\SecurityHelpers.psm1") { Import-Module "`$ScriptRoot\Scripts\Common\SecurityHelpers.psm1" -Force -ErrorAction SilentlyContinue }
     Write-Status "Modules imported successfully"
     Write-Host ""
     
@@ -7506,6 +7507,19 @@ if (Test-Path `$ReportSelectionsFile) {
                     continue
                 }
                 
+                # Parse SelectedUsers and ticket data from command
+                `$selectedUsersForReport = @()
+                if (`$command -match '\|SelectedUsers:(.+?)(?:\||$)') {
+                    try {
+                        `$usersJson = `$Matches[1]
+                        `$parsed = `$usersJson | ConvertFrom-Json -ErrorAction Stop
+                        `$selectedUsersForReport = if (`$parsed -is [array]) { @(`$parsed) } else { @(`$parsed) }
+                        Write-Host "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s) selected" -ForegroundColor Cyan
+                        Write-Status "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s)"
+                    } catch {
+                        Write-Warning "Could not parse SelectedUsers from command: `$(`$_.Exception.Message)"
+                    }
+                }
                 # Parse ticket data from command (format: |TICKET_DATA:{"TicketNumbers":["12345"],"TicketContent":"..."})
                 `$ticketNumbers = @()
                 `$ticketContent = ''
@@ -7580,22 +7594,34 @@ if (Test-Path `$ReportSelectionsFile) {
                 }
                 
                 Write-Host "Ticket data being passed: TicketNumbers=`$(`$ticketNumbers.Count) (`$(`$ticketNumbers -join ', ')), TicketContent length=`$(`$ticketContent.Length)" -ForegroundColor Cyan
+                # Get Graph token for parallel collection (avoids extra auth prompts in runspaces)
+                `$graphToken = `$null
+                if (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
+                    try {
+                        `$diag = { param(`$m) Write-Status `$m; if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken: `$m" -Level Debug } }
+                        `$graphToken = Get-GraphAccessToken -DiagnosticCallback `$diag
+                    } catch {
+                        Write-Status "Graph token acquisition failed: `$(`$_.Exception.Message)"
+                    }
+                }
+                if (`$graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel -ProgressCallback { param(`$m) Write-Status `$m } -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers @() -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel:(-not `$graphToken) -GraphAccessToken `$graphToken -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
                     # SECURITY: Use safe error handling - don't expose full exception details
                     if (Get-Command Get-SafeErrorMessage -ErrorAction SilentlyContinue) {
-                        $safeError = Get-SafeErrorMessage -Error $_ -UserMessage "Failed to generate report"
-                        Write-Status "ERROR: Failed to generate report - $safeError"
-                        Write-Host "ERROR: Failed to generate report - $safeError" -ForegroundColor Red
-                        Write-CommandResponse "GENERATE_REPORTS_FAILED:$safeError"
+                        `$safeError = Get-SafeErrorMessage -Error `$_ -UserMessage "Failed to generate report"
+                        Write-Status "ERROR: Failed to generate report - `$safeError"
+                        Write-Host "ERROR: Failed to generate report - `$safeError" -ForegroundColor Red
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:`$safeError"
                     } else {
-                        Write-Status "ERROR: Failed to generate report"
-                        Write-Host "ERROR: Failed to generate report" -ForegroundColor Red
-                        Write-CommandResponse "GENERATE_REPORTS_FAILED:Report generation failed"
+                        `$errMsg = if (`$_.Exception.Message) { `$_.Exception.Message } else { "Report generation failed" }
+                        Write-Status "ERROR: Failed to generate report - `$errMsg"
+                        Write-Host "ERROR: Failed to generate report - `$errMsg" -ForegroundColor Red
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:`$errMsg"
                     }
                     continue
                 }
