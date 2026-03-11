@@ -340,7 +340,9 @@ $bulkUnifiedAuditLogTypesBtn.add_Click({
     $clb.CheckOnClick = $true
     foreach ($t in $allTypes) {
         $idx = $clb.Items.Add($t)
-        if ($script:unifiedAuditLogRecordTypes -contains $t) { $clb.SetItemChecked($idx, $true) }
+        # $null means all types selected; otherwise check if this type is in the selection
+        $isChecked = if ($null -eq $script:unifiedAuditLogRecordTypes) { $true } else { $script:unifiedAuditLogRecordTypes -contains $t }
+        if ($isChecked) { $clb.SetItemChecked($idx, $true) }
     }
     $okBtn = New-Object System.Windows.Forms.Button
     $okBtn.Text = "OK"
@@ -363,14 +365,26 @@ $bulkUnifiedAuditLogTypesBtn.add_Click({
             $clb.SetItemChecked($i, $clb.Items[$i] -in @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated'))
         }
     })
-    $dlg.Controls.AddRange(@($clb, $okBtn, $cancelBtn, $selectDefaultBtn))
+    $selectAllBtn = New-Object System.Windows.Forms.Button
+    $selectAllBtn.Text = "All types"
+    $selectAllBtn.Location = New-Object System.Drawing.Point(10, 330)
+    $selectAllBtn.Size = New-Object System.Drawing.Size(110, 28)
+    $selectAllBtn.add_Click({
+        for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) }
+    })
+    $dlg.Controls.AddRange(@($clb, $okBtn, $cancelBtn, $selectDefaultBtn, $selectAllBtn))
     if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $script:unifiedAuditLogRecordTypes = @()
+        $checked = @()
         for ($i = 0; $i -lt $clb.Items.Count; $i++) {
-            if ($clb.GetItemChecked($i)) { $script:unifiedAuditLogRecordTypes += $clb.Items[$i] }
+            if ($clb.GetItemChecked($i)) { $checked += $clb.Items[$i] }
         }
-        if ($script:unifiedAuditLogRecordTypes.Count -eq 0) {
+        # If all types selected, pass $null so UAL does one query filtered only by user(s) - no per-RecordType queries
+        if ($checked.Count -eq $allTypes.Count) {
+            $script:unifiedAuditLogRecordTypes = $null
+        } elseif ($checked.Count -eq 0) {
             $script:unifiedAuditLogRecordTypes = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated')
+        } else {
+            $script:unifiedAuditLogRecordTypes = $checked
         }
     }
 })

@@ -995,7 +995,7 @@ function New-SecurityInvestigationReport {
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -RecordTypes $UnifiedAuditLogRecordTypes
+                    $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes
                     Write-Host "Collected $($report.UnifiedAuditLogs.Count) unified audit log entries" -ForegroundColor Green
                     Invoke-DoEventsSafe
                 } catch {
@@ -2703,20 +2703,40 @@ function Get-UnifiedAuditLogs {
     try {
         Write-Host "Collecting unified audit logs (email audit logs) (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         
-        # Check if Search-UnifiedAuditLog cmdlet is available (indicates Exchange Online connection)
+        # Ensure Exchange Online Management module is loaded (Search-UnifiedAuditLog comes from EXO/SCC session)
+        $exoModule = Get-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue
+        if (-not $exoModule) {
+            Import-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue
+        }
+        
+        # Search-UnifiedAuditLog is available after Connect-ExchangeOnline or Connect-IPPSSession (Security & Compliance Center)
         if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
-            Write-Warning "Search-UnifiedAuditLog cmdlet not available. Please ensure Exchange Online Management module is installed and connected."
-            return @()
+            # Fallback: Connect-IPPSSession - Search-UnifiedAuditLog is in both EXO and SCC; some configs need explicit SCC connection
+            if (Get-Command Connect-IPPSSession -ErrorAction SilentlyContinue) {
+                try {
+                    Write-Host "  Search-UnifiedAuditLog not in current session; trying Connect-IPPSSession (Security & Compliance Center)..." -ForegroundColor Gray
+                    if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Trying Connect-IPPSSession for unified audit log..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                    $ippParams = @{ ShowBanner = $false; ErrorAction = 'Stop' }
+                    if ((Get-Command Connect-IPPSSession -ErrorAction SilentlyContinue).Parameters.Keys -contains 'SkipLoadingCmdletHelp') {
+                        $ippParams['SkipLoadingCmdletHelp'] = $true
+                    }
+                    Connect-IPPSSession @ippParams | Out-Null
+                } catch {
+                    Write-Host "  Connect-IPPSSession failed: $($_.Exception.Message)" -ForegroundColor Gray
+                    if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Connect-IPPSSession failed: $($_.Exception.Message)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                }
+            }
+        }
+        if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
+            $errMsg = "Search-UnifiedAuditLog cmdlet not available. Ensure Exchange Online is connected (Connect-ExchangeOnline) and you have 'View-Only Audit Logs' or 'Audit Logs' role. If using app-based auth, Search-UnifiedAuditLog may require interactive Connect-IPPSSession."
+            Write-Warning $errMsg
+            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $errMsg" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+            throw $errMsg
         }
 
-        # Ensure Exchange Online Management module is available
-        if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
-            Write-Warning "Search-UnifiedAuditLog cmdlet not available. Please ensure Exchange Online Management module is installed."
-            return @()
-        }
-
-        $startDate = (Get-Date).AddDays(-[Math]::Max(1, $DaysBack))
-        $endDate = Get-Date  # Through run time (same timing as message trace)
+        # Unified audit log stores entries in UTC - use UTC for consistent results
+        $startDate = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max(1, $DaysBack))
+        $endDate = (Get-Date).ToUniversalTime()  # Through run time (same timing as message trace)
 
         $raw = New-Object System.Collections.Generic.List[object]
 
@@ -2731,36 +2751,28 @@ function Get-UnifiedAuditLogs {
             'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
         )
 
-        # RecordType parameter only accepts a single value, so if multiple RecordTypes provided, query each separately
-        # However, if ALL available types are selected, skip filtering entirely for efficiency
+        # RecordType parameter accepts only a single value. When all types selected (or $null), do ONE query filtered only by user(s).
+        # When a subset is selected, query each RecordType separately.
         $recordTypesToQuery = @()
-        if ($RecordTypes -and $RecordTypes.Count -gt 0) {
-            # Normalize: remove duplicates and compare unique sets
+        if ($null -eq $RecordTypes -or $RecordTypes.Count -eq 0) {
+            $recordTypesToQuery = @($null)
+            Write-Host "  All RecordTypes - single query filtered by user(s) only" -ForegroundColor Gray
+        } else {
             $uniqueSelected = $RecordTypes | Select-Object -Unique
             $uniqueAvailable = $allAvailableRecordTypes | Select-Object -Unique
-            
-            # Check if all available types are selected (order doesn't matter)
-            $allSelected = $true
-            foreach ($availableType in $uniqueAvailable) {
-                if ($uniqueSelected -notcontains $availableType) {
-                    $allSelected = $false
-                    break
+            $allSelected = ($uniqueSelected.Count -ge $uniqueAvailable.Count)
+            if ($allSelected) {
+                foreach ($availableType in $uniqueAvailable) {
+                    if ($uniqueSelected -notcontains $availableType) { $allSelected = $false; break }
                 }
             }
-            
-            # If all types are selected, query without RecordType filter for efficiency
-            if ($allSelected -and $uniqueSelected.Count -ge $uniqueAvailable.Count) {
-                # All types selected - query without RecordType filter
+            if ($allSelected) {
                 $recordTypesToQuery = @($null)
-                Write-Host "  All RecordTypes selected - querying all audit log types (no filter)" -ForegroundColor Gray
+                Write-Host "  All RecordTypes selected - single query filtered by user(s) only" -ForegroundColor Gray
             } else {
-                # Some types selected - query each separately
                 $recordTypesToQuery = $uniqueSelected
                 Write-Host "  Filtering by RecordTypes ($($uniqueSelected.Count) types): $($uniqueSelected -join ', ')" -ForegroundColor Gray
             }
-        } else {
-            # No RecordType filter - query all types
-            $recordTypesToQuery = @($null)
         }
 
         # If SelectedUsers provided, filter by user
