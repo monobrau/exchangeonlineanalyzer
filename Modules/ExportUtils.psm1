@@ -3923,12 +3923,78 @@ function New-LLMInvestigationInstructions {
         $settingsPath = Join-Path $PSScriptRoot 'Settings.psm1'
         if (Test-Path $settingsPath) {
             Import-Module $settingsPath -Force -ErrorAction SilentlyContinue
+            
+            # Import MemberberryIntegration module if available
+            $memberberryIntegrationPath = Join-Path $PSScriptRoot 'MemberberryIntegration.psm1'
+            if (Test-Path $memberberryIntegrationPath) {
+                Import-Module $memberberryIntegrationPath -Force -ErrorAction SilentlyContinue
+            }
+            
             if (Get-Command New-AIReadme -ErrorAction SilentlyContinue) {
                 $settings = Get-AppSettings
                 Write-Host "New-LLMInvestigationInstructions: Loaded settings - MemberberryEnabled=$($settings.MemberberryEnabled), MemberberryPath='$($settings.MemberberryPath)'" -ForegroundColor Cyan
                 # Override InvestigatorName and CompanyName from report if provided
                 if ($Report.Investigator) { $settings.InvestigatorName = $Report.Investigator }
                 if ($Report.Company) { $settings.CompanyName = $Report.Company }
+                
+                # Extract company and alert type from ticket content using memberberry integration
+                $ticketContent = if ($Report.TicketContent) { $Report.TicketContent } else { '' }
+                $extractedCompany = $Report.Company
+                $alertTypes = ''
+                
+                if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                    # Try to extract company name from ticket if not already provided
+                    if (Get-Command Get-CompanyFromTicket -ErrorAction SilentlyContinue) {
+                        try {
+                            $extractedCompanyFromTicket = Get-CompanyFromTicket -TicketContent $ticketContent
+                            if ($extractedCompanyFromTicket -and $extractedCompanyFromTicket.Trim() -ne "") {
+                                if ([string]::IsNullOrWhiteSpace($extractedCompany) -or $extractedCompany -eq "Organization") {
+                                    $extractedCompany = $extractedCompanyFromTicket.Trim()
+                                    Write-Host "New-LLMInvestigationInstructions: Extracted company name from ticket: $extractedCompany" -ForegroundColor Green
+                                }
+                            }
+                        } catch {
+                            Write-Warning "Could not extract company name from ticket: $($_.Exception.Message)"
+                        }
+                    }
+                    
+                    # Detect alert types from ticket
+                    if (Get-Command Get-AlertTypeFromTicket -ErrorAction SilentlyContinue) {
+                        try {
+                            $alertTypes = Get-AlertTypeFromTicket -TicketContent $ticketContent
+                            if ($alertTypes -and $alertTypes.Trim() -ne "") {
+                                Write-Host "New-LLMInvestigationInstructions: Detected alert types: $alertTypes" -ForegroundColor Green
+                            }
+                        } catch {
+                            Write-Warning "Could not detect alert types from ticket: $($_.Exception.Message)"
+                        }
+                    }
+                    
+                    # Compile memberberry instructions dynamically if integration is available
+                    if (Get-Command Invoke-MemberberryCompile -ErrorAction SilentlyContinue) {
+                        try {
+                            $compileParams = @{}
+                            if ($extractedCompany -and $extractedCompany.Trim() -ne "" -and $extractedCompany -ne "Organization") {
+                                $compileParams['Client'] = $extractedCompany
+                            }
+                            if ($alertTypes -and $alertTypes.Trim() -ne "") {
+                                $compileParams['AlertType'] = $alertTypes
+                            }
+                            
+                            $compiledMemberberryPath = Invoke-MemberberryCompile @compileParams
+                            if ($compiledMemberberryPath -and (Test-Path $compiledMemberberryPath)) {
+                                Write-Host "New-LLMInvestigationInstructions: Compiled memberberry instructions: $compiledMemberberryPath" -ForegroundColor Green
+                                # Store compiled path for potential use in report generation
+                                if (-not $Report.MemberberryInstructionsPath) {
+                                    $Report.MemberberryInstructionsPath = $compiledMemberberryPath
+                                }
+                            }
+                        } catch {
+                            Write-Warning "Could not compile memberberry instructions: $($_.Exception.Message)"
+                        }
+                    }
+                }
+                
                 # Pass ticket data if available
                 # Ensure TicketNumbers is an array
                 $ticketNumbers = @()
@@ -3941,7 +4007,6 @@ function New-LLMInvestigationInstructions {
                         $ticketNumbers = @($Report.TicketNumbers)
                     }
                 }
-                $ticketContent = if ($Report.TicketContent) { $Report.TicketContent } else { '' }
                 Write-Host "New-LLMInvestigationInstructions: Passing TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), TicketContent length=$($ticketContent.Length)" -ForegroundColor Gray
                 $result = New-AIReadme -Settings $settings -TicketNumbers $ticketNumbers -TicketContent $ticketContent
                 Write-Host "New-LLMInvestigationInstructions: AI readme generated (length: $($result.Length) chars)" -ForegroundColor Cyan

@@ -1,3 +1,15 @@
+# Import MemberberryIntegration module if available (for ticket processing)
+$memberberryIntegrationPath = Join-Path $PSScriptRoot "MemberberryIntegration.psm1"
+if (Test-Path $memberberryIntegrationPath) {
+    try {
+        # Import with -Global to make functions available in parent scope
+        Import-Module $memberberryIntegrationPath -Force -Global -ErrorAction Stop
+    } catch {
+        # Memberberry integration not available - functions will fall back to local implementations
+        Write-Warning "Could not load MemberberryIntegration module: $($_.Exception.Message)"
+    }
+}
+
 function Get-SettingsLocationConfig {
     # Save config file to AppData instead of repository directory to avoid committing user-specific files
     # This ensures both scripts use the same config file without polluting the repository
@@ -1367,6 +1379,20 @@ function Filter-TicketContent {
         return $TicketContent
     }
     
+    # Try to use MemberberryIntegration module if available
+    if (Get-Command Invoke-MemberberryCleanTicket -ErrorAction SilentlyContinue) {
+        try {
+            $cleaned = Invoke-MemberberryCleanTicket -TicketContent $TicketContent
+            if ($cleaned -and $cleaned.Trim() -ne "") {
+                return $cleaned
+            }
+        } catch {
+            Write-Warning "Error using memberberry clean-ticket: $($_.Exception.Message). Falling back to local implementation."
+        }
+    }
+    
+    # Fallback to local implementation (backward compatibility)
+    
     $lines = $TicketContent -split "`r?`n"
     $filteredLines = @()
     $skipConfigSection = $false
@@ -1891,7 +1917,80 @@ function Get-ExportPresets {
     }
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-ExportPresets
+<#
+.SYNOPSIS
+    Extracts company name from ticket content using memberberry integration
+.DESCRIPTION
+    Uses memberberry's extract-company.ps1 script to extract company name from ticket text.
+    Falls back to empty string if memberberry is not available.
+.PARAMETER TicketContent
+    The ticket text to search
+.EXAMPLE
+    $company = Get-CompanyFromTicket -TicketContent $ticketContent
+#>
+function Get-CompanyFromTicket {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TicketContent
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        return ""
+    }
+    
+    # Try to use MemberberryIntegration module if available
+    if (Get-Command Invoke-MemberberryExtractCompany -ErrorAction SilentlyContinue) {
+        try {
+            $company = Invoke-MemberberryExtractCompany -TicketContent $TicketContent
+            if ($company -and $company.Trim() -ne "") {
+                return $company.Trim()
+            }
+        } catch {
+            Write-Warning "Error using memberberry extract-company: $($_.Exception.Message)"
+        }
+    }
+    
+    return ""
+}
+
+<#
+.SYNOPSIS
+    Detects alert types from ticket content using memberberry integration
+.DESCRIPTION
+    Uses memberberry's detect-alert-type.ps1 script to identify security alert types.
+    Returns comma-separated list of alert types or empty string.
+.PARAMETER TicketContent
+    The ticket content to analyze
+.EXAMPLE
+    $alertTypes = Get-AlertTypeFromTicket -TicketContent $ticketContent
+    # Returns: "suspicious_login,inbox_forwarding" or ""
+#>
+function Get-AlertTypeFromTicket {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TicketContent
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        return ""
+    }
+    
+    # Try to use MemberberryIntegration module if available
+    if (Get-Command Invoke-MemberberryDetectAlertType -ErrorAction SilentlyContinue) {
+        try {
+            $alertTypes = Invoke-MemberberryDetectAlertType -TicketContent $TicketContent
+            if ($alertTypes -and $alertTypes.Trim() -ne "") {
+                return $alertTypes.Trim()
+            }
+        } catch {
+            Write-Warning "Error using memberberry detect-alert-type: $($_.Exception.Message)"
+        }
+    }
+    
+    return ""
+}
+
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-ExportPresets,Get-CompanyFromTicket,Get-AlertTypeFromTicket
 
 
 

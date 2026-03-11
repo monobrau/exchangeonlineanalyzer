@@ -60,6 +60,8 @@ Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SignInManagement.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\ExportUtils.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
+# Import Settings module (needed for settings tab and configuration)
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\Settings.psm1"
 # Import SecurityHelpers for input validation and sanitization
 $securityHelpersPath = Join-Path $PSScriptRoot 'Scripts\Common\SecurityHelpers.psm1'
 if (Test-Path $securityHelpersPath) {
@@ -2381,7 +2383,11 @@ $tabControl.TabPages.Add($settingsTab)
 
 $settingsTab.add_Enter({
     try {
-        # Settings module already imported globally
+        # Ensure Settings module is imported
+        $settingsModulePath = Join-Path $PSScriptRoot "Modules\Settings.psm1"
+        if (Test-Path $settingsModulePath) {
+            Import-Module $settingsModulePath -Force -ErrorAction Stop
+        }
         
         # Load current settings location
         $currentSettingsPath = Get-SettingsPath
@@ -2441,7 +2447,13 @@ $settingsTab.add_Enter({
 
 $btnBrowseSettingsLocation.add_Click({
     try {
-        # Settings module already imported globally
+        # Ensure Settings module is imported
+        $settingsModulePath = Join-Path $PSScriptRoot "Modules\Settings.psm1"
+        if (Test-Path $settingsModulePath) {
+            Import-Module $settingsModulePath -Force -ErrorAction Stop
+        } else {
+            throw "Settings module not found at: $settingsModulePath"
+        }
         
         # Show save file dialog
         $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
@@ -2452,11 +2464,23 @@ $btnBrowseSettingsLocation.add_Click({
         # Set initial directory to current settings location if it exists
         $currentPath = Get-SettingsPath
         if ($currentPath) {
-            $saveDialog.InitialDirectory = Split-Path -Parent $currentPath
-            $saveDialog.FileName = Split-Path -Leaf $currentPath
+            $parentDir = Split-Path -Parent $currentPath
+            # Only set InitialDirectory if parent directory exists
+            if ($parentDir -and (Test-Path $parentDir -PathType Container)) {
+                $saveDialog.InitialDirectory = $parentDir
+                $saveDialog.FileName = Split-Path -Leaf $currentPath
+            } else {
+                # Fallback to user's Documents folder if parent doesn't exist
+                $saveDialog.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
+            }
+        } else {
+            # Fallback to user's Documents folder if no current path
+            $saveDialog.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
         }
         
-        if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        # Show dialog with main form as owner (required for proper modal behavior)
+        $dialogResult = $saveDialog.ShowDialog($mainForm)
+        if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
             $newPath = $saveDialog.FileName
             
             # Set the new location
@@ -2519,14 +2543,22 @@ $btnBrowseSettingsLocation.add_Click({
             }
         }
     } catch {
-        $lblStatus.Text = "Error: $($_.Exception.Message)"
+        $errorMsg = $_.Exception.Message
+        $lblStatus.Text = "Error browsing for settings location: $errorMsg"
         $lblStatus.ForeColor = [System.Drawing.Color]::Red
+        Write-Warning "Error in settings location browse button: $errorMsg"
+        Write-Warning "Stack trace: $($_.ScriptStackTrace)"
+        [System.Windows.Forms.MessageBox]::Show("Error browsing for settings file location:`n`n$errorMsg", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
 
 $btnSave.add_Click({
     try {
-        # Settings module already imported globally
+        # Ensure Settings module is imported
+        $settingsModulePath = Join-Path $PSScriptRoot "Modules\Settings.psm1"
+        if (Test-Path $settingsModulePath) {
+            Import-Module $settingsModulePath -Force -ErrorAction Stop
+        }
         
         # Update settings location if user changed it manually
         $manualPath = $txtSettingsLocation.Text.Trim()
@@ -2582,31 +2614,40 @@ $btnSave.add_Click({
             }
         }
         
-        $s = [pscustomobject]@{
-            InvestigatorName = $txtInv.Text
-            InvestigatorTitle = $txtInvTitle.Text
-            CompanyName = $txtCo.Text
-            TimeZone = $txtTZ.Text
-            GeminiApiKey = $txtGem.Text
-            ClaudeApiKey = $txtClaude.Text
-            AdminUsernames = $txtAdminUsers.Text
-            InternalTeamDisplayNames = $txtInternalTeams.Text
-            AuthorizedISPs = $txtAuthorizedISPs.Text
-            InFlightWiFiProviders = $txtInFlightWiFi.Text
-            ServicePrincipalNames = $txtServicePrincipals.Text
-            KnownAdmins = $txtKnownAdmins.Text
-            ThirdPartyMFA = $txtThirdPartyMFA.Text
-            MemberberryEnabled = $chkMemberberryEnabled.Checked
-            MemberberryPath = $memberberryPath
-            MemberberryExceptionsPath = $memberberryExceptionsPath
-            ClientContactOverrides = $overridesJson
-        }
-        if (Save-AppSettings -Settings $s) {
-            $lblStatus.Text = "Settings saved successfully."
+        # Load existing settings first to preserve any fields not in the UI
+        # Get-AppSettings automatically returns defaults if file doesn't exist or loading fails
+        $s = Get-AppSettings
+        
+        # Update only the fields that are in the UI
+        $s.InvestigatorName = $txtInv.Text
+        $s.InvestigatorTitle = $txtInvTitle.Text
+        $s.CompanyName = $txtCo.Text
+        $s.TimeZone = $txtTZ.Text
+        $s.GeminiApiKey = $txtGem.Text
+        $s.ClaudeApiKey = $txtClaude.Text
+        $s.AdminUsernames = $txtAdminUsers.Text
+        $s.InternalTeamDisplayNames = $txtInternalTeams.Text
+        $s.AuthorizedISPs = $txtAuthorizedISPs.Text
+        $s.InFlightWiFiProviders = $txtInFlightWiFi.Text
+        $s.ServicePrincipalNames = $txtServicePrincipals.Text
+        $s.KnownAdmins = $txtKnownAdmins.Text
+        $s.ThirdPartyMFA = $txtThirdPartyMFA.Text
+        $s.MemberberryEnabled = $chkMemberberryEnabled.Checked
+        $s.MemberberryPath = $memberberryPath
+        $s.MemberberryExceptionsPath = $memberberryExceptionsPath
+        $s.ClientContactOverrides = $overridesJson
+        
+        # Save settings
+        $saveResult = Save-AppSettings -Settings $s
+        if ($saveResult) {
+            $settingsPath = Get-SettingsPath
+            $lblStatus.Text = "Settings saved successfully to: $settingsPath"
             $lblStatus.ForeColor = [System.Drawing.Color]::Green
+            Write-Host "Settings saved to: $settingsPath" -ForegroundColor Green
         } else {
-            $lblStatus.Text = "Failed to save settings."
+            $lblStatus.Text = "Failed to save settings. Check console for errors."
             $lblStatus.ForeColor = [System.Drawing.Color]::Red
+            Write-Warning "Failed to save settings"
         }
     } catch {
         $lblStatus.Text = $_.Exception.Message
@@ -8764,6 +8805,52 @@ if (Test-Path `$ReportSelectionsFile) {
                             } else {
                                 $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Text = ""
                                 $script:clientAuthControls[$capturedClientNumForTicket].TicketNumbersLabel.Visible = $false
+                            }
+                        }
+                        
+                        # Auto-extract company name using memberberry integration (if available)
+                        if (Get-Command Get-CompanyFromTicket -ErrorAction SilentlyContinue) {
+                            if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                                try {
+                                    $extractedCompany = Get-CompanyFromTicket -TicketContent $ticketContent
+                                    if ($extractedCompany -and $extractedCompany.Trim() -ne "") {
+                                        # Try to populate per-client company name field if it exists
+                                        if ($script:clientAuthControls[$capturedClientNumForTicket].CompanyNameTextBox) {
+                                            $currentCompany = $script:clientAuthControls[$capturedClientNumForTicket].CompanyNameTextBox.Text
+                                            if ([string]::IsNullOrWhiteSpace($currentCompany) -or $currentCompany -eq "Organization" -or $currentCompany -eq "") {
+                                                $script:clientAuthControls[$capturedClientNumForTicket].CompanyNameTextBox.Text = $extractedCompany
+                                                $script:company = $extractedCompany  # Update script-level variable
+                                            }
+                                        }
+                                        # Also update main form company name if available and empty/default
+                                        elseif (Get-Variable -Name "companyNameTextBox" -Scope Script -ErrorAction SilentlyContinue) {
+                                            $currentCompany = $script:companyNameTextBox.Text
+                                            if ([string]::IsNullOrWhiteSpace($currentCompany) -or $currentCompany -eq "Organization" -or $currentCompany -eq "") {
+                                                $script:companyNameTextBox.Text = $extractedCompany
+                                                $script:company = $extractedCompany  # Update script-level variable
+                                            }
+                                        }
+                                    }
+                                } catch {
+                                    # Silently ignore errors in auto-extraction
+                                }
+                            }
+                        }
+                        
+                        # Detect alert types using memberberry integration (if available)
+                        if (Get-Command Get-AlertTypeFromTicket -ErrorAction SilentlyContinue) {
+                            if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
+                                try {
+                                    $alertTypes = Get-AlertTypeFromTicket -TicketContent $ticketContent
+                                    if ($alertTypes -and $alertTypes.Trim() -ne "") {
+                                        # Store alert types in ticket data for later use
+                                        if ($script:clientTickets.ContainsKey($capturedClientNumForTicket)) {
+                                            $script:clientTickets[$capturedClientNumForTicket].AlertTypes = $alertTypes
+                                        }
+                                    }
+                                } catch {
+                                    # Silently ignore errors in alert type detection
+                                }
                             }
                         }
 
