@@ -730,10 +730,11 @@ $bulkStartButton.add_Click({
         MessageTraceDaysBack = $days
     }
 
-    # Validate at least one report is selected
+    # Validate at least one report is selected (exclude config keys: days, record types)
+    $configKeys = @('SignInLogsDaysBack', 'MessageTraceDaysBack', 'UnifiedAuditLogRecordTypes')
     $anySelected = $false
     foreach ($key in $reportSelections.Keys) {
-        if ($key -ne 'SignInLogsDaysBack' -and $reportSelections[$key]) { $anySelected = $true; break }
+        if ($key -notin $configKeys -and $reportSelections[$key]) { $anySelected = $true; break }
     }
     if (-not $anySelected) {
         [System.Windows.Forms.MessageBox]::Show("Please select at least one report to export.", "No Reports Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)

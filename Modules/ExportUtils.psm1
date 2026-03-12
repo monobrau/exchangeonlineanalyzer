@@ -699,11 +699,17 @@ function New-SecurityInvestigationReport {
                 Connect-ExchangeOnline -ShowBanner:$false -ErrorAction SilentlyContinue | Out-Null
                 $r = @{}
                 if ($Params.IncludeMessageTrace) {
-                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting message trace..." -Level Info -Component ExchangeRS }
-                    try { & $writeStatus "Exchange runspace: collecting message trace..." } catch {}
-                    $r.MessageTrace = Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers
-                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" -Level Info -Component ExchangeRS }
-                    try { & $writeStatus "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" } catch {}
+                    try {
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting message trace..." -Level Info -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: collecting message trace..." } catch {}
+                        $r.MessageTrace = Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" -Level Info -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" } catch {}
+                    } catch {
+                        $r.MessageTrace = @(); $r.MessageTraceError = $_.Exception.Message
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: message trace failed - $($_.Exception.Message)" -Level Warning -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: message trace failed - $($_.Exception.Message)" } catch {}
+                    }
                 }
                 if ($Params.IncludeInboxRules) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting inbox rules..." -Level Info -Component ExchangeRS }
@@ -859,7 +865,15 @@ function New-SecurityInvestigationReport {
 
                 # Exchange in main thread (reuses existing session)
                 $writeStatus = { param($m) if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 } }
-                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers }
+                if ($IncludeMessageTrace) {
+                    try {
+                        try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}
+                        $exchangeResult.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
+                    } catch {
+                        $exchangeResult.MessageTrace = @(); $exchangeResult.MessageTraceError = $_.Exception.Message
+                        try { & $writeStatus "Exchange (main): message trace failed - $($_.Exception.Message)" } catch {}
+                    }
+                }
                 if ($IncludeInboxRules) { try { & $writeStatus "Exchange (main): collecting inbox rules..." } catch {}; $exchangeResult.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential $true }
                 if ($IncludeTransportRules) { $exchangeResult.TransportRules = Get-ExchangeTransportRules }
                 if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
@@ -934,14 +948,19 @@ function New-SecurityInvestigationReport {
     if ($exchangeConnected) {
         try {
             if ($IncludeMessageTrace) {
-                $statusMsg = "Collecting message trace data (last $MessageTraceDaysBack days)... This may take several minutes."
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                Invoke-DoEventsSafe
-                Write-Host $statusMsg -ForegroundColor Cyan
-                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
-                Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
-                Invoke-DoEventsSafe
+                try {
+                    $statusMsg = "Collecting message trace data (last $MessageTraceDaysBack days)... This may take several minutes."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                    Invoke-DoEventsSafe
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
+                    Invoke-DoEventsSafe
+                } catch {
+                    $report.MessageTrace = @(); $report.MessageTraceError = $_.Exception.Message
+                    Write-Warning "Failed to collect message trace: $($_.Exception.Message)"
+                }
             }
 
             if ($IncludeInboxRules) {
@@ -1418,6 +1437,20 @@ function New-SecurityInvestigationReport {
             if ($report.MessageTrace -and $report.MessageTrace.Count -gt 0) {
                 try { $report.MessageTrace | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.MessageTraceCsv = $csv }
                 catch { $report.MessageTrace | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.MessageTraceJson = $json }
+            } elseif ($IncludeMessageTrace) {
+                $mtError = $report.MessageTraceError -or $report.ExchangeDataError -or ($report.ExchangeConnection -eq 'Not Connected')
+                if ($mtError) {
+                    $errorFile = Join-Path $report.OutputFolder "MessageTrace$ticketSuffix_Error.txt"
+                    $errMsg = if ($report.MessageTraceError) { $report.MessageTraceError } elseif ($report.ExchangeDataError) { $report.ExchangeDataError } else { "Exchange Online is not connected. Connect via Connect-ExchangeOnline before exporting message trace." }
+                    "Error collecting Message Trace:`n$errMsg`n`nNote: Message trace requires Exchange Online connection. Data is retained for up to 90 days." | Out-File -FilePath $errorFile -Encoding utf8
+                    $report.FilePaths.MessageTraceError = $errorFile
+                    Write-Host "Message trace collection failed - see MessageTrace$ticketSuffix_Error.txt" -ForegroundColor Yellow
+                } elseif ($null -ne $report.MessageTrace -and $report.MessageTrace.Count -eq 0) {
+                    $infoFile = Join-Path $report.OutputFolder "MessageTrace$ticketSuffix_NoResults.txt"
+                    "Message Trace Query Completed - No Results Found`n`nDate Range: Last $($report.DaysAnalyzed) days`nQuery Time: $($report.Timestamp)`n`nNo message trace entries were found for the specified criteria." | Out-File -FilePath $infoFile -Encoding utf8
+                    $report.FilePaths.MessageTraceInfo = $infoFile
+                    Write-Host "Message trace query completed - no results found (see MessageTrace$ticketSuffix_NoResults.txt)" -ForegroundColor Yellow
+                }
             }
 
             $csv = Join-Path $report.OutputFolder "InboxRules$ticketSuffix.csv"
@@ -2107,14 +2140,51 @@ function Get-ExchangeMessageTrace {
         [array]$SelectedUsers = @()
     )
 
+    # Exchange throttles message trace: 100 requests per 5-minute window. Use 10-day windows (API max) and delays.
+    $windowDays = 10
+    $delaySeconds = 4
+    $maxRetries = 3
+    $retryBaseSeconds = 30
+
+    function Invoke-MessageTraceQuery {
+        param([scriptblock]$Query, [string]$Label)
+        $attempt = 0
+        while ($true) {
+            try {
+                $r = & $Query
+                return $r
+            } catch {
+                $msg = $_.Exception.Message
+                $isThrottle = $msg -match 'permitted limit|throttl|rate limit|try again later'
+                if ($isThrottle -and $attempt -lt $maxRetries) {
+                    $attempt++
+                    $wait = $retryBaseSeconds * [Math]::Pow(2, $attempt - 1)
+                    Write-Host "  Rate limited - waiting ${wait}s before retry $attempt/$maxRetries..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $wait
+                } else {
+                    throw
+                }
+            }
+        }
+    }
+
     try {
         Write-Host "Collecting message trace data (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        Write-Host "  Using ${windowDays}-day windows and ${delaySeconds}s delay to avoid rate limits (100 req/5min)" -ForegroundColor Gray
         $end = (Get-Date).ToUniversalTime()
         $start = $end.AddDays(-$DaysBack).Date # start at 00:00Z; last window ends at $end (run time)
 
         $results = New-Object System.Collections.Generic.List[object]
 
         $hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
+
+        # Build list of time windows (10 days each; API max per query)
+        $windows = @()
+        for ($d = 0; $d -lt $DaysBack; $d += $windowDays) {
+            $winStart = $start.AddDays($d)
+            $winEnd = if ($d + $windowDays -ge $DaysBack) { $end } else { $winStart.AddDays($windowDays) }
+            $windows += @{ Start = $winStart; End = $winEnd }
+        }
 
         # If SelectedUsers provided, filter server-side by querying per user
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
@@ -2124,73 +2194,56 @@ function Get-ExchangeMessageTrace {
                 $selectedUserList += $upn
             }
             
-            # Query message trace for each selected user (server-side filtering)
             foreach ($upn in $selectedUserList) {
-                # Chunk by day to avoid server-side caps; last window extends to run time
-                for ($d = 0; $d -lt $DaysBack; $d++) {
-                    $winStart = $start.AddDays($d)
-                    $winEnd   = if ($d -eq $DaysBack - 1) { $end } else { $winStart.AddDays(1) }
-
+                foreach ($win in $windows) {
+                    $winStart = $win.Start; $winEnd = $win.End
                     try {
                         if ($hasV2) {
-                            # Query by sender - handle pagination
                             try {
-                                $params = @{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn; ErrorAction = 'Stop' }
-                                $params.ResultSize = 5000  # Use ResultSize for pagination
-                                $chunk = Get-MessageTraceV2 @params
+                                $chunk = Invoke-MessageTraceQuery -Query {
+                                    $p = @{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn; ResultSize = 5000; ErrorAction = 'Stop' }
+                                    Get-MessageTraceV2 @p
+                                } -Label "sender $upn"
                                 if ($chunk) {
-                                    # Handle both single objects and collections
-                                    $chunkArray = @($chunk)
-                                    foreach ($item in $chunkArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
+                                    foreach ($item in @($chunk)) { if ($item) { [void]$results.Add($item) } }
                                 }
                             } catch {
                                 Write-Warning "Failed to get message trace by sender for ${upn}: $($_.Exception.Message)"
                             }
-                            
-                            # Query by recipient - handle pagination
+                            Start-Sleep -Seconds $delaySeconds
+
                             try {
-                                $params = @{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn; ErrorAction = 'Stop' }
-                                $params.ResultSize = 5000  # Use ResultSize for pagination
-                                $chunk = Get-MessageTraceV2 @params
+                                $chunk = Invoke-MessageTraceQuery -Query {
+                                    $p = @{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn; ResultSize = 5000; ErrorAction = 'Stop' }
+                                    Get-MessageTraceV2 @p
+                                } -Label "recipient $upn"
                                 if ($chunk) {
-                                    # Handle both single objects and collections
-                                    $chunkArray = @($chunk)
-                                    foreach ($item in $chunkArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
+                                    foreach ($item in @($chunk)) { if ($item) { [void]$results.Add($item) } }
                                 }
                             } catch {
                                 Write-Warning "Failed to get message trace by recipient for ${upn}: $($_.Exception.Message)"
                             }
                         } else {
-                            # Legacy Get-MessageTrace - filter by sender
                             try {
-                                $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ErrorAction Stop
-                                if ($batch) {
-                                    $batchArray = @($batch)
-                                    foreach ($item in $batchArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
-                                }
+                                $batch = Invoke-MessageTraceQuery -Query {
+                                    Get-MessageTrace -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ErrorAction Stop
+                                } -Label "sender $upn"
+                                if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                             } catch {
                                 Write-Warning "Failed to get message trace by sender for ${upn}: $($_.Exception.Message)"
                             }
-                            
-                            # Filter by recipient
+                            Start-Sleep -Seconds $delaySeconds
+
                             try {
-                                $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ErrorAction Stop
-                                if ($batch) {
-                                    $batchArray = @($batch)
-                                    foreach ($item in $batchArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
-                                }
+                                $batch = Invoke-MessageTraceQuery -Query {
+                                    Get-MessageTrace -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ErrorAction Stop
+                                } -Label "recipient $upn"
+                                if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                             } catch {
                                 Write-Warning "Failed to get message trace by recipient for ${upn}: $($_.Exception.Message)"
                             }
                         }
+                        Start-Sleep -Seconds $delaySeconds
                     } catch {
                         Write-Warning "Failed to get message trace for ${upn}: $($_.Exception.Message)"
                     }
@@ -2220,45 +2273,40 @@ function Get-ExchangeMessageTrace {
             
             return [System.Collections.ArrayList]$uniqueResults
         } else {
-            # No selection - get all message traces
-            # Chunk by day to avoid server-side caps; last window extends to run time
-            for ($d = 0; $d -lt $DaysBack; $d++) {
-                $winStart = $start.AddDays($d)
-                $winEnd   = if ($d -eq $DaysBack - 1) { $end } else { $winStart.AddDays(1) }
-
+            # No selection - get all message traces (use 10-day windows + throttling)
+            foreach ($win in $windows) {
+                $winStart = $win.Start; $winEnd = $win.End
                 try {
                     if ($hasV2) {
-                        # Seek-based pagination using StartingRecipientAddress and ResultSize
                         $startRecipient = $null
                         $iterations = 0
                         do {
-                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
-                            $params.ResultSize = 1000
-                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                            $chunk = Get-MessageTraceV2 @params
+                            $chunk = Invoke-MessageTraceQuery -Query {
+                                $p = @{ StartDate = $winStart; EndDate = $winEnd; ResultSize = 1000; ErrorAction = 'Stop' }
+                                if ($startRecipient) { $p.StartingRecipientAddress = $startRecipient }
+                                Get-MessageTraceV2 @p
+                            } -Label "all users"
                             if ($chunk) {
-                                # Avoid duplicate loops when StartingRecipientAddress is inclusive
-                                if ($startRecipient) {
-                                    $filtered = $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient }
-                                } else {
-                                    $filtered = $chunk
-                                }
+                                $filtered = if ($startRecipient) { $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } } else { $chunk }
                                 if ($filtered) { [void]$results.AddRange($filtered) }
-
                                 $prev = $startRecipient
                                 $last = $chunk[-1]
                                 $startRecipient = $last.RecipientAddress
                                 if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
-                            } else {
-                                $startRecipient = $null
-                            }
+                            } else { break }
                             $iterations++
-                        } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
+                            Start-Sleep -Seconds $delaySeconds
+                        } while ($chunk.Count -eq 1000 -and $iterations -lt 500)
                     } else {
-                        $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+                        $batch = Invoke-MessageTraceQuery -Query {
+                            Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+                        } -Label "all users"
                         if ($batch) { [void]$results.AddRange($batch) }
                     }
-                } catch {}
+                    Start-Sleep -Seconds $delaySeconds
+                } catch {
+                    Write-Warning "Failed to get message trace for window $($winStart.ToString('yyyy-MM-dd')): $($_.Exception.Message)"
+                }
             }
         }
 
@@ -4451,7 +4499,7 @@ function New-SecurityInvestigationZip {
         # SharePointActivity, OneDriveActivity, TeamsActivity, SharePointSharing, SecurityAlerts, SecurityIncidents
         $csvJsonFiles = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse
         $txtFiles = Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse |
-                    Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt)$' }
+                    Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt|.*_NoResults\.txt|.*_Info\.txt)$' }
         
         # Filter out empty CSV/JSON files (headers only, no data)
         $nonEmptyCsvJsonFiles = @()
