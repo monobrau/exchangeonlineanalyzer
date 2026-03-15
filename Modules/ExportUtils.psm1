@@ -3,6 +3,24 @@ function Invoke-DoEventsSafe {
     try { [System.Windows.Forms.Application]::DoEvents() } catch { }
 }
 
+# Get current tenant ID from Graph or Exchange context (for WCM lookup)
+function Get-CurrentTenantId {
+    try {
+        $ctx = Get-MgContext -ErrorAction SilentlyContinue
+        if ($ctx -and $ctx.TenantId) { return $ctx.TenantId }
+    } catch {}
+    try {
+        $conn = Get-ConnectionInformation -ErrorAction SilentlyContinue
+        $c = if ($conn -is [Array] -and $conn.Count -gt 0) { $conn[0] } else { $conn }
+        if ($c -and $c.TenantId) { return $c.TenantId }
+    } catch {}
+    try {
+        $org = Get-OrganizationConfig -ErrorAction SilentlyContinue
+        if ($org -and $org.ExternalDirectoryOrganizationId) { return $org.ExternalDirectoryOrganizationId }
+    } catch {}
+    return $null
+}
+
 # POC: Get Graph access token from current MgGraph context for token passing (avoids extra auth prompts in runspaces)
 function Get-GraphAccessToken {
     param(
@@ -82,6 +100,9 @@ function Get-GraphAccessToken {
 
 # Returns:
 #   @{ SecurityDefaultsEnabled = <bool>; CAPoliciesRequireMfa = <bool>; Users = <list of user objects> }
+# MFA coverage logic: user is covered if ANY of: per-user MFA, Security Defaults (tenant-wide), or CA policy requiring MFA.
+# Security Defaults supersedes per-user (tenant-wide); when enabled, all users are covered regardless of per-user registration.
+# CA supersedes per-user only when the user is in scope of an MFA CA policy (includeUsers/Groups/Roles, exclude not hit).
 function Get-MfaCoverageReport {
     param(
         [Parameter(Mandatory=$false)]
@@ -112,7 +133,8 @@ function Get-MfaCoverageReport {
             $requiresMfa = $false
             if ($grant) {
                 if ($grant.builtInControls -contains 'mfa') { $requiresMfa = $true }
-                # authenticationStrength also implies MFA, but skip for simplicity if missing
+                # authenticationStrength (e.g. "Require MFA", "Require Phishing-resistant MFA") also implies MFA
+                if (-not $requiresMfa -and $grant.authenticationStrength) { $requiresMfa = $true }
             }
             if ($requiresMfa) { [void]$mfaPolicies.Add($p) }
         }
@@ -156,7 +178,9 @@ function Get-MfaCoverageReport {
                                 $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
                                 $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
                                 $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') {
+                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod' -or
+                                $otype -eq '#microsoft.graph.externalAuthenticationMethod') {
                                 $directMfa = $true; break
                             }
                         }
@@ -170,7 +194,11 @@ function Get-MfaCoverageReport {
                     $mem = Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue
                     foreach ($m in $mem) {
                         if ($m.'@odata.type' -eq '#microsoft.graph.group') { [void]$userGroups.Add($m.Id) }
-                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') { [void]$userRoles.Add($m.Id) }
+                        elseif ($m.'@odata.type' -eq '#microsoft.graph.directoryRole') {
+                            # CA policies use roleTemplateId; directoryRole has roleTemplateId
+                            $rtId = if ($m.roleTemplateId) { $m.roleTemplateId } elseif ($m.RoleTemplateId) { $m.RoleTemplateId } else { $m.Id }
+                            [void]$userRoles.Add($rtId)
+                        }
                     }
                 } catch {}
 
@@ -186,19 +214,20 @@ function Get-MfaCoverageReport {
                     if ($usersCond) {
                         # Include
                         if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
-                        if (-not $incUser -and $usersCond.includeGroups) { if (@($usersCond.includeGroups) -ne $null) { foreach ($groupId in $usersCond.includeGroups) { if ($userGroups.ContainsKey($groupId)) { $incUser = $true; break } } } }
-                        if (-not $incUser -and $usersCond.includeRoles) { if (@($usersCond.includeRoles) -ne $null) { foreach ($roleId in $usersCond.includeRoles) { if ($userRoles.ContainsKey($roleId)) { $incUser = $true; break } } } }
+                        if (-not $incUser -and $usersCond.includeGroups) { foreach ($groupId in @($usersCond.includeGroups)) { if ($userGroups -contains $groupId) { $incUser = $true; break } } }
+                        if (-not $incUser -and $usersCond.includeRoles) { foreach ($roleId in @($usersCond.includeRoles)) { if ($userRoles -contains $roleId) { $incUser = $true; break } } }
 
                         # Exclude
                         if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
-                        if ($usersCond.excludeGroups) { if (@($usersCond.excludeGroups) -ne $null) { foreach ($groupId in $usersCond.excludeGroups) { if ($userGroups.ContainsKey($groupId)) { $excluded = $true; break } } } }
-                        if ($usersCond.excludeRoles) { if (@($usersCond.excludeRoles) -ne $null) { foreach ($roleId in $usersCond.excludeRoles) { if ($userRoles.ContainsKey($roleId)) { $excluded = $true; break } } } }
+                        if ($usersCond.excludeGroups) { foreach ($groupId in @($usersCond.excludeGroups)) { if ($userGroups -contains $groupId) { $excluded = $true; break } } }
+                        if ($usersCond.excludeRoles) { foreach ($roleId in @($usersCond.excludeRoles)) { if ($userRoles -contains $roleId) { $excluded = $true; break } } }
                     }
 
                     $applies = ($incAll -or $incUser)
                     if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
                 }
 
+                # MFA covered if any form applies. Security Defaults supersedes per-user (tenant-wide).
                 $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
                 [void]$users.Add([pscustomobject]@{
                     DisplayName        = $u.displayName
@@ -620,6 +649,25 @@ function New-SecurityInvestigationReport {
         }
     }
 
+    # If Graph not connected, try Windows Credential Manager (app-only creds)
+    if (-not $graphConnected -and -not $GraphAccessToken) {
+        $tenantId = Get-CurrentTenantId
+        $graphAppMod = Join-Path $PSScriptRoot 'GraphAppCredential.psm1'
+        if ($tenantId -and (Test-Path $graphAppMod)) {
+            try {
+                Import-Module $graphAppMod -Force -ErrorAction Stop
+                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                if ($wcmToken) {
+                    $GraphAccessToken = $wcmToken
+                    $graphConnected = $true
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Using Graph app credentials from Windows Credential Manager" -Level Info -Component ExportUtils }
+                }
+            } catch {}
+        }
+    }
+    # Token passed from caller (e.g. GUI WCM lookup) counts as Graph connected
+    if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) { $graphConnected = $true }
+
     if (-not $exchangeConnected) {
         Write-Warning "Exchange Online connection required for complete analysis"
         $report.ExchangeConnection = "Not Connected"
@@ -1019,6 +1067,41 @@ function New-SecurityInvestigationReport {
     }
 
     # Collect data from Microsoft Graph
+    # When only inbox rules selected and we have Graph token (app reg/WCM), use Graph for inbox rules to avoid Exchange auth
+    if ($graphConnected -and $IncludeInboxRules -and -not $exchangeConnected) {
+        try {
+            $statusMsg = "Exporting inbox rules via Graph API (app registration)..."
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+            Invoke-DoEventsSafe
+            Write-Host $statusMsg -ForegroundColor Cyan
+            if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) {
+                try {
+                    $secToken = ConvertTo-SecureString $GraphAccessToken -AsPlainText -Force
+                    Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop | Out-Null
+                } catch {
+                    Write-Warning "Connect-MgGraph with token failed: $($_.Exception.Message)"
+                }
+            }
+            $report.InboxRules = Get-GraphInboxRules -SelectedUsers $SelectedUsers
+            if ($null -eq $report.InboxRules) {
+                $report.InboxRules = @()
+                Write-Warning "Graph inbox rules collection failed. Check that Microsoft.Graph.Mail is installed (Install-Module Microsoft.Graph.Mail -Scope CurrentUser) and the app has Mail.Read permission."
+            } elseif ($report.InboxRules.Count -gt 0) {
+                Write-Host "Collected $($report.InboxRules.Count) inbox rules via Graph" -ForegroundColor Green
+            } else {
+                Write-Host "Collected 0 inbox rules via Graph (no rules found for queried mailboxes)" -ForegroundColor Gray
+                if (-not (Get-Command Get-MgUserMailFolderMessageRule -ErrorAction SilentlyContinue)) {
+                    Write-Warning "Microsoft.Graph.Mail module required. Install: Install-Module Microsoft.Graph.Mail -Scope CurrentUser"
+                }
+            }
+            Invoke-DoEventsSafe
+        } catch {
+            Write-Warning "Graph inbox rules failed: $($_.Exception.Message)"
+            $report.InboxRules = @()
+        }
+    }
+
     # Order: SignInLogs first (required for Intune), then Intune, then independent collectors in parallel
     if ($graphConnected) {
         try {
@@ -2030,7 +2113,13 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                     $report.FilePaths.FindingsCsv = $findingsCsv
                 }
                 $findingsJson = Join-Path $report.OutputFolder "Findings$ticketSuffix.json"
-                @{ Findings = $analysisResult.Findings; RiskScore = $analysisResult.RiskScore } | ConvertTo-Json -Depth 5 | Out-File -Path $findingsJson -Encoding utf8
+                $jsonObj = @{ Findings = $analysisResult.Findings; RiskScore = $analysisResult.RiskScore; HasUAL = $analysisResult.HasUAL }
+                if ($analysisResult.UserSummaries) {
+                    $usForJson = @{}
+                    foreach ($k in $analysisResult.UserSummaries.Keys) { $usForJson[$k] = $analysisResult.UserSummaries[$k] }
+                    $jsonObj['UserSummaries'] = $usForJson
+                }
+                $jsonObj | ConvertTo-Json -Depth 5 | Out-File -Path $findingsJson -Encoding utf8
                 $report.FilePaths.FindingsJson = $findingsJson
                 $autoSummaryPath = Join-Path $report.OutputFolder "_Automated_Summary$ticketSuffix.txt"
                 $analysisResult.Summary | Out-File -Path $autoSummaryPath -Encoding utf8
@@ -2350,6 +2439,7 @@ function Get-ExchangeInboxRules {
                         elseif ($r.PSObject.Properties.Name -contains 'Hidden') { $isHidden = $r.Hidden }
                         elseif ($r.PSObject.Properties.Name -contains 'SystemManaged') { $isHidden = $r.SystemManaged }
                         $isSystemRule = $r.Name -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)'
+                        $moveTo = if ($r.PSObject.Properties['MoveToFolder'] -and $r.MoveToFolder) { $r.MoveToFolder } else { '' }
                         [void]$allRules.Add([pscustomobject]@{
                             MailboxOwner        = $upn
                             Name                = $r.Name
@@ -2361,6 +2451,7 @@ function Get-ExchangeInboxRules {
                             RedirectTo          = ($r.RedirectTo -join ';')
                             ForwardTo           = ($r.ForwardTo -join ';')
                             ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
+                            MoveToFolder        = $moveTo
                             DeleteMessage       = $r.DeleteMessage
                             StopProcessing      = $r.StopProcessingRules
                             IsHidden            = $isHidden
@@ -2389,6 +2480,7 @@ function Get-ExchangeInboxRules {
                         elseif ($r.PSObject.Properties.Name -contains 'Hidden') { $isHidden = $r.Hidden }
                         elseif ($r.PSObject.Properties.Name -contains 'SystemManaged') { $isHidden = $r.SystemManaged }
                         $isSystemRule = $r.Name -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)'
+                        $moveTo = if ($r.PSObject.Properties['MoveToFolder'] -and $r.MoveToFolder) { $r.MoveToFolder } else { '' }
                         $result += [pscustomobject]@{
                             MailboxOwner        = $Upn
                             Name                = $r.Name
@@ -2400,6 +2492,7 @@ function Get-ExchangeInboxRules {
                             RedirectTo          = ($r.RedirectTo -join ';')
                             ForwardTo           = ($r.ForwardTo -join ';')
                             ForwardAsAttachment = ($r.ForwardAsAttachmentTo -join ';')
+                            MoveToFolder        = $moveTo
                             DeleteMessage       = $r.DeleteMessage
                             StopProcessing      = $r.StopProcessingRules
                             IsHidden            = $isHidden
@@ -2440,6 +2533,99 @@ function Get-ExchangeInboxRules {
     } catch {
         Write-Error "Failed to export inbox rules: $($_.Exception.Message)"
         return @()
+    }
+}
+
+function Get-GraphInboxRules {
+    <#
+    .SYNOPSIS
+        Collects inbox rules via Microsoft Graph API (Get-MgUserMailFolderMessageRule).
+        Use when Graph token (app-only/WCM) is available to avoid Exchange Online auth.
+        Requires: Microsoft.Graph.Mail, Mail.Read (application permission).
+    #>
+    param(
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @()
+    )
+    try {
+        Import-Module Microsoft.Graph.Mail -ErrorAction SilentlyContinue | Out-Null
+        if (-not (Get-Command Get-MgUserMailFolderMessageRule -ErrorAction SilentlyContinue)) {
+            Write-Warning "Get-MgUserMailFolderMessageRule not available (Microsoft.Graph.Mail). Falling back to Exchange."
+            return $null
+        }
+        Write-Host "Exporting inbox rules via Graph API..." -ForegroundColor Yellow
+        $allRules = New-Object System.Collections.Generic.List[object]
+        $upns = @()
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            Write-Host "  Querying inbox rules for $($SelectedUsers.Count) selected user(s)..." -ForegroundColor Gray
+            foreach ($u in $SelectedUsers) {
+                $upn = if ($u -is [string]) { $u } elseif ($u.UserPrincipalName) { $u.UserPrincipalName } else { $null }
+                if ($upn) { $upns += $upn }
+            }
+        } else {
+            try {
+                $users = Get-MgUser -All -Filter "userType eq 'Member'" -Property "userPrincipalName" -PageSize 999 -ErrorAction Stop
+                foreach ($u in $users) { if ($u.UserPrincipalName) { $upns += $u.UserPrincipalName } }
+                if ($upns.Count -gt 2000) { $upns = $upns[0..1999] }
+                Write-Host "  Querying inbox rules for $($upns.Count) user(s) (all members)..." -ForegroundColor Gray
+            } catch {
+                Write-Warning "Get-MgUser failed for user list: $($_.Exception.Message)"
+                return $null
+            }
+        }
+        if ($upns.Count -eq 0) {
+            Write-Warning "No users to query for inbox rules."
+            return [System.Collections.ArrayList]@()
+        }
+        foreach ($upn in $upns) {
+            try {
+                $rules = @()
+                try { $rules = Get-MgUserMailFolderMessageRule -UserId $upn -MailFolderId "inbox" -ErrorAction Stop } catch { continue }
+                foreach ($r in $rules) {
+                    $cond = $r.Conditions
+                    $acts = $r.Actions
+                    $fromAddr = ''; $subj = ''; $sentTo = ''; $redirect = ''; $forward = ''; $forwardAtt = ''; $moveTo = ''; $del = $false; $stop = $false
+                    if ($cond) {
+                        if ($cond.PSObject.Properties['senderContains']) { $fromAddr = ($cond.senderContains -join ';') }
+                        if ($cond.PSObject.Properties['subjectContains']) { $subj = ($cond.subjectContains -join ';') }
+                        if ($cond.PSObject.Properties['sentToAddresses']) { $sentTo = (($cond.sentToAddresses | ForEach-Object { $_.emailAddress.address }) -join ';') }
+                    }
+                    if ($acts) {
+                        if ($acts.PSObject.Properties['forwardTo']) { $forward = (($acts.forwardTo | ForEach-Object { $_.emailAddress.address }) -join ';') }
+                        if ($acts.PSObject.Properties['forwardAsAttachmentTo']) { $forwardAtt = (($acts.forwardAsAttachmentTo | ForEach-Object { $_.emailAddress.address }) -join ';') }
+                        if ($acts.PSObject.Properties['redirectTo']) { $redirect = (($acts.redirectTo | ForEach-Object { $_.emailAddress.address }) -join ';') }
+                        if ($acts.PSObject.Properties['moveToFolder']) { $moveTo = $acts.moveToFolder }
+                        if ($acts.PSObject.Properties['deleteMessage']) { $del = $true }
+                        if ($acts.PSObject.Properties['stopProcessingRules']) { $stop = $true }
+                    }
+                    $isSys = $r.displayName -match '^(Junk E-Mail Rule|System|Microsoft|Outlook|Default)' -or ($r.isReadOnly -eq $true)
+                    [void]$allRules.Add([pscustomobject]@{
+                        MailboxOwner        = $upn
+                        Name                = $r.displayName
+                        Enabled             = $r.isEnabled
+                        Priority            = $r.sequence
+                        FromAddressContains = $fromAddr
+                        SubjectContains     = $subj
+                        SentTo              = $sentTo
+                        RedirectTo          = $redirect
+                        ForwardTo           = $forward
+                        ForwardAsAttachment = $forwardAtt
+                        MoveToFolder        = $moveTo
+                        DeleteMessage       = $del
+                        StopProcessing      = $stop
+                        IsHidden            = $false
+                        IsSystemManaged     = $isSys
+                        Description         = ''
+                    })
+                }
+            } catch {
+                Write-Warning "Get-MgUserMailFolderMessageRule failed for ${upn}: $($_.Exception.Message)"
+            }
+        }
+        return [System.Collections.ArrayList]$allRules
+    } catch {
+        Write-Warning "Get-GraphInboxRules failed: $($_.Exception.Message)"
+        return $null
     }
 }
 

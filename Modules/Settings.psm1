@@ -115,6 +115,7 @@ function Get-DefaultSettings {
         MemberberryEnabled = $false
         MemberberryPath = 'C:\git\memberberry'
         MemberberryExceptionsPath = 'C:\git\memberberry\exceptions.json'
+        PromptToCreateGraphApp = $false
     }
 }
 
@@ -1917,6 +1918,42 @@ function Get-ExportPresets {
     }
 }
 
+function Get-RequiredAuthFromReportSelections {
+    <#
+    .SYNOPSIS
+        Returns which auth types are required for the given report selections.
+    .OUTPUTS
+        @{ NeedsGraph = $bool; NeedsExchange = $bool }
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ReportSelections = @{}
+    )
+    $needsGraph = $false
+    $needsExchange = $false
+    $graphReports = @(
+        'IncludeAuditLogs', 'IncludeSignInLogs', 'IncludeMfaCoverage', 'IncludeConditionalAccessPolicies',
+        'IncludeAppRegistrations', 'IncludeSecurityAlerts', 'IncludeSecurityIncidents', 'IncludeIntuneDevices',
+        'IncludeSharePointActivity', 'IncludeOneDriveActivity', 'IncludeTeamsActivity', 'IncludeSharePointSharing'
+    )
+    $exchangeOnlyReports = @(
+        'IncludeMessageTrace', 'IncludeUnifiedAuditLogs', 'IncludeTransportRules',
+        'IncludeMailFlowConnectors', 'IncludeMailboxForwarding'
+    )
+    foreach ($key in $graphReports) {
+        if ($ReportSelections[$key] -eq $true) { $needsGraph = $true; break }
+    }
+    foreach ($key in $exchangeOnlyReports) {
+        if ($ReportSelections[$key] -eq $true) { $needsExchange = $true; break }
+    }
+    # Inbox rules: can use Graph API (app reg) or Exchange. When only inbox rules selected, use Graph to avoid Exchange auth.
+    if ($ReportSelections['IncludeInboxRules'] -eq $true) {
+        if ($needsExchange) { $needsExchange = $true }
+        else { $needsGraph = $true }
+    }
+    return @{ NeedsGraph = $needsGraph; NeedsExchange = $needsExchange }
+}
+
 <#
 .SYNOPSIS
     Extracts company name from ticket content using memberberry integration
@@ -1990,7 +2027,7 @@ function Get-AlertTypeFromTicket {
     return ""
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-ExportPresets,Get-CompanyFromTicket,Get-AlertTypeFromTicket
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-ExportPresets,Get-RequiredAuthFromReportSelections,Get-CompanyFromTicket,Get-AlertTypeFromTicket
 
 
 

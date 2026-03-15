@@ -122,9 +122,13 @@ Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force
 # Microsoft Graph Modules
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force
+
+# Optional: For app-only Graph + Windows Credential Manager (reports without interactive sign-in)
+Install-Module CredentialManager -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users.Actions -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Reports -Scope CurrentUser -Force
+Install-Module Microsoft.Graph.Mail -Scope CurrentUser -Force  # For inbox rules via app reg (no Exchange auth)
 ```
 
 ### Required Permissions

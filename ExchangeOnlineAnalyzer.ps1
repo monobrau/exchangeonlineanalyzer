@@ -2412,15 +2412,122 @@ $btnTestMemberberry.Location = New-Object System.Drawing.Point(655, 570)
 $btnTestMemberberry.Width = 90
 $btnTestMemberberry.Height = 25
 
+# Graph App (App-Only) Section
+$graphAppSectionTitle = New-Object System.Windows.Forms.Label
+$graphAppSectionTitle.Text = "Graph App (App-Only)"
+$graphAppSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$graphAppSectionTitle.Location = New-Object System.Drawing.Point(10,615)
+$graphAppSectionTitle.AutoSize = $true
+
+$chkPromptToCreateGraphApp = New-Object System.Windows.Forms.CheckBox
+$chkPromptToCreateGraphApp.Text = "Prompt to create Graph app when pulling reports for a tenant without one (default: off)"
+$chkPromptToCreateGraphApp.Location = New-Object System.Drawing.Point(10,640)
+$chkPromptToCreateGraphApp.AutoSize = $true
+$chkPromptToCreateGraphApp.Width = 550
+$chkPromptToCreateGraphAppTooltip = New-Object System.Windows.Forms.ToolTip
+$chkPromptToCreateGraphAppTooltip.SetToolTip($chkPromptToCreateGraphApp, "When enabled, first report pull for a tenant without Graph app credentials will prompt to create one and save to Windows Credential Manager")
+
+$btnCreateGraphApp = New-Object System.Windows.Forms.Button
+$btnCreateGraphApp.Text = "Create Graph App"
+$btnCreateGraphApp.Location = New-Object System.Drawing.Point(350, 638)
+$btnCreateGraphApp.Size = New-Object System.Drawing.Size(140, 28)
+$btnCreateGraphAppTooltip = New-Object System.Windows.Forms.ToolTip
+$btnCreateGraphAppTooltip.SetToolTip($btnCreateGraphApp, "Create app registration (River Run Security Investigator), grant permissions, and save credentials to Windows Credential Manager. A new window will open for sign-in.")
+$btnCreateGraphApp.add_Click({
+    $scriptPath = Join-Path $PSScriptRoot "New-GraphInboxRulesApp.ps1"
+    if (-not (Test-Path $scriptPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    try {
+        $psExe = (Get-Process -Id $PID).Path
+        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+        [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to run script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
+$btnDeleteGraphApp = New-Object System.Windows.Forms.Button
+$btnDeleteGraphApp.Text = "Delete Graph App"
+$btnDeleteGraphApp.Location = New-Object System.Drawing.Point(495, 638)
+$btnDeleteGraphApp.Size = New-Object System.Drawing.Size(140, 28)
+$btnDeleteGraphApp.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
+$btnDeleteGraphApp.ForeColor = [System.Drawing.Color]::White
+$btnDeleteGraphAppTooltip = New-Object System.Windows.Forms.ToolTip
+$btnDeleteGraphAppTooltip.SetToolTip($btnDeleteGraphApp, "Remove app registration (River Run Security Investigator) per tenant. Select which tenant(s) to remove from.")
+$btnDeleteGraphApp.add_Click({
+    $scriptPath = Join-Path $PSScriptRoot "Remove-GraphInboxRulesApp.ps1"
+    if (-not (Test-Path $scriptPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    $tenantList = @()
+    try {
+        Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
+        if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames }
+    } catch {}
+    if ($tenantList.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    $selForm = New-Object System.Windows.Forms.Form
+    $selForm.Text = "Select Tenant(s) to Remove App From"
+    $selForm.Size = New-Object System.Drawing.Size(450, 380)
+    $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "Select which tenant(s) to remove the 'River Run Security Investigator' app from:"
+    $lbl.Location = New-Object System.Drawing.Point(10, 10)
+    $lbl.Size = New-Object System.Drawing.Size(410, 35)
+    $lbl.AutoSize = $true
+    $clb = New-Object System.Windows.Forms.CheckedListBox
+    $clb.Location = New-Object System.Drawing.Point(10, 50)
+    $clb.Size = New-Object System.Drawing.Size(410, 240)
+    $clb.CheckOnClick = $true
+    foreach ($t in $tenantList) { [void]$clb.Items.Add($t.DisplayText, $false) }
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Text = "Remove Selected"
+    $btnOk.Location = New-Object System.Drawing.Point(180, 300)
+    $btnOk.Size = New-Object System.Drawing.Size(120, 30)
+    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = "Cancel"
+    $btnCancel.Location = New-Object System.Drawing.Point(310, 300)
+    $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $selForm.AcceptButton = $btnOk
+    $selForm.CancelButton = $btnCancel
+    $selForm.Controls.AddRange(@($lbl, $clb, $btnOk, $btnCancel))
+    if ($selForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    $selected = @()
+    for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+        if ($clb.GetItemChecked($i)) { $selected += $tenantList[$i].TenantId }
+    }
+    if ($selected.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No tenants selected.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    try {
+        $psExe = (Get-Process -Id $PID).Path
+        foreach ($tid in $selected) {
+            Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -TenantId `"$tid`" -Force" -Wait
+        }
+        [System.Windows.Forms.MessageBox]::Show("App removal completed for $($selected.Count) tenant(s).", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to run script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,605)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,665)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 602)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 662)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2460,25 +2567,25 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 730)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 790)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 730)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 790)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 770)
+$btnSave.Location = New-Object System.Drawing.Point(200, 830)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 770)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 830)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
@@ -2495,6 +2602,7 @@ $allControls = @($sTitle,$lblSettingsLocation,$txtSettingsLocation,$btnBrowseSet
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
     $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,$btnBrowseMemberberryPath,
     $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnBrowseMemberberryExceptionsPath,$btnTestMemberberry,
+    $graphAppSectionTitle,$chkPromptToCreateGraphApp,$btnCreateGraphApp,$btnDeleteGraphApp,
     $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
@@ -2548,6 +2656,7 @@ $settingsTab.add_Enter({
             } else {
                 $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
             }
+            $chkPromptToCreateGraphApp.Checked = if ($s.PromptToCreateGraphApp) { $true } else { $false }
             
             # Load client contact overrides into DataGridView
             $dgvContactOverrides.Rows.Clear()
@@ -2646,6 +2755,7 @@ $btnBrowseSettingsLocation.add_Click({
                     } else {
                         $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
                     }
+                    $chkPromptToCreateGraphApp.Checked = if ($s.PromptToCreateGraphApp) { $true } else { $false }
                     
                     # Load client contact overrides
                     $dgvContactOverrides.Rows.Clear()
@@ -2758,6 +2868,7 @@ $btnSave.add_Click({
         $s.MemberberryEnabled = $chkMemberberryEnabled.Checked
         $s.MemberberryPath = $memberberryPath
         $s.MemberberryExceptionsPath = $memberberryExceptionsPath
+        $s.PromptToCreateGraphApp = $chkPromptToCreateGraphApp.Checked
         $s.ClientContactOverrides = $overridesJson
         
         # Save settings
@@ -6358,44 +6469,14 @@ $securityInvestigationButton.add_Click({
             try {
                 # Import the security investigation module
                 Import-Module "$PSScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
+                Import-Module "$PSScriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
 
-                # Pre-warm connections so parallel runspaces can reuse tokens; any auth prompts happen now, not during collection
-                $progressLabel.Text = "Validating connections..."
-                [System.Windows.Forms.Application]::DoEvents()
-                try {
-                    $exoOk = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
-                    if (-not $exoOk) { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction SilentlyContinue | Out-Null }
-                    $mgOk = $false; try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgOk = $true } } catch {}
-                    if (-not $mgOk) { Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null }
-                } catch { }
-
-                # Resolve output folder for this run
-                # Determine tenant-scoped folder root to match ExportUtils behavior
-                $defaultRoot = Join-Path $env:USERPROFILE "Documents\\ExchangeOnlineAnalyzer\\SecurityInvestigation"
-                $tenantName = $null
-                try {
-                    Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
-                    $ti = $null; try { $ti = Get-TenantIdentity } catch {}
-                    if ($ti) { if ($ti.TenantDisplayName) { $tenantName = $ti.TenantDisplayName } elseif ($ti.PrimaryDomain) { $tenantName = $ti.PrimaryDomain } }
-                    if (-not $tenantName) { try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org.DisplayName) { $tenantName = $org.DisplayName } elseif ($org.Name) { $tenantName = $org.Name } } catch {} }
-                } catch {}
-                if (-not $tenantName -or [string]::IsNullOrWhiteSpace($tenantName)) { $tenantName = 'Tenant' }
-                $invalid = [System.IO.Path]::GetInvalidFileNameChars()
-                $safeName = ($tenantName.ToCharArray() | ForEach-Object { if ($invalid -contains $_) { '-' } else { $_ } }) -join ''
-                $safeName = ($safeName -replace '\s+', ' ').Trim()
-                if ($safeName.Length -gt 80) { $safeName = $safeName.Substring(0,80) }
-                $tenantRoot = Join-Path $defaultRoot $safeName
-                if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
-                $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
-
-                # Parse sign-in logs time range
+                # Build report selections early to determine required auth
                 $signInLogsDays = 7
                 $selectedRange = $signInLogsDaysComboBox.SelectedItem
                 if ($selectedRange -eq "1 day") { $signInLogsDays = 1 }
                 elseif ($selectedRange -eq "7 days") { $signInLogsDays = 7 }
                 elseif ($selectedRange -eq "30 days") { $signInLogsDays = 30 }
-
-                # Get report selections from checkboxes
                 $reportSelections = @{
                     IncludeMessageTrace = $messageTraceCheckBox.Checked
                     IncludeInboxRules = $inboxRulesCheckBox.Checked
@@ -6422,8 +6503,92 @@ $securityInvestigationButton.add_Click({
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
+                $required = @{ NeedsGraph = $true; NeedsExchange = $true }
+                if (Get-Command Get-RequiredAuthFromReportSelections -ErrorAction SilentlyContinue) {
+                    $required = Get-RequiredAuthFromReportSelections -ReportSelections $reportSelections
+                }
 
-                # Validate at least one report is selected
+                # When only inbox rules selected: try WCM (app reg) first - Graph can fetch inbox rules, no Exchange needed
+                $onlyInboxRules = $reportSelections.IncludeInboxRules -and -not $reportSelections.IncludeMessageTrace -and -not $reportSelections.IncludeTransportRules -and -not $reportSelections.IncludeMailFlowConnectors -and -not $reportSelections.IncludeMailboxForwarding -and -not $reportSelections.IncludeUnifiedAuditLogs
+                if ($onlyInboxRules -and $required.NeedsExchange) {
+                    $tenantId = $null
+                    try { $ctx = Get-MgContext -ErrorAction SilentlyContinue; if ($ctx -and $ctx.TenantId) { $tenantId = $ctx.TenantId } } catch {}
+                    if (-not $tenantId) { try { $conn = Get-ConnectionInformation -ErrorAction SilentlyContinue; $c = if ($conn -is [Array] -and $conn.Count -gt 0) { $conn[0] } else { $conn }; if ($c -and $c.TenantId) { $tenantId = $c.TenantId } } catch {} }
+                    if (-not $tenantId) { try { $org = Get-OrganizationConfig -ErrorAction SilentlyContinue; if ($org -and $org.ExternalDirectoryOrganizationId) { $tenantId = $org.ExternalDirectoryOrganizationId } } catch {} }
+                    if ($tenantId) {
+                        $graphAppMod = Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1"
+                        if (Test-Path $graphAppMod) {
+                            Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
+                            $wcmCheck = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                            if ($wcmCheck) { $required.NeedsExchange = $false; $required.NeedsGraph = $true }
+                        }
+                    }
+                }
+
+                # Pre-warm connections only for what the selected reports need
+                $progressLabel.Text = "Validating connections..."
+                [System.Windows.Forms.Application]::DoEvents()
+                $graphTokenForReport = $null
+                try {
+                    if ($required.NeedsExchange) {
+                        $exoOk = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
+                        if (-not $exoOk) { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction SilentlyContinue | Out-Null }
+                    }
+                    if ($required.NeedsGraph) {
+                        $mgOk = $false
+                        $tenantId = $null
+                        try { $ctx = Get-MgContext -ErrorAction SilentlyContinue; if ($ctx -and $ctx.Account) { $mgOk = $true; $tenantId = $ctx.TenantId } elseif ($ctx -and $ctx.TenantId) { $tenantId = $ctx.TenantId } } catch {}
+                        if (-not $tenantId) { try { $conn = Get-ConnectionInformation -ErrorAction SilentlyContinue; $c = if ($conn -is [Array] -and $conn.Count -gt 0) { $conn[0] } else { $conn }; if ($c -and $c.TenantId) { $tenantId = $c.TenantId } } catch {} }
+                        if (-not $tenantId) { try { $org = Get-OrganizationConfig -ErrorAction SilentlyContinue; if ($org -and $org.ExternalDirectoryOrganizationId) { $tenantId = $org.ExternalDirectoryOrganizationId } } catch {} }
+                        if ($tenantId) {
+                            $graphAppMod = Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1"
+                            if (Test-Path $graphAppMod) {
+                                Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
+                                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                                if ($wcmToken) { $mgOk = $true; $graphTokenForReport = $wcmToken }
+                            }
+                        }
+                        if (-not $mgOk) { Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null }
+                        if (-not $mgOk) { try { $ctx = Get-MgContext -ErrorAction SilentlyContinue; if ($ctx -and $ctx.Account) { $mgOk = $true } } catch {} }
+                        if (-not $mgOk -and $settings -and $settings.PromptToCreateGraphApp) {
+                            $createResult = [System.Windows.Forms.MessageBox]::Show("No Graph connection and no app credentials for this tenant. Create a Graph app now and save to Windows Credential Manager? (Requires admin - Application.ReadWrite.All)", "Create Graph App?", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+                            if ($createResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+                                $progressLabel.Text = "Opening app creation script..."
+                                [System.Windows.Forms.Application]::DoEvents()
+                                $scriptPath = Join-Path $PSScriptRoot "New-GraphInboxRulesApp.ps1"
+                                if (Test-Path $scriptPath) {
+                                    $psExe = (Get-Process -Id $PID).Path
+                                    Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+                                }
+                                $progressLabel.Text = "Retrying connections..."
+                                [System.Windows.Forms.Application]::DoEvents()
+                                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                                if ($wcmToken) { $mgOk = $true; $graphTokenForReport = $wcmToken }
+                            }
+                        }
+                    }
+                } catch { }
+
+                # Resolve output folder for this run
+                # Determine tenant-scoped folder root to match ExportUtils behavior
+                $defaultRoot = Join-Path $env:USERPROFILE "Documents\\ExchangeOnlineAnalyzer\\SecurityInvestigation"
+                $tenantName = $null
+                try {
+                    Import-Module "$PSScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
+                    $ti = $null; try { $ti = Get-TenantIdentity } catch {}
+                    if ($ti) { if ($ti.TenantDisplayName) { $tenantName = $ti.TenantDisplayName } elseif ($ti.PrimaryDomain) { $tenantName = $ti.PrimaryDomain } }
+                    if (-not $tenantName) { try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org.DisplayName) { $tenantName = $org.DisplayName } elseif ($org.Name) { $tenantName = $org.Name } } catch {} }
+                } catch {}
+                if (-not $tenantName -or [string]::IsNullOrWhiteSpace($tenantName)) { $tenantName = 'Tenant' }
+                $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+                $safeName = ($tenantName.ToCharArray() | ForEach-Object { if ($invalid -contains $_) { '-' } else { $_ } }) -join ''
+                $safeName = ($safeName -replace '\s+', ' ').Trim()
+                if ($safeName.Length -gt 80) { $safeName = $safeName.Substring(0,80) }
+                $tenantRoot = Join-Path $defaultRoot $safeName
+                if (-not (Test-Path $tenantRoot)) { New-Item -ItemType Directory -Path $tenantRoot -Force | Out-Null }
+                $timestampFolder = Join-Path $tenantRoot (Get-Date -Format "yyyyMMdd_HHmmss")
+
+                # Validate at least one report is selected (reportSelections built above)
                 $anySelected = $false
                 foreach ($key in $reportSelections.Keys) {
                     if ($reportSelections[$key]) { $anySelected = $true; break }
@@ -6456,7 +6621,38 @@ $securityInvestigationButton.add_Click({
                 if (Get-Command Set-LogContext -ErrorAction SilentlyContinue) { Set-LogContext -CompanyName $company }
 
                 # Generate the security investigation report with export paths
-                $securityReport = New-SecurityInvestigationReport -InvestigatorName $investigator -CompanyName $company -DaysBack $days -StatusLabel $progressLabel -MainForm $securityForm -OutputFolder $timestampFolder -IncludeMessageTrace $reportSelections.IncludeMessageTrace -IncludeInboxRules $reportSelections.IncludeInboxRules -IncludeTransportRules $reportSelections.IncludeTransportRules -IncludeMailFlowConnectors $reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding $reportSelections.IncludeMailboxForwarding -IncludeAuditLogs $reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies $reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations $reportSelections.IncludeAppRegistrations -IncludeSignInLogs $reportSelections.IncludeSignInLogs -IncludeIntuneDevices $reportSelections.IncludeIntuneDevices -IncludeMfaCoverage $reportSelections.IncludeMfaCoverage -IncludeSharePointActivity $reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity $reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity $reportSelections.IncludeTeamsActivity -IncludeSharePointSharing $reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts $reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents $reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs $reportSelections.IncludeUnifiedAuditLogs -UnifiedAuditLogRecordTypes $reportSelections.UnifiedAuditLogRecordTypes -SignInLogsDaysBack $reportSelections.SignInLogsDaysBack -MessageTraceDaysBack $reportSelections.MessageTraceDaysBack -SelectedUsers $selectedUsers
+                $reportParams = @{
+                    InvestigatorName = $investigator
+                    CompanyName = $company
+                    DaysBack = $days
+                    StatusLabel = $progressLabel
+                    MainForm = $securityForm
+                    OutputFolder = $timestampFolder
+                    IncludeMessageTrace = $reportSelections.IncludeMessageTrace
+                    IncludeInboxRules = $reportSelections.IncludeInboxRules
+                    IncludeTransportRules = $reportSelections.IncludeTransportRules
+                    IncludeMailFlowConnectors = $reportSelections.IncludeMailFlowConnectors
+                    IncludeMailboxForwarding = $reportSelections.IncludeMailboxForwarding
+                    IncludeAuditLogs = $reportSelections.IncludeAuditLogs
+                    IncludeConditionalAccessPolicies = $reportSelections.IncludeConditionalAccessPolicies
+                    IncludeAppRegistrations = $reportSelections.IncludeAppRegistrations
+                    IncludeSignInLogs = $reportSelections.IncludeSignInLogs
+                    IncludeIntuneDevices = $reportSelections.IncludeIntuneDevices
+                    IncludeMfaCoverage = $reportSelections.IncludeMfaCoverage
+                    IncludeSharePointActivity = $reportSelections.IncludeSharePointActivity
+                    IncludeOneDriveActivity = $reportSelections.IncludeOneDriveActivity
+                    IncludeTeamsActivity = $reportSelections.IncludeTeamsActivity
+                    IncludeSharePointSharing = $reportSelections.IncludeSharePointSharing
+                    IncludeSecurityAlerts = $reportSelections.IncludeSecurityAlerts
+                    IncludeSecurityIncidents = $reportSelections.IncludeSecurityIncidents
+                    IncludeUnifiedAuditLogs = $reportSelections.IncludeUnifiedAuditLogs
+                    UnifiedAuditLogRecordTypes = $reportSelections.UnifiedAuditLogRecordTypes
+                    SignInLogsDaysBack = $reportSelections.SignInLogsDaysBack
+                    MessageTraceDaysBack = $reportSelections.MessageTraceDaysBack
+                    SelectedUsers = $selectedUsers
+                }
+                if ($graphTokenForReport) { $reportParams['GraphAccessToken'] = $graphTokenForReport }
+                $securityReport = New-SecurityInvestigationReport @reportParams
 
                 if ($securityReport) {
                     $progressLabel.Text = "OK: Security investigation completed successfully!"
@@ -7051,6 +7247,77 @@ $bulkTenantExporterButton.add_Click({
             $bulkForm.Close()
         })
 
+        # Analyze Single Report button (rule-based analysis on one report folder)
+        $bulkAnalyzeSingleBtn = New-Object System.Windows.Forms.Button
+        $bulkAnalyzeSingleBtn.Text = "Analyze Single Report"
+        $bulkAnalyzeSingleBtn.Location = New-Object System.Drawing.Point(720, 110)
+        $bulkAnalyzeSingleBtn.Size = New-Object System.Drawing.Size(160, 24)
+        $bulkAnalyzeSingleBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
+        $bulkAnalyzeSingleBtn.ForeColor = [System.Drawing.Color]::White
+        $bulkAnalyzeSingleBtn.add_Click({
+            $defaultPath = if ($script:outputBaseDir -and (Test-Path $script:outputBaseDir)) { $script:outputBaseDir } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation" }
+            $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+            $fbd.Description = "Select a single report folder (e.g. SecurityInvestigation\TenantName\2024-03-09_123456)"
+            $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
+            if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                try {
+                    if (Get-Command Invoke-ReportFolderAnalysis -ErrorAction SilentlyContinue) {
+                        $result = Invoke-ReportFolderAnalysis -Path $fbd.SelectedPath -WriteOutputFiles
+                        $analysisResultForm = New-Object System.Windows.Forms.Form
+                        $analysisResultForm.Text = "Rule-Based Analysis Results"
+                        $analysisResultForm.Size = New-Object System.Drawing.Size(900, 600)
+                        $analysisResultForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+                        $tb = New-Object System.Windows.Forms.RichTextBox
+                        $tb.Dock = 'Fill'
+                        $tb.ReadOnly = $true
+                        $tb.Font = New-Object System.Drawing.Font('Consolas', 9)
+                        $tb.Text = $result.Summary
+                        $analysisResultForm.Controls.Add($tb)
+                        $analysisResultForm.ShowDialog()
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    }
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            }
+        })
+
+        # Analyze All Reports button (rule-based analysis on existing report folders)
+        $bulkAnalyzeAllBtn = New-Object System.Windows.Forms.Button
+        $bulkAnalyzeAllBtn.Text = "Analyze All Reports"
+        $bulkAnalyzeAllBtn.Location = New-Object System.Drawing.Point(720, 138)
+        $bulkAnalyzeAllBtn.Size = New-Object System.Drawing.Size(160, 24)
+        $bulkAnalyzeAllBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
+        $bulkAnalyzeAllBtn.ForeColor = [System.Drawing.Color]::White
+        $bulkAnalyzeAllBtn.add_Click({
+            $defaultPath = if ($script:outputBaseDir -and (Test-Path $script:outputBaseDir)) { $script:outputBaseDir } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation" }
+            $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+            $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
+            $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
+            if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                try {
+                    if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
+                        $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
+                        $rankForm = New-Object System.Windows.Forms.Form
+                        $rankForm.Text = "Bulk Tenant Risk Ranking"
+                        $rankForm.Size = New-Object System.Drawing.Size(850, 500)
+                        $rankForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+                        $dg = New-Object System.Windows.Forms.DataGridView
+                        $dg.Dock = 'Fill'
+                        $dg.AutoGenerateColumns = $true
+                        $dg.DataSource = $results
+                        $rankForm.Controls.Add($dg)
+                        $rankForm.ShowDialog()
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    }
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            }
+        })
+
         # Start Export button click handler - Opens Authentication Console
         $bulkStartButton.add_Click({
             # Load Investigator Name and Company Name from settings
@@ -7193,6 +7460,7 @@ try {
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
     if (Test-Path "`$ScriptRoot\Scripts\Common\SecurityHelpers.psm1") { Import-Module "`$ScriptRoot\Scripts\Common\SecurityHelpers.psm1" -Force -ErrorAction SilentlyContinue }
+    if (Test-Path "`$ScriptRoot\Modules\GraphAppCredential.psm1") { Import-Module "`$ScriptRoot\Modules\GraphAppCredential.psm1" -Force -ErrorAction SilentlyContinue }
     Write-Status "Modules imported successfully"
     Write-Host ""
     
@@ -7283,7 +7551,7 @@ if (Test-Path `$ReportSelectionsFile) {
             Remove-Item `$commandFile -Force -ErrorAction SilentlyContinue
             Write-Host "Command file removed" -ForegroundColor Gray
             
-            if (`$command -eq "GRAPH_AUTH") {
+            if (`$command -eq "GRAPH_AUTH" -or `$command -like "GRAPH_AUTH|*") {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "GRAPH AUTHENTICATION COMMAND RECEIVED" -ForegroundColor Yellow
                 Write-Host "==========================================" -ForegroundColor Yellow
@@ -7466,6 +7734,56 @@ if (Test-Path `$ReportSelectionsFile) {
         "Reports.Read.All"
     )
 
+                # Try WCM (app-only) first when we have tenant ID(s) to try
+                `$tenantIdsToTry = @()
+                if (`$command -match '\|TENANT_ID:([a-fA-F0-9\-]{36})') {
+                    `$tenantIdsToTry = @(`$matches[1])
+                } else {
+                    `$graphAppMod = Join-Path `$ScriptRoot "Modules\GraphAppCredential.psm1"
+                    if (Test-Path `$graphAppMod) {
+                        Import-Module `$graphAppMod -Force -ErrorAction SilentlyContinue
+                        if (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue) {
+                            `$allIds = Get-WCMTenantIds
+                            if (`$allIds -and `$allIds.Count -gt 0) { `$tenantIdsToTry = @(`$allIds) }
+                        }
+                    }
+                }
+                if (`$tenantIdsToTry.Count -gt 0) {
+                    Write-Host "Trying app-only credentials from Windows Credential Manager (`$(`$tenantIdsToTry.Count) tenant(s))..." -ForegroundColor Cyan
+                }
+                foreach (`$tid in `$tenantIdsToTry) {
+                    try {
+                        `$wcmToken = Get-GraphAppTokenFromWCM -TenantId `$tid
+                        if (-not `$wcmToken) { continue }
+                        `$headers = @{ Authorization = "Bearer `$wcmToken" }
+                        `$orgResp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/organization" -Headers `$headers -Method GET -ErrorAction Stop
+                        if (`$orgResp -and `$orgResp.value -and `$orgResp.value.Count -gt 0) {
+                            `$tenantDisplayName = `$orgResp.value[0].displayName
+                            if (-not `$tenantDisplayName) { `$tenantDisplayName = "Tenant" }
+                            `$graphAuthenticated = `$true
+                            `$script:graphTokenFromWCM = `$wcmToken
+                            Write-Status "Using app-only credentials from Windows Credential Manager"
+                            Write-Host "Using app-only credentials from Windows Credential Manager (Tenant: `$tid)" -ForegroundColor Green
+                            `$verifiedDomains = @()
+                            try {
+                                `$domResp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/domains" -Headers `$headers -Method GET -ErrorAction Stop
+                                if (`$domResp -and `$domResp.value) {
+                                    `$verifiedDomains = `$domResp.value | Where-Object { `$_.isVerified -eq `$true } | ForEach-Object { `$_.id }
+                                    Write-Host "Found `$(`$verifiedDomains.Count) verified domain(s): `$(`$verifiedDomains -join ', ')" -ForegroundColor Cyan
+                                }
+                            } catch {}
+                            if (`$verifiedDomains -and `$verifiedDomains.Count -gt 0) {
+                                Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName|TENANT_ID:`$tid|DOMAINS:`$(`$verifiedDomains -join ',')"
+                            } else {
+                                Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName|TENANT_ID:`$tid"
+                            }
+                            break
+                        }
+                    } catch { continue }
+                }
+
+                if (-not `$graphAuthenticated) {
+                Write-Host "No WCM credentials found or validation failed. Connecting interactively (browser/popup)..." -ForegroundColor Yellow
                 try {
                     # Use standard Connect-MgGraph authentication
                     # LIMITATION: Microsoft.Graph.Authentication version 2.33.0+ defaults to WAM (Web Account Manager) on Windows.
@@ -7525,20 +7843,20 @@ if (Test-Path `$ReportSelectionsFile) {
                         Write-Host "Falling back to tenant name as primary domain" -ForegroundColor Yellow
                     }
 
-                    # Build response with tenant name and domains
+                    # Build response with tenant name, tenant ID, and domains (tenant ID enables WCM-first on re-auth)
                     if (`$verifiedDomains -and `$verifiedDomains.Count -gt 0) {
                         `$domainsString = `$verifiedDomains -join ','
-                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName|DOMAINS:`$domainsString"
+                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName|TENANT_ID:`$(`$mgContext.TenantId)|DOMAINS:`$domainsString"
                     } else {
-                        # Fallback: just return tenant name without domains
-                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName"
+                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:`$tenantDisplayName|TENANT_ID:`$(`$mgContext.TenantId)"
                     }
     } catch {
                     Write-Status "ERROR: Graph authentication failed - `$(`$_.Exception.Message)"
                     Write-Host "ERROR: Graph authentication failed - `$(`$_.Exception.Message)" -ForegroundColor Red
                     Write-CommandResponse "GRAPH_AUTH_FAILED:`$(`$_.Exception.Message)"
                 }
-                
+                }
+
         Write-Host ""
                 Write-Host "Waiting for Exchange Online Auth command from GUI..." -ForegroundColor Green
                 Write-Host ""
@@ -7999,18 +8317,37 @@ if (Test-Path `$ReportSelectionsFile) {
 
             # Instructions
             $authInstructionsLabel = New-Object System.Windows.Forms.Label
-            $authInstructionsLabel.Text = "Click 'Add Tenant' to add a new tenant. Authenticate each client sequentially. Complete Graph authentication, then Exchange Online authentication for each client before proceeding to the next."
+            $authInstructionsLabel.Text = "Click 'Add Tenant' to add a new tenant. Use 'Create Graph App' to create app-only credentials (or 'Delete Graph App' to remove them). Authenticate each client: Graph first, then Exchange Online."
             $authInstructionsLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
             $authInstructionsLabel.Location = New-Object System.Drawing.Point(15, 55)
             $authInstructionsLabel.Size = New-Object System.Drawing.Size(950, 40)
             $authInstructionsLabel.MaximumSize = New-Object System.Drawing.Size(950, 0)
             $authInstructionsLabel.AutoSize = $true
 
+            # Helper to refresh a per-client app reg tenant combo (with display names)
+            $script:refreshAppRegTenantCombo = {
+                param([System.Windows.Forms.ComboBox]$combo)
+                if (-not $combo -or $combo.IsDisposed) { return }
+                $sel = $combo.SelectedItem
+                $combo.Items.Clear()
+                $combo.Items.Add("(Auto - try all)") | Out-Null
+                try {
+                    Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
+                    $list = @()
+                    if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $list = Get-WCMTenantListWithNames }
+                    foreach ($item in $list) {
+                        $combo.Items.Add($item.DisplayText) | Out-Null
+                    }
+                } catch {}
+                $combo.SelectedIndex = 0
+                if ($sel -and $combo.Items.Contains($sel)) { $combo.SelectedItem = $sel }
+            }
+
             # Add Tenant button
             $addTenantBtn = New-Object System.Windows.Forms.Button
             $addTenantBtn.Text = "Add Tenant"
             $addTenantBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-            $addTenantBtn.Location = New-Object System.Drawing.Point(15, 100)
+            $addTenantBtn.Location = New-Object System.Drawing.Point(15, 98)
             $addTenantBtn.Size = New-Object System.Drawing.Size(150, 35)
             $addTenantBtn.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
             $addTenantBtn.ForeColor = [System.Drawing.Color]::White
@@ -8019,7 +8356,7 @@ if (Test-Path `$ReportSelectionsFile) {
             $expandAllBtn = New-Object System.Windows.Forms.Button
             $expandAllBtn.Text = "Expand All"
             $expandAllBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-            $expandAllBtn.Location = New-Object System.Drawing.Point(175, 100)
+            $expandAllBtn.Location = New-Object System.Drawing.Point(175, 98)
             $expandAllBtn.Size = New-Object System.Drawing.Size(100, 35)
             $expandAllBtn.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
             $expandAllBtn.ForeColor = [System.Drawing.Color]::White
@@ -8028,10 +8365,152 @@ if (Test-Path `$ReportSelectionsFile) {
             $collapseAllBtn = New-Object System.Windows.Forms.Button
             $collapseAllBtn.Text = "Collapse All"
             $collapseAllBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-            $collapseAllBtn.Location = New-Object System.Drawing.Point(285, 100)
+            $collapseAllBtn.Location = New-Object System.Drawing.Point(285, 98)
             $collapseAllBtn.Size = New-Object System.Drawing.Size(100, 35)
             $collapseAllBtn.BackColor = [System.Drawing.Color]::FromArgb(156, 39, 176)
             $collapseAllBtn.ForeColor = [System.Drawing.Color]::White
+
+            # Create Graph App button - create app registration and save to WCM
+            $createGraphAppBtn = New-Object System.Windows.Forms.Button
+            $createGraphAppBtn.Text = "Create Graph App"
+            $createGraphAppBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+            $createGraphAppBtn.Location = New-Object System.Drawing.Point(395, 98)
+            $createGraphAppBtn.Size = New-Object System.Drawing.Size(130, 35)
+            $createGraphAppBtn.BackColor = [System.Drawing.Color]::FromArgb(96, 125, 139)
+            $createGraphAppBtn.ForeColor = [System.Drawing.Color]::White
+            $createGraphAppBtn.add_Click({
+                $scriptPath = Join-Path $PSScriptRoot "New-GraphInboxRulesApp.ps1"
+                if (-not (Test-Path $scriptPath)) {
+                    [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                }
+                try {
+                    $psExe = (Get-Process -Id $PID).Path
+                    Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+                    [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to. Click Graph Auth again to use app-only credentials.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    foreach ($cn in $script:clientAuthControls.Keys) {
+                        $c = $script:clientAuthControls[$cn]
+                        if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
+                            & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+                        }
+                    }
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Failed to run script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            })
+
+            # Delete Graph App button - remove app registration and WCM credential (per-tenant selection)
+            $deleteGraphAppBtn = New-Object System.Windows.Forms.Button
+            $deleteGraphAppBtn.Text = "Delete Graph App"
+            $deleteGraphAppBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+            $deleteGraphAppBtn.Location = New-Object System.Drawing.Point(530, 98)
+            $deleteGraphAppBtn.Size = New-Object System.Drawing.Size(130, 35)
+            $deleteGraphAppBtn.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
+            $deleteGraphAppBtn.ForeColor = [System.Drawing.Color]::White
+            $deleteGraphAppBtn.add_Click({
+                $scriptPath = Join-Path $PSScriptRoot "Remove-GraphInboxRulesApp.ps1"
+                if (-not (Test-Path $scriptPath)) {
+                    [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    return
+                }
+                $tenantList = @()
+                try {
+                    Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
+                    if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames }
+                } catch {}
+                if ($tenantList.Count -eq 0) {
+                    [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    return
+                }
+                $selForm = New-Object System.Windows.Forms.Form
+                $selForm.Text = "Select Tenant(s) to Remove App From"
+                $selForm.Size = New-Object System.Drawing.Size(450, 380)
+                $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+                $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+                $lbl = New-Object System.Windows.Forms.Label
+                $lbl.Text = "Select which tenant(s) to remove the 'River Run Security Investigator' app from:"
+                $lbl.Location = New-Object System.Drawing.Point(10, 10)
+                $lbl.Size = New-Object System.Drawing.Size(410, 35)
+                $lbl.AutoSize = $true
+                $clb = New-Object System.Windows.Forms.CheckedListBox
+                $clb.Location = New-Object System.Drawing.Point(10, 50)
+                $clb.Size = New-Object System.Drawing.Size(410, 240)
+                $clb.CheckOnClick = $true
+                foreach ($t in $tenantList) { [void]$clb.Items.Add($t.DisplayText, $false) }
+                $btnOk = New-Object System.Windows.Forms.Button
+                $btnOk.Text = "Remove Selected"
+                $btnOk.Location = New-Object System.Drawing.Point(180, 300)
+                $btnOk.Size = New-Object System.Drawing.Size(120, 30)
+                $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                $btnCancel = New-Object System.Windows.Forms.Button
+                $btnCancel.Text = "Cancel"
+                $btnCancel.Location = New-Object System.Drawing.Point(310, 300)
+                $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+                $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+                $selForm.AcceptButton = $btnOk
+                $selForm.CancelButton = $btnCancel
+                $selForm.Controls.AddRange(@($lbl, $clb, $btnOk, $btnCancel))
+                if ($selForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+                $selected = @()
+                for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+                    if ($clb.GetItemChecked($i)) { $selected += $tenantList[$i].TenantId }
+                }
+                if ($selected.Count -eq 0) {
+                    [System.Windows.Forms.MessageBox]::Show("No tenants selected.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    return
+                }
+                try {
+                    $psExe = (Get-Process -Id $PID).Path
+                    foreach ($tid in $selected) {
+                        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -TenantId `"$tid`" -Force" -Wait
+                    }
+                    [System.Windows.Forms.MessageBox]::Show("App removal completed for $($selected.Count) tenant(s).", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    foreach ($cn in $script:clientAuthControls.Keys) {
+                        $c = $script:clientAuthControls[$cn]
+                        if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
+                            & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+                        }
+                    }
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Failed to run script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            })
+
+            # Analyze All Reports button - rule-based bulk analysis (no LLM)
+            $analyzeAllReportsBtn = New-Object System.Windows.Forms.Button
+            $analyzeAllReportsBtn.Text = "Analyze All Reports"
+            $analyzeAllReportsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+            $analyzeAllReportsBtn.Location = New-Object System.Drawing.Point(665, 98)
+            $analyzeAllReportsBtn.Size = New-Object System.Drawing.Size(160, 35)
+            $analyzeAllReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
+            $analyzeAllReportsBtn.ForeColor = [System.Drawing.Color]::White
+            $analyzeAllReportsBtn.add_Click({
+                $defaultPath = if ($script:outputBaseDir -and (Test-Path $script:outputBaseDir)) { $script:outputBaseDir } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation" }
+                $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+                $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
+                $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
+                if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                    try {
+                        if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
+                            $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
+                            $rankForm = New-Object System.Windows.Forms.Form
+                            $rankForm.Text = "Bulk Tenant Risk Ranking"
+                            $rankForm.Size = New-Object System.Drawing.Size(850, 500)
+                            $rankForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+                            $dg = New-Object System.Windows.Forms.DataGridView
+                            $dg.Dock = 'Fill'
+                            $dg.AutoGenerateColumns = $true
+                            $dg.DataSource = $results
+                            $rankForm.Controls.Add($dg)
+                            $rankForm.ShowDialog()
+                        } else {
+                            [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        }
+                    } catch {
+                        [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    }
+                }
+            })
 
             # Create Panel for client authentication rows
             $authPanel = New-Object System.Windows.Forms.Panel
@@ -8052,7 +8531,7 @@ if (Test-Path `$ReportSelectionsFile) {
             $clientRowSpacing = 10  # Increased spacing between rows
 
             # Add controls to form
-            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $authPanel))
+            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $analyzeAllReportsBtn, $authPanel))
 
             # Close button
             $authCloseBtn = New-Object System.Windows.Forms.Button
@@ -8113,6 +8592,64 @@ if (Test-Path `$ReportSelectionsFile) {
             $script:workerScriptFile = $workerScriptFile
             $script:reportSelectionsFile = $reportSelectionsFile
             $script:authPanel = $authPanel
+
+            # Get required auth from current report selections (Graph-only, Exchange-only, or both)
+            function Get-CurrentRequiredAuth {
+                $required = @{ NeedsGraph = $false; NeedsExchange = $false }
+                if ($script:reportSelections -and (Get-Command Get-RequiredAuthFromReportSelections -ErrorAction SilentlyContinue)) {
+                    $required = Get-RequiredAuthFromReportSelections -ReportSelections $script:reportSelections
+                }
+                return $required
+            }
+
+            # Update Graph/Exchange button visibility and enable state based on report selections
+            # Parse app reg combo selected item to tenant ID
+            function Get-TenantIdFromAppRegComboSelection {
+                param([string]$SelectedItem)
+                if ([string]::IsNullOrWhiteSpace($SelectedItem) -or $SelectedItem -match '^\(Auto') { return $null }
+                if ($SelectedItem -match '\(([a-fA-F0-9\-]{36})\)\s*$') { return $Matches[1] }
+                if ($SelectedItem -match '^[a-fA-F0-9\-]{36}$') { return $SelectedItem }
+                return $null
+            }
+
+            function Update-AuthButtonVisibilityForClient {
+                param([int]$ClientNumber)
+                if (-not $script:clientAuthControls.ContainsKey($ClientNumber)) { return }
+                $required = Get-CurrentRequiredAuth
+                $state = $script:clientAuthStates[$ClientNumber]
+                $controls = $script:clientAuthControls[$ClientNumber]
+                if ($controls.GraphButton -and -not $controls.GraphButton.IsDisposed) {
+                    $controls.GraphButton.Visible = $required.NeedsGraph -and -not $state.GraphAuthenticated
+                    $controls.GraphButton.Enabled = $required.NeedsGraph -and -not $state.GraphAuthenticated
+                }
+                if ($controls.ExchangeButton -and -not $controls.ExchangeButton.IsDisposed) {
+                    $controls.ExchangeButton.Visible = $required.NeedsExchange -and -not $state.ExchangeAuthenticated
+                    $exchangeEnabled = $required.NeedsExchange -and ((-not $required.NeedsGraph) -or $state.GraphAuthenticated)
+                    $controls.ExchangeButton.Enabled = $exchangeEnabled -and -not $state.ExchangeAuthenticated
+                }
+                # Per-client app reg tenant selector: visible when Graph needed and not yet authenticated
+                if ($controls.AppRegTenantLabel -and -not $controls.AppRegTenantLabel.IsDisposed) {
+                    $controls.AppRegTenantLabel.Visible = $required.NeedsGraph -and -not $state.GraphAuthenticated
+                }
+                if ($controls.AppRegTenantCombo -and -not $controls.AppRegTenantCombo.IsDisposed) {
+                    $controls.AppRegTenantCombo.Visible = $required.NeedsGraph -and -not $state.GraphAuthenticated
+                }
+            }
+
+            # Update Generate Reports button visibility based on auth state and report selections
+            function Update-GenerateReportsButtonForClient {
+                param([int]$ClientNumber)
+                if (-not $script:clientAuthControls.ContainsKey($ClientNumber)) { return }
+                $required = Get-CurrentRequiredAuth
+                $hasGraph = $script:clientAuthStates[$ClientNumber].GraphAuthenticated
+                $hasExchange = $script:clientAuthStates[$ClientNumber].ExchangeAuthenticated
+                $canGenerate = (-not $required.NeedsGraph -or $hasGraph) -and (-not $required.NeedsExchange -or $hasExchange)
+                $ctrl = $script:clientAuthControls[$ClientNumber].GenerateReportsButton
+                if ($ctrl -and -not $ctrl.IsDisposed) {
+                    $ctrl.Visible = $canGenerate
+                    $ctrl.Enabled = $canGenerate
+                }
+            }
 
             # Function to search and validate users
             function Search-AndValidateUsers {
@@ -8312,11 +8849,10 @@ if (Test-Path `$ReportSelectionsFile) {
                 $controls = $script:clientAuthControls[$ClientNumber]
                 $state = $script:clientAuthStates[$ClientNumber]
 
-                # Check prerequisites
-                # 1. Both Graph AND Exchange auth must be complete
-                if (-not $state.GraphAuthenticated -or -not $state.ExchangeAuthenticated) {
-                    return $false
-                }
+                # Check prerequisites - need auth required by selected reports
+                $required = Get-CurrentRequiredAuth
+                if ($required.NeedsGraph -and -not $state.GraphAuthenticated) { return $false }
+                if ($required.NeedsExchange -and -not $state.ExchangeAuthenticated) { return $false }
 
                 # 2. User search textbox must be empty
                 if (-not [string]::IsNullOrWhiteSpace($controls.UserSearchTextBox.Text)) {
@@ -8497,18 +9033,39 @@ if (Test-Path `$ReportSelectionsFile) {
                                         } catch {}
                                     }
                                     
-                                    # Worker script is ready - enable Graph Auth button
-                                    if ($controls -and $controls.GraphButton) {
-                                        $controls.GraphButton.Enabled = $true
-                                        $controls.GraphButton.Text = "Graph Auth"
+                                    # Worker script is ready - show correct auth buttons based on report selections
+                                    if ($controls) {
+                                        Update-AuthButtonVisibilityForClient -ClientNumber $clientNum
+                                        if ($controls.GraphButton) { $controls.GraphButton.Text = "Graph Auth" }
                                     }
                                     if ($controls -and $controls.StatusLabel) {
-                                        $controls.StatusLabel.Text = "Ready for Graph Auth"
+                                        $required = Get-CurrentRequiredAuth
+                                        $controls.StatusLabel.Text = if ($required.NeedsGraph) { "Ready for Graph Auth" } else { "Ready for Exchange Auth" }
                                         $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Blue
                                     }
                                     if ($script:authStatusTextBox) {
                                         $script:authStatusTextBox.AppendText("Client $clientNum is ready for authentication (polling loop confirmed running).`r`n")
                                         $script:authStatusTextBox.ScrollToCaret()
+                                    }
+                                    # When only Graph needed (e.g. inbox rules + app reg), auto-trigger Graph Auth
+                                    $required = Get-CurrentRequiredAuth
+                                    $state = $script:clientAuthStates[$clientNum]
+                                    if ($required.NeedsGraph -and -not $required.NeedsExchange -and -not $state.GraphAuthenticated -and $controls.GraphButton -and $controls.GraphButton.Enabled) {
+                                        $script:authStatusTextBox.AppendText("Client $clientNum Graph-only reports: auto-starting Graph Auth (app reg)...`r`n")
+                                        $script:authStatusTextBox.ScrollToCaret()
+                                        [System.Windows.Forms.Application]::DoEvents()
+                                        $autoClientNum = $clientNum
+                                        $autoTimer = New-Object System.Windows.Forms.Timer
+                                        $autoTimer.Interval = 300
+                                        $autoTimer.add_Tick({
+                                            $autoTimer.Stop()
+                                            $autoTimer.Dispose()
+                                            if ($script:clientAuthControls.ContainsKey($autoClientNum) -and -not $script:clientAuthStates[$autoClientNum].GraphAuthenticated) {
+                                                $ctrl = $script:clientAuthControls[$autoClientNum].GraphButton
+                                                if ($ctrl -and -not $ctrl.IsDisposed -and $ctrl.Enabled) { $ctrl.PerformClick() }
+                                            }
+                                        })
+                                        $autoTimer.Start()
                                     }
                                     [System.Windows.Forms.Application]::DoEvents()
                                     try {
@@ -8532,17 +9089,38 @@ if (Test-Path `$ReportSelectionsFile) {
                         
                         # Timeout after max checks
                         if ($checkCount -ge $maxReadinessChecks) {
-                            if ($controls -and $controls.GraphButton) {
-                                $controls.GraphButton.Enabled = $true
-                                $controls.GraphButton.Text = "Graph Auth"
+                            if ($controls) {
+                                Update-AuthButtonVisibilityForClient -ClientNumber $clientNum
+                                if ($controls.GraphButton) { $controls.GraphButton.Text = "Graph Auth" }
                             }
                             if ($controls -and $controls.StatusLabel) {
-                                $controls.StatusLabel.Text = "Ready (timeout)"
+                                $required = Get-CurrentRequiredAuth
+                                $controls.StatusLabel.Text = if ($required.NeedsGraph) { "Ready for Graph Auth (timeout)" } else { "Ready for Exchange Auth (timeout)" }
                                 $controls.StatusLabel.ForeColor = [System.Drawing.Color]::Orange
                             }
                             if ($script:authStatusTextBox) {
-                                $script:authStatusTextBox.AppendText("Client $clientNum readiness check timed out, but enabling Graph Auth button anyway.`r`n")
+                                $script:authStatusTextBox.AppendText("Client $clientNum readiness check timed out, but enabling auth button anyway.`r`n")
                                 $script:authStatusTextBox.ScrollToCaret()
+                            }
+                            # Auto-trigger Graph Auth when Graph-only (same as success path)
+                            $required = Get-CurrentRequiredAuth
+                            $state = $script:clientAuthStates[$clientNum]
+                            if ($required.NeedsGraph -and -not $required.NeedsExchange -and -not $state.GraphAuthenticated -and $controls.GraphButton -and $controls.GraphButton.Enabled) {
+                                $script:authStatusTextBox.AppendText("Client $clientNum Graph-only reports: auto-starting Graph Auth (app reg)...`r`n")
+                                $script:authStatusTextBox.ScrollToCaret()
+                                [System.Windows.Forms.Application]::DoEvents()
+                                $autoClientNum = $clientNum
+                                $autoTimer = New-Object System.Windows.Forms.Timer
+                                $autoTimer.Interval = 300
+                                $autoTimer.add_Tick({
+                                    $autoTimer.Stop()
+                                    $autoTimer.Dispose()
+                                    if ($script:clientAuthControls.ContainsKey($autoClientNum) -and -not $script:clientAuthStates[$autoClientNum].GraphAuthenticated) {
+                                        $ctrl = $script:clientAuthControls[$autoClientNum].GraphButton
+                                        if ($ctrl -and -not $ctrl.IsDisposed -and $ctrl.Enabled) { $ctrl.PerformClick() }
+                                    }
+                                })
+                                $autoTimer.Start()
                             }
                             [System.Windows.Forms.Application]::DoEvents()
                             try {
@@ -8692,6 +9270,20 @@ if (Test-Path `$ReportSelectionsFile) {
                 $resetAuthBtn.Tag = $ClientNumber
                 $resetAuthBtn.ForeColor = [System.Drawing.Color]::DarkRed
 
+                # App reg tenant selector (per-client) - shown before Graph Auth, hidden after
+                $appRegTenantLabel = New-Object System.Windows.Forms.Label
+                $appRegTenantLabel.Text = "App reg tenant:"
+                $appRegTenantLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+                $appRegTenantLabel.Location = New-Object System.Drawing.Point(10, ($yPos + 50))
+                $appRegTenantLabel.Size = New-Object System.Drawing.Size(80, 20)
+                $appRegTenantLabel.Tag = $ClientNumber
+                $appRegTenantCombo = New-Object System.Windows.Forms.ComboBox
+                $appRegTenantCombo.Location = New-Object System.Drawing.Point(95, ($yPos + 47))
+                $appRegTenantCombo.Size = New-Object System.Drawing.Size(220, 25)
+                $appRegTenantCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+                $appRegTenantCombo.Tag = $ClientNumber
+                & $script:refreshAppRegTenantCombo -combo $appRegTenantCombo
+
                 # User Filtering Checkbox (shown after Graph Auth, on second row)
                 $userFilterCheckBox = New-Object System.Windows.Forms.CheckBox
                 $userFilterCheckBox.Text = "Filter by users"
@@ -8792,7 +9384,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 $extractEmailsBtn.ForeColor = [System.Drawing.Color]::White
 
                 # Add controls to panel
-                $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $viewReportsBtn))
+                $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $viewReportsBtn))
 
                 # Store controls and state
                 $script:clientAuthStates[$ClientNumber] = @{
@@ -8829,7 +9421,12 @@ if (Test-Path `$ReportSelectionsFile) {
                     TicketNumbersLabel = $ticketNumbersLabel
                     ExtractEmailsButton = $extractEmailsBtn
                     ViewReportsButton = $viewReportsBtn
+                    AppRegTenantLabel = $appRegTenantLabel
+                    AppRegTenantCombo = $appRegTenantCombo
                 }
+
+                # Show/hide Graph/Exchange buttons based on report selections immediately
+                Update-AuthButtonVisibilityForClient -ClientNumber $ClientNumber
                 
                 # View Reports button handler
                 $capturedClientNumForView = $ClientNumber
@@ -9053,26 +9650,28 @@ if (Test-Path `$ReportSelectionsFile) {
                         $controls.OpenReportsButton.Visible = $false
                         $controls.RemoveMinimizedButton.Visible = $false
 
-                        # Show expanded controls
+                        # Show expanded controls (Graph/Exchange visibility based on report selections)
                         $controls.StatusLabel.Visible = $true
                         $controls.WarningLabel.Visible = $true
-                        $controls.GraphButton.Visible = $true
-                        $controls.ExchangeButton.Visible = $true
                         $controls.RemoveButton.Visible = $true
                         $controls.ResetButton.Visible = $true
+                        Update-AuthButtonVisibilityForClient -ClientNumber $clientNum
 
                         # Show controls based on auth state
+                        $required = Get-CurrentRequiredAuth
+                        $authComplete = (-not $required.NeedsGraph -or $script:clientAuthStates[$clientNum].GraphAuthenticated) -and (-not $required.NeedsExchange -or $script:clientAuthStates[$clientNum].ExchangeAuthenticated)
                         if ($script:clientAuthStates[$clientNum].GraphAuthenticated) {
                             $controls.UserFilterCheckBox.Visible = $true
                             $controls.UserSearchTextBox.Visible = $true
                             $controls.ValidateUsersButton.Visible = $true
                         }
-
-                        if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                        if ($authComplete) {
                             $controls.TicketLabel.Visible = $true
                             $controls.TicketTextBox.Visible = $true
                             $controls.GenerateReportsButton.Visible = $true
-                            $controls.ExtractEmailsButton.Visible = $true
+                            if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                                $controls.ExtractEmailsButton.Visible = $true
+                            }
                         }
 
                         # Show View Reports if available
@@ -9351,9 +9950,17 @@ if (Test-Path `$ReportSelectionsFile) {
                     $clientNum = $this.Tag
                     if (-not $clientNum) { $clientNum = $capturedClientNum }
                     
-                    # Check if both authentications are complete
-                    if (-not $script:clientAuthStates[$clientNum].GraphAuthenticated -or -not $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                        [System.Windows.Forms.MessageBox]::Show("Please complete both Graph and Exchange authentication first.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    # Check required auth based on report selections
+                    $required = Get-CurrentRequiredAuth
+                    $hasGraph = $script:clientAuthStates[$clientNum].GraphAuthenticated
+                    $hasExchange = $script:clientAuthStates[$clientNum].ExchangeAuthenticated
+                    $needGraph = $required.NeedsGraph -and -not $hasGraph
+                    $needExchange = $required.NeedsExchange -and -not $hasExchange
+                    if ($needGraph -or $needExchange) {
+                        $msg = if ($needGraph -and $needExchange) { "Please complete both Graph and Exchange authentication first." }
+                        elseif ($needGraph) { "Please complete Graph authentication first." }
+                        else { "Please complete Exchange Online authentication first." }
+                        [System.Windows.Forms.MessageBox]::Show($msg, "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                         return
                     }
                     
@@ -9567,7 +10174,16 @@ if (Test-Path `$ReportSelectionsFile) {
                     $script:authStatusTextBox.ScrollToCaret()
                     [System.Windows.Forms.Application]::DoEvents()
                     
-                    $response = Send-CommandToSession -ClientNumber $clientNum -Command "GRAPH_AUTH" -TimeoutSeconds 60
+                    $tenantId = $null
+                    if ($script:clientAuthControls[$clientNum].AppRegTenantCombo -and -not $script:clientAuthControls[$clientNum].AppRegTenantCombo.IsDisposed) {
+                        $sel = $script:clientAuthControls[$clientNum].AppRegTenantCombo.SelectedItem
+                        $tenantId = Get-TenantIdFromAppRegComboSelection -SelectedItem $sel
+                    }
+                    $graphAuthCmd = "GRAPH_AUTH"
+                    if ($tenantId) {
+                        $graphAuthCmd = "GRAPH_AUTH|TENANT_ID:$tenantId"
+                    }
+                    $response = Send-CommandToSession -ClientNumber $clientNum -Command $graphAuthCmd -TimeoutSeconds 60
                     
                     # Check if Send-CommandToSession returned false (error writing command file)
                     if ($response -eq $false) {
@@ -9662,15 +10278,18 @@ if (Test-Path `$ReportSelectionsFile) {
                     }
                     
                     if ($response -like "GRAPH_AUTH_SUCCESS:*") {
-                        # Parse tenant name and domains from response
-                        # Format: "GRAPH_AUTH_SUCCESS:tenantName" or "GRAPH_AUTH_SUCCESS:tenantName|DOMAINS:domain1,domain2,domain3"
+                        # Parse tenant name, tenant ID, and domains from response
+                        # Format: "GRAPH_AUTH_SUCCESS:tenantName" or "tenantName|TENANT_ID:xxx|DOMAINS:domain1,domain2"
                         $responseParts = ($response -replace "^GRAPH_AUTH_SUCCESS:", "") -split '\|'
                         $tenantName = $responseParts[0]
 
-                        # Parse domains if present
+                        # Parse tenant ID and domains
+                        $tenantId = $null
                         $tenantDomains = @()
                         foreach ($part in $responseParts) {
-                            if ($part -like "DOMAINS:*") {
+                            if ($part -like "TENANT_ID:*") {
+                                $tenantId = $part -replace "^TENANT_ID:", ""
+                            } elseif ($part -like "DOMAINS:*") {
                                 $domainsStr = $part -replace "^DOMAINS:", ""
                                 $tenantDomains = $domainsStr -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
                             }
@@ -9683,15 +10302,32 @@ if (Test-Path `$ReportSelectionsFile) {
 
                         # Store in state
                         $script:clientAuthStates[$clientNum].GraphAuthenticated = $true
+                        $script:clientAuthStates[$clientNum].TenantId = $tenantId
                         $script:clientAuthStates[$clientNum].TenantName = $tenantName
                         $script:clientAuthStates[$clientNum].TenantDomains = $tenantDomains
                         $script:clientAuthControls[$clientNum].ClientLabel.Text = "Client $clientNum - $tenantName"
-                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph Auth Complete - Ready for Exchange"
-                        $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
-                        $script:clientAuthControls[$clientNum].ExchangeButton.Enabled = $true
+                        $required = Get-CurrentRequiredAuth
+                        if ($required.NeedsExchange) {
+                            $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph Auth Complete - Ready for Exchange"
+                            $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
+                            $script:clientAuthControls[$clientNum].ExchangeButton.Enabled = $true
+                            $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online Auth button is now enabled. Click it to proceed.`r`n")
+                        } else {
+                            $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph Auth Complete - Ready to Generate Reports"
+                            $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Green
+                            Update-GenerateReportsButtonForClient -ClientNumber $clientNum
+                            $script:authStatusTextBox.AppendText("Client $clientNum Ready to generate reports (Graph-only). Click 'Generate Reports'.`r`n")
+                            # Graph-only: show ticket controls (no Exchange Auth needed)
+                            $script:clientAuthControls[$clientNum].TicketLabel.Visible = $true
+                            $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
+                            $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
+                            $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
+                        }
                         $this.Text = "Graph Auth OK"
                         
-                        # Show user filtering controls after Graph Auth
+                        # Hide app reg tenant selector, show user filtering controls after Graph Auth
+                        if ($script:clientAuthControls[$clientNum].AppRegTenantLabel) { $script:clientAuthControls[$clientNum].AppRegTenantLabel.Visible = $false }
+                        if ($script:clientAuthControls[$clientNum].AppRegTenantCombo) { $script:clientAuthControls[$clientNum].AppRegTenantCombo.Visible = $false }
                         $script:clientAuthControls[$clientNum].UserFilterCheckBox.Visible = $true
                         $script:clientAuthControls[$clientNum].UserFilterCheckBox.Enabled = $true
                         $script:clientAuthControls[$clientNum].UserSearchTextBox.Visible = $true
@@ -9699,7 +10335,6 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:clientAuthControls[$clientNum].UserValidationLabel.Visible = $true
                         
                         $script:authStatusTextBox.AppendText("Client $clientNum Graph authentication successful! Tenant: $tenantName`r`n")
-                        $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online Auth button is now enabled. Click it to proceed.`r`n")
                     } elseif ($response -like "GRAPH_AUTH_FAILED:*") {
                         $errorMsg = $response -replace "GRAPH_AUTH_FAILED:", ""
                         $this.Enabled = $true
@@ -9809,13 +10444,12 @@ if (Test-Path `$ReportSelectionsFile) {
                         $this.Enabled = $false
                         $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication successful!`r`n")
                         
-                        # Show ticket controls and Generate Reports button
+                        # Show ticket controls and Generate Reports button (if required auth is complete)
                         $script:clientAuthControls[$clientNum].TicketLabel.Visible = $true
                         $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
                         $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
                         $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
-                        $script:clientAuthControls[$clientNum].GenerateReportsButton.Visible = $true
-                        $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $true
+                        Update-GenerateReportsButtonForClient -ClientNumber $clientNum
 
                         # Show and enable Extract Emails button (both auths now complete)
                         $script:clientAuthControls[$clientNum].ExtractEmailsButton.Visible = $true
@@ -9898,14 +10532,14 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:clientCacheDirs.Remove($clientNum)
                     }
                     
-                    # Reset UI controls
+                    # Reset UI controls (visibility based on report selections)
                     $script:clientAuthControls[$clientNum].ClientLabel.Text = "Client $clientNum"
-                    $script:clientAuthControls[$clientNum].StatusLabel.Text = "Ready for Graph Auth"
+                    $required = Get-CurrentRequiredAuth
+                    $script:clientAuthControls[$clientNum].StatusLabel.Text = if ($required.NeedsGraph) { "Ready for Graph Auth" } else { "Ready for Exchange Auth" }
                     $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Blue
-                    $script:clientAuthControls[$clientNum].GraphButton.Enabled = $true
-                    $script:clientAuthControls[$clientNum].GraphButton.Text = "Graph Auth"
-                    $script:clientAuthControls[$clientNum].ExchangeButton.Enabled = $false
-                    $script:clientAuthControls[$clientNum].ExchangeButton.Text = "Exchange Online Auth"
+                    Update-AuthButtonVisibilityForClient -ClientNumber $clientNum
+                    if ($script:clientAuthControls[$clientNum].GraphButton) { $script:clientAuthControls[$clientNum].GraphButton.Text = "Graph Auth" }
+                    if ($script:clientAuthControls[$clientNum].ExchangeButton) { $script:clientAuthControls[$clientNum].ExchangeButton.Text = "Exchange Online Auth" }
                     
                     $script:authStatusTextBox.AppendText("Client $clientNum authentication reset complete. Ready for full authentication.`r`n")
                     $script:authStatusTextBox.ScrollToCaret()
@@ -10331,7 +10965,7 @@ if (Test-Path `$ReportSelectionsFile) {
         # Add all controls to main panel
         $bulkMainPanel.Controls.AddRange(@(
             $bulkTitleLabel, $bulkDescLabel, $bulkConfigGroupBox, $bulkReportsGroupBox,
-            $bulkStartButton, $bulkProgressLabel, $bulkStatusTextBox, $bulkCloseButton
+            $bulkStartButton, $bulkAnalyzeSingleBtn, $bulkAnalyzeAllBtn, $bulkProgressLabel, $bulkStatusTextBox, $bulkCloseButton
         ))
 
         $bulkForm.Controls.Add($bulkMainPanel)
