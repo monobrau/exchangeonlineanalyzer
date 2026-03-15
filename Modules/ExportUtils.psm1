@@ -2012,6 +2012,35 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
             }
         } catch { $exportError = $_ }
 
+        # Rule-based automated analysis (reduces LLM reliance)
+        try {
+            $reportAnalysisPath = Join-Path $PSScriptRoot 'ReportAnalysis.psm1'
+            if (Test-Path $reportAnalysisPath) {
+                $statusMsg = "Running rule-based analysis..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
+                Import-Module $reportAnalysisPath -Force -ErrorAction Stop
+                $analysisResult = Get-ReportFindings -Report $report
+                $report.AutomatedFindings = $analysisResult.Findings
+                $report.RiskScore = $analysisResult.RiskScore
+                $report.AutomatedSummary = $analysisResult.Summary
+                if ($analysisResult.Findings -and $analysisResult.Findings.Count -gt 0) {
+                    $findingsCsv = Join-Path $report.OutputFolder "Findings$ticketSuffix.csv"
+                    $analysisResult.Findings | Export-Csv -Path $findingsCsv -NoTypeInformation -Encoding UTF8
+                    $report.FilePaths.FindingsCsv = $findingsCsv
+                }
+                $findingsJson = Join-Path $report.OutputFolder "Findings$ticketSuffix.json"
+                @{ Findings = $analysisResult.Findings; RiskScore = $analysisResult.RiskScore } | ConvertTo-Json -Depth 5 | Out-File -Path $findingsJson -Encoding utf8
+                $report.FilePaths.FindingsJson = $findingsJson
+                $autoSummaryPath = Join-Path $report.OutputFolder "_Automated_Summary$ticketSuffix.txt"
+                $analysisResult.Summary | Out-File -Path $autoSummaryPath -Encoding utf8
+                $report.FilePaths.AutomatedSummaryTxt = $autoSummaryPath
+                Write-Host "Automated analysis: $($analysisResult.Findings.Count) findings, Risk $($analysisResult.RiskScore.Level)" -ForegroundColor Green
+            }
+        } catch {
+            Write-Warning "Rule-based analysis failed: $($_.Exception.Message)"
+        }
+
         # Save only LLM instructions as TXT (no other text files on disk)
         try {
             $statusMsg = "Generating AI readme instructions..."
