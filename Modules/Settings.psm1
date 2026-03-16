@@ -104,12 +104,12 @@ function Get-DefaultSettings {
         GeminiApiKey = ''
         ClaudeApiKey = ''
         TimeZone = 'CST'
-        AdminUsernames = 'rrc,rradmin,rrcadmin,rmmadmin'
-        InternalTeamDisplayNames = 'River Run,RRC Admin,Managed Services'
+        AdminUsernames = 'admin,admin1,serviceadmin'
+        InternalTeamDisplayNames = 'Internal Team,Managed Services'
         AuthorizedISPs = 'Comcast,Charter,CenturyLink,Verizon,Brightspeed,AT&T,T-Mobile'
         InFlightWiFiProviders = 'Anuvu,Gogo,Viasat,Panasonic Avionics'
         ServicePrincipalNames = 'Microsoft Graph Command Line Tools'
-        KnownAdmins = 'Jeff Beyer'
+        KnownAdmins = ''
         ClientContactOverrides = '{}'
         ThirdPartyMFA = ''
         MemberberryEnabled = $false
@@ -783,7 +783,7 @@ $TicketContent
 Action Required: No action required.
 
 The detected file is Advanced IP Scanner, a deprecated network scanning tool. 
-While River Run historically used this tool, it is now deprecated because it has 
+While The organization historically used this tool, it is now deprecated because it has 
 not received updates in over 3 years and contains unpatched vulnerabilities.
 
 Mitigation will complete automatically on the next system reboot. No action is 
@@ -802,7 +802,7 @@ by the security agent.
 
 - **🚫 DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request
 - **🚫 DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement
-- **Narrative**: Explain that while River Run historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities
+- **Narrative**: Explain that while The organization historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities
 - **Replacement**: Suggest "Angry IP Scanner" ONLY if the client requires IP scanning functionality. Explicitly state this is a recommendation for them to implement if needed
 
 **These constraints are ALSO detailed in the GLOBAL EXCEPTIONS section below - check there for full context.**
@@ -815,7 +815,7 @@ by the security agent.
 
 1. **Check the CLIENT EXCEPTIONS section** for Name Preferences
 2. **If a preference exists**, you MUST use the preferred name
-3. **Example**: If you see "**Joseph Nedvidek** → Use preferred name: **Joe**", address as "Hi Joe," NOT "Hi Joseph,"
+3. **Example**: If you see "**John Smith** → Use preferred name: **John**", address as "Hi John," NOT "Hi John Smith,"
 
 **Failure to use preferred names is a critical error and will result in rejection.**
 
@@ -930,7 +930,7 @@ by the security agent.
     
     # Parse comma-separated lists
     $adminUsers = if ($Settings.AdminUsernames) { ($Settings.AdminUsernames -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { '[admin], [service_account], [rmm_account]' }
-    $internalTeams = if ($Settings.InternalTeamDisplayNames) { ($Settings.InternalTeamDisplayNames -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { 'Managed Services' }
+    $internalTeams = if ($Settings.InternalTeamDisplayNames) { ($Settings.InternalTeamDisplayNames -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { 'Internal Team, Managed Services' }
     $authorizedISPs = if ($Settings.AuthorizedISPs) { ($Settings.AuthorizedISPs -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { 'Comcast, Charter, CenturyLink, Verizon, Brightspeed, AT&T, T-Mobile' }
     $inFlightWiFi = if ($Settings.InFlightWiFiProviders) { ($Settings.InFlightWiFiProviders -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { 'Anuvu, Gogo, Viasat, Panasonic Avionics' }
     $servicePrincipals = if ($Settings.ServicePrincipalNames) { ($Settings.ServicePrincipalNames -split ',' | ForEach-Object { $_.Trim() }) -join ', ' } else { 'Microsoft Graph Command Line Tools' }
@@ -1206,7 +1206,7 @@ Clarification Questions [Ask 2 questions here regarding tuning, specific client 
 Action Required: No action required.
 
 The detected file is Advanced IP Scanner, a deprecated network scanning tool. 
-While River Run historically used this tool, it is now deprecated because it has 
+While The organization historically used this tool, it is now deprecated because it has 
 not received updates in over 3 years and contains unpatched vulnerabilities.
 
 Mitigation will complete automatically on the next system reboot. No action is 
@@ -1225,7 +1225,7 @@ by the security agent.
 
 - **🚫 DO NOT draft an allow-list request to the SOC** - Advanced IP Scanner does NOT need an allow-list request
 - **🚫 DO NOT offer to install Angry IP Scanner** - Only suggest it as a recommendation for the client to implement
-- **Narrative**: Explain that while River Run historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities
+- **Narrative**: Explain that while The organization historically used this tool, it is now deprecated because it has not received updates in over 3 years and contains unpatched vulnerabilities
 - **Replacement**: Suggest "Angry IP Scanner" ONLY if the client requires IP scanning functionality. Explicitly state this is a recommendation for them to implement if needed
 
 ---
@@ -1236,7 +1236,7 @@ by the security agent.
 
 1. **Check the CLIENT EXCEPTIONS section** for Name Preferences
 2. **If a preference exists**, you MUST use the preferred name
-3. **Example**: If you see "**Joseph Nedvidek** → Use preferred name: **Joe**", address as "Hi Joe," NOT "Hi Joseph,"
+3. **Example**: If you see "**John Smith** → Use preferred name: **John**", address as "Hi John," NOT "Hi John Smith,"
 
 **Failure to use preferred names is a critical error and will result in rejection.**
 
@@ -1690,11 +1690,11 @@ function Extract-EmailsFromTicket {
         $dl = $d.ToLower().Trim()
         if ([string]::IsNullOrWhiteSpace($dl)) { continue }
         [void]$domainSet.Add($dl)
-        # Add variant: zillihospitalitygroup.onmicrosoft.com -> zillihospitalitygroup.com
+        # Add variant: exampletenant.onmicrosoft.com -> exampletenant.com
         if ($dl -match '^(.+)\.onmicrosoft\.com$') {
             [void]$domainSet.Add("$($matches[1]).com")
         }
-        # Add variant: zillihospitalitygroup.com -> zillihospitalitygroup.onmicrosoft.com
+        # Add variant: exampletenant.com -> exampletenant.onmicrosoft.com
         if ($dl -match '^(.+)\.(com|net|org|edu|gov)$' -and -not $dl.EndsWith('.onmicrosoft.com')) {
             [void]$domainSet.Add("$($matches[1]).onmicrosoft.com")
         }
