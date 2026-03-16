@@ -65,6 +65,8 @@ function Save-GraphAppCredentialToWCM {
     <#
     .SYNOPSIS
         Saves Graph app credentials to Windows Credential Manager.
+    .PARAMETER TenantDisplayName
+        Optional. Tenant display name to store for dropdown display (avoids Graph API lookup later).
     .NOTES
         Uses CredentialManager module when available. Falls back to cmdkey on pwsh (CredentialManager
         fails in pwsh due to System.Web dependency).
@@ -75,12 +77,15 @@ function Save-GraphAppCredentialToWCM {
         [Parameter(Mandatory = $true)]
         [string]$ClientId,
         [Parameter(Mandatory = $true)]
-        [string]$ClientSecret
+        [string]$ClientSecret,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantDisplayName
     )
     $target = "$script:credTargetPrefix$TenantId"
     $userName = "${TenantId}|${ClientId}"
 
     # Try CredentialManager first (works in Windows PowerShell 5.1)
+    $usedCredMgr = $false
     if (Get-Module -ListAvailable -Name CredentialManager) {
         try {
             Import-Module CredentialManager -ErrorAction Stop
@@ -90,38 +95,73 @@ function Save-GraphAppCredentialToWCM {
             } catch {
                 New-StoredCredential -Target $target -Credentials $cred -ErrorAction Stop | Out-Null
             }
-            return
+            $usedCredMgr = $true
         } catch {
             # CredentialManager fails in pwsh (System.Web.Membership not in .NET Core)
         }
     }
 
-    # Fallback: cmdkey (built-in, works in pwsh)
-    try {
-        $targetArg = "/generic:$target"
-        $userArg = "/user:$userName"
-        $passArg = "/pass:$ClientSecret"
-        $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList $targetArg, $userArg, $passArg -Wait -PassThru -WindowStyle Hidden
-        if ($proc.ExitCode -ne 0) {
-            throw "cmdkey exited with code $($proc.ExitCode)"
+    if (-not $usedCredMgr) {
+        # Fallback: cmdkey (built-in, works in pwsh)
+        try {
+            $targetArg = "/generic:$target"
+            $userArg = "/user:$userName"
+            $passArg = "/pass:$ClientSecret"
+            $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList $targetArg, $userArg, $passArg -Wait -PassThru -WindowStyle Hidden
+            if ($proc.ExitCode -ne 0) {
+                throw "cmdkey exited with code $($proc.ExitCode)"
+            }
+        } catch {
+            throw "Could not save to WCM: $($_.Exception.Message). Ensure CredentialManager is installed (Install-Module CredentialManager -Scope CurrentUser) or run from Windows PowerShell 5.1."
         }
-    } catch {
-        throw "Could not save to WCM: $($_.Exception.Message). Ensure CredentialManager is installed (Install-Module CredentialManager -Scope CurrentUser) or run from Windows PowerShell 5.1."
     }
+
+    # Store tenant display name for dropdown (avoids Graph API lookup later)
+    if ($TenantDisplayName -and -not [string]::IsNullOrWhiteSpace($TenantDisplayName)) {
+        $nameTarget = "${script:credTargetPrefix}${TenantId}-DisplayName"
+        try {
+            if (Get-Module -ListAvailable -Name CredentialManager) {
+                Import-Module CredentialManager -ErrorAction Stop
+                $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
+                try { New-StoredCredential -Target $nameTarget -Credentials $nameCred -Persist LocalMachine -ErrorAction Stop | Out-Null }
+                catch { New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null }
+            } else {
+                Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden | Out-Null
+            }
+        } catch { /* non-fatal */ }
+    }
+}
+
+function _Get-StoredDisplayName {
+    param([string]$TenantId)
+    $target = "${script:credTargetPrefix}${TenantId}-DisplayName"
+    try {
+        if (Get-Module -ListAvailable -Name CredentialManager) {
+            Import-Module CredentialManager -ErrorAction Stop
+            $c = Get-StoredCredential -Target $target -ErrorAction SilentlyContinue
+            if ($c) { return $c.GetNetworkCredential().Password }
+        }
+        $obj = _ReadCredentialViaCredRead -Target $target
+        if ($obj -and $obj.CredentialBlob) { return $obj.CredentialBlob }
+    } catch {}
+    return $null
 }
 
 function Remove-GraphAppCredentialFromWCM {
     param([Parameter(Mandatory = $true)][string]$TenantId)
     $target = "$script:credTargetPrefix$TenantId"
+    $nameTarget = "${script:credTargetPrefix}${TenantId}-DisplayName"
     if (Get-Module -ListAvailable -Name CredentialManager) {
         try {
             Import-Module CredentialManager -ErrorAction Stop
             Remove-StoredCredential -Target $target -ErrorAction SilentlyContinue
+            Remove-StoredCredential -Target $nameTarget -ErrorAction SilentlyContinue
             return
         } catch {}
     }
     try {
         Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$target" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+        Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$nameTarget" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
     } catch {}
 }
 
@@ -181,7 +221,8 @@ function Get-WCMTenantListWithNames {
     $result = @()
     $ids = Get-WCMTenantIds
     foreach ($tid in $ids) {
-        $name = Get-TenantDisplayNameFromWCM -TenantId $tid
+        $name = _Get-StoredDisplayName -TenantId $tid
+        if (-not $name) { $name = Get-TenantDisplayNameFromWCM -TenantId $tid }
         $displayText = if ($name) { "$name ($tid)" } else { $tid }
         $result += [pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText }
     }
@@ -280,7 +321,11 @@ function Export-GraphAppCredentialsToFile {
     $creds = @()
     foreach ($tid in $ids) {
         $c = Get-GraphAppCredentialFromWCM -TenantId $tid
-        if ($c) { $creds += $c }
+        if ($c) {
+            $dn = _Get-StoredDisplayName -TenantId $tid
+            if ($dn) { $c | Add-Member -NotePropertyName 'TenantDisplayName' -NotePropertyValue $dn -Force }
+            $creds += $c
+        }
     }
     if ($creds.Count -eq 0) { throw "Could not read any credentials." }
     $json = $creds | ConvertTo-Json -Compress
@@ -327,8 +372,9 @@ function Import-GraphAppCredentialsFromFile {
         $tid = if ($c.TenantId) { $c.TenantId } elseif ($c.PSObject.Properties['TenantId']) { $c.TenantId } else { continue }
         $cid = if ($c.ClientId) { $c.ClientId } elseif ($c.PSObject.Properties['ClientId']) { $c.ClientId } else { continue }
         $secret = if ($c.ClientSecret) { $c.ClientSecret } elseif ($c.PSObject.Properties['ClientSecret']) { $c.ClientSecret } else { continue }
+        $displayName = if ($c.TenantDisplayName) { $c.TenantDisplayName } elseif ($c.PSObject.Properties['TenantDisplayName']) { $c.TenantDisplayName } else { $null }
         try {
-            Save-GraphAppCredentialToWCM -TenantId $tid -ClientId $cid -ClientSecret $secret
+            Save-GraphAppCredentialToWCM -TenantId $tid -ClientId $cid -ClientSecret $secret -TenantDisplayName $displayName
             $count++
         } catch { Write-Warning "Failed to import $tid : $($_.Exception.Message)" }
     }

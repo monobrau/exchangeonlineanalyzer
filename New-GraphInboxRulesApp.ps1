@@ -125,8 +125,13 @@ Write-Host "  Secret created (expires: $($cred.endDateTime))" -ForegroundColor G
 if ($SaveToWCM) {
     Write-Host "`nSaving to Windows Credential Manager..." -ForegroundColor Yellow
     try {
+        $tenantDisplayName = $null
+        try {
+            $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
+            if ($org.value -and $org.value[0].displayName) { $tenantDisplayName = $org.value[0].displayName }
+        } catch {}
         Import-Module (Join-Path $projectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction Stop
-        Save-GraphAppCredentialToWCM -TenantId $tenantId -ClientId $app.AppId -ClientSecret $cred.secretText
+        Save-GraphAppCredentialToWCM -TenantId $tenantId -ClientId $app.AppId -ClientSecret $cred.secretText -TenantDisplayName $tenantDisplayName
         Write-Host "  Saved. Reports will use these credentials when pulling for this tenant." -ForegroundColor Green
     } catch {
         Write-Warning "Could not save to WCM: $($_.Exception.Message). Install-Module CredentialManager -Scope CurrentUser"

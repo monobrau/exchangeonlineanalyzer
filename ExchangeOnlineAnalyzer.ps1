@@ -9981,7 +9981,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         try {
                             if (Get-Command Test-RateLimit -ErrorAction SilentlyContinue) {
                                 $rateLimit = Test-RateLimit -Key "user-validation-client-$clientNum" -MaxRequests 10 -WindowSeconds 60
-                                if ($rateLimit -and -not $rateLimit.Allowed) {
+                                if ($null -ne $rateLimit -and ($rateLimit.Allowed -eq $false)) {
                                     [System.Windows.Forms.MessageBox]::Show($rateLimit.Message, "Rate Limit Exceeded", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                                     $this.Enabled = $true
                                     return

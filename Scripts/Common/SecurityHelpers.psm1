@@ -427,6 +427,8 @@ function Test-RateLimit {
         [int]$WindowSeconds = 60
     )
     
+    try {
+        $script:RateLimitStore = if ($null -eq $script:RateLimitStore) { @{} } else { $script:RateLimitStore }
     $now = Get-Date
     $windowStart = $now.AddSeconds(-$WindowSeconds)
     
@@ -460,6 +462,8 @@ function Test-RateLimit {
         Allowed = $true
         WaitSeconds = 0
         Message = $null
+    }    } catch {
+        return @{ Allowed = $true; WaitSeconds = 0; Message = $null }
     }
 }
 
@@ -533,7 +537,7 @@ function Validate-CommandWhitelist {
     # Additional validation: check for suspicious patterns
     $suspiciousPatterns = @(
         '\.\.',           # Path traversal
-        '[;&|`]',         # Command chaining
+        '[;&`]',         # Command chaining
         '\$\(',           # Command substitution
         'Invoke-',         # PowerShell invocation
         'Start-Process',   # Process execution

@@ -417,20 +417,21 @@ function Invoke-IndependentGraphCollectorsParallel {
     $exportUtilsPath = Join-Path $PSScriptRoot 'ExportUtils.psm1'
     $securityAnalysisPath = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
     $collectorScript = {
-        param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath)
+        param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath, $UseDateRange, $StartDate, $EndDate)
         # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
         Import-Module $ExportUtilsPath -Force -ErrorAction Stop
         Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+        $dateArgs = if ($UseDateRange -and $StartDate -and $EndDate) { @{ StartDate = $StartDate; EndDate = $EndDate } } else { @{ DaysBack = $DaysBack } }
         switch ($CollectorName) {
-            'AuditLogs' { return Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
+            'AuditLogs' { return Get-GraphAuditLogs @dateArgs -SelectedUsers $SelectedUsers }
             'CAPolicies' { Import-Module $SecurityAnalysisPath -Force -ErrorAction SilentlyContinue; return Get-ConditionalAccessPolicies -ErrorAction Stop }
             'AppRegistrations' { Import-Module $SecurityAnalysisPath -Force -ErrorAction SilentlyContinue; return Get-AppRegistrations -ErrorAction Stop }
-            'SharePointActivity' { return Get-SharePointActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
-            'OneDriveActivity' { return Get-OneDriveActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
-            'TeamsActivity' { return Get-TeamsActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
+            'SharePointActivity' { return Get-SharePointActivityLogs @dateArgs -SelectedUsers $SelectedUsers }
+            'OneDriveActivity' { return Get-OneDriveActivityLogs @dateArgs -SelectedUsers $SelectedUsers }
+            'TeamsActivity' { return Get-TeamsActivityLogs @dateArgs -SelectedUsers $SelectedUsers }
             'SharePointSharing' { return Get-SharePointSharingLinks -SelectedUsers $SelectedUsers }
-            'SecurityAlerts' { return Get-SecurityAlerts -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
-            'SecurityIncidents' { return Get-SecurityIncidents -DaysBack $DaysBack }
+            'SecurityAlerts' { return Get-SecurityAlerts @dateArgs -SelectedUsers $SelectedUsers }
+            'SecurityIncidents' { return Get-SecurityIncidents @dateArgs }
             'MfaCoverage' { return Get-MfaCoverageReport -SelectedUsers $SelectedUsers }
             'UserSecurityGroups' { return Get-UserSecurityGroupsReport -SelectedUsers $SelectedUsers }
             default { return $null }
@@ -459,7 +460,7 @@ function Invoke-IndependentGraphCollectorsParallel {
     foreach ($name in $collectorNames) {
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
-        $null = $ps.AddScript($collectorScript).AddArgument($name).AddArgument($Params.DaysBack).AddArgument($Params.SelectedUsers).AddArgument($exportUtilsPath).AddArgument($securityAnalysisPath)
+        $null = $ps.AddScript($collectorScript).AddArgument($name).AddArgument($Params.DaysBack).AddArgument($Params.SelectedUsers).AddArgument($exportUtilsPath).AddArgument($securityAnalysisPath).AddArgument(($Params.UseDateRange -eq $true)).AddArgument($Params.StartDate).AddArgument($Params.EndDate)
         $jobs.Add(@{ Name = $name; PowerShell = $ps; Handle = $ps.BeginInvoke() }) | Out-Null
     }
     foreach ($j in $jobs) {
@@ -528,6 +529,10 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [int]$MessageTraceDaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @(),
         [Parameter(Mandatory=$false)]
         [string[]]$TicketNumbers = @(),
@@ -580,9 +585,13 @@ function New-SecurityInvestigationReport {
     $report.Investigator = $InvestigatorName
     $report.Company = $CompanyName
     # Timing standard: All date-range exports use start = (now - DaysBack) and end = run time (now).
-    # Message trace, unified audit logs, Graph audit/sign-in, security alerts/incidents all include data through export run time.
+    # When StartDate/EndDate provided, use them for date-filterable reports; otherwise compute from DaysBack.
     if (-not $PSBoundParameters.ContainsKey('DaysBack')) { $DaysBack = 10 }
-    $report.DaysAnalyzed = $DaysBack
+    $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+    if ($useDateRange) {
+        $effectiveDaysBack = [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays))
+    }
+    $report.DaysAnalyzed = if ($useDateRange) { $effectiveDaysBack } else { $DaysBack }
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
     $report.FilePaths = @{}
     $report.TicketNumbers = $TicketNumbers
@@ -703,6 +712,9 @@ function New-SecurityInvestigationReport {
                 DaysBack = $DaysBack
                 MessageTraceDaysBack = $MessageTraceDaysBack
                 SignInLogsDaysBack = $SignInLogsDaysBack
+                StartDate = $StartDate
+                EndDate = $EndDate
+                UseDateRange = $useDateRange
                 SelectedUsers = $SelectedUsers
                 UseSequentialInboxRules = (-not $MainForm -or -not $StatusLabel)  # Worker/runspace: avoid parallel inbox rules to prevent extra auth prompts
                 IncludeMessageTrace = $IncludeMessageTrace
@@ -749,7 +761,7 @@ function New-SecurityInvestigationReport {
                 if ($Params.IncludeMessageTrace) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting message trace..." -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: collecting message trace..." } catch {}
-                    $r.MessageTrace = Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers
+                    $r.MessageTrace = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-ExchangeMessageTrace -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers }
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" } catch {}
                 }
@@ -785,7 +797,7 @@ function New-SecurityInvestigationReport {
                     try {
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting unified audit logs..." -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: collecting unified audit logs... (this may take 10+ minutes)" } catch {}
-                        $r.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes
+                        $r.UnifiedAuditLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-UnifiedAuditLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes }
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" } catch {}
                     }
@@ -829,7 +841,7 @@ function New-SecurityInvestigationReport {
                 if ($Params.IncludeAuditLogs) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: collecting audit logs..." -Level Info -Component GraphRS }
                     try { & $writeStatus "Graph runspace: collecting audit logs..." } catch {}
-                    $r.AuditLogs = Get-GraphAuditLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers
+                    $r.AuditLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-GraphAuditLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-GraphAuditLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers }
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: audit logs done ($($r.AuditLogs.Count) entries)" -Level Info -Component GraphRS }
                     try { & $writeStatus "Graph runspace: audit logs done ($($r.AuditLogs.Count) entries)" } catch {}
                 }
@@ -837,7 +849,7 @@ function New-SecurityInvestigationReport {
                     try {
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: collecting sign-in logs..." -Level Info -Component GraphRS }
                         try { & $writeStatus "Graph runspace: collecting sign-in logs..." } catch {}
-                        $r.SignInLogs = Get-GraphSignInLogs -DaysBack $Params.SignInLogsDaysBack -SelectedUsers $Params.SelectedUsers
+                        $r.SignInLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-GraphSignInLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-GraphSignInLogs -DaysBack $Params.SignInLogsDaysBack -SelectedUsers $Params.SelectedUsers }
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" -Level Info -Component GraphRS }
                         try { & $writeStatus "Graph runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" } catch {}
                     }
@@ -867,12 +879,12 @@ function New-SecurityInvestigationReport {
                     if ($Params.IncludeConditionalAccessPolicies) { try { $r.ConditionalAccessPolicies = Get-ConditionalAccessPolicies -ErrorAction Stop } catch { $r.ConditionalAccessPolicies = @(); $r.CAPoliciesError = $_.Exception.Message } }
                     if ($Params.IncludeAppRegistrations) { try { $r.AppRegistrations = Get-AppRegistrations -ErrorAction Stop } catch { $r.AppRegistrations = @(); $r.AppRegistrationsError = $_.Exception.Message } }
                 }
-                if ($Params.IncludeSharePointActivity) { try { $r.SharePointActivity = Get-SharePointActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.SharePointActivity = @(); $r.SharePointActivityError = $_.Exception.Message } }
-                if ($Params.IncludeOneDriveActivity) { try { $r.OneDriveActivity = Get-OneDriveActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.OneDriveActivity = @(); $r.OneDriveActivityError = $_.Exception.Message } }
-                if ($Params.IncludeTeamsActivity) { try { $r.TeamsActivity = Get-TeamsActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.TeamsActivity = @(); $r.TeamsActivityError = $_.Exception.Message } }
+                if ($Params.IncludeSharePointActivity) { try { $r.SharePointActivity = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-SharePointActivityLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-SharePointActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } } catch { $r.SharePointActivity = @(); $r.SharePointActivityError = $_.Exception.Message } }
+                if ($Params.IncludeOneDriveActivity) { try { $r.OneDriveActivity = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-OneDriveActivityLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-OneDriveActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } } catch { $r.OneDriveActivity = @(); $r.OneDriveActivityError = $_.Exception.Message } }
+                if ($Params.IncludeTeamsActivity) { try { $r.TeamsActivity = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-TeamsActivityLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-TeamsActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } } catch { $r.TeamsActivity = @(); $r.TeamsActivityError = $_.Exception.Message } }
                 if ($Params.IncludeSharePointSharing) { try { $r.SharePointSharing = Get-SharePointSharingLinks -SelectedUsers $Params.SelectedUsers } catch { $r.SharePointSharing = @(); $r.SharePointSharingError = $_.Exception.Message } }
-                if ($Params.IncludeSecurityAlerts) { try { $r.SecurityAlerts = Get-SecurityAlerts -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } catch { $r.SecurityAlerts = @(); $r.SecurityAlertsError = $_.Exception.Message } }
-                if ($Params.IncludeSecurityIncidents) { try { $r.SecurityIncidents = Get-SecurityIncidents -DaysBack $Params.DaysBack } catch { $r.SecurityIncidents = @(); $r.SecurityIncidentsError = $_.Exception.Message } }
+                if ($Params.IncludeSecurityAlerts) { try { $r.SecurityAlerts = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-SecurityAlerts -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-SecurityAlerts -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } } catch { $r.SecurityAlerts = @(); $r.SecurityAlertsError = $_.Exception.Message } }
+                if ($Params.IncludeSecurityIncidents) { try { $r.SecurityIncidents = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-SecurityIncidents -StartDate $Params.StartDate -EndDate $Params.EndDate } else { Get-SecurityIncidents -DaysBack $Params.DaysBack } } catch { $r.SecurityIncidents = @(); $r.SecurityIncidentsError = $_.Exception.Message } }
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: complete" -Level Info -Component GraphRS }
                 try { & $writeStatus "Graph runspace: complete" } catch {}
                 return $r
@@ -907,12 +919,12 @@ function New-SecurityInvestigationReport {
 
                 # Exchange in main thread (reuses existing session)
                 $writeStatus = { param($m) if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 } }
-                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers }
+                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers } }
                 if ($IncludeInboxRules) { try { & $writeStatus "Exchange (main): collecting inbox rules..." } catch {}; $exchangeResult.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential $true }
                 if ($IncludeTransportRules) { $exchangeResult.TransportRules = Get-ExchangeTransportRules }
                 if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
                 if ($IncludeMailboxForwarding) { $exchangeResult.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers }
-                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
+                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
                 try { & $writeStatus "Exchange (main): complete" } catch {}
 
                 $graphResultRaw = $graphPs.EndInvoke($graphHandle)
@@ -987,7 +999,7 @@ function New-SecurityInvestigationReport {
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                 Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.MessageTrace = Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers
+                $report.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers }
                 Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
                 Invoke-DoEventsSafe
             }
@@ -1043,7 +1055,7 @@ function New-SecurityInvestigationReport {
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.UnifiedAuditLogs = Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -RecordTypes $UnifiedAuditLogRecordTypes
+                    $report.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -RecordTypes $UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -RecordTypes $UnifiedAuditLogRecordTypes }
                     Write-Host "Collected $($report.UnifiedAuditLogs.Count) unified audit log entries" -ForegroundColor Green
                     Invoke-DoEventsSafe
                 } catch {
@@ -1113,7 +1125,7 @@ function New-SecurityInvestigationReport {
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.SignInLogs = Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers
+                    $report.SignInLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-GraphSignInLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers }
                     if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                         Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
                     }
@@ -1203,6 +1215,9 @@ function New-SecurityInvestigationReport {
             Write-Host $statusMsg -ForegroundColor Cyan
             $parallelParams = @{
                 DaysBack = $DaysBack
+                StartDate = $StartDate
+                EndDate = $EndDate
+                UseDateRange = $useDateRange
                 SelectedUsers = $SelectedUsers
                 IncludeAuditLogs = $IncludeAuditLogs
                 IncludeConditionalAccessPolicies = $IncludeConditionalAccessPolicies
@@ -1231,7 +1246,7 @@ function New-SecurityInvestigationReport {
                 $statusMsg = "Collecting audit logs from Microsoft Graph..."
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.AuditLogs = Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                $report.AuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-GraphAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-GraphAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
                 Write-Host "Collected $($report.AuditLogs.Count) audit log entries" -ForegroundColor Green
             }
             if ($IncludeMfaCoverage) {
@@ -1269,7 +1284,7 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting SharePoint activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.SharePointActivity = Get-SharePointActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    $report.SharePointActivity = if ($useDateRange -and $StartDate -and $EndDate) { Get-SharePointActivityLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-SharePointActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
                     Write-Host "Collected $($report.SharePointActivity.Count) SharePoint activity entries" -ForegroundColor Green
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
@@ -1295,7 +1310,7 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting OneDrive activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.OneDriveActivity = Get-OneDriveActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    $report.OneDriveActivity = if ($useDateRange -and $StartDate -and $EndDate) { Get-OneDriveActivityLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-OneDriveActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
                     Write-Host "Collected $($report.OneDriveActivity.Count) OneDrive activity entries" -ForegroundColor Green
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
@@ -1321,7 +1336,7 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting Teams activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.TeamsActivity = Get-TeamsActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    $report.TeamsActivity = if ($useDateRange -and $StartDate -and $EndDate) { Get-TeamsActivityLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-TeamsActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
                     Write-Host "Collected $($report.TeamsActivity.Count) Teams activity entries" -ForegroundColor Green
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
@@ -1363,7 +1378,7 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting security alerts (last $DaysBack days)... Requires SecurityAlert.Read.All permission."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.SecurityAlerts = Get-SecurityAlerts -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    $report.SecurityAlerts = if ($useDateRange -and $StartDate -and $EndDate) { Get-SecurityAlerts -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-SecurityAlerts -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
                     Write-Host "Collected $($report.SecurityAlerts.Count) security alerts" -ForegroundColor Green
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
@@ -1389,7 +1404,7 @@ function New-SecurityInvestigationReport {
                     $statusMsg = "Collecting security incidents (last $DaysBack days)... Requires SecurityIncident.Read.All permission."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.SecurityIncidents = Get-SecurityIncidents -DaysBack $DaysBack
+                    $report.SecurityIncidents = if ($useDateRange -and $StartDate -and $EndDate) { Get-SecurityIncidents -StartDate $StartDate -EndDate $EndDate } else { Get-SecurityIncidents -DaysBack $DaysBack }
                     Write-Host "Collected $($report.SecurityIncidents.Count) security incidents" -ForegroundColor Green
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*" -or $_.Exception.Message -like "*Authorization_RequestDenied*") {
@@ -2222,13 +2237,25 @@ function Get-ExchangeMessageTrace {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
 
     try {
-        Write-Host "Collecting message trace data (last $DaysBack days, through run time)..." -ForegroundColor Yellow
-        $end = (Get-Date).ToUniversalTime()
-        $start = $end.AddDays(-$DaysBack).Date # start at 00:00Z; last window ends at $end (run time)
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        if ($useDateRange) {
+            $start = $StartDate.ToUniversalTime()
+            $end = $EndDate.ToUniversalTime()
+            $fmt = "yyyy-MM-dd"
+            Write-Host ("Collecting message trace data ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
+        } else {
+            $end = (Get-Date).ToUniversalTime()
+            $start = $end.AddDays(-$DaysBack).Date # start at 00:00Z; last window ends at $end (run time)
+            Write-Host "Collecting message trace data (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        }
 
         $results = New-Object System.Collections.Generic.List[object]
 
@@ -2243,11 +2270,12 @@ function Get-ExchangeMessageTrace {
             }
             
             # Query message trace for each selected user (server-side filtering)
+            $daysToIterate = if ($useDateRange) { [Math]::Max(1, [int](($end - $start).TotalDays)) } else { $DaysBack }
             foreach ($upn in $selectedUserList) {
                 # Chunk by day to avoid server-side caps; last window extends to run time
-                for ($d = 0; $d -lt $DaysBack; $d++) {
+                for ($d = 0; $d -lt $daysToIterate; $d++) {
                     $winStart = $start.AddDays($d)
-                    $winEnd   = if ($d -eq $DaysBack - 1) { $end } else { $winStart.AddDays(1) }
+                    $winEnd   = if ($d -eq $daysToIterate - 1) { $end } else { $winStart.AddDays(1) }
 
                     try {
                         if ($hasV2) {
@@ -2340,9 +2368,10 @@ function Get-ExchangeMessageTrace {
         } else {
             # No selection - get all message traces
             # Chunk by day to avoid server-side caps; last window extends to run time
-            for ($d = 0; $d -lt $DaysBack; $d++) {
+            $daysToIterateAll = if ($useDateRange) { [Math]::Max(1, [int](($end - $start).TotalDays)) } else { $DaysBack }
+            for ($d = 0; $d -lt $daysToIterateAll; $d++) {
                 $winStart = $start.AddDays($d)
-                $winEnd   = if ($d -eq $DaysBack - 1) { $end } else { $winStart.AddDays(1) }
+                $winEnd   = if ($d -eq $daysToIterateAll - 1) { $end } else { $winStart.AddDays(1) }
 
                 try {
                     if ($hasV2) {
@@ -2735,11 +2764,24 @@ function Get-GraphAuditLogs {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
 
     try {
-        Write-Host "Collecting audit logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        if ($useDateRange) {
+            $startUtc = $StartDate.ToUniversalTime()
+            $fmt = "yyyy-MM-dd"
+            Write-Host ("Collecting audit logs ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
+        } else {
+            $startUtc = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max(1,$DaysBack))
+            Write-Host "Collecting audit logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        }
+        $startIso = $startUtc.ToString("s") + "Z"
         # Ensure identity modules are available
         # NOTE: Using defensive import pattern (check cmdlet existence before importing) rather than Import-GraphModulesOnDemand
         # because GraphOnline.psm1 is not imported in this module. This pattern avoids unnecessary imports and works reliably.
@@ -2747,9 +2789,6 @@ function Get-GraphAuditLogs {
             Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
             Import-Module Microsoft.Graph.Authentication -ErrorAction SilentlyContinue | Out-Null
         }
-
-        $startUtc = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max(1,$DaysBack))
-        $startIso = $startUtc.ToString("s") + "Z"
         # Filter "ge" returns from start through run time (no end filter = through now)
 
         $raw = New-Object System.Collections.Generic.List[object]
@@ -2908,6 +2947,10 @@ function Get-UnifiedAuditLogs {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @(),
         [Parameter(Mandatory=$false)]
         [string]$StatusFile = $null,
@@ -2916,7 +2959,17 @@ function Get-UnifiedAuditLogs {
     )
 
     try {
-        Write-Host "Collecting unified audit logs (email audit logs) (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        if ($useDateRange) {
+            $startDate = $StartDate
+            $endDate = $EndDate
+            $fmt = "yyyy-MM-dd"
+            Write-Host ("Collecting unified audit logs ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
+        } else {
+            $startDate = (Get-Date).AddDays(-[Math]::Max(1, $DaysBack))
+            $endDate = Get-Date  # Through run time (same timing as message trace)
+            Write-Host "Collecting unified audit logs (email audit logs) (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        }
         
         # Check if Search-UnifiedAuditLog cmdlet is available (indicates Exchange Online connection)
         if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
@@ -2929,9 +2982,6 @@ function Get-UnifiedAuditLogs {
             Write-Warning "Search-UnifiedAuditLog cmdlet not available. Please ensure Exchange Online Management module is installed."
             return @()
         }
-
-        $startDate = (Get-Date).AddDays(-[Math]::Max(1, $DaysBack))
-        $endDate = Get-Date  # Through run time (same timing as message trace)
 
         $raw = New-Object System.Collections.Generic.List[object]
 
@@ -2954,7 +3004,7 @@ function Get-UnifiedAuditLogs {
             $uniqueSelected = $RecordTypes | Select-Object -Unique
             $uniqueAvailable = $allAvailableRecordTypes | Select-Object -Unique
             
-            # Check if all available types are selected (order doesn't matter)
+            # Check if all available types are selected (order does not matter)
             $allSelected = $true
             foreach ($availableType in $uniqueAvailable) {
                 if ($uniqueSelected -notcontains $availableType) {
@@ -3142,11 +3192,25 @@ function Get-GraphSignInLogs {
         [Parameter(Mandatory=$false)]
         [int]$DaysBack = 7,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
     
     try {
-        Write-Host "Collecting sign-in logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        if ($useDateRange) {
+            $startDate = $StartDate.ToUniversalTime()
+            $daysSpan = [int](($EndDate - $StartDate).TotalDays)
+            $fmt = "yyyy-MM-dd"
+            Write-Host ("Collecting sign-in logs ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
+        } else {
+            $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
+            $daysSpan = $DaysBack
+            Write-Host "Collecting sign-in logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        }
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
@@ -3156,12 +3220,11 @@ function Get-GraphSignInLogs {
         }
         
         # Free tenants are limited to 7 days, Premium tenants can go up to 30 days
-        if ($DaysBack -gt 7) {
+        if ($daysSpan -gt 7) {
             Write-Host "  Note: Retrieving more than 7 days requires Azure AD Premium license." -ForegroundColor Cyan
         }
         
         $allLogs = New-Object System.Collections.ArrayList
-        $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
         $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
         # Filter "ge" returns from start through run time (no end filter = through now)
 
@@ -5140,26 +5203,32 @@ function Get-SharePointActivityLogs {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
-    
+
     try {
-        Write-Host "Collecting SharePoint activity logs (last $DaysBack days)..." -ForegroundColor Yellow
-        
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        $effectiveDaysBack = if ($useDateRange) { [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays)) } else { $DaysBack }
+        Write-Host "Collecting SharePoint activity logs (last $effectiveDaysBack days)..." -ForegroundColor Yellow
+
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
             throw "Microsoft Graph not connected. Cannot collect SharePoint activity logs."
         }
-        
+
         # Use Invoke-MgGraphRequest to call Reports API directly
-        # The Reports API uses function endpoints that return CSV data
+        # The Reports API uses function endpoints that return CSV data (D7, D30, D90 only)
         $results = New-Object System.Collections.ArrayList
-        
+
         # Determine period format (D7, D30, etc.)
-        $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
-        
-        Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
+        $period = if ($effectiveDaysBack -le 7) { "D7" } elseif ($effectiveDaysBack -le 30) { "D30" } else { "D90" }
+
+        Write-Host "  Using period: $period (requested $effectiveDaysBack days)" -ForegroundColor Gray
         
         try {
             # Call the Reports API function endpoint
@@ -5347,25 +5416,31 @@ function Get-OneDriveActivityLogs {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
-    
+
     try {
-        Write-Host "Collecting OneDrive activity logs (last $DaysBack days)..." -ForegroundColor Yellow
-        
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        $effectiveDaysBack = if ($useDateRange) { [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays)) } else { $DaysBack }
+        Write-Host "Collecting OneDrive activity logs (last $effectiveDaysBack days)..." -ForegroundColor Yellow
+
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
             throw "Microsoft Graph not connected. Cannot collect OneDrive activity logs."
         }
-        
-        # Use Invoke-MgGraphRequest to call Reports API directly
+
+        # Use Invoke-MgGraphRequest to call Reports API directly (D7, D30, D90 only)
         $results = New-Object System.Collections.ArrayList
-        
+
         # Determine period format (D7, D30, etc.)
-        $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
-        
-        Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
+        $period = if ($effectiveDaysBack -le 7) { "D7" } elseif ($effectiveDaysBack -le 30) { "D30" } else { "D90" }
+
+        Write-Host "  Using period: $period (requested $effectiveDaysBack days)" -ForegroundColor Gray
         
         try {
             # Call the Reports API function endpoint
@@ -5530,25 +5605,31 @@ function Get-TeamsActivityLogs {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
-    
+
     try {
-        Write-Host "Collecting Teams activity logs (last $DaysBack days)..." -ForegroundColor Yellow
-        
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        $effectiveDaysBack = if ($useDateRange) { [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays)) } else { $DaysBack }
+        Write-Host "Collecting Teams activity logs (last $effectiveDaysBack days)..." -ForegroundColor Yellow
+
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
             throw "Microsoft Graph not connected. Cannot collect Teams activity logs."
         }
-        
-        # Use Invoke-MgGraphRequest to call Reports API directly
+
+        # Use Invoke-MgGraphRequest to call Reports API directly (D7, D30, D90 only)
         $results = New-Object System.Collections.ArrayList
-        
+
         # Determine period format (D7, D30, etc.)
-        $period = if ($DaysBack -le 7) { "D7" } elseif ($DaysBack -le 30) { "D30" } else { "D90" }
-        
-        Write-Host "  Using period: $period (requested $DaysBack days)" -ForegroundColor Gray
+        $period = if ($effectiveDaysBack -le 7) { "D7" } elseif ($effectiveDaysBack -le 30) { "D30" } else { "D90" }
+
+        Write-Host "  Using period: $period (requested $effectiveDaysBack days)" -ForegroundColor Gray
         
         try {
             # Call the Reports API function endpoint
@@ -5804,11 +5885,23 @@ function Get-SecurityAlerts {
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
     
     try {
-        Write-Host "Collecting security alerts (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        if ($useDateRange) {
+            $filterDate = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            $fmt = "yyyy-MM-dd"
+            Write-Host ("Collecting security alerts ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
+        } else {
+            $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            Write-Host "Collecting security alerts (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        }
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
@@ -5821,8 +5914,6 @@ function Get-SecurityAlerts {
         if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
         }
-        
-        $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         $filter = "createdDateTime ge $filterDate"  # Through run time (no end filter = through now)
         
         Write-Host "  Querying Microsoft Graph Security API for alerts..." -ForegroundColor Gray
@@ -5909,11 +6000,23 @@ function Get-SecurityAlerts {
 
 function Get-SecurityIncidents {
     param(
-        [int]$DaysBack = 10
+        [int]$DaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue
     )
     
     try {
-        Write-Host "Collecting security incidents (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+        if ($useDateRange) {
+            $filterDate = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            $fmt = "yyyy-MM-dd"
+            Write-Host ("Collecting security incidents ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
+        } else {
+            $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            Write-Host "Collecting security incidents (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        }
         
         # Check if Microsoft Graph is connected
         $context = Get-MgContext -ErrorAction SilentlyContinue
@@ -5926,8 +6029,6 @@ function Get-SecurityIncidents {
         if (-not (Get-Command Get-MgSecurityIncident -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
         }
-        
-        $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         $filter = "createdDateTime ge $filterDate"  # Through run time (no end filter = through now)
         
         Write-Host "  Querying Microsoft Graph Security API for incidents..." -ForegroundColor Gray

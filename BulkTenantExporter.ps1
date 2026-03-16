@@ -77,15 +77,16 @@ function Search-AndValidateUsers {
         
         $users = @()
         try {
-            # Try server-side filtering first (startsWith) - case-sensitive but we'll also try case variations
+            # Try server-side filtering first (startsWith) - requires ConsistencyLevel eventual for advanced queries
             # Microsoft Graph OData filters are case-sensitive, so try both original and lowercase
-            $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+            $countVar = 'userSearchCount'
+            $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable $countVar -ErrorAction SilentlyContinue
             $searchTermLower = $searchTerm.ToLower()
             $searchTermUpper = $searchTerm.ToUpper()
             $searchTermTitle = (Get-Culture).TextInfo.ToTitleCase($searchTermLower)
-            $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-            $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-            $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+            $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable $countVar -ErrorAction SilentlyContinue
+            $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable $countVar -ErrorAction SilentlyContinue
+            $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable $countVar -ErrorAction SilentlyContinue
             $users = @($users1) + @($users2) + @($users3) + @($users4) | Sort-Object UserPrincipalName -Unique
             Write-Host "  Found $($users.Count) users with startsWith filter (tried multiple case variations)"
         } catch {
@@ -1319,6 +1320,7 @@ try {
                             if (-not `$tenantDisplayName) { `$tenantDisplayName = "Tenant" }
                             `$graphAuthenticated = `$true
                             `$script:graphTokenFromWCM = `$wcmToken
+                            `$script:currentTenantId = `$tid
                             Write-Status "Using app-only credentials from Windows Credential Manager"
                             Write-Host "Using app-only credentials from Windows Credential Manager (Tenant: `$tid)" -ForegroundColor Green
                             `$verifiedDomains = @()
@@ -1359,6 +1361,7 @@ try {
                     Connect-MgGraph -Scopes `$scopes -ContextScope Process -NoWelcome -ErrorAction Stop
                     `$mgContext = Get-MgContext -ErrorAction Stop
                     `$graphAuthenticated = `$true
+                    `$script:currentTenantId = `$mgContext.TenantId
                     Write-Status "Graph authentication successful! Tenant: `$(`$mgContext.TenantId)"
                     Write-Host "Graph authentication successful!" -ForegroundColor Green
                     Write-Host "Tenant ID: `$(`$mgContext.TenantId)" -ForegroundColor Cyan
@@ -1505,6 +1508,31 @@ try {
                     continue
                 }
                 
+                # Ensure Graph session exists for Get-MgUser (WCM app-only stores token but doesn't call Connect-MgGraph)
+                `$mgCtx = Get-MgContext -ErrorAction SilentlyContinue
+                if (-not `$mgCtx) {
+                    `$tokenToUse = `$script:graphTokenFromWCM
+                    if (-not `$tokenToUse -and `$script:currentTenantId -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+                        `$tokenToUse = Get-GraphAppTokenFromWCM -TenantId `$script:currentTenantId
+                        if (`$tokenToUse) { `$script:graphTokenFromWCM = `$tokenToUse }
+                    }
+                    if (`$tokenToUse) {
+                        try {
+                            `$secToken = ConvertTo-SecureString `$tokenToUse -AsPlainText -Force
+                            Connect-MgGraph -AccessToken `$secToken -NoWelcome -ErrorAction Stop
+                            Write-Host "Connected Graph session for user validation (app-only)" -ForegroundColor Gray
+                        } catch {
+                            Write-Host "ERROR: Failed to connect Graph for validation: `$(`$_.Exception.Message)" -ForegroundColor Red
+                            Write-CommandResponse "VALIDATE_USERS_FAILED:Failed to connect Graph - `$(`$_.Exception.Message)"
+                            continue
+                        }
+                    } else {
+                        Write-Host "ERROR: No Graph session and no app token. Re-authenticate with Graph." -ForegroundColor Red
+                        Write-CommandResponse "VALIDATE_USERS_FAILED:No Graph session. Please complete Graph authentication first."
+                        continue
+                    }
+                }
+                
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "VALIDATE USERS COMMAND RECEIVED" -ForegroundColor Yellow
                 Write-Host "==========================================" -ForegroundColor Yellow
@@ -1546,16 +1574,49 @@ try {
                         Write-Host "  Searching for users matching: '`$searchTerm'" -ForegroundColor Gray
                         `$users = @()
                         try {
-                            # Single startsWith call (original + lowercase covers most cases; avoid multiple calls)
-                            `$escaped = `$searchTerm.Replace("'","''")
-                            `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escaped') or startsWith(UserPrincipalName,'`$escaped')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
-                            if (-not `$users -or `$users.Count -eq 0) {
-                                `$escapedLower = `$searchTerm.ToLower().Replace("'","''")
-                                `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escapedLower') or startsWith(UserPrincipalName,'`$escapedLower')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
+                            # For full UPNs/emails (contains @), try direct lookup first - works with both app-only and delegated auth
+                            if (`$searchTerm.Trim() -match '@') {
+                                try {
+                                    `$u = Get-MgUser -UserId `$searchTerm.Trim() -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
+                                    if (`$u) { `$users = @(`$u); Write-Host "    Found via direct UPN lookup" -ForegroundColor Gray }
+                                } catch {
+                                    Write-Host "    Direct UPN lookup failed: `$(`$_.Exception.Message)" -ForegroundColor DarkGray
+                                }
+                            }
+                            # For domain names (contains . but no @), search users whose UPN ends with @domain
+                            if ((-not `$users -or `$users.Count -eq 0) -and `$searchTerm.Trim() -match '\.' -and `$searchTerm.Trim() -notmatch '@') {
+                                `$domainPart = '@' + `$searchTerm.Trim().Replace("'","''")
+                                `$users = @(Get-MgUser -Filter "endsWith(userPrincipalName,'`$domainPart')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue)
+                                if (`$users.Count -gt 0) { Write-Host "    Found `$(`$users.Count) user(s) in domain" -ForegroundColor Gray }
                             }
                             if (-not `$users -or `$users.Count -eq 0) {
-                                # Exact match fallback (2 calls max)
-                                `$users = Get-MgUser -Filter "DisplayName eq '`$escaped' or UserPrincipalName eq '`$escaped'" -Top 10 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                # startsWith requires ConsistencyLevel eventual for advanced queries
+                                `$escaped = `$searchTerm.Replace("'","''")
+                                `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escaped') or startsWith(UserPrincipalName,'`$escaped')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue)
+                            }
+                            if (-not `$users -or `$users.Count -eq 0) {
+                                `$escapedLower = `$searchTerm.ToLower().Replace("'","''")
+                                `$users = @(Get-MgUser -Filter "startsWith(DisplayName,'`$escapedLower') or startsWith(UserPrincipalName,'`$escapedLower')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue)
+                            }
+                            if (-not `$users -or `$users.Count -eq 0) {
+                                # Exact match fallback (eq works without eventual)
+                                `$escaped = `$searchTerm.Replace("'","''")
+                                `$users = @(Get-MgUser -Filter "DisplayName eq '`$escaped' or UserPrincipalName eq '`$escaped'" -Top 10 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
+                            }
+                            # Client-side fallback when API filters fail (e.g. app-only without advanced query support)
+                            if ((-not `$users -or `$users.Count -eq 0) -and `$searchTerm.Trim().Length -gt 0) {
+                                try {
+                                    `$term = `$searchTerm.Trim()
+                                    `$all = @(Get-MgUser -All -Top 1000 -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop)
+                                    if (`$term -match '\.' -and `$term -notmatch '@') {
+                                        `$users = @(`$all | Where-Object { `$_.UserPrincipalName -like "*@`$term" })
+                                    } else {
+                                        `$users = @(`$all | Where-Object { `$_.DisplayName -like "*`$term*" -or `$_.UserPrincipalName -like "*`$term*" })
+                                    }
+                                    if (`$users.Count -gt 0) { Write-Host "    Found `$(`$users.Count) user(s) via client-side search" -ForegroundColor Gray }
+                                } catch {
+                                    Write-Host "    Client-side fallback failed: `$(`$_.Exception.Message)" -ForegroundColor DarkGray
+                                }
                             }
                             Write-Host "    Found `$(`$users.Count) user(s)" -ForegroundColor Gray
                         } catch {
@@ -1615,17 +1676,41 @@ try {
                     continue
                 }
                 
-                # Parse SelectedUsers and TicketData from command if provided
+                # Parse SelectedUsers, TicketData, and DATE_RANGE from command if provided
                 `$selectedUsersForReport = @()
                 `$ticketNumbers = @()
                 `$ticketContent = ''
+                `$reportStartDate = [DateTime]::MinValue
+                `$reportEndDate = [DateTime]::MinValue
                 
-                # Parse ticket data from command (format: |TICKET_DATA:{"TicketNumbers":["12345"],"TicketContent":"..."})
-                # Use a more robust regex that captures everything after TICKET_DATA: until end of string
-                # This handles cases where ticket content might contain special characters
+                # Parse DATE_RANGE from command (format: |DATE_RANGE:{"StartDate":"...","EndDate":"..."})
+                if (`$command -match '\|DATE_RANGE:(\{[^|]+\})') {
+                    try {
+                        `$dateRangeJson = `$Matches[1]
+                        `$dateRange = `$dateRangeJson | ConvertFrom-Json -ErrorAction Stop
+                        if (`$dateRange.StartDate -and `$dateRange.EndDate) {
+                            `$reportStartDate = [DateTime]::Parse(`$dateRange.StartDate)
+                            `$reportEndDate = [DateTime]::Parse(`$dateRange.EndDate)
+                            if (`$reportEndDate -ge `$reportStartDate) {
+                                Write-Host "Date range from command: `$(`$reportStartDate.ToString('yyyy-MM-dd')) to `$(`$reportEndDate.ToString('yyyy-MM-dd'))" -ForegroundColor Cyan
+                                Write-Status "Date range: `$(`$reportStartDate.ToString('yyyy-MM-dd')) to `$(`$reportEndDate.ToString('yyyy-MM-dd'))"
+                            } else {
+                                Write-Warning "Invalid date range (End < Start), ignoring"
+                                `$reportStartDate = [DateTime]::MinValue
+                                `$reportEndDate = [DateTime]::MinValue
+                            }
+                        }
+                    } catch {
+                        Write-Warning "Could not parse DATE_RANGE from command: `$(`$_.Exception.Message)"
+                    }
+                }
+                
+                # Parse ticket data from command (format: |TICKET_DATA:{"TicketNumbers":["12345"],"TicketContent":"..."}|DATE_RANGE:...)
+                # Extract only the ticket JSON - stop at |DATE_RANGE: to avoid passing trailing content to ConvertFrom-Json
+                # (TicketContent can contain | and other chars; |DATE_RANGE: delimiter would cause "Additional text" JSON error)
                 Write-Host "Parsing ticket data from command. Command length: `$(`$command.Length)" -ForegroundColor Gray
                 Write-Host "Command preview (first 500 chars): `$(`$command.Substring(0, [Math]::Min(500, `$command.Length)))" -ForegroundColor Gray
-                if (`$command -match '\|TICKET_DATA:(.+)$') {
+                if (`$command -match '\|TICKET_DATA:(.+?)(?:\|DATE_RANGE:|$)') {
                     Write-Host "TICKET_DATA regex matched!" -ForegroundColor Green
                     try {
                         `$ticketDataJson = `$Matches[1]
@@ -1693,13 +1778,13 @@ try {
                             `$users = @()
                             try {
                                 # Try server-side filtering first (startsWith) - try multiple case variations
-                                `$users1 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTerm') or startsWith(UserPrincipalName,'`$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users1 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTerm') or startsWith(UserPrincipalName,'`$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
                                 `$searchTermLower = `$searchTerm.ToLower()
                                 `$searchTermUpper = `$searchTerm.ToUpper()
                                 `$searchTermTitle = (Get-Culture).TextInfo.ToTitleCase(`$searchTermLower)
-                                `$users2 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermLower') or startsWith(UserPrincipalName,'`$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                `$users3 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermUpper') or startsWith(UserPrincipalName,'`$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                `$users4 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermTitle') or startsWith(UserPrincipalName,'`$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                `$users2 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermLower') or startsWith(UserPrincipalName,'`$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                `$users3 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermUpper') or startsWith(UserPrincipalName,'`$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                `$users4 = Get-MgUser -Filter "startsWith(DisplayName,'`$searchTermTitle') or startsWith(UserPrincipalName,'`$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
                                 `$users = @(`$users1) + @(`$users2) + @(`$users3) + @(`$users4) | Sort-Object UserPrincipalName -Unique
                                 Write-Host "    Found `$(`$users.Count) users with startsWith filter (tried multiple case variations)" -ForegroundColor Gray
                             } catch {
@@ -1827,7 +1912,47 @@ try {
                 if (`$graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel:(-not `$graphToken) -GraphAccessToken `$graphToken -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -UnifiedAuditLogRecordTypes `$reportSelections.UnifiedAuditLogRecordTypes -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$reportParams = @{
+                        InvestigatorName = `$InvestigatorName
+                        CompanyName = `$CompanyName
+                        DaysBack = `$DaysBack
+                        StatusLabel = `$null
+                        MainForm = `$null
+                        NoParallel = (-not `$graphToken)
+                        GraphAccessToken = `$graphToken
+                        ProgressCallback = { param(`$m) Write-Status `$m }
+                        SessionId = "Client`$ClientNumber"
+                        StatusFile = `$StatusFile
+                        IncludeMessageTrace = `$reportSelections.IncludeMessageTrace
+                        IncludeInboxRules = `$reportSelections.IncludeInboxRules
+                        IncludeTransportRules = `$reportSelections.IncludeTransportRules
+                        IncludeMailFlowConnectors = `$reportSelections.IncludeMailFlowConnectors
+                        IncludeMailboxForwarding = `$reportSelections.IncludeMailboxForwarding
+                        IncludeAuditLogs = `$reportSelections.IncludeAuditLogs
+                        IncludeConditionalAccessPolicies = `$reportSelections.IncludeConditionalAccessPolicies
+                        IncludeAppRegistrations = `$reportSelections.IncludeAppRegistrations
+                        IncludeSignInLogs = `$reportSelections.IncludeSignInLogs
+                        IncludeIntuneDevices = `$reportSelections.IncludeIntuneDevices
+                        IncludeMfaCoverage = `$reportSelections.IncludeMfaCoverage
+                        IncludeSharePointActivity = `$reportSelections.IncludeSharePointActivity
+                        IncludeOneDriveActivity = `$reportSelections.IncludeOneDriveActivity
+                        IncludeTeamsActivity = `$reportSelections.IncludeTeamsActivity
+                        IncludeSharePointSharing = `$reportSelections.IncludeSharePointSharing
+                        IncludeSecurityAlerts = `$reportSelections.IncludeSecurityAlerts
+                        IncludeSecurityIncidents = `$reportSelections.IncludeSecurityIncidents
+                        IncludeUnifiedAuditLogs = `$reportSelections.IncludeUnifiedAuditLogs
+                        UnifiedAuditLogRecordTypes = `$reportSelections.UnifiedAuditLogRecordTypes
+                        SignInLogsDaysBack = `$reportSelections.SignInLogsDaysBack
+                        MessageTraceDaysBack = `$messageTraceDays
+                        SelectedUsers = `$selectedUsersForReport
+                        TicketNumbers = `$ticketNumbers
+                        TicketContent = `$ticketContent
+                    }
+                    if (`$reportStartDate -and `$reportEndDate -and `$reportStartDate -ne [DateTime]::MinValue -and `$reportEndDate -ne [DateTime]::MinValue -and `$reportEndDate -ge `$reportStartDate) {
+                        `$reportParams.StartDate = `$reportStartDate
+                        `$reportParams.EndDate = `$reportEndDate
+                    }
+                    `$report = New-SecurityInvestigationReport @reportParams
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
                 } catch {
@@ -2162,21 +2287,11 @@ trap {
     $collapseAllBtn.BackColor = [System.Drawing.Color]::FromArgb(156, 39, 176)
     $collapseAllBtn.ForeColor = [System.Drawing.Color]::White
 
-    # Generate All Reports button - sends GENERATE_REPORTS to all authenticated tenants in parallel
-    $generateAllReportsBtn = New-Object System.Windows.Forms.Button
-    $generateAllReportsBtn.Text = "Generate All Reports"
-    $generateAllReportsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $generateAllReportsBtn.Location = New-Object System.Drawing.Point(395, 98)
-    $generateAllReportsBtn.Size = New-Object System.Drawing.Size(180, 35)
-    $generateAllReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
-    $generateAllReportsBtn.ForeColor = [System.Drawing.Color]::White
-    $generateAllReportsBtn.Visible = $false  # Shown when first tenant completes both Graph and Exchange auth
-
     # Create Graph App button - create app registration and save to WCM
     $createGraphAppBtn = New-Object System.Windows.Forms.Button
     $createGraphAppBtn.Text = "Create Graph App"
     $createGraphAppBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $createGraphAppBtn.Location = New-Object System.Drawing.Point(525, 98)
+    $createGraphAppBtn.Location = New-Object System.Drawing.Point(395, 98)
     $createGraphAppBtn.Size = New-Object System.Drawing.Size(130, 35)
     $createGraphAppBtn.BackColor = [System.Drawing.Color]::FromArgb(96, 125, 139)
     $createGraphAppBtn.ForeColor = [System.Drawing.Color]::White
@@ -2205,7 +2320,7 @@ trap {
     $deleteGraphAppBtn = New-Object System.Windows.Forms.Button
     $deleteGraphAppBtn.Text = "Delete Graph App"
     $deleteGraphAppBtn.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $deleteGraphAppBtn.Location = New-Object System.Drawing.Point(660, 98)
+    $deleteGraphAppBtn.Location = New-Object System.Drawing.Point(530, 98)
     $deleteGraphAppBtn.Size = New-Object System.Drawing.Size(130, 35)
     $deleteGraphAppBtn.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
     $deleteGraphAppBtn.ForeColor = [System.Drawing.Color]::White
@@ -2424,8 +2539,7 @@ trap {
     $clientRowSpacing = 10  # Increased spacing between rows
 
     # Add controls to form
-    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $generateAllReportsBtn, $createGraphAppBtn, $deleteGraphAppBtn, $exportAppCredsBtn, $importAppCredsBtn, $analyzeAllReportsBtn, $authPanel))
-    $script:generateAllReportsBtn = $generateAllReportsBtn
+    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $exportAppCredsBtn, $importAppCredsBtn, $analyzeAllReportsBtn, $authPanel))
 
     # Close button
     $authCloseBtn = New-Object System.Windows.Forms.Button
@@ -2543,10 +2657,6 @@ trap {
         if ($ctrl -and -not $ctrl.IsDisposed) {
             $ctrl.Visible = $canGenerate
             $ctrl.Enabled = $canGenerate
-        }
-        if ($canGenerate -and $script:generateAllReportsBtn -and -not $script:generateAllReportsBtn.IsDisposed) {
-            $script:generateAllReportsBtn.Visible = $true
-            $script:generateAllReportsBtn.Enabled = $true
         }
     }
 
@@ -3292,6 +3402,42 @@ try {
         $onlyUsersInTicketCheckBox.Tag = $ClientNumber
         $onlyUsersInTicketCheckBox.Font = New-Object System.Drawing.Font('Segoe UI', 8)
 
+        # Date range for report data (server-side filtering) - placed to right of "Only include users" checkbox
+        $dateRangeLabel = New-Object System.Windows.Forms.Label
+        $dateRangeLabel.Text = "Date range:"
+        $dateRangeLabel.Location = New-Object System.Drawing.Point(300, 158)
+        $dateRangeLabel.Size = New-Object System.Drawing.Size(65, 20)
+        $dateRangeLabel.Enabled = $false
+        $dateRangeLabel.Visible = $false
+        $dateRangeLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+        $dateRangeLabel.Tag = $ClientNumber
+        $dateRangeStartPicker = New-Object System.Windows.Forms.DateTimePicker
+        $dateRangeStartPicker.Location = New-Object System.Drawing.Point(370, 155)
+        $dateRangeStartPicker.Size = New-Object System.Drawing.Size(130, 25)
+        $dateRangeStartPicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Custom
+        $dateRangeStartPicker.CustomFormat = "yyyy-MM-dd HH:mm"
+        $dateRangeStartPicker.Value = (Get-Date).AddDays(-10)
+        $dateRangeStartPicker.Enabled = $false
+        $dateRangeStartPicker.Visible = $false
+        $dateRangeStartPicker.Tag = $ClientNumber
+        $dateRangeToLabel = New-Object System.Windows.Forms.Label
+        $dateRangeToLabel.Text = "to"
+        $dateRangeToLabel.Location = New-Object System.Drawing.Point(508, 158)
+        $dateRangeToLabel.Size = New-Object System.Drawing.Size(18, 20)
+        $dateRangeToLabel.Enabled = $false
+        $dateRangeToLabel.Visible = $false
+        $dateRangeToLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+        $dateRangeToLabel.Tag = $ClientNumber
+        $dateRangeEndPicker = New-Object System.Windows.Forms.DateTimePicker
+        $dateRangeEndPicker.Location = New-Object System.Drawing.Point(530, 155)
+        $dateRangeEndPicker.Size = New-Object System.Drawing.Size(130, 25)
+        $dateRangeEndPicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Custom
+        $dateRangeEndPicker.CustomFormat = "yyyy-MM-dd HH:mm"
+        $dateRangeEndPicker.Value = Get-Date
+        $dateRangeEndPicker.Enabled = $false
+        $dateRangeEndPicker.Visible = $false
+        $dateRangeEndPicker.Tag = $ClientNumber
+
         # Exchange Online Auth button
         $exchangeAuthBtn = New-Object System.Windows.Forms.Button
         $exchangeAuthBtn.Text = "Exchange Online Auth"
@@ -3341,7 +3487,7 @@ try {
         $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
 
         # Add all controls to the container panel, then add container to auth panel
-        $clientContainerPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $viewReportsBtn))
+        $clientContainerPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $dateRangeLabel, $dateRangeStartPicker, $dateRangeToLabel, $dateRangeEndPicker, $viewReportsBtn))
         $script:authPanel.Controls.Add($clientContainerPanel)
 
         # Store controls and state BEFORE Update-TenantPositions so the new client is included in layout
@@ -3383,6 +3529,10 @@ try {
             ViewReportsButton = $viewReportsBtn
             AppRegTenantLabel = $appRegTenantLabel
             AppRegTenantCombo = $appRegTenantCombo
+            DateRangeLabel = $dateRangeLabel
+            DateRangeStartPicker = $dateRangeStartPicker
+            DateRangeToLabel = $dateRangeToLabel
+            DateRangeEndPicker = $dateRangeEndPicker
         }
 
         # Reposition all clients for consistent spacing (must run after client is in clientAuthControls)
@@ -3588,6 +3738,10 @@ try {
                     $controls.OnlyUsersInTicketCheckBox.Visible = $true
                     $controls.OnlyUsersInTicketCheckBox.Enabled = $true
                     $controls.GenerateReportsButton.Visible = $true
+                    if ($controls.DateRangeLabel) { $controls.DateRangeLabel.Visible = $true; $controls.DateRangeLabel.Enabled = $true }
+                    if ($controls.DateRangeStartPicker) { $controls.DateRangeStartPicker.Visible = $true; $controls.DateRangeStartPicker.Enabled = $true }
+                    if ($controls.DateRangeToLabel) { $controls.DateRangeToLabel.Visible = $true; $controls.DateRangeToLabel.Enabled = $true }
+                    if ($controls.DateRangeEndPicker) { $controls.DateRangeEndPicker.Visible = $true; $controls.DateRangeEndPicker.Enabled = $true }
                     if ($script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
                         $controls.ExtractEmailsButton.Visible = $true
                     }
@@ -3627,6 +3781,10 @@ try {
                 $controls.ExtractEmailsButton.Visible = $false
                 $controls.GenerateReportsButton.Visible = $false
                 $controls.ViewReportsButton.Visible = $false
+                if ($controls.DateRangeLabel) { $controls.DateRangeLabel.Visible = $false }
+                if ($controls.DateRangeStartPicker) { $controls.DateRangeStartPicker.Visible = $false }
+                if ($controls.DateRangeToLabel) { $controls.DateRangeToLabel.Visible = $false }
+                if ($controls.DateRangeEndPicker) { $controls.DateRangeEndPicker.Visible = $false }
             }
 
             # Update border panel height
@@ -3717,7 +3875,7 @@ try {
                 try {
                     if (Get-Command Test-RateLimit -ErrorAction SilentlyContinue) {
                         $rateLimit = Test-RateLimit -Key "user-validation-client-$clientNum" -MaxRequests 10 -WindowSeconds 60
-                        if ($rateLimit -and -not $rateLimit.Allowed) {
+                        if ($null -ne $rateLimit -and ($rateLimit.Allowed -eq $false)) {
                             [System.Windows.Forms.MessageBox]::Show($rateLimit.Message, "Rate Limit Exceeded", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                             $this.Enabled = $true
                             return
@@ -4068,6 +4226,10 @@ try {
                     $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
                     $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Visible = $true
                     $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Enabled = $true
+                    if ($script:clientAuthControls[$clientNum].DateRangeLabel) { $script:clientAuthControls[$clientNum].DateRangeLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeLabel.Enabled = $true }
+                    if ($script:clientAuthControls[$clientNum].DateRangeStartPicker) { $script:clientAuthControls[$clientNum].DateRangeStartPicker.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeStartPicker.Enabled = $true }
+                    if ($script:clientAuthControls[$clientNum].DateRangeToLabel) { $script:clientAuthControls[$clientNum].DateRangeToLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeToLabel.Enabled = $true }
+                    if ($script:clientAuthControls[$clientNum].DateRangeEndPicker) { $script:clientAuthControls[$clientNum].DateRangeEndPicker.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeEndPicker.Enabled = $true }
                 }
                 $this.Text = "Graph Auth ✓"
                 
@@ -4196,12 +4358,6 @@ try {
                 $script:clientAuthControls[$clientNum].GenerateReportsButton.Visible = $true
                 $script:clientAuthControls[$clientNum].GenerateReportsButton.Enabled = $true
 
-                # Show Generate All Reports button when at least one tenant is ready
-                if ($script:generateAllReportsBtn -and -not $script:generateAllReportsBtn.IsDisposed) {
-                    $script:generateAllReportsBtn.Visible = $true
-                    $script:generateAllReportsBtn.Enabled = $true
-                }
-                
                 # Show ticket controls
                 $script:clientAuthControls[$clientNum].TicketLabel.Visible = $true
                 $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
@@ -4209,6 +4365,10 @@ try {
                 $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
                 $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Visible = $true
                 $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Enabled = $true
+                if ($script:clientAuthControls[$clientNum].DateRangeLabel) { $script:clientAuthControls[$clientNum].DateRangeLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeLabel.Enabled = $true }
+                if ($script:clientAuthControls[$clientNum].DateRangeStartPicker) { $script:clientAuthControls[$clientNum].DateRangeStartPicker.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeStartPicker.Enabled = $true }
+                if ($script:clientAuthControls[$clientNum].DateRangeToLabel) { $script:clientAuthControls[$clientNum].DateRangeToLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeToLabel.Enabled = $true }
+                if ($script:clientAuthControls[$clientNum].DateRangeEndPicker) { $script:clientAuthControls[$clientNum].DateRangeEndPicker.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeEndPicker.Enabled = $true }
 
                 # Show and enable Extract Emails button (both auths now complete)
                 $script:clientAuthControls[$clientNum].ExtractEmailsButton.Visible = $true
@@ -4398,6 +4558,20 @@ try {
                     } else {
                         Write-Host "Generate Reports (SEARCH): No ticket data to include (TicketNumbers.Count=$($ticketNumbers.Count), FilteredContent empty=$([string]::IsNullOrWhiteSpace($filteredTicketContent)))" -ForegroundColor Yellow
                     }
+                    # Append date range if valid (End >= Start)
+                    if ($controls.DateRangeStartPicker -and $controls.DateRangeEndPicker) {
+                        $drStart = $controls.DateRangeStartPicker.Value
+                        $drEnd = $controls.DateRangeEndPicker.Value
+                        if ($drEnd -lt $drStart) {
+                            [System.Windows.Forms.MessageBox]::Show("End date must be on or after start date. Please fix the date range.", "Invalid Date Range", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                            return
+                        }
+                        if ($drEnd -ge $drStart) {
+                            $dateRangeObj = [PSCustomObject]@{ StartDate = $drStart.ToString("yyyy-MM-ddTHH:mm:ss"); EndDate = $drEnd.ToString("yyyy-MM-ddTHH:mm:ss") }
+                            $command += "|DATE_RANGE:$($dateRangeObj | ConvertTo-Json -Compress)"
+                            Write-Host "Generate Reports (SEARCH): Including date range $($drStart.ToString('yyyy-MM-dd')) to $($drEnd.ToString('yyyy-MM-dd'))" -ForegroundColor Cyan
+                        }
+                    }
                     Write-Host "Generate Reports (SEARCH): Final command being sent: $($command.Substring(0, [Math]::Min(500, $command.Length)))..." -ForegroundColor Cyan
                     $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 300
 
@@ -4467,6 +4641,22 @@ try {
                 $command += "|TICKET_DATA:$ticketDataJson"
                 Write-Host "Generate Reports: Including ticket data - TicketNumbers=$($ticketNumsArray.Count) ($($ticketNumsArray -join ', ')), TicketContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
                 Write-Host "Generate Reports: Ticket data JSON preview: $($ticketDataJson.Substring(0, [Math]::Min(200, $ticketDataJson.Length)))..." -ForegroundColor Gray
+            }
+            # Append date range if valid (End >= Start)
+            if ($controls.DateRangeStartPicker -and $controls.DateRangeEndPicker) {
+                $drStart = $controls.DateRangeStartPicker.Value
+                $drEnd = $controls.DateRangeEndPicker.Value
+                if ($drEnd -lt $drStart) {
+                    [System.Windows.Forms.MessageBox]::Show("End date must be on or after start date. Please fix the date range.", "Invalid Date Range", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    $this.Enabled = $true
+                    $this.Text = "Generate Reports"
+                    return
+                }
+                if ($drEnd -ge $drStart) {
+                    $dateRangeObj = [PSCustomObject]@{ StartDate = $drStart.ToString("yyyy-MM-ddTHH:mm:ss"); EndDate = $drEnd.ToString("yyyy-MM-ddTHH:mm:ss") }
+                    $command += "|DATE_RANGE:$($dateRangeObj | ConvertTo-Json -Compress)"
+                    Write-Host "Generate Reports: Including date range $($drStart.ToString('yyyy-MM-dd')) to $($drEnd.ToString('yyyy-MM-dd'))" -ForegroundColor Cyan
+                }
             }
             
             # Send command to worker script
@@ -4705,31 +4895,6 @@ try {
                     # Don't set IsExpanded first - let the toggle button handler toggle it
                     $controls.ToggleButton.PerformClick()
                 }
-            }
-        }
-    })
-
-    # Generate All Reports button click handler - sends GENERATE_REPORTS to all authenticated tenants
-    $generateAllReportsBtn.add_Click({
-        $authenticatedClients = [System.Collections.ArrayList]::new()
-        foreach ($clientNum in $script:clientAuthStates.Keys) {
-            $state = $script:clientAuthStates[$clientNum]
-            if ($state.GraphAuthenticated -and $state.ExchangeAuthenticated) {
-                [void]$authenticatedClients.Add($clientNum)
-            }
-        }
-        if ($authenticatedClients.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("No tenants are fully authenticated. Complete both Graph and Exchange authentication for at least one tenant first.", "Authentication Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            return
-        }
-        $script:authStatusTextBox.AppendText("Generate All Reports: Sending to $($authenticatedClients.Count) tenant(s)...`r`n")
-        $script:authStatusTextBox.ScrollToCaret()
-        [System.Windows.Forms.Application]::DoEvents()
-        foreach ($clientNum in $authenticatedClients) {
-            $controls = $script:clientAuthControls[$clientNum]
-            if ($controls -and $controls.GenerateReportsButton -and $controls.GenerateReportsButton.Enabled) {
-                $controls.GenerateReportsButton.PerformClick()
-                [System.Windows.Forms.Application]::DoEvents()
             }
         }
     })
