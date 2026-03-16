@@ -2456,6 +2456,95 @@ $btnDeleteGraphApp.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
 $btnDeleteGraphApp.ForeColor = [System.Drawing.Color]::White
 $btnDeleteGraphAppTooltip = New-Object System.Windows.Forms.ToolTip
 $btnDeleteGraphAppTooltip.SetToolTip($btnDeleteGraphApp, "Remove app registration (River Run Security Investigator) per tenant. Select which tenant(s) to remove from.")
+$btnExportAppCreds = New-Object System.Windows.Forms.Button
+$btnExportAppCreds.Text = "Export App Creds"
+$btnExportAppCreds.Location = New-Object System.Drawing.Point(640, 638)
+$btnExportAppCreds.Size = New-Object System.Drawing.Size(120, 28)
+$btnExportAppCredsTooltip = New-Object System.Windows.Forms.ToolTip
+$btnExportAppCredsTooltip.SetToolTip($btnExportAppCreds, "Export app credentials from WCM to an encrypted file. Use Import to restore on another machine.")
+$btnExportAppCreds.add_Click({
+    try {
+        Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+        $ids = Get-WCMTenantIds
+        if ($ids.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager.", "Export", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
+        }
+        $pwdForm = New-Object System.Windows.Forms.Form
+        $pwdForm.Text = "Export Password"
+        $pwdForm.Size = New-Object System.Drawing.Size(320, 150)
+        $pwdForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $pwdForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = "Enter password to encrypt the export file:"
+        $lbl.Location = New-Object System.Drawing.Point(10, 10)
+        $lbl.Size = New-Object System.Drawing.Size(280, 20)
+        $txtPwd = New-Object System.Windows.Forms.TextBox
+        $txtPwd.PasswordChar = '*'
+        $txtPwd.Location = New-Object System.Drawing.Point(10, 35)
+        $txtPwd.Size = New-Object System.Drawing.Size(280, 20)
+        $btnOk = New-Object System.Windows.Forms.Button
+        $btnOk.Text = "OK"
+        $btnOk.Location = New-Object System.Drawing.Point(120, 70)
+        $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $pwdForm.AcceptButton = $btnOk
+        $pwdForm.Controls.AddRange(@($lbl, $txtPwd, $btnOk))
+        if ($pwdForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        $pwd = ConvertTo-SecureString $txtPwd.Text -AsPlainText -Force
+        $txtPwd.Text = ""
+        $sfd = New-Object System.Windows.Forms.SaveFileDialog
+        $sfd.Filter = "EOA Credentials (*.eoa-creds)|*.eoa-creds|All files (*.*)|*.*"
+        $sfd.DefaultExt = "eoa-creds"
+        $sfd.FileName = "GraphAppCredentials.eoa-creds"
+        if ($sfd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        Export-GraphAppCredentialsToFile -Path $sfd.FileName -Password $pwd
+        [System.Windows.Forms.MessageBox]::Show("Exported $($ids.Count) credential(s) to $($sfd.FileName)", "Export", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Export failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
+$btnImportAppCreds = New-Object System.Windows.Forms.Button
+$btnImportAppCreds.Text = "Import App Creds"
+$btnImportAppCreds.Location = New-Object System.Drawing.Point(765, 638)
+$btnImportAppCreds.Size = New-Object System.Drawing.Size(120, 28)
+$btnImportAppCredsTooltip = New-Object System.Windows.Forms.ToolTip
+$btnImportAppCredsTooltip.SetToolTip($btnImportAppCreds, "Import app credentials from an encrypted file into WCM.")
+$btnImportAppCreds.add_Click({
+    try {
+        Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+        $ofd = New-Object System.Windows.Forms.OpenFileDialog
+        $ofd.Filter = "EOA Credentials (*.eoa-creds)|*.eoa-creds|All files (*.*)|*.*"
+        if ($ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        $pwdForm = New-Object System.Windows.Forms.Form
+        $pwdForm.Text = "Import Password"
+        $pwdForm.Size = New-Object System.Drawing.Size(320, 150)
+        $pwdForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $pwdForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = "Enter password used when the file was exported:"
+        $lbl.Location = New-Object System.Drawing.Point(10, 10)
+        $lbl.Size = New-Object System.Drawing.Size(280, 20)
+        $txtPwd = New-Object System.Windows.Forms.TextBox
+        $txtPwd.PasswordChar = '*'
+        $txtPwd.Location = New-Object System.Drawing.Point(10, 35)
+        $txtPwd.Size = New-Object System.Drawing.Size(280, 20)
+        $btnOk = New-Object System.Windows.Forms.Button
+        $btnOk.Text = "OK"
+        $btnOk.Location = New-Object System.Drawing.Point(120, 70)
+        $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $pwdForm.AcceptButton = $btnOk
+        $pwdForm.Controls.AddRange(@($lbl, $txtPwd, $btnOk))
+        if ($pwdForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        $pwd = ConvertTo-SecureString $txtPwd.Text -AsPlainText -Force
+        $txtPwd.Text = ""
+        $count = Import-GraphAppCredentialsFromFile -Path $ofd.FileName -Password $pwd
+        [System.Windows.Forms.MessageBox]::Show("Imported $count credential(s) into Windows Credential Manager.", "Import", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Import failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
 $btnDeleteGraphApp.add_Click({
     $scriptPath = Join-Path $PSScriptRoot "Remove-GraphInboxRulesApp.ps1"
     if (-not (Test-Path $scriptPath)) {
@@ -2602,7 +2691,7 @@ $allControls = @($sTitle,$lblSettingsLocation,$txtSettingsLocation,$btnBrowseSet
     $lblInFlightWiFi,$txtInFlightWiFi,$lblServicePrincipals,$txtServicePrincipals,$lblKnownAdmins,$txtKnownAdmins,
     $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,$btnBrowseMemberberryPath,
     $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnBrowseMemberberryExceptionsPath,$btnTestMemberberry,
-    $graphAppSectionTitle,$chkPromptToCreateGraphApp,$btnCreateGraphApp,$btnDeleteGraphApp,
+    $graphAppSectionTitle,$chkPromptToCreateGraphApp,$btnCreateGraphApp,$btnDeleteGraphApp,$btnExportAppCreds,$btnImportAppCreds,
     $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
@@ -8512,9 +8601,104 @@ if (Test-Path `$ReportSelectionsFile) {
                 }
             })
 
+            # Export App Creds button (auth console)
+            $exportAppCredsBtn = New-Object System.Windows.Forms.Button
+            $exportAppCredsBtn.Text = "Export Creds"
+            $exportAppCredsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+            $exportAppCredsBtn.Location = New-Object System.Drawing.Point(15, 140)
+            $exportAppCredsBtn.Size = New-Object System.Drawing.Size(100, 28)
+            $exportAppCredsBtn.add_Click({
+                try {
+                    Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+                    $ids = Get-WCMTenantIds
+                    if ($ids.Count -eq 0) {
+                        [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager.", "Export", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                        return
+                    }
+                    $pwdForm = New-Object System.Windows.Forms.Form
+                    $pwdForm.Text = "Export Password"
+                    $pwdForm.Size = New-Object System.Drawing.Size(320, 150)
+                    $pwdForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+                    $pwdForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+                    $lbl = New-Object System.Windows.Forms.Label
+                    $lbl.Text = "Enter password to encrypt the export file:"
+                    $lbl.Location = New-Object System.Drawing.Point(10, 10)
+                    $lbl.Size = New-Object System.Drawing.Size(280, 20)
+                    $txtPwd = New-Object System.Windows.Forms.TextBox
+                    $txtPwd.PasswordChar = '*'
+                    $txtPwd.Location = New-Object System.Drawing.Point(10, 35)
+                    $txtPwd.Size = New-Object System.Drawing.Size(280, 20)
+                    $btnOk = New-Object System.Windows.Forms.Button
+                    $btnOk.Text = "OK"
+                    $btnOk.Location = New-Object System.Drawing.Point(120, 70)
+                    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                    $pwdForm.AcceptButton = $btnOk
+                    $pwdForm.Controls.AddRange(@($lbl, $txtPwd, $btnOk))
+                    if ($pwdForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+                    $pwd = ConvertTo-SecureString $txtPwd.Text -AsPlainText -Force
+                    $txtPwd.Text = ""
+                    $sfd = New-Object System.Windows.Forms.SaveFileDialog
+                    $sfd.Filter = "EOA Credentials (*.eoa-creds)|*.eoa-creds|All files (*.*)|*.*"
+                    $sfd.DefaultExt = "eoa-creds"
+                    $sfd.FileName = "GraphAppCredentials.eoa-creds"
+                    if ($sfd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+                    Export-GraphAppCredentialsToFile -Path $sfd.FileName -Password $pwd
+                    [System.Windows.Forms.MessageBox]::Show("Exported $($ids.Count) credential(s) to $($sfd.FileName)", "Export", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Export failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            })
+
+            # Import App Creds button (auth console)
+            $importAppCredsBtn = New-Object System.Windows.Forms.Button
+            $importAppCredsBtn.Text = "Import Creds"
+            $importAppCredsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+            $importAppCredsBtn.Location = New-Object System.Drawing.Point(120, 140)
+            $importAppCredsBtn.Size = New-Object System.Drawing.Size(100, 28)
+            $importAppCredsBtn.add_Click({
+                try {
+                    Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+                    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+                    $ofd.Filter = "EOA Credentials (*.eoa-creds)|*.eoa-creds|All files (*.*)|*.*"
+                    if ($ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+                    $pwdForm = New-Object System.Windows.Forms.Form
+                    $pwdForm.Text = "Import Password"
+                    $pwdForm.Size = New-Object System.Drawing.Size(320, 150)
+                    $pwdForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+                    $pwdForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+                    $lbl = New-Object System.Windows.Forms.Label
+                    $lbl.Text = "Enter password used when the file was exported:"
+                    $lbl.Location = New-Object System.Drawing.Point(10, 10)
+                    $lbl.Size = New-Object System.Drawing.Size(280, 20)
+                    $txtPwd = New-Object System.Windows.Forms.TextBox
+                    $txtPwd.PasswordChar = '*'
+                    $txtPwd.Location = New-Object System.Drawing.Point(10, 35)
+                    $txtPwd.Size = New-Object System.Drawing.Size(280, 20)
+                    $btnOk = New-Object System.Windows.Forms.Button
+                    $btnOk.Text = "OK"
+                    $btnOk.Location = New-Object System.Drawing.Point(120, 70)
+                    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                    $pwdForm.AcceptButton = $btnOk
+                    $pwdForm.Controls.AddRange(@($lbl, $txtPwd, $btnOk))
+                    if ($pwdForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+                    $pwd = ConvertTo-SecureString $txtPwd.Text -AsPlainText -Force
+                    $txtPwd.Text = ""
+                    $count = Import-GraphAppCredentialsFromFile -Path $ofd.FileName -Password $pwd
+                    [System.Windows.Forms.MessageBox]::Show("Imported $count credential(s) into Windows Credential Manager.", "Import", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    foreach ($cn in $script:clientAuthControls.Keys) {
+                        $c = $script:clientAuthControls[$cn]
+                        if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
+                            & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+                        }
+                    }
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Import failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            })
+
             # Create Panel for client authentication rows
             $authPanel = New-Object System.Windows.Forms.Panel
-            $authPanel.Location = New-Object System.Drawing.Point(15, 145)
+            $authPanel.Location = New-Object System.Drawing.Point(15, 180)
             $authPanel.Size = New-Object System.Drawing.Size(960, 410)
             $authPanel.AutoScroll = $true
             $authPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
@@ -8531,7 +8715,7 @@ if (Test-Path `$ReportSelectionsFile) {
             $clientRowSpacing = 10  # Increased spacing between rows
 
             # Add controls to form
-            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $analyzeAllReportsBtn, $authPanel))
+            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $exportAppCredsBtn, $importAppCredsBtn, $analyzeAllReportsBtn, $authPanel))
 
             # Close button
             $authCloseBtn = New-Object System.Windows.Forms.Button
