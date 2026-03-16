@@ -47,6 +47,7 @@ BulkReports/
 *secret*
 *password*
 *credential*
+!Modules/GraphAppCredential.psm1
 *token*
 *.key
 *.pem
