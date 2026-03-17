@@ -8419,7 +8419,6 @@ if (Test-Path `$ReportSelectionsFile) {
                 if (-not $combo -or $combo.IsDisposed) { return }
                 $sel = $combo.SelectedItem
                 $combo.Items.Clear()
-                $combo.Items.Add("(Auto - try all)") | Out-Null
                 try {
                     Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
                     $list = @()
@@ -8427,9 +8426,11 @@ if (Test-Path `$ReportSelectionsFile) {
                     foreach ($item in $list) {
                         $combo.Items.Add($item.DisplayText) | Out-Null
                     }
+                    if ($combo.Items.Count -gt 0) {
+                        $combo.SelectedIndex = 0
+                        if ($sel -and $combo.Items.Contains($sel)) { $combo.SelectedItem = $sel }
+                    }
                 } catch {}
-                $combo.SelectedIndex = 0
-                if ($sel -and $combo.Items.Contains($sel)) { $combo.SelectedItem = $sel }
             }
 
             # Add Tenant button
@@ -8790,7 +8791,7 @@ if (Test-Path `$ReportSelectionsFile) {
             # Parse app reg combo selected item to tenant ID
             function Get-TenantIdFromAppRegComboSelection {
                 param([string]$SelectedItem)
-                if ([string]::IsNullOrWhiteSpace($SelectedItem) -or $SelectedItem -match '^\(Auto') { return $null }
+                if ([string]::IsNullOrWhiteSpace($SelectedItem)) { return $null }
                 if ($SelectedItem -match '\(([a-fA-F0-9\-]{36})\)\s*$') { return $Matches[1] }
                 if ($SelectedItem -match '^[a-fA-F0-9\-]{36}$') { return $SelectedItem }
                 return $null

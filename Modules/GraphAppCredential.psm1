@@ -214,7 +214,7 @@ function Get-TenantDisplayNameFromWCM {
 function Get-WCMTenantListWithNames {
     <#
     .SYNOPSIS
-        Returns WCM tenants with display names for dropdown display.
+        Returns WCM tenants with display names for dropdown display, sorted alphabetically by DisplayText.
     .OUTPUTS
         @(@{ TenantId; DisplayName; DisplayText }, ...)
     #>
@@ -226,7 +226,7 @@ function Get-WCMTenantListWithNames {
         $displayText = if ($name) { "$name ($tid)" } else { $tid }
         $result += [pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText }
     }
-    return $result
+    return $result | Sort-Object -Property DisplayText
 }
 
 function Get-GraphAppTokenFromWCM {
