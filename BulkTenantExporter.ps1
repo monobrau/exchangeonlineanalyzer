@@ -3354,18 +3354,7 @@ try {
         $extractEmailsBtn.BackColor = [System.Drawing.Color]::FromArgb(94, 53, 177)
         $extractEmailsBtn.ForeColor = [System.Drawing.Color]::White
 
-        # Only include users that appear in ticket
-        $onlyUsersInTicketCheckBox = New-Object System.Windows.Forms.CheckBox
-        $onlyUsersInTicketCheckBox.Text = "Only include users that appear in ticket"
-        $onlyUsersInTicketCheckBox.Location = New-Object System.Drawing.Point(10, 155)
-        $onlyUsersInTicketCheckBox.Size = New-Object System.Drawing.Size(280, 20)
-        $onlyUsersInTicketCheckBox.Enabled = $false
-        $onlyUsersInTicketCheckBox.Visible = $false
-        $onlyUsersInTicketCheckBox.Checked = $true
-        $onlyUsersInTicketCheckBox.Tag = $ClientNumber
-        $onlyUsersInTicketCheckBox.Font = New-Object System.Drawing.Font('Segoe UI', 8)
-
-        # Date range for report data (server-side filtering) - placed to right of "Only include users" checkbox
+        # Date range for report data (server-side filtering)
         $dateRangeLabel = New-Object System.Windows.Forms.Label
         $dateRangeLabel.Text = "Date range:"
         $dateRangeLabel.Location = New-Object System.Drawing.Point(300, 158)
@@ -3450,7 +3439,7 @@ try {
         $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
 
         # Add all controls to the container panel, then add container to auth panel
-        $clientContainerPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $useInteractiveGraphCheckBox, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $dateRangeLabel, $dateRangeStartPicker, $dateRangeToLabel, $dateRangeEndPicker, $viewReportsBtn))
+        $clientContainerPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $useInteractiveGraphCheckBox, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $dateRangeLabel, $dateRangeStartPicker, $dateRangeToLabel, $dateRangeEndPicker, $viewReportsBtn))
         $script:authPanel.Controls.Add($clientContainerPanel)
 
         # Store controls and state BEFORE Update-TenantPositions so the new client is included in layout
@@ -3488,7 +3477,6 @@ try {
             TicketTextBox = $ticketTextBox
             TicketNumbersLabel = $ticketNumbersLabel
             ExtractEmailsButton = $extractEmailsBtn
-            OnlyUsersInTicketCheckBox = $onlyUsersInTicketCheckBox
             ViewReportsButton = $viewReportsBtn
             AppRegTenantLabel = $appRegTenantLabel
             AppRegTenantCombo = $appRegTenantCombo
@@ -3699,8 +3687,6 @@ try {
                 if ($authComplete) {
                     $controls.TicketLabel.Visible = $true
                     $controls.TicketTextBox.Visible = $true
-                    $controls.OnlyUsersInTicketCheckBox.Visible = $true
-                    $controls.OnlyUsersInTicketCheckBox.Enabled = $true
                     $controls.GenerateReportsButton.Visible = $true
                     if ($controls.DateRangeLabel) { $controls.DateRangeLabel.Visible = $true; $controls.DateRangeLabel.Enabled = $true }
                     if ($controls.DateRangeStartPicker) { $controls.DateRangeStartPicker.Visible = $true; $controls.DateRangeStartPicker.Enabled = $true }
@@ -3743,7 +3729,6 @@ try {
                 $controls.UserValidationLabel.Visible = $false
                 $controls.TicketLabel.Visible = $false
                 $controls.TicketTextBox.Visible = $false
-                $controls.OnlyUsersInTicketCheckBox.Visible = $false
                 $controls.TicketNumbersLabel.Visible = $false
                 $controls.ExtractEmailsButton.Visible = $false
                 $controls.GenerateReportsButton.Visible = $false
@@ -4194,8 +4179,6 @@ try {
                     $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
                     $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
                     $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
-                    $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Visible = $true
-                    $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Enabled = $true
                     if ($script:clientAuthControls[$clientNum].DateRangeLabel) { $script:clientAuthControls[$clientNum].DateRangeLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeLabel.Enabled = $true }
                     if ($script:clientAuthControls[$clientNum].DateRangeStartPicker) { $script:clientAuthControls[$clientNum].DateRangeStartPicker.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeStartPicker.Enabled = $true }
                     if ($script:clientAuthControls[$clientNum].DateRangeToLabel) { $script:clientAuthControls[$clientNum].DateRangeToLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeToLabel.Enabled = $true }
@@ -4334,8 +4317,6 @@ try {
                 $script:clientAuthControls[$clientNum].TicketLabel.Enabled = $true
                 $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $true
                 $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $true
-                $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Visible = $true
-                $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Enabled = $true
                 if ($script:clientAuthControls[$clientNum].DateRangeLabel) { $script:clientAuthControls[$clientNum].DateRangeLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeLabel.Enabled = $true }
                 if ($script:clientAuthControls[$clientNum].DateRangeStartPicker) { $script:clientAuthControls[$clientNum].DateRangeStartPicker.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeStartPicker.Enabled = $true }
                 if ($script:clientAuthControls[$clientNum].DateRangeToLabel) { $script:clientAuthControls[$clientNum].DateRangeToLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeToLabel.Enabled = $true }
@@ -4570,28 +4551,9 @@ try {
             # Build GENERATE_REPORTS command
             $command = "GENERATE_REPORTS"
             if ($selectedUsers.Count -gt 0) {
-                $usersToSend = $selectedUsers
-                # Optionally filter to only users whose email appears in the ticket
-                $onlyInTicketChecked = $controls.OnlyUsersInTicketCheckBox -and $controls.OnlyUsersInTicketCheckBox.Checked
-                if ($onlyInTicketChecked -and -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
-                    try {
-                        # Settings module already imported globally
-                        if (Get-Command Select-UsersInTicketContent -ErrorAction SilentlyContinue) {
-                            $usersToSend = Select-UsersInTicketContent -Users $selectedUsers -TicketContent $filteredTicketContent
-                            if ($usersToSend.Count -lt $selectedUsers.Count) {
-                                $excluded = $selectedUsers.Count - $usersToSend.Count
-                                $script:authStatusTextBox.AppendText("Client $($clientNum): Filtered to $($usersToSend.Count) user(s) that appear in ticket ($excluded excluded)`r`n")
-                                Write-Host "Only include users in ticket: filtered from $($selectedUsers.Count) to $($usersToSend.Count) user(s)" -ForegroundColor Cyan
-                            }
-                        }
-                    } catch {
-                        Write-Warning "Failed to filter users by ticket content: $($_.Exception.Message)"
-                    }
-                }
-                if ($usersToSend.Count -gt 0) {
-                    $usersJson = ($usersToSend | ConvertTo-Json -Compress)
-                    $command += "|SelectedUsers:$usersJson"
-                }
+                $usersJson = ($selectedUsers | ConvertTo-Json -Compress)
+                $command += "|SelectedUsers:$usersJson"
+                Write-Host "Generate Reports: Adding SelectedUsers ($($selectedUsers.Count)): $($selectedUsers -join ', ')" -ForegroundColor Green
             }
             # Include ticket data if we have ticket numbers OR ticket content
             if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
@@ -4743,8 +4705,6 @@ try {
             $script:clientAuthControls[$clientNum].TicketTextBox.Visible = $false
             $script:clientAuthControls[$clientNum].TicketTextBox.Enabled = $false
             $script:clientAuthControls[$clientNum].TicketTextBox.Text = ""
-            $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Visible = $false
-            $script:clientAuthControls[$clientNum].OnlyUsersInTicketCheckBox.Enabled = $false
             $script:clientAuthControls[$clientNum].TicketNumbersLabel.Visible = $false
             $script:clientAuthControls[$clientNum].TicketNumbersLabel.Text = ""
             
