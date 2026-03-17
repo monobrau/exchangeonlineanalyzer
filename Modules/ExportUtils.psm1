@@ -3249,11 +3249,14 @@ function Get-GraphSignInLogs {
             Write-Host "  Per-user mode: Filtering sign-in logs for $($SelectedUsers.Count) selected user(s)..." -ForegroundColor Cyan
             
             $userIds = @()
-            foreach ($upn in $SelectedUsers) {
+            foreach ($u in $SelectedUsers) {
+                $upn = if ($u -is [string]) { $u } elseif ($u.UserPrincipalName) { $u.UserPrincipalName } else { continue }
+                if ([string]::IsNullOrWhiteSpace($upn)) { continue }
                 try {
                     $user = Get-MgUser -UserId $upn -Property Id -ErrorAction Stop
                     if ($user -and $user.Id) {
                         $userIds += $user.Id
+                        Write-Host "  Resolved: $upn -> $($user.Id)" -ForegroundColor Gray
                     }
                 } catch {
                     Write-Warning "  Could not resolve user ID for $upn : $($_.Exception.Message)"

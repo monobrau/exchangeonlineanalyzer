@@ -8110,12 +8110,16 @@ if (Test-Path `$ReportSelectionsFile) {
                 
                 # Parse SelectedUsers and ticket data from command
                 `$selectedUsersForReport = @()
-                if (`$command -match '\|SelectedUsers:(.+?)(?:\||$)') {
+                if (`$command -match '\|SelectedUsers:([^|]+)') {
                     try {
-                        `$usersJson = `$Matches[1]
+                        `$usersJson = `$Matches[1].Trim()
                         `$parsed = `$usersJson | ConvertFrom-Json -ErrorAction Stop
-                        `$selectedUsersForReport = if (`$parsed -is [array]) { @(`$parsed) } else { @(`$parsed) }
-                        Write-Host "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s) selected" -ForegroundColor Cyan
+                        `$selectedUsersForReport = @()
+                        foreach (`$p in @(`$parsed)) {
+                            `$upn = if (`$p -is [string]) { `$p } elseif (`$p.UserPrincipalName) { `$p.UserPrincipalName } else { `$p.ToString() }
+                            if (-not [string]::IsNullOrWhiteSpace(`$upn)) { `$selectedUsersForReport += `$upn }
+                        }
+                        Write-Host "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s) selected: `$(`$selectedUsersForReport -join ', ')" -ForegroundColor Cyan
                         Write-Status "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s)"
                     } catch {
                         Write-Warning "Could not parse SelectedUsers from command: `$(`$_.Exception.Message)"
@@ -10256,8 +10260,15 @@ if (Test-Path `$ReportSelectionsFile) {
                     # Build GENERATE_REPORTS command
                     $command = "GENERATE_REPORTS"
                     if ($selectedUsers.Count -gt 0) {
-                        $usersJson = ($selectedUsers | ConvertTo-Json -Compress)
-                        $command += "|SelectedUsers:$usersJson"
+                        $upnList = @()
+                        foreach ($u in $selectedUsers) {
+                            $upn = if ($u -is [string]) { $u } elseif ($u.UserPrincipalName) { $u.UserPrincipalName } else { continue }
+                            if (-not [string]::IsNullOrWhiteSpace($upn)) { $upnList += $upn }
+                        }
+                        if ($upnList.Count -gt 0) {
+                            $usersJson = ($upnList | ConvertTo-Json -Compress)
+                            $command += "|SelectedUsers:$usersJson"
+                        }
                     }
                     if ($ticketNumbers.Count -gt 0) {
                         # Ensure ticketNumbers is always an array for JSON serialization
