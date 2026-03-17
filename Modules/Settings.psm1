@@ -1356,10 +1356,24 @@ function Extract-TicketNumbers {
     foreach ($match in $matches2) {
         if ($match.Groups.Count -gt 1) {
             $ticketNum = $match.Groups[1].Value
-            # Only add if not already found by pattern 1
             if ($ticketNumbers -notcontains $ticketNum) {
                 $ticketNumbers += $ticketNum
                 Write-Host "Extract-TicketNumbers: Found ticket number (Pattern 2): $ticketNum" -ForegroundColor Green
+            }
+        }
+    }
+
+    # Pattern 3: Combined/Bundled tickets - Parent/Child blocks with ticket number on line after company
+    # Format: Parent\nDoral Corporation\n1839557\n... or Child\nDoral Corporation\n1839558\n...
+    $pattern3 = '(?:Parent|Child)\s*\r?\n[^\r\n]+\r?\n\s*(\d{6,})\s*(?:\r?\n|$)'
+    $matches3 = [regex]::Matches($TicketContent, $pattern3, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    Write-Host "Extract-TicketNumbers: Pattern 3 (Combined Tickets Parent/Child) found $($matches3.Count) match(es)" -ForegroundColor Gray
+    foreach ($match in $matches3) {
+        if ($match.Groups.Count -gt 1) {
+            $ticketNum = $match.Groups[1].Value
+            if ($ticketNumbers -notcontains $ticketNum) {
+                $ticketNumbers += $ticketNum
+                Write-Host "Extract-TicketNumbers: Found ticket number (Pattern 3 - bundled): $ticketNum" -ForegroundColor Green
             }
         }
     }
