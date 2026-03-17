@@ -566,14 +566,6 @@ function New-SecurityInvestigationReport {
         [string]$GraphAccessToken = $null
     )
 
-    # Normalize SelectedUsers: runspace deserialization can turn single-element array into scalar; ensure we always have an array
-    if ($SelectedUsers -and -not ($SelectedUsers -is [array])) {
-        $SelectedUsers = @($SelectedUsers)
-    }
-    if ($null -eq $SelectedUsers) {
-        $SelectedUsers = @()
-    }
-
     try {
         if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
             $StatusLabel.Text = "Starting comprehensive security investigation..."
@@ -716,8 +708,6 @@ function New-SecurityInvestigationReport {
     if ($useParallelCollection) {
         try {
             $exportUtilsPath = Join-Path $PSScriptRoot 'ExportUtils.psm1'
-            # Pass SelectedUsers as JSON string to avoid runspace hashtable serialization corrupting arrays
-            $selectedUsersJson = if ($SelectedUsers -and $SelectedUsers.Count -gt 0) { $SelectedUsers | ConvertTo-Json -Compress } else { '[]' }
             $params = @{
                 DaysBack = $DaysBack
                 MessageTraceDaysBack = $MessageTraceDaysBack
@@ -726,7 +716,6 @@ function New-SecurityInvestigationReport {
                 EndDate = $EndDate
                 UseDateRange = $useDateRange
                 SelectedUsers = $SelectedUsers
-                SelectedUsersJson = $selectedUsersJson
                 UseSequentialInboxRules = (-not $MainForm -or -not $StatusLabel)  # Worker/runspace: avoid parallel inbox rules to prevent extra auth prompts
                 IncludeMessageTrace = $IncludeMessageTrace
                 IncludeInboxRules = $IncludeInboxRules
@@ -762,14 +751,6 @@ function New-SecurityInvestigationReport {
                 param($ExportUtilsPath, $Params)
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
-                # Reconstruct SelectedUsers from JSON - runspace hashtable serialization corrupts arrays
-                if ($Params.SelectedUsersJson) {
-                    try {
-                        $parsed = $Params.SelectedUsersJson | ConvertFrom-Json -ErrorAction Stop
-                        $Params.SelectedUsers = @(); foreach ($p in @($parsed)) { $upn = if ($p -is [string]) { $p } else { $p.ToString() }; if ($upn) { $Params.SelectedUsers += $upn } }
-                    } catch { $Params.SelectedUsers = @() }
-                }
-                if (-not $Params.SelectedUsers) { $Params.SelectedUsers = @() }
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
                 # Reuse cached Exchange connection if available (EXO v2 token cache)
@@ -835,14 +816,6 @@ function New-SecurityInvestigationReport {
                 param($ExportUtilsPath, $Params)
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
-                # Reconstruct SelectedUsers from JSON - runspace hashtable serialization corrupts arrays
-                if ($Params.SelectedUsersJson) {
-                    try {
-                        $parsed = $Params.SelectedUsersJson | ConvertFrom-Json -ErrorAction Stop
-                        $Params.SelectedUsers = @(); foreach ($p in @($parsed)) { $upn = if ($p -is [string]) { $p } else { $p.ToString() }; if ($upn) { $Params.SelectedUsers += $upn } }
-                    } catch { $Params.SelectedUsers = @() }
-                }
-                if (-not $Params.SelectedUsers) { $Params.SelectedUsers = @() }
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: connecting..." -Level Info -Component GraphRS }
@@ -2195,20 +2168,33 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                 if (Get-Command Get-AppSettings -ErrorAction SilentlyContinue) {
                     try { $s = Get-AppSettings; if ($s.MemberberryPath) { $mbPath = $s.MemberberryPath } } catch {}
                 }
-                # Use ticket-extracted company when report.Company is default "Organization" (key off Company: field, not tenant)
-                $companyForSlim = $report.Company
-                if ([string]::IsNullOrWhiteSpace($companyForSlim) -or $companyForSlim -eq "Organization") {
-                    if (Get-Command Get-CompanyFromTicket -ErrorAction SilentlyContinue) {
-                        try {
-                            $extracted = Get-CompanyFromTicket -TicketContent $ticketContent
-                            if ($extracted -and $extracted.Trim() -ne "") {
-                                $companyForSlim = $extracted.Trim()
-                                Write-Host "Using company from ticket for ClientExceptions: $companyForSlim" -ForegroundColor Green
-                            }
-                        } catch {}
+                # Company for ClientExceptions: ticket Company: field first, then Entra tenant name, then report.Company
+                $companyForSlim = $null
+                if (-not [string]::IsNullOrWhiteSpace($ticketContent) -and (Get-Command Get-CompanyFromTicket -ErrorAction SilentlyContinue)) {
+                    try {
+                        $extracted = Get-CompanyFromTicket -TicketContent $ticketContent
+                        if ($extracted -and $extracted.Trim() -ne "") {
+                            $companyForSlim = $extracted.Trim()
+                            Write-Host "Using company from ticket for ClientExceptions: $companyForSlim" -ForegroundColor Green
+                        }
+                    } catch {}
+                }
+                if ([string]::IsNullOrWhiteSpace($companyForSlim)) {
+                    $tenantName = $null
+                    try {
+                        $bi = Join-Path $PSScriptRoot 'BrowserIntegration.psm1'
+                        if (Test-Path $bi) { Import-Module $bi -Force -ErrorAction SilentlyContinue }
+                        $ti = $null; try { $ti = Get-TenantIdentity } catch {}
+                        if ($ti) { if ($ti.TenantDisplayName) { $tenantName = $ti.TenantDisplayName } elseif ($ti.PrimaryDomain) { $tenantName = $ti.PrimaryDomain } }
+                        if (-not $tenantName) { try { $org = Get-OrganizationConfig -ErrorAction Stop; if ($org.DisplayName) { $tenantName = $org.DisplayName } elseif ($org.Name) { $tenantName = $org.Name } } catch {} }
+                    } catch {}
+                    if ($tenantName -and -not [string]::IsNullOrWhiteSpace($tenantName)) {
+                        $companyForSlim = $tenantName
+                        Write-Host "Using Entra tenant name for ClientExceptions: $companyForSlim" -ForegroundColor Green
                     }
                 }
-                if ([string]::IsNullOrWhiteSpace($companyForSlim)) { $companyForSlim = "Organization" }
+                if ([string]::IsNullOrWhiteSpace($companyForSlim)) { $companyForSlim = $report.Company }
+                if ([string]::IsNullOrWhiteSpace($companyForSlim) -or $companyForSlim -eq "Organization") { $companyForSlim = "Organization" }
                 $slimPackage = New-MemberberrySlimPackage -TicketContent $ticketContent -TicketNumbers $ticketNumsArray -CompanyName $companyForSlim -OutputFolder $report.OutputFolder -MemberberryPath $mbPath
                 if ($slimPackage -and (Test-Path $slimPackage.TicketPath)) {
                     $report.FilePaths.MemberberrySlimPackage = $slimPackage
@@ -3037,17 +3023,6 @@ function Get-UnifiedAuditLogs {
         }
 
         $raw = New-Object System.Collections.Generic.List[object]
-
-        # Ensure SelectedUsers is always an array (runspace deserialization can turn single-element array into scalar)
-        if ($SelectedUsers -and -not ($SelectedUsers -is [array])) {
-            $SelectedUsers = @($SelectedUsers)
-        }
-        if ($null -eq $SelectedUsers) {
-            $SelectedUsers = @()
-        }
-        if ($SelectedUsers.Count -gt 0) {
-            Write-Host "  Filtering unified audit logs to $($SelectedUsers.Count) selected user(s): $($SelectedUsers -join ', ')" -ForegroundColor Cyan
-        }
 
         # Use SessionId + SessionCommand ReturnLargeSet for pagination (up to 50,000 results vs 5,000)
         $sessionId = "UnifiedAuditLog_" + (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
