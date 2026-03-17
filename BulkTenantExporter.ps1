@@ -1799,8 +1799,14 @@ try {
                 elseif (`$command -match '\|SelectedUsers:(.+?)(?:\||$)') {
                     try {
                         `$usersJson = `$Matches[1]
-                        `$selectedUsersForReport = `$usersJson | ConvertFrom-Json -ErrorAction Stop
-                        Write-Host "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s) selected" -ForegroundColor Cyan
+                        `$parsed = `$usersJson | ConvertFrom-Json -ErrorAction Stop
+                        # ConvertFrom-Json returns scalar for single-element array in PS 5.1 - ensure array
+                        `$selectedUsersForReport = @()
+                        foreach (`$p in @(`$parsed)) {
+                            `$upn = if (`$p -is [string]) { `$p } elseif (`$p.UserPrincipalName) { `$p.UserPrincipalName } else { `$p.ToString() }
+                            if (-not [string]::IsNullOrWhiteSpace(`$upn)) { `$selectedUsersForReport += `$upn }
+                        }
+                        Write-Host "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s) selected: `$(`$selectedUsersForReport -join ', ')" -ForegroundColor Cyan
                         Write-Status "User filtering enabled: `$(`$selectedUsersForReport.Count) user(s)"
                     } catch {
                         Write-Warning "Could not parse SelectedUsers from command: `$(`$_.Exception.Message)"
