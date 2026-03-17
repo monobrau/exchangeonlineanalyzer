@@ -1231,19 +1231,25 @@ try {
                     "Reports.Read.All"
                 )
 
-                # Try WCM (app-only) first when we have tenant ID(s) to try
+                # Try WCM (app-only) first when we have tenant ID(s) to try - skip if INTERACTIVE:1 (use browser instead)
                 `$tenantIdsToTry = @()
-                if (`$command -match '\|TENANT_ID:([a-fA-F0-9\-]{36})') {
-                    `$tenantIdsToTry = @(`$matches[1])
-                } else {
-                    `$graphAppMod = Join-Path `$ScriptRoot "Modules\GraphAppCredential.psm1"
-                    if (Test-Path `$graphAppMod) {
-                        Import-Module `$graphAppMod -Force -ErrorAction SilentlyContinue
-                        if (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue) {
-                            `$allIds = Get-WCMTenantIds
-                            if (`$allIds -and `$allIds.Count -gt 0) { `$tenantIdsToTry = @(`$allIds) }
+                `$useInteractiveOnly = (`$command -match 'INTERACTIVE:1')
+                if (-not `$useInteractiveOnly) {
+                    if (`$command -match '\|TENANT_ID:([a-fA-F0-9\-]{36})') {
+                        `$tenantIdsToTry = @(`$matches[1])
+                    } else {
+                        `$graphAppMod = Join-Path `$ScriptRoot "Modules\GraphAppCredential.psm1"
+                        if (Test-Path `$graphAppMod) {
+                            Import-Module `$graphAppMod -Force -ErrorAction SilentlyContinue
+                            if (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue) {
+                                `$allIds = Get-WCMTenantIds
+                                if (`$allIds -and `$allIds.Count -gt 0) { `$tenantIdsToTry = @(`$allIds) }
+                            }
                         }
                     }
+                }
+                if (`$useInteractiveOnly) {
+                    Write-Host "Use interactive Graph selected - skipping app credentials, connecting via browser..." -ForegroundColor Cyan
                 }
                 if (`$tenantIdsToTry.Count -gt 0) {
                     Write-Host "Trying app-only credentials from Windows Credential Manager (`$(`$tenantIdsToTry.Count) tenant(s))..." -ForegroundColor Cyan
@@ -2582,6 +2588,9 @@ trap {
         if ($controls.AppRegTenantCombo -and -not $controls.AppRegTenantCombo.IsDisposed) {
             $controls.AppRegTenantCombo.Visible = $required.NeedsGraph -and -not $state.GraphAuthenticated
         }
+        if ($controls.UseInteractiveGraphCheckBox -and -not $controls.UseInteractiveGraphCheckBox.IsDisposed) {
+            $controls.UseInteractiveGraphCheckBox.Visible = $required.NeedsGraph -and -not $state.GraphAuthenticated
+        }
     }
 
     # Update Generate Reports button visibility based on auth state and report selections
@@ -3253,6 +3262,15 @@ try {
         $appRegTenantCombo.Tag = $ClientNumber
         & $script:refreshAppRegTenantCombo -combo $appRegTenantCombo
 
+        # Use interactive Graph (skip app credentials) - per-client override
+        $useInteractiveGraphCheckBox = New-Object System.Windows.Forms.CheckBox
+        $useInteractiveGraphCheckBox.Text = "Use interactive Graph"
+        $useInteractiveGraphCheckBox.Location = New-Object System.Drawing.Point(325, 50)
+        $useInteractiveGraphCheckBox.Size = New-Object System.Drawing.Size(150, 20)
+        $useInteractiveGraphCheckBox.Checked = $false
+        $useInteractiveGraphCheckBox.Tag = $ClientNumber
+        $useInteractiveGraphCheckBox.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+
         # User Filtering Checkbox
         $userFilterCheckBox = New-Object System.Windows.Forms.CheckBox
         $userFilterCheckBox.Text = "Filter by users"
@@ -3426,7 +3444,7 @@ try {
         $viewReportsBtn.ForeColor = [System.Drawing.Color]::White
 
         # Add all controls to the container panel, then add container to auth panel
-        $clientContainerPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $dateRangeLabel, $dateRangeStartPicker, $dateRangeToLabel, $dateRangeEndPicker, $viewReportsBtn))
+        $clientContainerPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $useInteractiveGraphCheckBox, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $onlyUsersInTicketCheckBox, $dateRangeLabel, $dateRangeStartPicker, $dateRangeToLabel, $dateRangeEndPicker, $viewReportsBtn))
         $script:authPanel.Controls.Add($clientContainerPanel)
 
         # Store controls and state BEFORE Update-TenantPositions so the new client is included in layout
@@ -3468,6 +3486,7 @@ try {
             ViewReportsButton = $viewReportsBtn
             AppRegTenantLabel = $appRegTenantLabel
             AppRegTenantCombo = $appRegTenantCombo
+            UseInteractiveGraphCheckBox = $useInteractiveGraphCheckBox
             DateRangeLabel = $dateRangeLabel
             DateRangeStartPicker = $dateRangeStartPicker
             DateRangeToLabel = $dateRangeToLabel
@@ -3708,6 +3727,9 @@ try {
                 $controls.GraphButton.Visible = $false
                 $controls.ExchangeButton.Visible = $false
                 $controls.RemoveButton.Visible = $false
+                if ($controls.AppRegTenantLabel) { $controls.AppRegTenantLabel.Visible = $false }
+                if ($controls.AppRegTenantCombo) { $controls.AppRegTenantCombo.Visible = $false }
+                if ($controls.UseInteractiveGraphCheckBox) { $controls.UseInteractiveGraphCheckBox.Visible = $false }
                 $controls.ResetButton.Visible = $false
                 $controls.UserFilterCheckBox.Visible = $false
                 $controls.UserSearchTextBox.Visible = $false
@@ -4024,6 +4046,9 @@ try {
             if ($tenantId) {
                 $graphAuthCmd = "GRAPH_AUTH|TENANT_ID:$tenantId"
             }
+            if ($script:clientAuthControls[$clientNum].UseInteractiveGraphCheckBox -and $script:clientAuthControls[$clientNum].UseInteractiveGraphCheckBox.Checked) {
+                $graphAuthCmd = "$graphAuthCmd|INTERACTIVE:1"
+            }
             $response = Send-CommandToSession -ClientNumber $clientNum -Command $graphAuthCmd -TimeoutSeconds 60
             
             # Check if Send-CommandToSession returned false (error writing command file)
@@ -4172,9 +4197,10 @@ try {
                 }
                 $this.Text = "Graph Auth ✓"
                 
-                # Hide app reg tenant selector, show user filtering controls after Graph Auth
+                # Hide app reg tenant selector and interactive checkbox, show user filtering controls after Graph Auth
                 if ($script:clientAuthControls[$clientNum].AppRegTenantLabel) { $script:clientAuthControls[$clientNum].AppRegTenantLabel.Visible = $false }
                 if ($script:clientAuthControls[$clientNum].AppRegTenantCombo) { $script:clientAuthControls[$clientNum].AppRegTenantCombo.Visible = $false }
+                if ($script:clientAuthControls[$clientNum].UseInteractiveGraphCheckBox) { $script:clientAuthControls[$clientNum].UseInteractiveGraphCheckBox.Visible = $false }
                 $script:clientAuthControls[$clientNum].UserFilterCheckBox.Visible = $true
                 $script:clientAuthControls[$clientNum].UserFilterCheckBox.Enabled = $true
                 $script:clientAuthControls[$clientNum].UserSearchTextBox.Visible = $true
