@@ -6320,7 +6320,7 @@ $securityInvestigationButton.add_Click({
         $intuneDevicesCheckBox.Checked = $true
 
         $unifiedAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
-        $unifiedAuditLogsCheckBox.Text = "Email Audit Logs (Unified Audit Log - requires View-Only Audit Logs)"
+        $unifiedAuditLogsCheckBox.Text = "Unified Audit Logs"
         $unifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 540)
         $unifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $unifiedAuditLogsCheckBox.Checked = $false

@@ -314,7 +314,7 @@ $bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(390, 20)
 $bulkMessageTraceCheckBox.Checked = $true
 
 $bulkUnifiedAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
-$bulkUnifiedAuditLogsCheckBox.Text = "Email Audit Logs (Unified Audit Log - requires View-Only Audit Logs)"
+$bulkUnifiedAuditLogsCheckBox.Text = "Unified Audit Logs"
 $bulkUnifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 65)
 $bulkUnifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkUnifiedAuditLogsCheckBox.Checked = $false
