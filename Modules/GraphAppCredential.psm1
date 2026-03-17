@@ -85,16 +85,13 @@ function Save-GraphAppCredentialToWCM {
     $userName = "${TenantId}|${ClientId}"
 
     # Try CredentialManager first (works in Windows PowerShell 5.1)
+    # Use CurrentUser persistence to avoid UAC prompt (LocalMachine can freeze waiting for hidden elevation dialog)
     $usedCredMgr = $false
     if (Get-Module -ListAvailable -Name CredentialManager) {
         try {
             Import-Module CredentialManager -ErrorAction Stop
             $cred = New-Object PSCredential $userName, (ConvertTo-SecureString $ClientSecret -AsPlainText -Force)
-            try {
-                New-StoredCredential -Target $target -Credentials $cred -Persist LocalMachine -ErrorAction Stop | Out-Null
-            } catch {
-                New-StoredCredential -Target $target -Credentials $cred -ErrorAction Stop | Out-Null
-            }
+            New-StoredCredential -Target $target -Credentials $cred -ErrorAction Stop | Out-Null
             $usedCredMgr = $true
         } catch {
             # CredentialManager fails in pwsh (System.Web.Membership not in .NET Core)
@@ -123,8 +120,7 @@ function Save-GraphAppCredentialToWCM {
             if (Get-Module -ListAvailable -Name CredentialManager) {
                 Import-Module CredentialManager -ErrorAction Stop
                 $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
-                try { New-StoredCredential -Target $nameTarget -Credentials $nameCred -Persist LocalMachine -ErrorAction Stop | Out-Null }
-                catch { New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null }
+                New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null
             } else {
                 Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden | Out-Null
             }
