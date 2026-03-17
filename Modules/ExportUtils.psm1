@@ -2145,56 +2145,68 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
             Write-Warning "Rule-based analysis failed: $($_.Exception.Message)"
         }
 
-        # Save only LLM instructions as TXT (no other text files on disk)
+        # Generate Memberberry-Slim package (ticket + exceptions + settings) or fallback to AI readme
+        $report.FilePaths.MemberberrySlimPackage = $null
         try {
-            $statusMsg = "Generating AI readme instructions..."
-            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-            Write-Host $statusMsg -ForegroundColor Cyan
-            
-            # If ticket numbers exist, generate separate AI readme file for each ticket
-            # Ensure TicketNumbers is an array - use report property, not parameter
             $ticketNumsArray = @()
             if ($report.TicketNumbers) {
-                if ($report.TicketNumbers -is [string]) {
-                    $ticketNumsArray = @($report.TicketNumbers)
-                } elseif ($report.TicketNumbers -is [array]) {
-                    $ticketNumsArray = $report.TicketNumbers
-                } else {
-                    $ticketNumsArray = @($report.TicketNumbers)
+                if ($report.TicketNumbers -is [string]) { $ticketNumsArray = @($report.TicketNumbers) }
+                elseif ($report.TicketNumbers -is [array]) { $ticketNumsArray = $report.TicketNumbers }
+                else { $ticketNumsArray = @($report.TicketNumbers) }
+            }
+            $ticketContent = if ($report.TicketContent) { $report.TicketContent } else { "" }
+            $hasTicketInfo = ($ticketNumsArray.Count -gt 0) -or -not [string]::IsNullOrWhiteSpace($ticketContent)
+
+            # Prefer Memberberry-Slim package (same as Memberberry-Slim.ahk) when available
+            $memberberryMod = Join-Path $PSScriptRoot 'MemberberryIntegration.psm1'
+            if (Test-Path $memberberryMod) { Import-Module $memberberryMod -Force -ErrorAction SilentlyContinue }
+            if ($hasTicketInfo -and (Get-Command New-MemberberrySlimPackage -ErrorAction SilentlyContinue)) {
+                $statusMsg = "Generating Memberberry-Slim package (ticket + exceptions + settings)..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
+                $mbPath = ""
+                if (Get-Command Get-AppSettings -ErrorAction SilentlyContinue) {
+                    try { $s = Get-AppSettings; if ($s.MemberberryPath) { $mbPath = $s.MemberberryPath } } catch {}
+                }
+                $slimPackage = New-MemberberrySlimPackage -TicketContent $ticketContent -TicketNumbers $ticketNumsArray -CompanyName $report.Company -OutputFolder $report.OutputFolder -MemberberryPath $mbPath
+                if ($slimPackage -and (Test-Path $slimPackage.TicketPath)) {
+                    $report.FilePaths.MemberberrySlimPackage = $slimPackage
+                    Write-Host "Memberberry-Slim package created (Ticket, ClientExceptions, GlobalExceptions, Settings)" -ForegroundColor Green
                 }
             }
-            Write-Host "AI Readme Generation: Checking ticket numbers - report.TicketNumbers=$($report.TicketNumbers), ticketNumsArray.Count=$($ticketNumsArray.Count)" -ForegroundColor Cyan
-            if ($ticketNumsArray.Count -gt 0) {
-                Write-Host "Generating separate AI readme files for $($ticketNumsArray.Count) ticket(s): $($ticketNumsArray -join ', ')" -ForegroundColor Cyan
-                foreach ($ticketNum in $ticketNumsArray) {
-                    try {
-                        $ticketReport = $report.PSObject.Copy()
-                        $ticketReport.TicketNumbers = @($ticketNum)  # Single ticket number for this file
-                        $ticketReport.LLMInstructions = New-LLMInvestigationInstructions -Report $ticketReport
-                        $ticketLlmPath = Join-Path $report.OutputFolder "_AI_Readme_Ticket_$ticketNum.txt"
-                        if ($ticketReport.LLMInstructions) {
-                            $ticketReport.LLMInstructions | Out-File -FilePath $ticketLlmPath -Encoding utf8
-                            $report.FilePaths["LLMInstructionsTxt_Ticket_$ticketNum"] = $ticketLlmPath
-                            Write-Host "AI readme instructions saved for ticket #$ticketNum" -ForegroundColor Green
-                        }
-                    } catch {
-                        Write-Warning "Failed to generate AI readme for ticket #$ticketNum : $($_.Exception.Message)"
+
+            # Fallback to AI readme when slim package not used
+            if (-not $report.FilePaths.MemberberrySlimPackage) {
+                $statusMsg = "Generating AI readme instructions..."
+                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                Write-Host $statusMsg -ForegroundColor Cyan
+                if ($ticketNumsArray.Count -gt 0) {
+                    foreach ($ticketNum in $ticketNumsArray) {
+                        try {
+                            $ticketReport = $report.PSObject.Copy()
+                            $ticketReport.TicketNumbers = @($ticketNum)
+                            $ticketReport.LLMInstructions = New-LLMInvestigationInstructions -Report $ticketReport
+                            $ticketLlmPath = Join-Path $report.OutputFolder "_AI_Readme_Ticket_$ticketNum.txt"
+                            if ($ticketReport.LLMInstructions) {
+                                $ticketReport.LLMInstructions | Out-File -FilePath $ticketLlmPath -Encoding utf8
+                                $report.FilePaths["LLMInstructionsTxt_Ticket_$ticketNum"] = $ticketLlmPath
+                                Write-Host "AI readme instructions saved for ticket #$ticketNum" -ForegroundColor Green
+                            }
+                        } catch { Write-Warning "Failed to generate AI readme for ticket #$ticketNum : $($_.Exception.Message)" }
                     }
                 }
+                $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
+                $llmFileName = if ($ticketSuffix) { "_AI_Readme$ticketSuffix.txt" } else { "_AI_Readme.txt" }
+                $llmPath = Join-Path $report.OutputFolder $llmFileName
+                if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
+                $report.FilePaths.LLMInstructionsTxt = $llmPath
+                Write-Host "AI readme instructions saved" -ForegroundColor Green
             }
-            
-            # Always generate standard AI readme (with all ticket data if provided, or without if not)
-            $report.LLMInstructions = New-LLMInvestigationInstructions -Report $report
-            $llmFileName = if ($ticketSuffix) { "_AI_Readme$ticketSuffix.txt" } else { "_AI_Readme.txt" }
-            $llmPath = Join-Path $report.OutputFolder $llmFileName
-            if ($report.LLMInstructions) { $report.LLMInstructions | Out-File -FilePath $llmPath -Encoding utf8 }
-            $report.FilePaths.LLMInstructionsTxt = $llmPath
-            Write-Host "AI readme instructions saved" -ForegroundColor Green
         } catch {
-            Write-Warning "Failed to generate AI readme instructions: $($_.Exception.Message)"
+            Write-Warning "Failed to generate instructions: $($_.Exception.Message)"
         }
 
-        # Automatically create zip file of all reports (excluding _AI_Readme.txt)
+        # Automatically create zip file (Memberberry-Slim files or _AI_Readme + CSVs/JSONs)
         try {
             $statusMsg = "Creating zip archive of security reports..."
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
@@ -2207,7 +2219,7 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
                 $zipFileName = "SecurityInvestigation$ticketSuffix`_$timestamp.zip"
             }
-            $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder -ZipFileName $zipFileName
+            $zipPath = New-SecurityInvestigationZip -OutputFolder $report.OutputFolder -ZipFileName $zipFileName -MemberberrySlimPackage $report.FilePaths.MemberberrySlimPackage
             if ($zipPath) {
                 $report.FilePaths.ZipFile = $zipPath
                 if ($zipPath -like "*,*") {
@@ -4701,7 +4713,9 @@ function New-SecurityInvestigationZip {
         [Parameter(Mandatory=$true)]
         [string]$OutputFolder,
         [Parameter(Mandatory=$false)]
-        [string]$ZipFileName
+        [string]$ZipFileName,
+        [Parameter(Mandatory=$false)]
+        [hashtable]$MemberberrySlimPackage = $null
     )
 
     try {
@@ -4711,13 +4725,36 @@ function New-SecurityInvestigationZip {
             return $null
         }
 
-        # Get all CSV, JSON files, and relevant TXT files (AI readme files and error files)
-        # This includes all export files: MessageTrace, InboxRules, TransportRules, MailFlowConnectors,
-        # GraphAuditLogs, SignInLogs, ConditionalAccessPolicies, AppRegistrations, UserSecurityPosture,
-        # SharePointActivity, OneDriveActivity, TeamsActivity, SharePointSharing, SecurityAlerts, SecurityIncidents
+        # Get all CSV, JSON files
         $csvJsonFiles = Get-ChildItem -Path $OutputFolder -Include *.csv,*.json -Recurse
-        $txtFiles = Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse |
-                    Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt)$' }
+        $txtFiles = @()
+
+        # Include Memberberry-Slim files (Ticket, ClientExceptions, GlobalExceptions, Settings, always_include) or fallback to _AI_Readme
+        if ($MemberberrySlimPackage -and $MemberberrySlimPackage.TicketPath -and (Test-Path $MemberberrySlimPackage.TicketPath)) {
+            $slimPaths = @()
+            if ($MemberberrySlimPackage.AlwaysIncludePath -and (Test-Path $MemberberrySlimPackage.AlwaysIncludePath)) {
+                $slimPaths += Get-Item $MemberberrySlimPackage.AlwaysIncludePath
+            }
+            if ($MemberberrySlimPackage.TicketPath -and (Test-Path $MemberberrySlimPackage.TicketPath)) {
+                $slimPaths += Get-Item $MemberberrySlimPackage.TicketPath
+            }
+            if ($MemberberrySlimPackage.ClientExceptionsPath -and (Test-Path $MemberberrySlimPackage.ClientExceptionsPath)) {
+                $slimPaths += Get-Item $MemberberrySlimPackage.ClientExceptionsPath
+            }
+            if ($MemberberrySlimPackage.GlobalExceptionsPath -and (Test-Path $MemberberrySlimPackage.GlobalExceptionsPath)) {
+                $slimPaths += Get-Item $MemberberrySlimPackage.GlobalExceptionsPath
+            }
+            if ($MemberberrySlimPackage.SettingsPath -and (Test-Path $MemberberrySlimPackage.SettingsPath)) {
+                $slimPaths += Get-Item $MemberberrySlimPackage.SettingsPath
+            }
+            $errorTxt = @(Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -match '_Error\.txt$' })
+            $txtFiles = $slimPaths + $errorTxt
+        } else {
+            # Fallback: AI readme and error files
+            $txtFiles = Get-ChildItem -Path $OutputFolder -Include *.txt -Recurse |
+                        Where-Object { $_.Name -match '^(_AI_Readme|.*_Error\.txt)$' }
+        }
         
         # Filter out empty CSV/JSON files (headers only, no data)
         $nonEmptyCsvJsonFiles = @()

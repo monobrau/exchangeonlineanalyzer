@@ -6966,7 +6966,7 @@ $securityInvestigationButton.add_Click({
                     $instructionsLabel.AutoSize = $true
                     $instructionsLabel.Location = New-Object System.Drawing.Point(15, 10)
                     $instructionsLabel.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
-                    $instructionsLabel.Text = "Instructions: All reports have been exported as individual CSV files AND a zip archive (excluding _AI_Readme.txt). Use 'Open Zip Location' to find the zip file for easy upload to your analysis workspace. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them for full analysis."
+                    $instructionsLabel.Text = "Instructions: All reports have been exported as individual CSV files AND a zip archive. When Memberberry is available with ticket content, the zip includes Memberberry-Slim format (Ticket, ClientExceptions, GlobalExceptions, Settings); otherwise _AI_Readme.txt. Use 'Open Zip Location' to find the zip. Reminder: Download Entra sign-in logs from the Entra portal (Sign-in logs → Download CSV) and include them for full analysis."
 
                     $copySummaryBtn = New-Object System.Windows.Forms.Button
                     $copySummaryBtn.Text = "Copy Summary"
