@@ -6325,65 +6325,6 @@ $securityInvestigationButton.add_Click({
         $unifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $unifiedAuditLogsCheckBox.Checked = $false
 
-        $unifiedAuditLogTypesBtn = New-Object System.Windows.Forms.Button
-        $unifiedAuditLogTypesBtn.Text = "Configure record types..."
-        $unifiedAuditLogTypesBtn.Location = New-Object System.Drawing.Point(200, 538)
-        $unifiedAuditLogTypesBtn.Size = New-Object System.Drawing.Size(150, 22)
-        $unifiedAuditLogTypesBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-        $script:unifiedAuditLogRecordTypes = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated')
-        $unifiedAuditLogTypesBtn.add_Click({
-            $allTypes = @(
-                'ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated',
-                'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation',
-                'OneDrive', 'MicrosoftTeams', 'AzureActiveDirectory',
-                'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
-            )
-            $dlg = New-Object System.Windows.Forms.Form
-            $dlg.Text = "Unified Audit Log - Record Types"
-            $dlg.Size = New-Object System.Drawing.Size(320, 380)
-            $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-            $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-            $clb = New-Object System.Windows.Forms.CheckedListBox
-            $clb.Location = New-Object System.Drawing.Point(10, 10)
-            $clb.Size = New-Object System.Drawing.Size(285, 280)
-            $clb.CheckOnClick = $true
-            foreach ($t in $allTypes) {
-                $idx = $clb.Items.Add($t)
-                if ($script:unifiedAuditLogRecordTypes -contains $t) { $clb.SetItemChecked($idx, $true) }
-            }
-            $okBtn = New-Object System.Windows.Forms.Button
-            $okBtn.Text = "OK"
-            $okBtn.Location = New-Object System.Drawing.Point(130, 300)
-            $okBtn.Size = New-Object System.Drawing.Size(75, 28)
-            $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
-            $dlg.AcceptButton = $okBtn
-            $cancelBtn = New-Object System.Windows.Forms.Button
-            $cancelBtn.Text = "Cancel"
-            $cancelBtn.Location = New-Object System.Drawing.Point(215, 300)
-            $cancelBtn.Size = New-Object System.Drawing.Size(75, 28)
-            $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-            $dlg.CancelButton = $cancelBtn
-            $selectDefaultBtn = New-Object System.Windows.Forms.Button
-            $selectDefaultBtn.Text = "Exchange only (default)"
-            $selectDefaultBtn.Location = New-Object System.Drawing.Point(10, 300)
-            $selectDefaultBtn.Size = New-Object System.Drawing.Size(110, 28)
-            $selectDefaultBtn.add_Click({
-                for ($i = 0; $i -lt $clb.Items.Count; $i++) {
-                    $clb.SetItemChecked($i, $clb.Items[$i] -in @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated'))
-                }
-            })
-            $dlg.Controls.AddRange(@($clb, $okBtn, $cancelBtn, $selectDefaultBtn))
-            if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                $script:unifiedAuditLogRecordTypes = @()
-                for ($i = 0; $i -lt $clb.Items.Count; $i++) {
-                    if ($clb.GetItemChecked($i)) { $script:unifiedAuditLogRecordTypes += $clb.Items[$i] }
-                }
-                if ($script:unifiedAuditLogRecordTypes.Count -eq 0) {
-                    $script:unifiedAuditLogRecordTypes = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated')
-                }
-            }
-        })
-
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
         $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 217)
@@ -6489,7 +6430,7 @@ $securityInvestigationButton.add_Click({
         $reportsScrollPanel.Controls.AddRange(@(
             $selectAllReportsBtn, $deselectAllReportsBtn,
             # Exchange Online / Email Reports
-            $messageTraceCheckBox, $unifiedAuditLogsCheckBox, $unifiedAuditLogTypesBtn, $inboxRulesCheckBox, $transportRulesCheckBox,
+            $messageTraceCheckBox, $unifiedAuditLogsCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
             $mailFlowCheckBox, $mailboxForwardingCheckBox,
             # Entra ID / Identity & Access Reports
             $auditLogsCheckBox, $signInLogsCheckBox, $mfaCoverageCheckBox, $caPoliciesCheckBox, $appRegistrationsCheckBox,
@@ -6588,7 +6529,6 @@ $securityInvestigationButton.add_Click({
                     IncludeDLPViolations = $dlpViolationsCheckBox.Checked
                     IncludeIntuneDevices = $intuneDevicesCheckBox.Checked
                     IncludeUnifiedAuditLogs = $unifiedAuditLogsCheckBox.Checked
-                    UnifiedAuditLogRecordTypes = $script:unifiedAuditLogRecordTypes
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -6735,7 +6675,6 @@ $securityInvestigationButton.add_Click({
                     IncludeSecurityAlerts = $reportSelections.IncludeSecurityAlerts
                     IncludeSecurityIncidents = $reportSelections.IncludeSecurityIncidents
                     IncludeUnifiedAuditLogs = $reportSelections.IncludeUnifiedAuditLogs
-                    UnifiedAuditLogRecordTypes = $reportSelections.UnifiedAuditLogRecordTypes
                     SignInLogsDaysBack = $reportSelections.SignInLogsDaysBack
                     MessageTraceDaysBack = $reportSelections.MessageTraceDaysBack
                     SelectedUsers = $selectedUsers
