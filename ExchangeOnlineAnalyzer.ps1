@@ -6629,13 +6629,22 @@ $securityInvestigationButton.add_Click({
                     return
                 }
 
-                # Get selected users from unified account grid if available
+                # Get selected users from unified account grid: checked rows first, then fallback to selected (highlighted) rows
                 $selectedUsers = @()
                 try {
                     if ($unifiedAccountGrid -and $unifiedAccountGrid.Rows.Count -gt 0) {
                         for ($i = 0; $i -lt $unifiedAccountGrid.Rows.Count; $i++) {
                             if ($unifiedAccountGrid.Rows[$i].Cells["Select"].Value -eq $true) {
                                 $upn = $unifiedAccountGrid.Rows[$i].Cells["UserPrincipalName"].Value
+                                if ($upn -and -not [string]::IsNullOrWhiteSpace($upn)) {
+                                    $selectedUsers += $upn
+                                }
+                            }
+                        }
+                        # Fallback: if no checkboxes checked, use selected (highlighted) rows
+                        if ($selectedUsers.Count -eq 0 -and $unifiedAccountGrid.SelectedRows -and $unifiedAccountGrid.SelectedRows.Count -gt 0) {
+                            foreach ($row in $unifiedAccountGrid.SelectedRows) {
+                                $upn = $row.Cells["UserPrincipalName"].Value
                                 if ($upn -and -not [string]::IsNullOrWhiteSpace($upn)) {
                                     $selectedUsers += $upn
                                 }

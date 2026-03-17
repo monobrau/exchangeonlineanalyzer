@@ -716,6 +716,8 @@ function New-SecurityInvestigationReport {
     if ($useParallelCollection) {
         try {
             $exportUtilsPath = Join-Path $PSScriptRoot 'ExportUtils.psm1'
+            # Pass SelectedUsers as JSON string to avoid runspace hashtable serialization corrupting arrays
+            $selectedUsersJson = if ($SelectedUsers -and $SelectedUsers.Count -gt 0) { $SelectedUsers | ConvertTo-Json -Compress } else { '[]' }
             $params = @{
                 DaysBack = $DaysBack
                 MessageTraceDaysBack = $MessageTraceDaysBack
@@ -724,6 +726,7 @@ function New-SecurityInvestigationReport {
                 EndDate = $EndDate
                 UseDateRange = $useDateRange
                 SelectedUsers = $SelectedUsers
+                SelectedUsersJson = $selectedUsersJson
                 UseSequentialInboxRules = (-not $MainForm -or -not $StatusLabel)  # Worker/runspace: avoid parallel inbox rules to prevent extra auth prompts
                 IncludeMessageTrace = $IncludeMessageTrace
                 IncludeInboxRules = $IncludeInboxRules
@@ -759,6 +762,14 @@ function New-SecurityInvestigationReport {
                 param($ExportUtilsPath, $Params)
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
+                # Reconstruct SelectedUsers from JSON - runspace hashtable serialization corrupts arrays
+                if ($Params.SelectedUsersJson) {
+                    try {
+                        $parsed = $Params.SelectedUsersJson | ConvertFrom-Json -ErrorAction Stop
+                        $Params.SelectedUsers = @(); foreach ($p in @($parsed)) { $upn = if ($p -is [string]) { $p } else { $p.ToString() }; if ($upn) { $Params.SelectedUsers += $upn } }
+                    } catch { $Params.SelectedUsers = @() }
+                }
+                if (-not $Params.SelectedUsers) { $Params.SelectedUsers = @() }
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
                 # Reuse cached Exchange connection if available (EXO v2 token cache)
@@ -824,6 +835,14 @@ function New-SecurityInvestigationReport {
                 param($ExportUtilsPath, $Params)
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
+                # Reconstruct SelectedUsers from JSON - runspace hashtable serialization corrupts arrays
+                if ($Params.SelectedUsersJson) {
+                    try {
+                        $parsed = $Params.SelectedUsersJson | ConvertFrom-Json -ErrorAction Stop
+                        $Params.SelectedUsers = @(); foreach ($p in @($parsed)) { $upn = if ($p -is [string]) { $p } else { $p.ToString() }; if ($upn) { $Params.SelectedUsers += $upn } }
+                    } catch { $Params.SelectedUsers = @() }
+                }
+                if (-not $Params.SelectedUsers) { $Params.SelectedUsers = @() }
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
                 $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: connecting..." -Level Info -Component GraphRS }
