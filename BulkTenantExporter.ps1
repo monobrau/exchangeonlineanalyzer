@@ -1528,11 +1528,16 @@ try {
                                     Write-Host "    Direct UPN lookup failed: `$(`$_.Exception.Message)" -ForegroundColor DarkGray
                                 }
                             }
-                            # For domain names (contains . but no @), search users whose UPN ends with @domain
+                            # For domain names only (e.g. contoso.com) - not partial UPN like john.smith
+                            # Domain heuristic: has dot, no @, and part after last dot is 2-4 chars (TLD)
                             if ((-not `$users -or `$users.Count -eq 0) -and `$searchTerm.Trim() -match '\.' -and `$searchTerm.Trim() -notmatch '@') {
-                                `$domainPart = '@' + `$searchTerm.Trim().Replace("'","''")
-                                `$users = @(Get-MgUser -Filter "endsWith(userPrincipalName,'`$domainPart')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue)
-                                if (`$users.Count -gt 0) { Write-Host "    Found `$(`$users.Count) user(s) in domain" -ForegroundColor Gray }
+                                `$lastPart = `$searchTerm.Trim().Split('.')[-1]
+                                `$looksLikeDomain = (`$lastPart.Length -ge 2 -and `$lastPart.Length -le 4)
+                                if (`$looksLikeDomain) {
+                                    `$domainPart = '@' + `$searchTerm.Trim().Replace("'","''")
+                                    `$users = @(Get-MgUser -Filter "endsWith(userPrincipalName,'`$domainPart')" -Top 999 -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue)
+                                    if (`$users.Count -gt 0) { Write-Host "    Found `$(`$users.Count) user(s) in domain" -ForegroundColor Gray }
+                                }
                             }
                             if (-not `$users -or `$users.Count -eq 0) {
                                 # startsWith requires ConsistencyLevel eventual for advanced queries
@@ -1548,16 +1553,13 @@ try {
                                 `$escaped = `$searchTerm.Replace("'","''")
                                 `$users = @(Get-MgUser -Filter "DisplayName eq '`$escaped' or UserPrincipalName eq '`$escaped'" -Top 10 -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue)
                             }
-                            # Client-side fallback when API filters fail (e.g. app-only without advanced query support)
+                            # Client-side fallback when API filters fail (partial UPN, partial name, app-only without advanced query)
+                            # Use contains for both DisplayName and UPN - handles john.smith, Smith, user@domain.com
                             if ((-not `$users -or `$users.Count -eq 0) -and `$searchTerm.Trim().Length -gt 0) {
                                 try {
                                     `$term = `$searchTerm.Trim()
                                     `$all = @(Get-MgUser -All -Top 1000 -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop)
-                                    if (`$term -match '\.' -and `$term -notmatch '@') {
-                                        `$users = @(`$all | Where-Object { `$_.UserPrincipalName -like "*@`$term" })
-                                    } else {
-                                        `$users = @(`$all | Where-Object { `$_.DisplayName -like "*`$term*" -or `$_.UserPrincipalName -like "*`$term*" })
-                                    }
+                                    `$users = @(`$all | Where-Object { (`$_.DisplayName -and `$_.DisplayName -like "*`$term*") -or (`$_.UserPrincipalName -and `$_.UserPrincipalName -like "*`$term*") })
                                     if (`$users.Count -gt 0) { Write-Host "    Found `$(`$users.Count) user(s) via client-side search" -ForegroundColor Gray }
                                 } catch {
                                     Write-Host "    Client-side fallback failed: `$(`$_.Exception.Message)" -ForegroundColor DarkGray
