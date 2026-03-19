@@ -46,8 +46,8 @@ Start-Process 'firefox.exe' -ArgumentList (
 ## 🚀 Features
 
 ### Bulk Tenant Report Exporter
-- **📦 Standalone Application**: `BulkTenantExporter.ps1` - Run independently for bulk operations
-- **🔄 Integrated Mode**: Available within main application via "Bulk Tenant Report Exporter" button
+- **📦 Single implementation**: `BulkTenantExporter.ps1` — run standalone, or from the main app (same script, `-Owner $mainForm` for a modal window centered on the main form)
+- **🔄 Integrated Mode**: "Bulk Tenant Report Exporter" button calls `BulkTenantExporter.ps1` in-process (no duplicate UI code)
 - **➕ Dynamic Tenant Management**: Add tenants on-the-fly during export (no fixed count required)
 - **🔐 Per-Tenant Authentication**: Isolated authentication sessions for each tenant
 - **👥 User Filtering**: Filter reports by specific users (name, email, or partial matches) per tenant

@@ -417,10 +417,23 @@ function Invoke-IndependentGraphCollectorsParallel {
     $exportUtilsPath = Join-Path $PSScriptRoot 'ExportUtils.psm1'
     $securityAnalysisPath = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
     $collectorScript = {
-        param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath, $UseDateRange, $StartDate, $EndDate)
+        param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath, $UseDateRange, $StartDate, $EndDate, $GraphAccessToken)
         # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
         Import-Module $ExportUtilsPath -Force -ErrorAction Stop
-        Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+        # Match main Graph runspace: use passed token when present (bulk worker + StatusFile) to avoid extra auth
+        if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) {
+            try {
+                $secToken = ConvertTo-SecureString $GraphAccessToken -AsPlainText -Force
+                Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop | Out-Null
+            } catch {
+                Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+            } finally {
+                $GraphAccessToken = $null
+                [System.GC]::Collect()
+            }
+        } else {
+            Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+        }
         $dateArgs = if ($UseDateRange -and $StartDate -and $EndDate) { @{ StartDate = $StartDate; EndDate = $EndDate } } else { @{ DaysBack = $DaysBack } }
         switch ($CollectorName) {
             'AuditLogs' { return Get-GraphAuditLogs @dateArgs -SelectedUsers $SelectedUsers }
@@ -460,7 +473,8 @@ function Invoke-IndependentGraphCollectorsParallel {
     foreach ($name in $collectorNames) {
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
-        $null = $ps.AddScript($collectorScript).AddArgument($name).AddArgument($Params.DaysBack).AddArgument($Params.SelectedUsers).AddArgument($exportUtilsPath).AddArgument($securityAnalysisPath).AddArgument(($Params.UseDateRange -eq $true)).AddArgument($Params.StartDate).AddArgument($Params.EndDate)
+        $tok = if ($Params.ContainsKey('GraphAccessToken')) { $Params.GraphAccessToken } else { $null }
+        $null = $ps.AddScript($collectorScript).AddArgument($name).AddArgument($Params.DaysBack).AddArgument($Params.SelectedUsers).AddArgument($exportUtilsPath).AddArgument($securityAnalysisPath).AddArgument(($Params.UseDateRange -eq $true)).AddArgument($Params.StartDate).AddArgument($Params.EndDate).AddArgument($tok)
         $jobs.Add(@{ Name = $name; PowerShell = $ps; Handle = $ps.BeginInvoke() }) | Out-Null
     }
     foreach ($j in $jobs) {
@@ -1203,10 +1217,11 @@ function New-SecurityInvestigationReport {
         $report.IntuneDevices = @()
     }
 
-    # Phase 3: Independent Graph collectors - skip parallel when NoParallel/StatusFile (runspaces trigger extra auth)
+    # Phase 3: Independent Graph collectors — parallel when GUI (no StatusFile), or bulk worker when GraphAccessToken is set (avoids runspace auth prompts)
     $graphParallelPhaseSucceeded = $false
     if ($graphConnected) {
-        if (-not $NoParallel -and -not $StatusFile) {
+        $usePhase3Parallel = -not $NoParallel -and ((-not $StatusFile) -or $hasTokenForParallel)
+        if ($usePhase3Parallel) {
         try {
             $statusMsg = "Collecting independent Graph data in parallel... This may take several minutes."
             if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
@@ -1229,6 +1244,7 @@ function New-SecurityInvestigationReport {
                 IncludeSecurityAlerts = $IncludeSecurityAlerts
                 IncludeSecurityIncidents = $IncludeSecurityIncidents
                 IncludeMfaCoverage = $IncludeMfaCoverage
+                GraphAccessToken = $GraphAccessToken
             }
             $parallelResults = Invoke-IndependentGraphCollectorsParallel -Params $parallelParams
             if ($parallelResults.Keys.Count -gt 0) {
@@ -2845,7 +2861,7 @@ function Get-GraphAuditLogs {
                     if ($mgUser -and $mgUser.Id) {
                         $userIds += $mgUser.Id
                         $userIdToUpn[$mgUser.Id] = $upn
-                        Write-Host "  ✓ Found user ID $($mgUser.Id) for $upn" -ForegroundColor Gray
+                        Write-Host "  [OK] Found user ID $($mgUser.Id) for $upn" -ForegroundColor Gray
                     } else {
                         Write-Warning "User ID lookup returned null for ${upn}"
                     }
@@ -2875,9 +2891,9 @@ function Get-GraphAuditLogs {
                                     $count++
                                 }
                             }
-                            Write-Host "  ✓ Found $count audit log entries for $upn" -ForegroundColor Gray
+                            Write-Host "  [OK] Found $count audit log entries for $upn" -ForegroundColor Gray
                         } else {
-                            Write-Host "  ℹ No audit log entries found for $upn (this is normal if no activity)" -ForegroundColor Gray
+                            Write-Host "  [i] No audit log entries found for $upn (this is normal if no activity)" -ForegroundColor Gray
                         }
                     } catch {
                         Write-Warning "Failed to get audit logs for $upn (ID: ${userId}): $($_.Exception.Message)"
@@ -2931,7 +2947,7 @@ function Get-GraphAuditLogs {
                         $pname = $p.DisplayName
                         $oldV  = $p.OldValue
                         $newV  = $p.NewValue
-                        $modProps += ("{0}: '{1}' → '{2}'" -f $pname,$oldV,$newV)
+                        $modProps += ("{0}: '{1}' -> '{2}'" -f $pname,$oldV,$newV)
                     }
                 }
 
@@ -4227,7 +4243,7 @@ Location: $($Report.OutputFolder)
 - MFAStatus.csv: Identify users not covered by any MFA control; prioritize remediation.
 - UserSecurityGroups.csv: Validate privileged group/role membership (e.g., Global Administrator).
 
-Important: Sign-in logs require Entra ID Premium for API access. Please export sign-in CSVs from the Entra portal (Sign-in logs → Download, last 7–30 days depending on tenant) and include alongside these files for full analysis.
+Important: Sign-in logs require Entra ID Premium for API access. Please export sign-in CSVs from the Entra portal (Sign-in logs -> Download, last 7-30 days depending on tenant) and include alongside these files for full analysis.
 
 *This automated security analysis helps identify potential security incidents and unusual patterns that may require further investigation by security professionals.*
 "@
@@ -4335,7 +4351,7 @@ function New-LLMInvestigationInstructions {
                     Write-Warning "New-LLMInvestigationInstructions: WARNING - Generated readme appears to be using default template instead of memberberry content!"
                     Write-Host "  This suggests memberberry is not enabled or failed to load. Check settings: MemberberryEnabled=$($settings.MemberberryEnabled), MemberberryPath='$($settings.MemberberryPath)'" -ForegroundColor Yellow
                 } elseif ($result -match 'MEMBERBERRY|# MEMBERBERRY') {
-                    Write-Host "New-LLMInvestigationInstructions: ✓ Memberberry content detected in generated readme" -ForegroundColor Green
+                    Write-Host "New-LLMInvestigationInstructions: [OK] Memberberry content detected in generated readme" -ForegroundColor Green
                 }
                 return $result
             }
@@ -4348,10 +4364,11 @@ function New-LLMInvestigationInstructions {
     $investigator = if ($Report.Investigator) { $Report.Investigator } else { 'Security Administrator' }
     $company = if ($Report.Company) { $Report.Company } else { 'Organization' }
 
+    # Expandable here-string: avoid raw '&' (call operator in some parse contexts) and odd `` `$ `` sequences; use plain text / single `$ for literals.
     $instructions = @"
 Master Prompt - Generic Template (Copy and Save This)
 
-Role & Objective You are a Security Engineer acting on behalf of $company. Your task is to analyze security alert tickets, cross-reference them with attached CSV logs/text files, and classify the event as True Positive, False Positive, or Authorized Activity.
+Role and Objective: You are a Security Engineer acting on behalf of $company. Your task is to analyze security alert tickets, cross-reference them with attached CSV logs/text files, and classify the event as True Positive, False Positive, or Authorized Activity.
 
 
 
@@ -4359,7 +4376,7 @@ You will then draft a non-technical, professional email response to the client c
 
 
 
-I. Data Ingestion & Analysis Rules
+I. Data Ingestion and Analysis Rules
 
 1. Analyze the Ticket Context
 
@@ -4431,7 +4448,7 @@ Action: Classify as Authorized Activity (Maintenance Script).
 
 B. False Positives (System Noise)
 
-Endpoint Protection: Alerts for TrustedInstaller.exe, `$`$DeleteMe..., or files in \Windows\WinSxS\Temp\.
+Endpoint Protection: Alerts for TrustedInstaller.exe, temporary names like `$DeleteMe, or files in \Windows\WinSxS\Temp\.
 
 
 
@@ -4453,7 +4470,7 @@ Action moves mail to "RSS Feeds" or "Conversation History" folders.
 
 
 
-Action: Classify as True Positive. Recommend immediate password reset & session revocation.
+Action: Classify as True Positive. Recommend immediate password reset and session revocation.
 
 
 
@@ -4497,7 +4514,7 @@ Source: [ISP Name / Location] (IP: [IP Address])
 
 
 
-Evidence: Explain why it is classified this way (e.g., "This is a standard residential ISP," or "The rule name '.' is a known indicator of compromise"). Cite the specific log file used (e.g., ``).]
+Evidence: Explain why it is classified this way (e.g., "This is a standard residential ISP," or "The rule name '.' is a known indicator of compromise"). Cite the specific log file used (e.g., SignInLogs.csv or AuditLogs.csv).]
 
 
 
