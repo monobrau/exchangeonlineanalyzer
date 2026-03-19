@@ -24,6 +24,34 @@ $scopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
 Write-Host "`n=== Create Graph Inbox Rules App ===" -ForegroundColor Cyan
 Write-Host "Connecting with Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All..." -ForegroundColor Yellow
 
+# Clear cached tokens so you can sign in with a different tenant (avoids reusing previous tenant's token)
+try {
+    Disconnect-MgGraph -ErrorAction SilentlyContinue
+    $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+    if ($graphSession -and $graphSession.AuthContext) { $graphSession.AuthContext.ClearTokenCache() }
+} catch {}
+try {
+    $msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+    if ($msalCache -and (Test-Path $msalCache)) { Remove-Item $msalCache -Force -ErrorAction SilentlyContinue }
+} catch {}
+# Use a fresh cache directory so no cached tokens are loaded - forces account picker
+$authCacheDir = Join-Path $env:TEMP "EOA_GraphAppCreate_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+try {
+    if (Test-Path $authCacheDir) { Remove-Item -Path $authCacheDir -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path $authCacheDir -Force -ErrorAction Stop | Out-Null
+    $env:MSAL_CACHE_DIR = $authCacheDir
+    $env:IDENTITY_SERVICE_CACHE_DIR = $authCacheDir
+} catch {}
+# Clear Graph module cache
+try {
+    $graphCache = Join-Path $env:LOCALAPPDATA "Microsoft\Graph"
+    if (Test-Path $graphCache) { Get-ChildItem -Path $graphCache -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+} catch {}
+
+# Disable WAM so Connect-MgGraph uses system browser (better account picker for multi-tenant)
+$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+$env:MSAL_DISABLE_BROKER = "1"
+
 try {
     Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
 } catch {
@@ -31,7 +59,12 @@ try {
 }
 
 $tenantId = (Get-MgContext).TenantId
-Write-Host "Connected. Tenant: $tenantId" -ForegroundColor Green
+$tenantDisplayName = $tenantId
+try {
+    $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
+    if ($org.value -and $org.value[0].displayName) { $tenantDisplayName = $org.value[0].displayName }
+} catch {}
+Write-Host "Connected. Tenant: $tenantDisplayName ($tenantId)" -ForegroundColor Green
 
 # Microsoft Graph resource app ID
 $graphAppId = '00000003-0000-0000-c000-000000000000'

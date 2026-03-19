@@ -4388,13 +4388,16 @@ try {
             # Check if user filtering is enabled - do this BEFORE processing ticket data
             $controls = $script:clientAuthControls[$clientNum]
             if ($controls.UserFilterCheckBox.Checked) {
-                # Check if users were validated OR if search terms are stored for validation during export
+                # Check if users were validated OR if search terms exist (stored or in text box)
                 $hasValidatedUsers = $script:clientValidatedUsers.ContainsKey($clientNum) -and $script:clientValidatedUsers[$clientNum].Count -gt 0
-                $hasSearchTerms = $script:clientSearchTerms.ContainsKey($clientNum) -and -not [string]::IsNullOrWhiteSpace($script:clientSearchTerms[$clientNum])
+                $searchTermsFromStore = $script:clientSearchTerms.ContainsKey($clientNum) -and -not [string]::IsNullOrWhiteSpace($script:clientSearchTerms[$clientNum])
+                $searchTermsFromTextBox = -not [string]::IsNullOrWhiteSpace($controls.UserSearchTextBox.Text)
+                $hasSearchTerms = $searchTermsFromStore -or $searchTermsFromTextBox
                 
-                Write-Host "Generate Reports: Client $clientNum - HasValidatedUsers: $hasValidatedUsers, HasSearchTerms: $hasSearchTerms" -ForegroundColor Cyan
+                Write-Host "Generate Reports: Client $clientNum - HasValidatedUsers: $hasValidatedUsers, HasSearchTerms: $hasSearchTerms (store=$searchTermsFromStore, textbox=$searchTermsFromTextBox)" -ForegroundColor Cyan
                 if ($hasSearchTerms) {
-                    Write-Host "Generate Reports: Search terms for Client $clientNum : $($script:clientSearchTerms[$clientNum])" -ForegroundColor Cyan
+                    $termsSource = if ($searchTermsFromStore) { $script:clientSearchTerms[$clientNum] } else { $controls.UserSearchTextBox.Text.Trim() }
+                    Write-Host "Generate Reports: Search terms for Client $clientNum : $termsSource" -ForegroundColor Cyan
                 }
                 
                 if (-not $hasValidatedUsers -and -not $hasSearchTerms) {
@@ -4467,10 +4470,17 @@ try {
             $selectedUsers = @()
             if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
                 $selectedUsers = $script:clientValidatedUsers[$clientNum]
-            } elseif ($script:clientSearchTerms.ContainsKey($clientNum)) {
-                # If search terms exist but not validated, send GENERATE_REPORTS_SEARCH command
-                $searchTerms = $script:clientSearchTerms[$clientNum]
+            } else {
+                # Use search terms from store or from text box (user may have typed/extracted but not clicked Validate)
+                $searchTerms = if ($script:clientSearchTerms.ContainsKey($clientNum) -and -not [string]::IsNullOrWhiteSpace($script:clientSearchTerms[$clientNum])) {
+                    $script:clientSearchTerms[$clientNum]
+                } elseif (-not [string]::IsNullOrWhiteSpace($controls.UserSearchTextBox.Text)) {
+                    $controls.UserSearchTextBox.Text.Trim()
+                } else {
+                    ""
+                }
                 if (-not [string]::IsNullOrWhiteSpace($searchTerms)) {
+                    # Search terms from text box or store - send GENERATE_REPORTS_SEARCH (worker will validate and run)
                     # Parse search terms (comma-separated) into array
                     $searchTermsArray = @()
                     if ($searchTerms -match ',') {

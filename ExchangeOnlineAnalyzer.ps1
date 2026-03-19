@@ -7138,67 +7138,73 @@ $bulkTenantExporterButton.add_Click({
         $bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMessageTraceCheckBox.Checked = $true
 
+        $bulkUnifiedAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
+        $bulkUnifiedAuditLogsCheckBox.Text = "Unified Audit Logs"
+        $bulkUnifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 65)
+        $bulkUnifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $bulkUnifiedAuditLogsCheckBox.Checked = $true
+
         $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkInboxRulesCheckBox.Text = "Inbox Rules"
-        $bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 65)
+        $bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
         $bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkInboxRulesCheckBox.Checked = $true
 
         $bulkTransportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkTransportRulesCheckBox.Text = "Transport Rules"
-        $bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
+        $bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 115)
         $bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkTransportRulesCheckBox.Checked = $true
 
         $bulkMailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkMailFlowCheckBox.Text = "Mail Flow Connectors"
-        $bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 115)
+        $bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 140)
         $bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMailFlowCheckBox.Checked = $true
 
         $bulkMailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkMailboxForwardingCheckBox.Text = "Mailbox Forwarding & Delegation"
-        $bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 140)
+        $bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 165)
         $bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMailboxForwardingCheckBox.Checked = $true
 
         $bulkAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkAuditLogsCheckBox.Text = "Audit Logs"
-        $bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 165)
+        $bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 190)
         $bulkAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkAuditLogsCheckBox.Checked = $true
 
         $bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
-        $bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 190)
+        $bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 215)
         $bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkCaPoliciesCheckBox.Checked = $true
 
         $bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkAppRegistrationsCheckBox.Text = "App Registrations"
-        $bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
+        $bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 240)
         $bulkAppRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkAppRegistrationsCheckBox.Checked = $true
 
         $bulkSignInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkSignInLogsCheckBox.Text = "Sign-In Logs"
-        $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 240)
+        $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 265)
         $bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkSignInLogsCheckBox.Checked = $true
 
         $bulkMfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
         $bulkMfaCoverageCheckBox.Text = "MFA Coverage"
-        $bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 265)
+        $bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 290)
         $bulkMfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $bulkMfaCoverageCheckBox.Checked = $true
 
         $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
-        $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 290)
+        $bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 315)
         $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
         $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
-        $bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 288)
+        $bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 313)
         $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
         $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
         $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
@@ -7212,6 +7218,7 @@ $bulkTenantExporterButton.add_Click({
         # Select All button click handler
         $bulkSelectAllBtn.add_Click({
             $bulkMessageTraceCheckBox.Checked = $true
+            $bulkUnifiedAuditLogsCheckBox.Checked = $true
             $bulkInboxRulesCheckBox.Checked = $true
             $bulkTransportRulesCheckBox.Checked = $true
             $bulkMailFlowCheckBox.Checked = $true
@@ -7226,6 +7233,7 @@ $bulkTenantExporterButton.add_Click({
         # Deselect All button click handler
         $bulkDeselectAllBtn.add_Click({
             $bulkMessageTraceCheckBox.Checked = $false
+            $bulkUnifiedAuditLogsCheckBox.Checked = $false
             $bulkInboxRulesCheckBox.Checked = $false
             $bulkTransportRulesCheckBox.Checked = $false
             $bulkMailFlowCheckBox.Checked = $false
@@ -7240,7 +7248,7 @@ $bulkTenantExporterButton.add_Click({
         # Add all controls to scrollable panel
         $bulkReportsScrollPanel.Controls.AddRange(@(
             $bulkSelectAllBtn, $bulkDeselectAllBtn,
-            $bulkMessageTraceCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
+            $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
             $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox, $bulkAuditLogsCheckBox,
             $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
             $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox,
@@ -7380,6 +7388,7 @@ $bulkTenantExporterButton.add_Click({
             $days = [int]$bulkDaysComboBox.SelectedItem
             $reportSelections = @{
                 IncludeMessageTrace = $bulkMessageTraceCheckBox.Checked
+                IncludeUnifiedAuditLogs = $bulkUnifiedAuditLogsCheckBox.Checked
                 IncludeInboxRules = $bulkInboxRulesCheckBox.Checked
                 IncludeTransportRules = $bulkTransportRulesCheckBox.Checked
                 IncludeMailFlowConnectors = $bulkMailFlowCheckBox.Checked
@@ -7521,6 +7530,7 @@ if (Test-Path `$ReportSelectionsFile) {
         `$jsonObj = Get-Content `$ReportSelectionsFile -Raw | ConvertFrom-Json
         `$reportSelections = @{
             IncludeMessageTrace = if (`$null -ne `$jsonObj.IncludeMessageTrace) { `$jsonObj.IncludeMessageTrace } else { `$false }
+            IncludeUnifiedAuditLogs = if (`$null -ne `$jsonObj.IncludeUnifiedAuditLogs) { `$jsonObj.IncludeUnifiedAuditLogs } else { `$false }
             IncludeInboxRules = if (`$null -ne `$jsonObj.IncludeInboxRules) { `$jsonObj.IncludeInboxRules } else { `$false }
             IncludeTransportRules = if (`$null -ne `$jsonObj.IncludeTransportRules) { `$jsonObj.IncludeTransportRules } else { `$false }
             IncludeMailFlowConnectors = if (`$null -ne `$jsonObj.IncludeMailFlowConnectors) { `$jsonObj.IncludeMailFlowConnectors } else { `$false }
