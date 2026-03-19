@@ -94,12 +94,13 @@ function Save-GraphAppCredentialToWCM {
             New-StoredCredential -Target $target -Credentials $cred -ErrorAction Stop | Out-Null
             $usedCredMgr = $true
         } catch {
-            # CredentialManager fails in pwsh (System.Web.Membership not in .NET Core)
+            Write-Warning "CredentialManager failed; falling back to cmdkey. Install CredentialManager for secure storage: Install-Module CredentialManager -Scope CurrentUser"
         }
     }
 
     if (-not $usedCredMgr) {
-        # Fallback: cmdkey (built-in, works in pwsh)
+        # Fallback: cmdkey (built-in, works in pwsh). SECURITY: /pass: exposes secret in process argv.
+        Write-Warning "CredentialManager not installed. Client secret may be visible in process argv. Install for secure storage: Install-Module CredentialManager -Scope CurrentUser"
         try {
             $targetArg = "/generic:$target"
             $userArg = "/user:$userName"

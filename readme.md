@@ -123,7 +123,8 @@ Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force
 
-# Optional: For app-only Graph + Windows Credential Manager (reports without interactive sign-in)
+# Recommended: CredentialManager for app-only Graph + WCM (reports without interactive sign-in).
+# Without it, Add App / SaveToWCM uses cmdkey, which exposes secrets in process argv.
 Install-Module CredentialManager -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users.Actions -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force
