@@ -2,13 +2,16 @@
 .SYNOPSIS
     Store and retrieve Graph app credentials (app-only) in Windows Credential Manager.
 .DESCRIPTION
-    Uses CredentialManager module. Target format: EOA-GraphApp-{tenantId}
-    UserName stores "TenantId|ClientId", Password stores ClientSecret.
+    Uses CredentialManager module. Target formats: EOA-GraphApp-{tenantId} (Exchange Online Analyzer),
+    ESR-GraphApp-{tenantId} (Entra Secret Rotate). UserName stores "TenantId|ClientId", Password stores ClientSecret.
 .NOTES
     Requires: Install-Module CredentialManager
 #>
 
-$script:credTargetPrefix = 'EOA-GraphApp-'
+$script:credTargetPrefixEOA = 'EOA-GraphApp-'
+$script:credTargetPrefixESR = 'ESR-GraphApp-'
+# Legacy alias (EOA); used where a single default prefix string is needed
+$script:credTargetPrefix = $script:credTargetPrefixEOA
 # CredRead P/Invoke: load native helper type once per session (see _Ensure-CredReadNativeType)
 $script:credReadNativeTypeLoaded = $false
 
@@ -17,13 +20,50 @@ $script:credMgrListAvailable = $null   # $null = not yet checked
 $script:credMgrImported = $false
 $script:credMgrImportFailed = $false
 
-# Compiled regex for Get-WCMTenantIds (prefix is fixed at module load)
-$script:wcmTenantIdRegex = [regex]::new(
-    [regex]::Escape($script:credTargetPrefix) + '([a-fA-F0-9\-]{36})',
-    [System.Text.RegularExpressions.RegexOptions]::Compiled)
-
-# Cache Graph /organization displayName per tenant per session (avoids duplicate token + HTTP)
+# Cache Graph /organization displayName per tenant+prefix per session (avoids duplicate token + HTTP)
 $script:tenantOrgDisplayNameCache = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+
+function _Get-CredPrefixString {
+    param([Parameter(Mandatory = $true)][ValidateSet('EOA', 'ESR')][string]$Prefix)
+    if ($Prefix -eq 'ESR') { return $script:credTargetPrefixESR }
+    return $script:credTargetPrefixEOA
+}
+
+function _Get-WcmGraphAppTenantIdSuffixVariants {
+    <#
+    .SYNOPSIS
+        Suffix variants after EOA-GraphApp- / ESR-GraphApp- (cmdkey targets differ by braces or GUID casing).
+    #>
+    param([string]$TenantId)
+    $cand = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $t = $TenantId.Trim()
+    if ($t) { [void]$cand.Add($t) }
+    $noBrace = $t -replace '[\{\}]', ''
+    if ($noBrace) {
+        [void]$cand.Add($noBrace)
+        [void]$cand.Add($noBrace.ToLowerInvariant())
+        [void]$cand.Add($noBrace.ToUpperInvariant())
+        [void]$cand.Add('{' + $noBrace + '}')
+        [void]$cand.Add('{' + $noBrace.ToUpperInvariant() + '}')
+    }
+    return @($cand)
+}
+
+function _Get-WcmCredReadTargetVariants {
+    <#
+    .SYNOPSIS
+        Windows stores generic credentials as LegacyGeneric:target=<name> in many cases; CredRead may need either form.
+    #>
+    param([string]$BaseTarget)
+    $set = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if ([string]::IsNullOrWhiteSpace($BaseTarget)) { return @() }
+    $b = $BaseTarget.Trim()
+    [void]$set.Add($b)
+    if ($b -notlike 'LegacyGeneric:target=*') {
+        [void]$set.Add('LegacyGeneric:target=' + $b)
+    }
+    return @($set)
+}
 
 function _EnsureCredentialManagerImported {
     <#
@@ -135,46 +175,54 @@ function Get-GraphAppCredentialFromWCM {
         @{ TenantId; ClientId; ClientSecret } or $null if not found
     .NOTES
         Tries CredentialManager first, falls back to CredRead P/Invoke (for pwsh compatibility).
+        Use -Prefix ESR for Entra Secret Rotate targets (ESR-GraphApp-...).
     #>
     param(
         [Parameter(Mandatory = $true)]
-        [string]$TenantId
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
     )
-    $target = "$script:credTargetPrefix$TenantId"
-
-    # Try CredentialManager first (works in Windows PowerShell 5.1)
-    if (_EnsureCredentialManagerImported) {
-        try {
-            $cred = Get-StoredCredential -Target $target -ErrorAction SilentlyContinue
-            if ($cred) {
-                $parts = $cred.UserName -split '\|', 2
-                if ($parts.Count -ge 2) {
-                    return [pscustomobject]@{
-                        TenantId     = $parts[0]
-                        ClientId     = $parts[1]
-                        ClientSecret = $cred.GetNetworkCredential().Password
+    $credPrefix = _Get-CredPrefixString -Prefix $Prefix
+    foreach ($tidCand in (_Get-WcmGraphAppTenantIdSuffixVariants -TenantId $TenantId)) {
+        $baseTarget = "$credPrefix$tidCand"
+        foreach ($tn in (_Get-WcmCredReadTargetVariants -BaseTarget $baseTarget)) {
+            if (_EnsureCredentialManagerImported) {
+                try {
+                    $cred = Get-StoredCredential -Target $tn -ErrorAction SilentlyContinue
+                    if ($cred) {
+                        $parts = $cred.UserName -split '\|', 2
+                        if ($parts.Count -ge 2) {
+                            $pw = $cred.GetNetworkCredential().Password
+                            if (-not [string]::IsNullOrWhiteSpace($pw)) {
+                                return [pscustomobject]@{
+                                    TenantId       = $parts[0]
+                                    ClientId       = $parts[1]
+                                    ClientSecret   = $pw
+                                }
+                            }
+                        }
                     }
+                } catch {
+                    # CredentialManager may fail in pwsh
                 }
             }
-        } catch {
-            # CredentialManager may fail in pwsh
+            try {
+                $credObj = _ReadCredentialViaCredRead -Target $tn
+                if (-not $credObj) { continue }
+                $parts = $credObj.UserName -split '\|', 2
+                if ($parts.Count -lt 2) { continue }
+                if ([string]::IsNullOrWhiteSpace($credObj.CredentialBlob)) { continue }
+                return [pscustomobject]@{
+                    TenantId     = $parts[0]
+                    ClientId     = $parts[1]
+                    ClientSecret = $credObj.CredentialBlob
+                }
+            } catch { }
         }
     }
-
-    # Fallback: CredRead P/Invoke (works in pwsh)
-    try {
-        $credObj = _ReadCredentialViaCredRead -Target $target
-        if (-not $credObj) { return $null }
-        $parts = $credObj.UserName -split '\|', 2
-        if ($parts.Count -lt 2) { return $null }
-        return [pscustomobject]@{
-            TenantId     = $parts[0]
-            ClientId     = $parts[1]
-            ClientSecret = $credObj.CredentialBlob
-        }
-    } catch {
-        return $null
-    }
+    return $null
 }
 
 function Save-GraphAppCredentialToWCM {
@@ -195,9 +243,13 @@ function Save-GraphAppCredentialToWCM {
         [Parameter(Mandatory = $true)]
         [string]$ClientSecret,
         [Parameter(Mandatory = $false)]
-        [string]$TenantDisplayName
+        [string]$TenantDisplayName,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
     )
-    $target = "$script:credTargetPrefix$TenantId"
+    $credPrefix = _Get-CredPrefixString -Prefix $Prefix
+    $target = "$credPrefix$TenantId"
     $userName = "${TenantId}|${ClientId}"
 
     # Try CredentialManager first (works in Windows PowerShell 5.1)
@@ -231,7 +283,7 @@ function Save-GraphAppCredentialToWCM {
 
     # Store tenant display name for dropdown (avoids Graph API lookup later)
     if ($TenantDisplayName -and -not [string]::IsNullOrWhiteSpace($TenantDisplayName)) {
-        $nameTarget = "${script:credTargetPrefix}${TenantId}-DisplayName"
+        $nameTarget = "${credPrefix}${TenantId}-DisplayName"
         try {
             if (_EnsureCredentialManagerImported) {
                 $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
@@ -241,39 +293,59 @@ function Save-GraphAppCredentialToWCM {
             }
         } catch { /* non-fatal */ }
     }
+    [void]$script:tenantOrgDisplayNameCache.Remove("${Prefix}|$TenantId")
     [void]$script:tenantOrgDisplayNameCache.Remove($TenantId)
 }
 
 function _Get-StoredDisplayName {
-    param([string]$TenantId)
-    $target = "${script:credTargetPrefix}${TenantId}-DisplayName"
-    try {
-        if (_EnsureCredentialManagerImported) {
-            $c = Get-StoredCredential -Target $target -ErrorAction SilentlyContinue
-            if ($c) { return $c.GetNetworkCredential().Password }
+    param(
+        [string]$TenantId,
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    $credPrefix = _Get-CredPrefixString -Prefix $Prefix
+    foreach ($tidCand in (_Get-WcmGraphAppTenantIdSuffixVariants -TenantId $TenantId)) {
+        $base = "${credPrefix}${tidCand}-DisplayName"
+        foreach ($tn in (_Get-WcmCredReadTargetVariants -BaseTarget $base)) {
+            try {
+                if (_EnsureCredentialManagerImported) {
+                    $c = Get-StoredCredential -Target $tn -ErrorAction SilentlyContinue
+                    if ($c) {
+                        $pwd = $c.GetNetworkCredential().Password
+                        if (-not [string]::IsNullOrWhiteSpace($pwd)) { return $pwd }
+                    }
+                }
+                $obj = _ReadCredentialViaCredRead -Target $tn
+                if ($obj -and $obj.CredentialBlob) { return $obj.CredentialBlob }
+            } catch { }
         }
-        $obj = _ReadCredentialViaCredRead -Target $target
-        if ($obj -and $obj.CredentialBlob) { return $obj.CredentialBlob }
-    } catch {}
+    }
     return $null
 }
 
 function Remove-GraphAppCredentialFromWCM {
-    param([Parameter(Mandatory = $true)][string]$TenantId)
-    $target = "$script:credTargetPrefix$TenantId"
-    $nameTarget = "${script:credTargetPrefix}${TenantId}-DisplayName"
-    if (_EnsureCredentialManagerImported) {
-        try {
-            Remove-StoredCredential -Target $target -ErrorAction SilentlyContinue
-            Remove-StoredCredential -Target $nameTarget -ErrorAction SilentlyContinue
-            return
-        } catch {}
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+    )
+    $credPrefix = _Get-CredPrefixString -Prefix $Prefix
+    foreach ($tidCand in (_Get-WcmGraphAppTenantIdSuffixVariants -TenantId $TenantId)) {
+        $targets = @("$credPrefix$tidCand", "${credPrefix}${tidCand}-DisplayName")
+        foreach ($base in $targets) {
+            foreach ($tn in (_Get-WcmCredReadTargetVariants -BaseTarget $base)) {
+                if (_EnsureCredentialManagerImported) {
+                    try { Remove-StoredCredential -Target $tn -ErrorAction SilentlyContinue } catch { }
+                }
+                try {
+                    Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$tn" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+                } catch { }
+            }
+        }
+        $ck = "${Prefix}|$($tidCand.Trim())"
+        [void]$script:tenantOrgDisplayNameCache.Remove($ck)
     }
-    try {
-        Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$target" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-        Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$nameTarget" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-    } catch {}
     [void]$script:tenantOrgDisplayNameCache.Remove($TenantId)
+    [void]$script:tenantOrgDisplayNameCache.Remove("${Prefix}|$TenantId")
 }
 
 function _Get-GraphAppShortTargetsFromCmdKeyList {
@@ -303,10 +375,15 @@ function _Get-GraphAppShortTargetsFromCmdKeyList {
 function Get-WCMUnrecognizedGraphAppTargets {
     <#
     .SYNOPSIS
-        Lists EOA-GraphApp-* credential targets that do not match the expected tenant GUID (or GUID-DisplayName) pattern.
+        Lists GraphApp-* credential targets for the given prefix family that do not match the expected tenant GUID (or GUID-DisplayName) pattern.
         Use Remove-WCMGraphCredentialTarget to delete these individually.
     #>
-    $prefix = $script:credTargetPrefix
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    $prefix = _Get-CredPrefixString -Prefix $Prefix
     $esc = [regex]::Escape($prefix)
     $validMain = "^$esc[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
     $validDisp = "^$esc[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}-DisplayName$"
@@ -341,10 +418,13 @@ function Remove-GraphAppCredentialsLocalOnly {
         Removes stored Graph app credentials for the given tenant(s) from Windows Credential Manager only.
         Does not delete app registrations in Entra ID.
     #>
-    param([Parameter(Mandatory = $true)][string[]]$TenantId)
+    param(
+        [Parameter(Mandatory = $true)][string[]]$TenantId,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+    )
     foreach ($tid in $TenantId) {
         if ([string]::IsNullOrWhiteSpace($tid)) { continue }
-        Remove-GraphAppCredentialFromWCM -TenantId $tid.Trim()
+        Remove-GraphAppCredentialFromWCM -TenantId $tid.Trim() -Prefix $Prefix
     }
 }
 
@@ -355,23 +435,28 @@ function Get-WCMTenantIds {
     .OUTPUTS
         [string[]] Tenant IDs, or @() if none found
     .NOTES
-        Implementation runs "cmdkey /list" and parses stdout with a regex (EOA-GraphApp-{GUID}).
-        Output format can vary by Windows locale or cmdkey version; if discovery fails unexpectedly,
-        verify credentials exist in Credential Manager and that targets still use prefix EOA-GraphApp-.
+        Parses cmdkey /list for EOA-GraphApp-{GUID} or ESR-GraphApp-{GUID} (excludes *-DisplayName rows).
     #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    $credPrefix = _Get-CredPrefixString -Prefix $Prefix
     $tenantIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     try {
         $output = cmdkey /list 2>$null
         if ($output) {
             $text = if ($output -is [string]) { $output } else { [string]::Join([Environment]::NewLine, @($output)) }
-            foreach ($match in $script:wcmTenantIdRegex.Matches($text)) {
+            $pattern = [regex]::Escape($credPrefix) + '(?:\{)?([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})(?:\})?(?!-DisplayName)'
+            $m = [regex]::Matches($text, $pattern)
+            foreach ($match in $m) {
                 if ($match.Success -and $match.Groups[1].Value) {
                     [void]$tenantIds.Add($match.Groups[1].Value)
                 }
             }
         }
     } catch {}
-    # HashSet iteration order is undefined; sort for stable callers (e.g. export/tests)
     return @($tenantIds | Sort-Object)
 }
 
@@ -382,14 +467,18 @@ function Get-TenantDisplayNameFromWCM {
     .OUTPUTS
         Display name string, or $null if resolution fails
     #>
-    param([Parameter(Mandatory = $true)][string]$TenantId)
-    if ($script:tenantOrgDisplayNameCache.ContainsKey($TenantId)) {
-        $cached = $script:tenantOrgDisplayNameCache[$TenantId]
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+    )
+    $cacheKey = "${Prefix}|$TenantId"
+    if ($script:tenantOrgDisplayNameCache.ContainsKey($cacheKey)) {
+        $cached = $script:tenantOrgDisplayNameCache[$cacheKey]
         return $cached
     }
-    $token = Get-GraphAppTokenFromWCM -TenantId $TenantId
+    $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $Prefix
     if (-not $token) {
-        $script:tenantOrgDisplayNameCache[$TenantId] = $null
+        $script:tenantOrgDisplayNameCache[$cacheKey] = $null
         return $null
     }
     try {
@@ -397,11 +486,11 @@ function Get-TenantDisplayNameFromWCM {
         $resp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/organization" -Headers $headers -Method Get -ErrorAction Stop
         if ($resp.value -and $resp.value.Count -gt 0 -and $resp.value[0].displayName) {
             $name = $resp.value[0].displayName
-            $script:tenantOrgDisplayNameCache[$TenantId] = $name
+            $script:tenantOrgDisplayNameCache[$cacheKey] = $name
             return $name
         }
     } catch {}
-    $script:tenantOrgDisplayNameCache[$TenantId] = $null
+    $script:tenantOrgDisplayNameCache[$cacheKey] = $null
     return $null
 }
 
@@ -410,15 +499,34 @@ function Get-WCMTenantListWithNames {
     .SYNOPSIS
         Returns WCM tenants with display names for dropdown display, sorted alphabetically by DisplayText.
     .OUTPUTS
-        @(@{ TenantId; DisplayName; DisplayText }, ...)
+        @(@{ TenantId; DisplayName; DisplayText; Source }, ...)
     #>
+    param(
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
+        [Parameter(Mandatory = $false)][switch]$SkipGraphLookup
+    )
     $result = [System.Collections.ArrayList]::new()
-    $ids = Get-WCMTenantIds
+    $ids = Get-WCMTenantIds -Prefix $Prefix
     foreach ($tid in $ids) {
-        $name = _Get-StoredDisplayName -TenantId $tid
-        if (-not $name) { $name = Get-TenantDisplayNameFromWCM -TenantId $tid }
-        $displayText = if ($name) { "$name ($tid)" } else { $tid }
-        [void]$result.Add([pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText })
+        $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
+        if (-not $name -and -not $SkipGraphLookup) {
+            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix
+        }
+        if (-not $name -and -not $SkipGraphLookup) {
+            $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
+            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt
+        }
+        $displayText = if ($name) {
+            if ($Prefix -eq 'ESR') { "$name ($tid) (ESR)" } else { "$name ($tid)" }
+        } else {
+            if ($Prefix -eq 'ESR') { "$tid (ESR)" } else { $tid }
+        }
+        [void]$result.Add([pscustomobject]@{
+                TenantId    = $tid
+                DisplayName = $name
+                DisplayText = $displayText
+                Source      = $Prefix
+            })
     }
     return @($result | Sort-Object -Property DisplayText)
 }
@@ -464,16 +572,19 @@ function Get-GraphAppTokenFromWCM {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
         [Parameter(Mandatory = $false)][string]$FailureVariable
     )
-    $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId
+    $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId -Prefix $Prefix
     if (-not $cred) {
-        $msg = "No app credentials found in WCM for tenant $TenantId."
+        $msg = "No app credentials found in WCM for tenant $TenantId (prefix $Prefix)."
         Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
         _Report-GraphAppTokenFailure -FailureVariable $FailureVariable -TenantId $TenantId -Message $msg
         return $null
     }
-    $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    $tenantForUrl = ($cred.TenantId -replace '[\{\}]', '').Trim()
+    if (-not $tenantForUrl) { $tenantForUrl = ($TenantId -replace '[\{\}]', '').Trim() }
+    $tokenUrl = "https://login.microsoftonline.com/$tenantForUrl/oauth2/v2.0/token"
     $body = @{
         client_id     = $cred.ClientId
         client_secret = $cred.ClientSecret
@@ -540,18 +651,20 @@ function Export-GraphAppCredentialsToFile {
     #>
     param(
         [Parameter(Mandatory=$true)][string]$Path,
-        [Parameter(Mandatory=$true)][SecureString]$Password
+        [Parameter(Mandatory=$true)][SecureString]$Password,
+        [Parameter(Mandatory=$false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
     )
-    $ids = Get-WCMTenantIds
+    $ids = Get-WCMTenantIds -Prefix $Prefix
     if ($ids.Count -eq 0) {
-        throw "No app credentials found in Windows Credential Manager."
+        throw "No app credentials found in Windows Credential Manager for prefix $Prefix."
     }
     $creds = [System.Collections.ArrayList]::new()
     foreach ($tid in $ids) {
-        $c = Get-GraphAppCredentialFromWCM -TenantId $tid
+        $c = Get-GraphAppCredentialFromWCM -TenantId $tid -Prefix $Prefix
         if ($c) {
-            $dn = _Get-StoredDisplayName -TenantId $tid
+            $dn = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
             if ($dn) { $c | Add-Member -NotePropertyName 'TenantDisplayName' -NotePropertyValue $dn -Force }
+            $c | Add-Member -NotePropertyName 'WcmPrefix' -NotePropertyValue $Prefix -Force
             [void]$creds.Add($c)
         }
     }
@@ -617,8 +730,10 @@ function Import-GraphAppCredentialsFromFile {
         if ([string]::IsNullOrWhiteSpace($tid) -or [string]::IsNullOrWhiteSpace($cid) -or [string]::IsNullOrWhiteSpace($secret)) { continue }
         $displayName = _Get-ImportedCredProperty -Object $c -Name 'TenantDisplayName'
         if ([string]::IsNullOrWhiteSpace([string]$displayName)) { $displayName = $null }
+        $wcmPfx = _Get-ImportedCredProperty -Object $c -Name 'WcmPrefix'
+        $savePrefix = if ([string]$wcmPfx -eq 'ESR') { 'ESR' } else { 'EOA' }
         try {
-            Save-GraphAppCredentialToWCM -TenantId $tid -ClientId $cid -ClientSecret $secret -TenantDisplayName $displayName
+            Save-GraphAppCredentialToWCM -TenantId $tid -ClientId $cid -ClientSecret $secret -TenantDisplayName $displayName -Prefix $savePrefix
             $count++
         } catch { Write-Warning "Failed to import $tid : $($_.Exception.Message)" }
     }
@@ -639,16 +754,20 @@ function Show-ClearLocalGraphWcmPicker {
         return 0
     }
     $rowList = [System.Collections.ArrayList]::new()
-    foreach ($t in Get-WCMTenantListWithNames) {
-        $label = if ($t.DisplayName) { $t.DisplayText } else { "$($t.TenantId)  (tenant ID - display name unknown)" }
-        [void]$rowList.Add([pscustomobject]@{ DisplayText = $label; Kind = 'Tenant'; TenantId = $t.TenantId; OrphanTarget = [string]$null })
+    foreach ($pfx in @('EOA', 'ESR')) {
+        foreach ($t in @(Get-WCMTenantListWithNames -Prefix $pfx -SkipGraphLookup)) {
+            $label = if ($t.DisplayName) { $t.DisplayText } else { "$($t.TenantId)  (tenant ID - display name unknown)" }
+            [void]$rowList.Add([pscustomobject]@{ DisplayText = $label; Kind = 'Tenant'; TenantId = $t.TenantId; WcmPrefix = $pfx; OrphanTarget = [string]$null })
+        }
     }
-    foreach ($o in Get-WCMUnrecognizedGraphAppTargets) {
-        [void]$rowList.Add([pscustomobject]@{ DisplayText = "Unrecognized WCM target: $o"; Kind = 'Orphan'; TenantId = [string]$null; OrphanTarget = $o })
+    foreach ($pfx in @('EOA', 'ESR')) {
+        foreach ($o in @(Get-WCMUnrecognizedGraphAppTargets -Prefix $pfx)) {
+            [void]$rowList.Add([pscustomobject]@{ DisplayText = "Unrecognized WCM target ($pfx): $o"; Kind = 'Orphan'; TenantId = [string]$null; WcmPrefix = $pfx; OrphanTarget = $o })
+        }
     }
     if ($rowList.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show(
-            "No EOA Graph app credentials found in Windows Credential Manager.",
+            "No Graph app credentials (EOA/ESR) found in Windows Credential Manager.",
             "Clear local credentials",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
@@ -702,7 +821,8 @@ function Show-ClearLocalGraphWcmPicker {
     $removed = 0
     foreach ($p in $picked) {
         if ($p.Kind -eq 'Tenant' -and $p.TenantId) {
-            Remove-GraphAppCredentialsLocalOnly -TenantId @($p.TenantId)
+            $pfx = if ($p.WcmPrefix -eq 'ESR') { 'ESR' } else { 'EOA' }
+            Remove-GraphAppCredentialsLocalOnly -TenantId @($p.TenantId) -Prefix $pfx
             $removed++
         }
         elseif ($p.Kind -eq 'Orphan' -and $p.OrphanTarget) {
