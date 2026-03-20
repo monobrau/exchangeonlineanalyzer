@@ -18,6 +18,8 @@ verify_*.ps1
 **/verify*.ps1
 **/Test-*.ps1
 **/Test_*.ps1
+# Repo-maintained diagnostic (not throwaway local test)
+!Scripts/Test-GraphAppWcmLogin.ps1
 
 # Test Readme Files (all locations)
 test_*.md
