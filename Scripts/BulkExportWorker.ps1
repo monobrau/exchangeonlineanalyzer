@@ -466,10 +466,12 @@ try {
 
                 # Try WCM (app-only) first when we have tenant ID(s) to try - skip if INTERACTIVE:1 (use browser instead)
                 $tenantIdsToTry = @()
+                $graphAuthExplicitTenantId = $null
                 $useInteractiveOnly = ($command -match 'INTERACTIVE:1')
                 if (-not $useInteractiveOnly) {
                     if ($command -match '\|TENANT_ID:([a-fA-F0-9\-]{36})') {
-                        $tenantIdsToTry = @($matches[1])
+                        $graphAuthExplicitTenantId = $matches[1]
+                        $tenantIdsToTry = @($graphAuthExplicitTenantId)
                     } else {
                         $graphAppMod = Join-Path $ScriptRoot "Modules\GraphAppCredential.psm1"
                         if (Test-Path $graphAppMod) {
@@ -485,12 +487,23 @@ try {
                     Write-Host "Use interactive Graph selected - skipping app credentials, connecting via browser..." -ForegroundColor Cyan
                 }
                 if ($tenantIdsToTry.Count -gt 0) {
-                    Write-Host "Trying app-only credentials from Windows Credential Manager ($($tenantIdsToTry.Count) tenant(s))..." -ForegroundColor Cyan
+                    if ($graphAuthExplicitTenantId) {
+                        Write-Host "Trying app-only for selected tenant $graphAuthExplicitTenantId (Credential Manager target: EOA-GraphApp-$graphAuthExplicitTenantId)..." -ForegroundColor Cyan
+                    } else {
+                        Write-Host "Trying app-only for $($tenantIdsToTry.Count) tenant(s) listed in Credential Manager..." -ForegroundColor Cyan
+                    }
                 }
                 foreach ($tid in $tenantIdsToTry) {
                     try {
-                        $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tid
-                        if (-not $wcmToken) { continue }
+                        $wcmErr = $null
+                        $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tid -FailureVariable wcmErr
+                        if (-not $wcmToken) {
+                            if ($wcmErr) {
+                                Write-Host "App-only token failed for tenant $tid : $wcmErr" -ForegroundColor Yellow
+                                Write-Status "WCM app-only failed: $wcmErr"
+                            }
+                            continue
+                        }
                         $headers = @{ Authorization = "Bearer $wcmToken" }
                         $orgResp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/organization" -Headers $headers -Method GET -ErrorAction Stop
                         if ($orgResp -and $orgResp.value -and $orgResp.value.Count -gt 0) {
@@ -515,12 +528,78 @@ try {
                                 Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$tid"
                             }
                             break
+                        } else {
+                            Write-Host "App-only token was obtained but GET /organization returned no data (app may lack Directory.Read.All or admin consent). Tenant: $tid" -ForegroundColor Yellow
+                            Write-Status "WCM: token OK, organization API empty or forbidden"
                         }
-                    } catch { continue }
+                    } catch {
+                        Write-Host "App-only Graph verification failed for tenant $tid (token or API): $($_.Exception.Message)" -ForegroundColor Yellow
+                        continue
+                    }
+                }
+
+                # Fallback: selected tenant had no WCM entry or failed - try other EOA-GraphApp-* tenants in Credential Manager
+                if (-not $graphAuthenticated -and $graphAuthExplicitTenantId -and (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue)) {
+                    $otherWcm = @()
+                    try { $otherWcm = @(Get-WCMTenantIds | Where-Object { $_ -and ($_ -ne $graphAuthExplicitTenantId) }) } catch {}
+                    if ($otherWcm.Count -gt 0) {
+                        Write-Host "No usable WCM app credential for selected tenant $graphAuthExplicitTenantId. Trying $($otherWcm.Count) other tenant ID(s) from Credential Manager: $($otherWcm -join ', ')" -ForegroundColor Yellow
+                        Write-Status "WCM fallback: $($otherWcm -join ', ')"
+                        foreach ($tid in $otherWcm) {
+                            try {
+                                $wcmErr2 = $null
+                                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tid -FailureVariable wcmErr2
+                                if (-not $wcmToken) {
+                                    if ($wcmErr2) {
+                                        Write-Host "App-only failed for fallback tenant $tid : $wcmErr2" -ForegroundColor Yellow
+                                    }
+                                    continue
+                                }
+                                $headers = @{ Authorization = "Bearer $wcmToken" }
+                                $orgResp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/organization" -Headers $headers -Method GET -ErrorAction Stop
+                                if ($orgResp -and $orgResp.value -and $orgResp.value.Count -gt 0) {
+                                    $tenantDisplayName = $orgResp.value[0].displayName
+                                    if (-not $tenantDisplayName) { $tenantDisplayName = "Tenant" }
+                                    $graphAuthenticated = $true
+                                    $script:graphTokenFromWCM = $wcmToken
+                                    $script:currentTenantId = $tid
+                                    Write-Status "App-only WCM: using tenant $tid (UI had selected $graphAuthExplicitTenantId)"
+                                    Write-Host "App-only success: authenticated tenant $tid. Your UI selection was $graphAuthExplicitTenantId - verify this is the correct Microsoft 365 tenant for this client." -ForegroundColor Green
+                                    $verifiedDomains = @()
+                                    try {
+                                        $domResp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/domains" -Headers $headers -Method GET -ErrorAction Stop
+                                        if ($domResp -and $domResp.value) {
+                                            $verifiedDomains = $domResp.value | Where-Object { $_.isVerified -eq $true } | ForEach-Object { $_.id }
+                                            Write-Host "Found $($verifiedDomains.Count) verified domain(s): $($verifiedDomains -join ', ')" -ForegroundColor Cyan
+                                        }
+                                    } catch {}
+                                    if ($verifiedDomains -and $verifiedDomains.Count -gt 0) {
+                                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$tid|DOMAINS:$($verifiedDomains -join ',')"
+                                    } else {
+                                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$tid"
+                                    }
+                                    break
+                                }
+                            } catch {
+                                Write-Host "Fallback tenant $tid : $($_.Exception.Message)" -ForegroundColor Yellow
+                                continue
+                            }
+                        }
+                    }
                 }
 
                 if (-not $graphAuthenticated) {
-                Write-Host "No WCM credentials found or validation failed. Connecting interactively (browser/popup)..." -ForegroundColor Yellow
+                Write-Host "No WCM credentials found or validation failed. Connecting interactively (browser/popup/WAM)..." -ForegroundColor Yellow
+                Write-Host "If you expected app-only: add EOA-GraphApp-<tenantId> in Credential Manager (Import App Creds or Create Graph App), or pick the tenant that matches an existing EOA-GraphApp-* entry." -ForegroundColor Gray
+                if ($graphAuthExplicitTenantId -and (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue)) {
+                    try {
+                        $wcmOtherIds = @(Get-WCMTenantIds)
+                        if ($wcmOtherIds.Count -gt 0 -and ($wcmOtherIds -notcontains $graphAuthExplicitTenantId)) {
+                            Write-Host "Credential Manager has app secrets for different tenant ID(s): $($wcmOtherIds -join ', '). Not for selected $graphAuthExplicitTenantId." -ForegroundColor Yellow
+                            Write-Host "Import/create credentials for the selected tenant, or choose the matching tenant in the app-reg dropdown." -ForegroundColor Gray
+                        }
+                    } catch {}
+                }
                 try {
                     # Use standard Connect-MgGraph authentication
                     # LIMITATION: Microsoft.Graph.Authentication version 2.33.0+ defaults to WAM (Web Account Manager) on Windows.

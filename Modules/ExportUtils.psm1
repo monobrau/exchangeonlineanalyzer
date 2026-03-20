@@ -679,11 +679,16 @@ function New-SecurityInvestigationReport {
         if ($tenantId -and (Test-Path $graphAppMod)) {
             try {
                 Import-Module $graphAppMod -Force -ErrorAction Stop
-                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                $wcmFail = $null
+                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId -FailureVariable wcmFail
                 if ($wcmToken) {
                     $GraphAccessToken = $wcmToken
                     $graphConnected = $true
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Using Graph app credentials from Windows Credential Manager" -Level Info -Component ExportUtils }
+                }
+                elseif ($wcmFail) {
+                    Write-Warning "Graph app-only token from WCM failed: $wcmFail"
+                    if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "WCM Graph token failed: $wcmFail" -Level Warning -Component ExportUtils }
                 }
             } catch {}
         }

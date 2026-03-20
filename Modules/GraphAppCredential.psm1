@@ -351,6 +351,35 @@ function Get-WCMTenantListWithNames {
     return @($result | Sort-Object -Property DisplayText)
 }
 
+function _Set-GraphAppFailureInCallerScope {
+    <#
+    .SYNOPSIS
+        Sets a variable in the caller's scope (not the module scope). Exported module functions use Scope 1 = module;
+        Set-Variable -Scope 1 from Get-GraphAppTokenFromWCM did not update the worker/GUI script's $wcmErr.
+    #>
+    param([string]$Name, [string]$Message)
+    if (-not $Name) { return }
+    foreach ($s in 2..25) {
+        try {
+            Set-Variable -Name $Name -Value $Message -Scope $s -ErrorAction Stop
+            return
+        } catch { }
+    }
+    try { Set-Variable -Name $Name -Value $Message -Scope Global -ErrorAction SilentlyContinue } catch { }
+}
+
+function _Report-GraphAppTokenFailure {
+    <#
+    .SYNOPSIS
+        Sets FailureVariable in caller scope when possible, and always emits WARNING so bulk worker consoles show the reason
+        even when nested scopes block Set-Variable (e.g. invoked scriptblocks).
+    #>
+    param([string]$FailureVariable, [string]$TenantId, [string]$Message)
+    if (-not $FailureVariable) { return }
+    _Set-GraphAppFailureInCallerScope -Name $FailureVariable -Message $Message
+    Write-Warning "Get-GraphAppTokenFromWCM [$TenantId]: $Message"
+}
+
 function Get-GraphAppTokenFromWCM {
     <#
     .SYNOPSIS
@@ -369,7 +398,7 @@ function Get-GraphAppTokenFromWCM {
     if (-not $cred) {
         $msg = "No app credentials found in WCM for tenant $TenantId."
         Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
-        if ($FailureVariable) { Set-Variable -Name $FailureVariable -Scope 1 -Value $msg }
+        _Report-GraphAppTokenFailure -FailureVariable $FailureVariable -TenantId $TenantId -Message $msg
         return $null
     }
     $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
@@ -384,7 +413,7 @@ function Get-GraphAppTokenFromWCM {
         if (-not $resp.access_token) {
             $msg = 'Token endpoint returned no access_token (check app registration and tenant).'
             Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
-            if ($FailureVariable) { Set-Variable -Name $FailureVariable -Scope 1 -Value $msg }
+            _Report-GraphAppTokenFailure -FailureVariable $FailureVariable -TenantId $TenantId -Message $msg
             return $null
         }
         return $resp.access_token
@@ -401,7 +430,7 @@ function Get-GraphAppTokenFromWCM {
         }
         $msg = "Token request failed: $detail"
         Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
-        if ($FailureVariable) { Set-Variable -Name $FailureVariable -Scope 1 -Value $msg }
+        _Report-GraphAppTokenFailure -FailureVariable $FailureVariable -TenantId $TenantId -Message $msg
         return $null
     }
 }

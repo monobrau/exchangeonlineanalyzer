@@ -6507,8 +6507,10 @@ $securityInvestigationButton.add_Click({
                         $graphAppMod = Join-Path $script:EOA_AppRoot "Modules\GraphAppCredential.psm1"
                         if (Test-Path $graphAppMod) {
                             Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
-                            $wcmCheck = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                            $wcmCheckErr = $null
+                            $wcmCheck = Get-GraphAppTokenFromWCM -TenantId $tenantId -FailureVariable wcmCheckErr
                             if ($wcmCheck) { $required.NeedsExchange = $false; $required.NeedsGraph = $true }
+                            elseif ($wcmCheckErr) { Write-Warning "Graph app-only (WCM) token check failed for inbox-rules-only path: $wcmCheckErr" }
                         }
                     }
                 }
@@ -6532,8 +6534,14 @@ $securityInvestigationButton.add_Click({
                             $graphAppMod = Join-Path $script:EOA_AppRoot "Modules\GraphAppCredential.psm1"
                             if (Test-Path $graphAppMod) {
                                 Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
-                                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                                $wcmFail = $null
+                                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId -FailureVariable wcmFail
                                 if ($wcmToken) { $mgOk = $true; $graphTokenForReport = $wcmToken }
+                                elseif ($wcmFail) {
+                                    Write-Warning "Graph app-only auth failed (falling back to interactive / WAM): $wcmFail"
+                                    $progressLabel.Text = "Graph app credentials failed; sign in interactively..."
+                                    [System.Windows.Forms.Application]::DoEvents()
+                                }
                             }
                         }
                         if (-not $mgOk) { Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null }
@@ -6550,8 +6558,10 @@ $securityInvestigationButton.add_Click({
                                 }
                                 $progressLabel.Text = "Retrying connections..."
                                 [System.Windows.Forms.Application]::DoEvents()
-                                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId
+                                $wcmFail2 = $null
+                                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId -FailureVariable wcmFail2
                                 if ($wcmToken) { $mgOk = $true; $graphTokenForReport = $wcmToken }
+                                elseif ($wcmFail2) { Write-Warning "Graph app-only after Create Graph App retry failed: $wcmFail2" }
                             }
                         }
                     }
