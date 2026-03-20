@@ -851,7 +851,7 @@ $bulkStartButton.add_Click({
 
     # Instructions
     $authInstructionsLabel = New-Object System.Windows.Forms.Label
-    $authInstructionsLabel.Text = "Click 'Add Tenant' to add a new tenant. Use 'Create Graph App' to create app-only credentials (or 'Delete Graph App' to remove them). Authenticate each client: Graph first, then Exchange Online."
+    $authInstructionsLabel.Text = "Click 'Add Tenant' to add a new tenant. Use 'Create Graph App' to create app-only credentials; 'Delete Graph App' removes the Entra app and WCM; 'Clear local WCM' removes stored credentials on this PC only. Authenticate each client: Graph first, then Exchange Online."
     $authInstructionsLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
     $authInstructionsLabel.Location = New-Object System.Drawing.Point(15, 55)
     $authInstructionsLabel.Size = New-Object System.Drawing.Size(950, 40)
@@ -1011,6 +1011,29 @@ $bulkStartButton.add_Click({
         }
     })
 
+    # Clear local WCM only (Entra unchanged)
+    $clearLocalWcmBtn = New-Object System.Windows.Forms.Button
+    $clearLocalWcmBtn.Text = "Clear local WCM"
+    $clearLocalWcmBtn.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+    $clearLocalWcmBtn.Location = New-Object System.Drawing.Point(665, 98)
+    $clearLocalWcmBtn.Size = New-Object System.Drawing.Size(125, 35)
+    $clearLocalWcmBtn.add_Click({
+        try {
+            Import-Module (Join-Path $script:scriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+            if (Get-Command Show-ClearLocalGraphWcmPicker -ErrorAction SilentlyContinue) {
+                [void](Show-ClearLocalGraphWcmPicker)
+            }
+            foreach ($cn in $script:clientAuthControls.Keys) {
+                $c = $script:clientAuthControls[$cn]
+                if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
+                    & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+                }
+            }
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed: $($_.Exception.Message)", "Clear local WCM", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    })
+
     # Export App Creds button
     $exportAppCredsBtn = New-Object System.Windows.Forms.Button
     $exportAppCredsBtn.Text = "Export Creds"
@@ -1157,7 +1180,7 @@ $bulkStartButton.add_Click({
     $clientRowSpacing = 10  # Increased spacing between rows
 
     # Add controls to form
-    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $exportAppCredsBtn, $importAppCredsBtn, $analyzeAllReportsBtn, $authPanel))
+    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $analyzeAllReportsBtn, $authPanel))
 
     # Close button
     $authCloseBtn = New-Object System.Windows.Forms.Button

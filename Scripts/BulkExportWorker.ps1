@@ -14,6 +14,7 @@ param(
 # CRITICAL: Set error action preference immediately after param block
 $ErrorActionPreference = "Continue"
 
+
 # Pause immediately to see if script starts at all
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host "Worker script starting..." -ForegroundColor Green
@@ -513,6 +514,16 @@ try {
                             $script:graphTokenFromWCM = $wcmToken
                             $script:currentTenantId = $tid
                             Write-Status "Using app-only credentials from Windows Credential Manager"
+                            try {
+                                $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
+                                $env:MSAL_DISABLE_BROKER = "1"
+                                $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+                                $secGraphTokWcm = ConvertTo-SecureString $wcmToken -AsPlainText -Force
+                                Connect-MgGraph -AccessToken $secGraphTokWcm -NoWelcome -ErrorAction Stop
+                                Write-Host "Graph PowerShell session established with app-only token (no interactive scopes flow)." -ForegroundColor DarkGreen
+                            } catch {
+                                Write-Warning "Connect-MgGraph -AccessToken after WCM success failed: $($_.Exception.Message)"
+                            }
                             Write-Host "Using app-only credentials from Windows Credential Manager (Tenant: $tid)" -ForegroundColor Green
                             $verifiedDomains = @()
                             try {
