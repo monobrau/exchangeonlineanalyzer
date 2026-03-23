@@ -2570,7 +2570,7 @@ $btnDeleteGraphApp.add_Click({
     $tenantList = @()
     try {
         Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
-        if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames }
+        if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames -SkipGraphLookup }
     } catch {}
     if ($tenantList.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -8406,7 +8406,11 @@ if (Test-Path `$ReportSelectionsFile) {
                 try {
                     Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
                     $list = @()
-                    if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $list = Get-WCMTenantListWithNames }
+                    if (Get-Command Get-WCMTenantListWithNamesForAppRegCombo -ErrorAction SilentlyContinue) {
+                        $list = Get-WCMTenantListWithNamesForAppRegCombo
+                    } elseif (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
+                        $list = Get-WCMTenantListWithNames
+                    }
                     foreach ($item in $list) {
                         $combo.Items.Add($item.DisplayText) | Out-Null
                     }
@@ -8490,7 +8494,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 $tenantList = @()
                 try {
                     Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
-                    if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames }
+                    if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames -SkipGraphLookup }
                 } catch {}
                 if ($tenantList.Count -eq 0) {
                     [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -8799,8 +8803,10 @@ if (Test-Path `$ReportSelectionsFile) {
             function Get-TenantIdFromAppRegComboSelection {
                 param([string]$SelectedItem)
                 if ([string]::IsNullOrWhiteSpace($SelectedItem)) { return $null }
-                if ($SelectedItem -match '\(([a-fA-F0-9\-]{36})\)\s*$') { return $Matches[1] }
-                if ($SelectedItem -match '^[a-fA-F0-9\-]{36}$') { return $SelectedItem }
+                # First (guid) in parentheses — works for "Contoso (guid)" and "Contoso (guid) (ESR)"
+                if ($SelectedItem -match '\(([a-fA-F0-9\-]{36})\)') { return $Matches[1] }
+                $stripped = ($SelectedItem -replace '\s*\(ESR\)\s*$', '').Trim()
+                if ($stripped -match '^[a-fA-F0-9\-]{36}$') { return $stripped }
                 return $null
             }
 

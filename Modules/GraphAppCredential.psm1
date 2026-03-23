@@ -498,6 +498,9 @@ function Get-WCMTenantListWithNames {
     <#
     .SYNOPSIS
         Returns WCM tenants with display names for dropdown display, sorted alphabetically by DisplayText.
+    .PARAMETER SkipGraphLookup
+        When set, skips per-tenant client_credentials token + Graph /organization calls. Use for responsive UI
+        (same pattern as CA Manager / XOA); labels use stored WCM *-DisplayName entries or raw tenant GUIDs.
     .OUTPUTS
         @(@{ TenantId; DisplayName; DisplayText; Source }, ...)
     #>
@@ -529,6 +532,33 @@ function Get-WCMTenantListWithNames {
             })
     }
     return @($result | Sort-Object -Property DisplayText)
+}
+
+function Get-WCMTenantListWithNamesForAppRegCombo {
+    <#
+    .SYNOPSIS
+        Merged EOA + ESR WCM tenants for client-auth "App reg tenant" dropdowns (Exchange Online Analyzer / Bulk Tenant Exporter).
+    .DESCRIPTION
+        Calls Get-WCMTenantListWithNames **without** -SkipGraphLookup so missing *-DisplayName WCM entries still get a friendly
+        name from Graph. Merges duplicate tenant IDs (prefers EOA row unless EOA has no DisplayName and ESR does).
+    #>
+    $merged = @{}
+    foreach ($pfx in @('EOA', 'ESR')) {
+        foreach ($row in @(Get-WCMTenantListWithNames -Prefix $pfx -ErrorAction SilentlyContinue)) {
+            $tid = [string]$row.TenantId
+            if (-not $merged.ContainsKey($tid)) {
+                $merged[$tid] = $row
+                continue
+            }
+            $cur = $merged[$tid]
+            $curWeak = [string]::IsNullOrWhiteSpace($cur.DisplayName)
+            $newStrong = -not [string]::IsNullOrWhiteSpace($row.DisplayName)
+            if ($curWeak -and $newStrong) {
+                $merged[$tid] = $row
+            }
+        }
+    }
+    return @($merged.Values | Sort-Object DisplayText)
 }
 
 function _Set-GraphAppFailureInCallerScope {
@@ -839,4 +869,4 @@ function Show-ClearLocalGraphWcmPicker {
     return $removed
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker

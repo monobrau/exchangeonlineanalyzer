@@ -293,13 +293,14 @@ $bulkConfigGroupBox.Controls.AddRange(@($bulkPresetLabel, $bulkPresetComboBox, $
 # Report Selection section
 $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
 $bulkReportsGroupBox.Text = "Select Reports to Export"
+# Width 400 so right edge is 15+400=415; status/log column starts at 430 (15px gap — was 420 wide and overlapped at 435)
 $bulkReportsGroupBox.Location = New-Object System.Drawing.Point(15, 230)
-$bulkReportsGroupBox.Size = New-Object System.Drawing.Size(420, 360)
+$bulkReportsGroupBox.Size = New-Object System.Drawing.Size(400, 360)
 
 # Create scrollable panel inside GroupBox
 $bulkReportsScrollPanel = New-Object System.Windows.Forms.Panel
 $bulkReportsScrollPanel.Location = New-Object System.Drawing.Point(10, 20)
-$bulkReportsScrollPanel.Size = New-Object System.Drawing.Size(400, 330)
+$bulkReportsScrollPanel.Size = New-Object System.Drawing.Size(380, 330)
 $bulkReportsScrollPanel.AutoScroll = $true
 $bulkReportsScrollPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::None
 
@@ -319,7 +320,7 @@ $bulkDeselectAllBtn.Size = New-Object System.Drawing.Size(90, 25)
 $bulkMessageTraceCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMessageTraceCheckBox.Text = "Message Trace"
 $bulkMessageTraceCheckBox.Location = New-Object System.Drawing.Point(10, 40)
-$bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkMessageTraceCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMessageTraceCheckBox.Checked = $true
 
 $bulkUnifiedAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
@@ -331,25 +332,25 @@ $bulkUnifiedAuditLogsCheckBox.Checked = $false
 $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkInboxRulesCheckBox.Text = "Inbox Rules"
 $bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 115)
-$bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkInboxRulesCheckBox.Checked = $true
 
 $bulkTransportRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkTransportRulesCheckBox.Text = "Transport Rules"
 $bulkTransportRulesCheckBox.Location = New-Object System.Drawing.Point(10, 115)
-$bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkTransportRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkTransportRulesCheckBox.Checked = $true
 
 $bulkMailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailFlowCheckBox.Text = "Mail Flow Connectors"
 $bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 165)
-$bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMailFlowCheckBox.Checked = $true
 
 $bulkMailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailboxForwardingCheckBox.Text = "Mailbox Forwarding & Delegation"
 $bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 190)
-$bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMailboxForwardingCheckBox.Checked = $true
 
 # Entra ID / Identity & Access Reports
@@ -362,7 +363,7 @@ $bulkAuditLogsCheckBox.Checked = $true
 $bulkSignInLogsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSignInLogsCheckBox.Text = "Sign-In Logs"
 $bulkSignInLogsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
-$bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkSignInLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSignInLogsCheckBox.Checked = $true
 
 $bulkMfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
@@ -374,7 +375,7 @@ $bulkMfaCoverageCheckBox.Checked = $true
 $bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
 $bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 315)
-$bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkCaPoliciesCheckBox.Checked = $true
 
 $bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
@@ -387,7 +388,7 @@ $bulkAppRegistrationsCheckBox.Checked = $true
 $bulkSecurityAlertsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSecurityAlertsCheckBox.Text = "Security Alerts (requires E5/SecurityAlert.Read.All)"
 $bulkSecurityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
-$bulkSecurityAlertsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkSecurityAlertsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSecurityAlertsCheckBox.Checked = $true
 
 $bulkSecurityIncidentsCheckBox = New-Object System.Windows.Forms.CheckBox
@@ -399,7 +400,7 @@ $bulkSecurityIncidentsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkDLPViolationsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkDLPViolationsCheckBox.Text = "DLP Violations (requires AuditLog.Read.All)"
 $bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
-$bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkDLPViolationsCheckBox.Checked = $true
 
 # Collaboration Reports (SharePoint/OneDrive/Teams)
@@ -412,7 +413,7 @@ $bulkSharePointActivityCheckBox.Checked = $true
 $bulkOneDriveActivityCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkOneDriveActivityCheckBox.Text = "OneDrive Activity (requires E5/Reports.Read.All)"
 $bulkOneDriveActivityCheckBox.Location = New-Object System.Drawing.Point(10, 415)
-$bulkOneDriveActivityCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkOneDriveActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkOneDriveActivityCheckBox.Checked = $true
 
 $bulkTeamsActivityCheckBox = New-Object System.Windows.Forms.CheckBox
@@ -424,13 +425,13 @@ $bulkTeamsActivityCheckBox.Checked = $true
 $bulkSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointSharingCheckBox.Text = "SharePoint Sharing Links"
 $bulkSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 515)
-$bulkSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointSharingCheckBox.Checked = $true
 
 $bulkAnonymousSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAnonymousSharePointSharingCheckBox.Text = "Anonymous SharePoint Sharing (requires AuditLog.Read.All)"
 $bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 540)
-$bulkAnonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkAnonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAnonymousSharePointSharingCheckBox.Checked = $true
 
 $bulkSharePointFileSharingLinksCheckBox = New-Object System.Windows.Forms.CheckBox
@@ -443,14 +444,14 @@ $bulkSharePointFileSharingLinksCheckBox.Checked = $true
 $bulkIntuneDevicesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkIntuneDevicesCheckBox.Text = "Intune Device Records (requires DeviceManagementManagedDevices.Read.All)"
 $bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 590)
-$bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkIntuneDevicesCheckBox.Checked = $true
 
 # Detailed File Action Logs
 $bulkSharePointOneDriveFileActionsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointOneDriveFileActionsCheckBox.Text = "SharePoint/OneDrive File Actions (detailed audit log - requires View-Only Audit Logs)"
 $bulkSharePointOneDriveFileActionsCheckBox.Location = New-Object System.Drawing.Point(10, 615)
-$bulkSharePointOneDriveFileActionsCheckBox.Size = New-Object System.Drawing.Size(390, 20)
+$bulkSharePointOneDriveFileActionsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
 
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
@@ -867,7 +868,11 @@ $bulkStartButton.add_Click({
         try {
             Import-Module (Join-Path $script:scriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
             $list = @()
-            if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $list = Get-WCMTenantListWithNames }
+            if (Get-Command Get-WCMTenantListWithNamesForAppRegCombo -ErrorAction SilentlyContinue) {
+                $list = Get-WCMTenantListWithNamesForAppRegCombo
+            } elseif (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
+                $list = Get-WCMTenantListWithNames
+            }
             foreach ($item in $list) {
                 $combo.Items.Add($item.DisplayText) | Out-Null
             }
@@ -951,7 +956,7 @@ $bulkStartButton.add_Click({
         $tenantList = @()
         try {
             Import-Module (Join-Path $script:scriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
-            if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames }
+            if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames -SkipGraphLookup }
         } catch {}
         if ($tenantList.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -1255,8 +1260,9 @@ $bulkStartButton.add_Click({
     function Get-TenantIdFromAppRegComboSelection {
         param([string]$SelectedItem)
         if ([string]::IsNullOrWhiteSpace($SelectedItem)) { return $null }
-        if ($SelectedItem -match '\(([a-fA-F0-9\-]{36})\)\s*$') { return $Matches[1] }
-        if ($SelectedItem -match '^[a-fA-F0-9\-]{36}$') { return $SelectedItem }
+        if ($SelectedItem -match '\(([a-fA-F0-9\-]{36})\)') { return $Matches[1] }
+        $stripped = ($SelectedItem -replace '\s*\(ESR\)\s*$', '').Trim()
+        if ($stripped -match '^[a-fA-F0-9\-]{36}$') { return $stripped }
         return $null
     }
 
