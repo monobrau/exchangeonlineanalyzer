@@ -235,10 +235,17 @@ public class CredWriteInterop {
     }
 }
 
+function _Normalize-DisplayNameBlob {
+    param([AllowNull()][string]$Text)
+    if ($null -eq $Text) { return $null }
+    return $Text.TrimEnd([char]0).Trim()
+}
+
 function _Write-GenericWcmSecretNative {
     <#
     .SYNOPSIS
         Writes a generic credential via CredWriteW (UTF-16 secret). Used for *-DisplayName so cmdkey argv is not used.
+        Tries CRED_PERSIST_LOCAL_MACHINE (2) then CRED_PERSIST_ENTERPRISE (3); some vaults reject one or the other.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$TargetName,
@@ -264,25 +271,28 @@ function _Write-GenericWcmSecretNative {
         $bytes = [System.Text.Encoding]::Unicode.GetBytes($secretWithNul)
         $blobPtr = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($bytes.Length)
         [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $blobPtr, $bytes.Length)
-        $cred = [System.Activator]::CreateInstance($credType)
-        $cred.Flags = 0
-        $cred.Type = 1
-        $cred.TargetName = $tgtPtr
-        $cred.Comment = [IntPtr]::Zero
-        $cred.LastWritten = 0
-        $cred.CredentialBlobSize = [uint32]$bytes.Length
-        $cred.CredentialBlob = $blobPtr
-        $cred.Persist = 3
-        $cred.AttributeCount = 0
-        $cred.Attributes = [IntPtr]::Zero
-        $cred.TargetAlias = [IntPtr]::Zero
-        $cred.UserName = $usrPtr
-        $ok = [CredWriteInterop]::CredWrite([ref]$cred, 0)
-        if (-not $ok) {
-            Write-Verbose "_Write-GenericWcmSecretNative: CredWrite failed LastError=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error()) Target=$TargetName"
-            return $false
+        $lastErr = 0
+        foreach ($persist in @(2, 3)) {
+            $cred = [System.Activator]::CreateInstance($credType)
+            $cred.Flags = 0
+            $cred.Type = 1
+            $cred.TargetName = $tgtPtr
+            $cred.Comment = [IntPtr]::Zero
+            $cred.LastWritten = 0
+            $cred.CredentialBlobSize = [uint32]$bytes.Length
+            $cred.CredentialBlob = $blobPtr
+            $cred.Persist = [uint32]$persist
+            $cred.AttributeCount = 0
+            $cred.Attributes = [IntPtr]::Zero
+            $cred.TargetAlias = [IntPtr]::Zero
+            $cred.UserName = $usrPtr
+            $ok = [CredWriteInterop]::CredWrite([ref]$cred, 0)
+            if ($ok) { return $true }
+            $lastErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            Write-Verbose "_Write-GenericWcmSecretNative: CredWrite Persist=$persist failed LastError=$lastErr Target=$TargetName"
         }
-        return $true
+        Write-Warning "GraphAppCredential: CredWrite could not save *-DisplayName for target '$TargetName' (tried persist 2 and 3). Last Win32 error: $lastErr"
+        return $false
     }
     finally {
         if ($blobPtr -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($blobPtr) }
@@ -478,7 +488,7 @@ function _Get-StoredDisplayName {
                 try {
                     $c = Get-StoredCredential -Target $tn -ErrorAction SilentlyContinue
                     if ($c) {
-                        $pwd = $c.GetNetworkCredential().Password
+                        $pwd = _Normalize-DisplayNameBlob -Text ($c.GetNetworkCredential().Password)
                         if (-not [string]::IsNullOrWhiteSpace($pwd)) { return $pwd }
                     }
                 }
@@ -486,7 +496,7 @@ function _Get-StoredDisplayName {
             }
             try {
                 $obj = _ReadCredentialViaCredRead -Target $tn
-                if ($obj -and $obj.CredentialBlob) { return $obj.CredentialBlob }
+                if ($obj -and $obj.CredentialBlob) { return (_Normalize-DisplayNameBlob -Text $obj.CredentialBlob) }
             }
             catch { }
         }
@@ -965,6 +975,64 @@ function Export-GraphAppCredentialsToFile {
     [System.IO.File]::WriteAllText($Path, $header + $encrypted, [System.Text.Encoding]::UTF8)
 }
 
+function Get-GraphAppCredentialEncryptedFileSummary {
+    <#
+    .SYNOPSIS
+        Decrypts an .eoa-creds export and reports how many rows include TenantDisplayName (does not print secrets).
+    .DESCRIPTION
+        Run on the export PC before copying the file, or on the import PC to verify the file before Import-GraphAppCredentialsFromFile.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][SecureString]$Password
+    )
+    if (-not (Test-Path $Path)) { throw "File not found: $Path" }
+    $content = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    if ($content -notmatch '^EOA-CREDS-1\r?\n(.+)$') { throw "Invalid file format (expected EOA-CREDS-1 header)." }
+    $encrypted = $Matches[1]
+    $pwdBytes = _Get-SecureStringAsPlainForKey -SecureString $Password
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $key = $sha.ComputeHash($pwdBytes)[0..31]
+    }
+    finally {
+        $sha.Dispose()
+    }
+    $secure = $encrypted | ConvertTo-SecureString -Key $key
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    }
+    finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+    $creds = $json | ConvertFrom-Json
+    if (-not $creds) {
+        return [pscustomobject]@{
+            TotalCredentials          = 0
+            WithTenantDisplayName     = 0
+            WithoutTenantDisplayName  = 0
+            SampleTenantIds           = @()
+        }
+    }
+    if ($creds -isnot [Array]) { $creds = @($creds) }
+    $withDn = 0
+    $sampleTids = [System.Collections.Generic.List[string]]::new()
+    foreach ($row in $creds) {
+        $tid = [string](_Get-ImportedCredProperty -Object $row -Name 'TenantId')
+        $dn = _Get-ImportedCredProperty -Object $row -Name 'TenantDisplayName'
+        if ($sampleTids.Count -lt 8 -and -not [string]::IsNullOrWhiteSpace($tid)) { [void]$sampleTids.Add($tid) }
+        if (-not [string]::IsNullOrWhiteSpace([string]$dn)) { $withDn++ }
+    }
+    return [pscustomobject]@{
+        TotalCredentials          = $creds.Count
+        WithTenantDisplayName     = $withDn
+        WithoutTenantDisplayName  = ($creds.Count - $withDn)
+        SampleTenantIds           = @($sampleTids)
+    }
+}
+
 function Import-GraphAppCredentialsFromFile {
     <#
     .SYNOPSIS
@@ -1131,4 +1199,4 @@ function Show-ClearLocalGraphWcmPicker {
     return $removed
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache
