@@ -2513,7 +2513,7 @@ $btnDeleteGraphApp.add_Click({
     $tenantList = @()
     try {
         Import-Module (Join-Path $script:EOA_AppRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
-        if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames }
+        if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) { $tenantList = Get-WCMTenantListWithNames -SkipGraphLookup }
     } catch {}
     if ($tenantList.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
