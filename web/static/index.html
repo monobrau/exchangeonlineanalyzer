@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bulk export — Exchange Online Analyzer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="brand-mark">EOA</span>
+      <div>
+        <h1>Bulk export jobs</h1>
+        <p class="sub">Web console · API matches <code>/api/v1</code></p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a id="auth-login" class="auth-link" href="#" style="display:none">Sign in</a>
+      <button type="button" id="auth-logout" class="linklike nav-btn" style="display:none">Sign out</button>
+      <a href="/docs" target="_blank" rel="noopener">OpenAPI</a>
+      <a href="/health" target="_blank">Health</a>
+      <a href="/ready" target="_blank">Ready</a>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <section class="panel" aria-labelledby="new-job-title">
+      <h2 id="new-job-title">New job</h2>
+      <p class="hint">Tenant IDs (one per line or comma-separated). Options as JSON (advanced). On the server, set <code>EOA_USE_PWSH_STUB_WORKER=true</code> to run <code>web/pwsh/WebBulkJobStub.ps1</code> via <code>pwsh</code>.</p>
+      <form id="job-form">
+        <label for="tenant-ids">Tenant IDs</label>
+        <textarea id="tenant-ids" name="tenant_ids" rows="4" placeholder="aaaaaaaa-bbbb-cccc-dddddddddddd"></textarea>
+        <label for="options-json">Options (JSON object)</label>
+        <textarea id="options-json" name="options" rows="3">{}</textarea>
+        <div class="actions">
+          <button type="submit" class="primary">Create bulk job</button>
+        </div>
+      </form>
+      <p id="form-msg" class="msg" role="status"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="jobs-title">
+      <div class="panel-head">
+        <h2 id="jobs-title">Recent jobs</h2>
+        <button type="button" id="refresh" class="ghost">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Artifact</th>
+              <th>Download</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="jobs-body">
+            <tr><td colspan="6" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p id="list-msg" class="msg" role="status"></p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Placeholder worker runs on the server after each create (replace with PowerShell bulk export).</span>
+  </footer>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>

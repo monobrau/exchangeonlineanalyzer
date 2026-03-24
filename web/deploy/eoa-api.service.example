@@ -1,0 +1,21 @@
+# Copy to /etc/systemd/system/eoa-api.service and adjust User/WorkingDirectory/Environment.
+# sudo systemctl daemon-reload && sudo systemctl enable --now eoa-api
+
+[Unit]
+Description=Exchange Online Analyzer Web API (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cknospe
+Group=cknospe
+WorkingDirectory=/home/cknospe/git/exchangeonlineanalyzer/web
+Environment=PATH=/home/cknospe/git/exchangeonlineanalyzer/web/.venv/bin:/usr/local/bin:/usr/bin
+EnvironmentFile=-/home/cknospe/git/exchangeonlineanalyzer/web/.env
+ExecStart=/home/cknospe/git/exchangeonlineanalyzer/web/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
