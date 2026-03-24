@@ -9,7 +9,8 @@ credentials-file: /root/.cloudflared/2b306e1d-699d-41c5-8d08-4cd52c2f5960.json
 
 ingress:
   - hostname: eoa.knospe.org
-    service: http://127.0.0.1:8080
+    # uvicorn on webhost uses 18080; 8080 is nginx (blingus PHP backend)
+    service: http://127.0.0.1:18080
   - hostname: blingus.knospe.org
     service: http://localhost:80
   - service: http_status:404

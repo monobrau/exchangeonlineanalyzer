@@ -24,13 +24,13 @@ Add a **hostname block for EOA** and keep **more specific rules before the catch
 ```yaml
 ingress:
   - hostname: eoa.knospe.org
-    service: http://127.0.0.1:8080
+    service: http://127.0.0.1:18080
   - hostname: blingus.knospe.org
     service: http://localhost:80
   - service: http_status:404
 ```
 
-Use **8080** when the FastAPI app (`uvicorn`) listens on **`127.0.0.1:8080`**. **`blingus.knospe.org`** stays on **port 80** (nginx).
+**Webhost:** `nginx` already binds **`127.0.0.1:8080`** for the blingus backend, so run **`uvicorn` on `127.0.0.1:18080`** and point the tunnel there (see [`eoa-api.service.example`](eoa-api.service.example)). On a host with nothing on 8080, you can use **8080** for both instead.
 
 Restart after saving:
 

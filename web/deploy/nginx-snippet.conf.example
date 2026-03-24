@@ -2,7 +2,7 @@
 # Adjust server_name and paths; include inside a server { } block.
 
 location / {
-    proxy_pass http://127.0.0.1:8080;
+    proxy_pass http://127.0.0.1:18080;  # uvicorn; webhost uses 8080 for blingus nginx
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;

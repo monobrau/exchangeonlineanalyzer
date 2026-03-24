@@ -1,3 +1,4 @@
 # Workspace notes
 
 - **Client auth Graph app dropdown:** Commit **`4cc23b0`** is the reference version where the client-auth Graph app dropdown correctly shows **client name and tenant number**.
+- **Web API (bulk jobs):** [`web/`](web/) — FastAPI + SQLite, UI at `/`, **`GET /api/v1/auth/oidc/login`** (PKCE) + callback stores token in **`sessionStorage`**, **`EOA_SESSION_SECRET`**, jobs API + artifacts, **`deploy/`** examples. Run: `cd web && pip install -r requirements.txt && uvicorn app.main:app`. **Webhost:** Cloudflare Option A — [`web/deploy/cloudflare-tunnel-option-a.md`](web/deploy/cloudflare-tunnel-option-a.md), env template [`web/deploy/env.eoa.knospe.example`](web/deploy/env.eoa.knospe.example); `uvicorn` on **`127.0.0.1:18080`** matches tunnel ingress to **`eoa.knospe.org`** (8080 is nginx/blingus on webhost).

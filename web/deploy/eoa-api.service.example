@@ -13,7 +13,8 @@ Group=cknospe
 WorkingDirectory=/home/cknospe/git/exchangeonlineanalyzer/web
 Environment=PATH=/home/cknospe/git/exchangeonlineanalyzer/web/.venv/bin:/usr/local/bin:/usr/bin
 EnvironmentFile=-/home/cknospe/git/exchangeonlineanalyzer/web/.env
-ExecStart=/home/cknospe/git/exchangeonlineanalyzer/web/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+# Port 18080: on webhost, nginx already listens on 127.0.0.1:8080 (blingus backend). Match tunnel ingress to this port.
+ExecStart=/home/cknospe/git/exchangeonlineanalyzer/web/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18080
 Restart=on-failure
 RestartSec=5
 
