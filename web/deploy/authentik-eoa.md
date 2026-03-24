@@ -47,8 +47,8 @@ After the provider exists, open the **provider** (not only the application).
    - Copy the OAuth2 **Client ID** (UUID string).
 
 3. **Audience for API validation**  
-   - Set **`EOA_OIDC_AUDIENCE`** to the **same value as the Client ID** (Authentik typically puts `aud` = client id on JWT access tokens).  
-   - If you later customize `aud` via scope mappings, set `EOA_OIDC_AUDIENCE` (or `EOA_OIDC_AUDIENCES`) to match.
+   - The app **defaults** JWT audience validation to **`EOA_OIDC_CLIENT_ID`** when `EOA_OIDC_AUDIENCE` is unset (Authentik’s default `aud` on access tokens).  
+   - Set **`EOA_OIDC_AUDIENCE`** (or **`EOA_OIDC_AUDIENCES`**) only if you customize `aud` via scope mappings.
 
 4. **Client secret**  
    - **Public client:** leave empty in `.env`.  
@@ -63,7 +63,7 @@ Copy [`env.eoa.knospe.example`](env.eoa.knospe.example) to `web/.env` and set:
 ```env
 EOA_OIDC_ISSUER=https://auth.knospe.org/application/o/eoa/
 EOA_OIDC_CLIENT_ID=<client-id-from-authentik>
-EOA_OIDC_AUDIENCE=<same-as-client-id>
+# EOA_OIDC_AUDIENCE=  # optional; defaults to client id
 EOA_OIDC_REDIRECT_URI=https://eoa.knospe.org/api/v1/auth/oidc/callback
 EOA_CORS_ORIGINS=https://eoa.knospe.org
 EOA_SESSION_SECRET=<long random string>

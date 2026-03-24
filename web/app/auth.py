@@ -2,28 +2,22 @@
 
 from typing import Annotated
 
-import httpx
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 
 from app.config import get_settings
+from app.oidc_metadata import get_oidc_metadata
 
 security = HTTPBearer(auto_error=False)
-_jwks_client: PyJWKClient | None = None
+_jwks_by_uri: dict[str, PyJWKClient] = {}
 
 
-def _get_jwks_client(issuer: str) -> PyJWKClient:
-    global _jwks_client
-    if _jwks_client is None:
-        well_known = issuer.rstrip("/") + "/.well-known/openid-configuration"
-        with httpx.Client(timeout=10.0) as client:
-            r = client.get(well_known)
-            r.raise_for_status()
-            jwks_uri = r.json()["jwks_uri"]
-        _jwks_client = PyJWKClient(jwks_uri)
-    return _jwks_client
+def _jwks_client_for(jwks_uri: str) -> PyJWKClient:
+    if jwks_uri not in _jwks_by_uri:
+        _jwks_by_uri[jwks_uri] = PyJWKClient(jwks_uri)
+    return _jwks_by_uri[jwks_uri]
 
 
 def _audiences(settings) -> list[str]:
@@ -31,6 +25,9 @@ def _audiences(settings) -> list[str]:
         return [a.strip() for a in settings.oidc_audiences.split(",") if a.strip()]
     if settings.oidc_audience:
         return [settings.oidc_audience]
+    # Authentik default access-token aud is the OAuth2 client id
+    if settings.oidc_client_id:
+        return [settings.oidc_client_id]
     return []
 
 
@@ -48,13 +45,16 @@ async def require_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = creds.credentials
-    issuer = settings.oidc_issuer.rstrip("/")
     try:
-        jwks = _get_jwks_client(issuer)
+        meta = get_oidc_metadata(settings.oidc_issuer)
+        jwks_uri = str(meta["jwks_uri"])
+        # Must match JWT iss claim (Authentik matches discovery document issuer string)
+        iss = str(meta["issuer"])
+        jwks = _jwks_client_for(jwks_uri)
         signing_key = jwks.get_signing_key_from_jwt(token)
         audiences = _audiences(settings)
         decode_kw: dict = {
-            "issuer": issuer,
+            "issuer": iss,
             "algorithms": ["RS256", "ES256"],
         }
         if audiences:

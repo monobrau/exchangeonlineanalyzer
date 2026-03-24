@@ -33,12 +33,15 @@ app = FastAPI(
 
 _s = get_settings()
 _session_key = _s.session_secret or "dev-insecure-change-EOA_SESSION_SECRET"
+# PKCE session cookie: Secure when public URL is HTTPS (e.g. eoa.knospe.org)
+_redirect = (_s.oidc_redirect_uri or "").strip()
+_session_https = _redirect.casefold().startswith("https://")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_key,
     max_age=3600,
     same_site="lax",
-    https_only=False,
+    https_only=_session_https,
 )
 
 
