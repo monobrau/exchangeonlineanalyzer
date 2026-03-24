@@ -49,7 +49,7 @@ EOA_CORS_ORIGINS=https://eoa.knospe.org
 EOA_SESSION_SECRET=<long random string>
 ```
 
-Authentik: register the **same** redirect URI for your OIDC application.
+Authentik: register the **same** redirect URI for your OIDC application (step-by-step: [`authentik-eoa.md`](authentik-eoa.md)).
 
 ## 4. Smoke test
 
