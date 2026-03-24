@@ -184,10 +184,16 @@ function _Get-ImportedCredProperty {
     if ($null -eq $Object) { return $null }
     if ($Object -is [hashtable]) {
         if ($Object.ContainsKey($Name)) { return $Object[$Name] }
+        foreach ($k in @($Object.Keys)) {
+            if ([string]::Equals([string]$k, $Name, [StringComparison]::OrdinalIgnoreCase)) { return $Object[$k] }
+        }
         return $null
     }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value }
+    foreach ($prop in $Object.PSObject.Properties) {
+        if ([string]::Equals($prop.Name, $Name, [StringComparison]::OrdinalIgnoreCase)) { return $prop.Value }
+    }
     return $null
 }
 
@@ -323,7 +329,7 @@ function Save-GraphAppCredentialToWCM {
                 Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden | Out-Null
             }
         } catch {
-            # DisplayName WCM write is optional; main credential already saved.
+            Write-Warning "GraphAppCredential: Could not save *-DisplayName for $TenantId : $($_.Exception.Message)"
         }
     }
     [void]$script:tenantOrgDisplayNameCache.Remove("${Prefix}|$TenantId")
@@ -799,7 +805,16 @@ function Export-GraphAppCredentialsToFile {
         }
     }
     if ($creds.Count -eq 0) { throw "Could not read any credentials." }
-    $json = @($creds) | ConvertTo-Json -Compress
+    $namesInExport = 0
+    foreach ($row in $creds) {
+        $rdn = _Get-ImportedCredProperty -Object $row -Name 'TenantDisplayName'
+        if (-not [string]::IsNullOrWhiteSpace([string]$rdn)) { $namesInExport++ }
+    }
+    if ($namesInExport -eq 0) {
+        Write-Warning "Export: no tenant display names will be in this file. Import on another PC will show GUIDs until names exist in WCM there. Fix: check 'Embed tenant display names' in the app, or run Register-GraphAppTenantDisplayNamesInWCM on this PC, then export again."
+    }
+    # -Depth ensures TenantDisplayName and long secrets serialize reliably; -EnumsAsStrings not needed
+    $json = @($creds) | ConvertTo-Json -Compress -Depth 8
     $pwdBytes = _Get-SecureStringAsPlainForKey -SecureString $Password
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -852,6 +867,14 @@ function Import-GraphAppCredentialsFromFile {
     $creds = $json | ConvertFrom-Json
     if (-not $creds) { return 0 }
     if ($creds -isnot [Array]) { $creds = @($creds) }
+    $withDisplayName = 0
+    foreach ($ic in $creds) {
+        $dnProbe = _Get-ImportedCredProperty -Object $ic -Name 'TenantDisplayName'
+        if (-not [string]::IsNullOrWhiteSpace([string]$dnProbe)) { $withDisplayName++ }
+    }
+    if ($withDisplayName -eq 0 -and $creds.Count -gt 0) {
+        Write-Warning "Import: no TenantDisplayName fields in this file — export on a PC with 'Embed tenant display names' checked (or run Register-GraphAppTenantDisplayNamesInWCM before export). Dropdowns may show GUIDs until names are stored."
+    }
     $count = 0
     foreach ($c in $creds) {
         $tid = [string](_Get-ImportedCredProperty -Object $c -Name 'TenantId')
