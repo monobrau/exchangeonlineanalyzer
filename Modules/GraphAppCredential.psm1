@@ -14,6 +14,8 @@ $script:credTargetPrefixESR = 'ESR-GraphApp-'
 $script:credTargetPrefix = $script:credTargetPrefixEOA
 # CredRead P/Invoke: load native helper type once per session (see _Ensure-CredReadNativeType)
 $script:credReadNativeTypeLoaded = $false
+# CredWrite P/Invoke for *-DisplayName (avoids cmdkey argv issues with Unicode / special chars in PS Core)
+$script:credWriteNativeTypeLoaded = $false
 
 # CredentialManager: avoid repeated Get-Module -ListAvailable / Import-Module on every WCM call
 $script:credMgrListAvailable = $null   # $null = not yet checked
@@ -28,6 +30,23 @@ function _Get-CredPrefixString {
     param([Parameter(Mandatory = $true)][ValidateSet('EOA', 'ESR')][string]$Prefix)
     if ($Prefix -eq 'ESR') { return $script:credTargetPrefixESR }
     return $script:credTargetPrefixEOA
+}
+
+function _Normalize-GraphAppTenantIdForWcm {
+    <#
+    .SYNOPSIS
+        Canonical tenant id string (no braces, hyphenated GUID) so WCM targets match Get-WCMTenantIds after import/export.
+    #>
+    param([string]$TenantId)
+    if ([string]::IsNullOrWhiteSpace($TenantId)) { return $TenantId }
+    $t = ($TenantId.Trim() -replace '[\{\}]', '')
+    if ([string]::IsNullOrWhiteSpace($t)) { return $TenantId.Trim() }
+    try {
+        return [Guid]::Parse($t).ToString('d')
+    }
+    catch {
+        return $t
+    }
 }
 
 function _Get-WcmGraphAppTenantIdSuffixVariants {
@@ -176,6 +195,102 @@ public struct NativeCredential {
     }
 }
 
+function _Ensure-CredWriteNativeType {
+    if ($script:credWriteNativeTypeLoaded) { return $true }
+    $sig = @'
+public class CredWriteInterop {
+    [System.Runtime.InteropServices.DllImport("Advapi32.dll", EntryPoint = "CredWriteW", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    public static extern bool CredWrite(ref CREDENTIAL cred, uint Flags);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    public struct CREDENTIAL {
+        public uint Flags;
+        public uint Type;
+        public System.IntPtr TargetName;
+        public System.IntPtr Comment;
+        public long LastWritten;
+        public uint CredentialBlobSize;
+        public System.IntPtr CredentialBlob;
+        public uint Persist;
+        public uint AttributeCount;
+        public System.IntPtr Attributes;
+        public System.IntPtr TargetAlias;
+        public System.IntPtr UserName;
+    }
+}
+'@
+    try {
+        Add-Type -TypeDefinition $sig -Language CSharp -ErrorAction Stop
+        $script:credWriteNativeTypeLoaded = $true
+        return $true
+    }
+    catch {
+        $msg = $_.Exception.Message
+        if ($msg -match 'already exists|duplicate type name|already been added|Cannot add type') {
+            $script:credWriteNativeTypeLoaded = $true
+            return $true
+        }
+        Write-Warning "GraphAppCredential: CredWrite native type not loaded: $msg"
+        return $false
+    }
+}
+
+function _Write-GenericWcmSecretNative {
+    <#
+    .SYNOPSIS
+        Writes a generic credential via CredWriteW (UTF-16 secret). Used for *-DisplayName so cmdkey argv is not used.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetName,
+        [Parameter(Mandatory = $true)][string]$UserName,
+        [Parameter(Mandatory = $true)][string]$SecretText
+    )
+    if (-not (_Ensure-CredWriteNativeType)) { return $false }
+    try {
+        $interopType = [CredWriteInterop]
+        $credType = $interopType.GetNestedType('CREDENTIAL', [System.Reflection.BindingFlags]::Public)
+    }
+    catch {
+        return $false
+    }
+    if (-not $credType) { return $false }
+    $tgtPtr = [IntPtr]::Zero
+    $usrPtr = [IntPtr]::Zero
+    $blobPtr = [IntPtr]::Zero
+    try {
+        $tgtPtr = [System.Runtime.InteropServices.Marshal]::StringToCoTaskMemUni($TargetName)
+        $usrPtr = [System.Runtime.InteropServices.Marshal]::StringToCoTaskMemUni($UserName)
+        $secretWithNul = $SecretText + [char]0
+        $bytes = [System.Text.Encoding]::Unicode.GetBytes($secretWithNul)
+        $blobPtr = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($bytes.Length)
+        [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $blobPtr, $bytes.Length)
+        $cred = [System.Activator]::CreateInstance($credType)
+        $cred.Flags = 0
+        $cred.Type = 1
+        $cred.TargetName = $tgtPtr
+        $cred.Comment = [IntPtr]::Zero
+        $cred.LastWritten = 0
+        $cred.CredentialBlobSize = [uint32]$bytes.Length
+        $cred.CredentialBlob = $blobPtr
+        $cred.Persist = 3
+        $cred.AttributeCount = 0
+        $cred.Attributes = [IntPtr]::Zero
+        $cred.TargetAlias = [IntPtr]::Zero
+        $cred.UserName = $usrPtr
+        $ok = [CredWriteInterop]::CredWrite([ref]$cred, 0)
+        if (-not $ok) {
+            Write-Verbose "_Write-GenericWcmSecretNative: CredWrite failed LastError=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error()) Target=$TargetName"
+            return $false
+        }
+        return $true
+    }
+    finally {
+        if ($blobPtr -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($blobPtr) }
+        if ($usrPtr -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($usrPtr) }
+        if ($tgtPtr -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($tgtPtr) }
+    }
+}
+
 function _Get-ImportedCredProperty {
     param(
         [Parameter(Mandatory = $true)]$Object,
@@ -321,12 +436,25 @@ function Save-GraphAppCredentialToWCM {
     # Store tenant display name for dropdown (avoids Graph API lookup later)
     if ($TenantDisplayName -and -not [string]::IsNullOrWhiteSpace($TenantDisplayName)) {
         $nameTarget = "${credPrefix}${TenantId}-DisplayName"
+        $dnOk = $false
         try {
             if (-not $psCore -and (_EnsureCredentialManagerImported)) {
-                $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
-                New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null
-            } else {
-                Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden | Out-Null
+                try {
+                    $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
+                    New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null
+                    $dnOk = $true
+                }
+                catch { }
+            }
+            if (-not $dnOk -and (_Write-GenericWcmSecretNative -TargetName $nameTarget -UserName 'DisplayName' -SecretText $TenantDisplayName)) {
+                $dnOk = $true
+            }
+            if (-not $dnOk) {
+                $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden
+                if ($proc.ExitCode -eq 0) { $dnOk = $true }
+                else {
+                    Write-Warning "GraphAppCredential: cmdkey could not save *-DisplayName for $TenantId (exit $($proc.ExitCode))."
+                }
             }
         } catch {
             Write-Warning "GraphAppCredential: Could not save *-DisplayName for $TenantId : $($_.Exception.Message)"
@@ -346,17 +474,21 @@ function _Get-StoredDisplayName {
     foreach ($tidCand in (_Get-WcmGraphAppTenantIdSuffixVariants -TenantId $TenantId)) {
         $base = "${credPrefix}${tidCand}-DisplayName"
         foreach ($tn in (_Get-WcmCredReadTargetVariants -BaseTarget $base)) {
-            try {
-                if (_EnsureCredentialManagerImported) {
+            if (_EnsureCredentialManagerImported) {
+                try {
                     $c = Get-StoredCredential -Target $tn -ErrorAction SilentlyContinue
                     if ($c) {
                         $pwd = $c.GetNetworkCredential().Password
                         if (-not [string]::IsNullOrWhiteSpace($pwd)) { return $pwd }
                     }
                 }
+                catch { }
+            }
+            try {
                 $obj = _ReadCredentialViaCredRead -Target $tn
                 if ($obj -and $obj.CredentialBlob) { return $obj.CredentialBlob }
-            } catch { }
+            }
+            catch { }
         }
     }
     return $null
@@ -791,6 +923,10 @@ function Export-GraphAppCredentialsToFile {
     foreach ($tid in $ids) {
         $c = Get-GraphAppCredentialFromWCM -TenantId $tid -Prefix $Prefix
         if ($c) {
+            $normTid = _Normalize-GraphAppTenantIdForWcm -TenantId ([string]$c.TenantId)
+            if ($normTid -and $normTid -ne [string]$c.TenantId) {
+                $c | Add-Member -NotePropertyName TenantId -NotePropertyValue $normTid -Force
+            }
             $dn = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
             if (-not $dn -and $ResolveMissingDisplayNamesFromGraph) {
                 $dn = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
@@ -881,8 +1017,11 @@ function Import-GraphAppCredentialsFromFile {
         $cid = [string](_Get-ImportedCredProperty -Object $c -Name 'ClientId')
         $secret = [string](_Get-ImportedCredProperty -Object $c -Name 'ClientSecret')
         if ([string]::IsNullOrWhiteSpace($tid) -or [string]::IsNullOrWhiteSpace($cid) -or [string]::IsNullOrWhiteSpace($secret)) { continue }
+        $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $tid
         $displayName = _Get-ImportedCredProperty -Object $c -Name 'TenantDisplayName'
+        if ($null -ne $displayName -and $displayName -isnot [string]) { $displayName = "$displayName" }
         if ([string]::IsNullOrWhiteSpace([string]$displayName)) { $displayName = $null }
+        else { $displayName = $displayName.Trim() }
         $wcmPfx = _Get-ImportedCredProperty -Object $c -Name 'WcmPrefix'
         $savePrefix = if ([string]$wcmPfx -eq 'ESR') { 'ESR' } else { 'EOA' }
         try {
