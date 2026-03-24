@@ -403,6 +403,7 @@ function Save-GraphAppCredentialToWCM {
         [ValidateSet('EOA', 'ESR')]
         [string]$Prefix = 'EOA'
     )
+    $TenantId = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
     $credPrefix = _Get-CredPrefixString -Prefix $Prefix
     $target = "$credPrefix$TenantId"
     $userName = "${TenantId}|${ClientId}"
@@ -661,23 +662,30 @@ function Get-TenantDisplayNameFromWCM {
     }
     elseif ($script:tenantOrgDisplayNameCache.ContainsKey($cacheKey)) {
         $cached = $script:tenantOrgDisplayNameCache[$cacheKey]
-        return $cached
+        # Do not treat cached failure ($null) as final — allow retry on next call (same session).
+        if ($null -ne $cached -and -not [string]::IsNullOrWhiteSpace([string]$cached)) {
+            return [string]$cached
+        }
     }
     $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $Prefix
     if (-not $token) {
-        $script:tenantOrgDisplayNameCache[$cacheKey] = $null
         return $null
     }
     try {
         $headers = @{ Authorization = "Bearer $token" }
         $resp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/organization" -Headers $headers -Method Get -ErrorAction Stop
-        if ($resp.value -and $resp.value.Count -gt 0 -and $resp.value[0].displayName) {
-            $name = $resp.value[0].displayName
-            $script:tenantOrgDisplayNameCache[$cacheKey] = $name
-            return $name
+        $vals = @($resp.value)
+        if ($vals.Count -gt 0) {
+            $dn = $vals[0].displayName
+            if (-not [string]::IsNullOrWhiteSpace([string]$dn)) {
+                $name = [string]$dn.Trim()
+                $script:tenantOrgDisplayNameCache[$cacheKey] = $name
+                return $name
+            }
         }
-    } catch {}
-    $script:tenantOrgDisplayNameCache[$cacheKey] = $null
+    } catch {
+        Write-Warning "Get-TenantDisplayNameFromWCM: Graph GET /organization failed ($Prefix, tenant $TenantId): $($_.Exception.Message)"
+    }
     return $null
 }
 
@@ -688,23 +696,40 @@ function Get-WCMTenantListWithNames {
     .PARAMETER SkipGraphLookup
         When set, skips per-tenant client_credentials token + Graph /organization calls. Use for responsive UI
         (same pattern as CA Manager / XOA); labels use stored WCM *-DisplayName entries or raw tenant GUIDs.
+    .PARAMETER ForceRefreshFromGraph
+        When set (and SkipGraphLookup is not set), calls Get-TenantDisplayNameFromWCM -ForceRefresh so dropdowns
+        pick up current /organization names even if a previous lookup cached a failure in-session.
     .OUTPUTS
         @(@{ TenantId; DisplayName; DisplayText; Source }, ...)
     #>
     param(
         [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
-        [Parameter(Mandatory = $false)][switch]$SkipGraphLookup
+        [Parameter(Mandatory = $false)][switch]$SkipGraphLookup,
+        [Parameter(Mandatory = $false)][switch]$ForceRefreshFromGraph
     )
     $result = [System.Collections.ArrayList]::new()
     $ids = Get-WCMTenantIds -Prefix $Prefix
     foreach ($tid in $ids) {
         $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
-        if (-not $name -and -not $SkipGraphLookup) {
-            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix
-        }
-        if (-not $name -and -not $SkipGraphLookup) {
-            $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
-            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt
+        if (-not $SkipGraphLookup) {
+            if ($ForceRefreshFromGraph) {
+                $g = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
+                if ($g) { $name = $g }
+                elseif (-not $name) {
+                    $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
+                    $g2 = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt -ForceRefresh
+                    if ($g2) { $name = $g2 }
+                }
+            }
+            else {
+                if (-not $name) {
+                    $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix
+                }
+                if (-not $name) {
+                    $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
+                    $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt
+                }
+            }
         }
         $displayText = if ($name) {
             if ($Prefix -eq 'ESR') { "$name ($tid) (ESR)" } else { "$name ($tid)" }
@@ -728,10 +753,16 @@ function Get-WCMTenantListWithNamesForAppRegCombo {
     .DESCRIPTION
         Calls Get-WCMTenantListWithNames **without** -SkipGraphLookup so missing *-DisplayName WCM entries still get a friendly
         name from Graph. Merges duplicate tenant IDs (prefers EOA row unless EOA has no DisplayName and ESR does).
+    .PARAMETER ForceRefreshFromGraph
+        Passed through to Get-WCMTenantListWithNames (e.g. after Refresh tenant names in the auth console).
     #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$ForceRefreshFromGraph
+    )
     $merged = @{}
     foreach ($pfx in @('EOA', 'ESR')) {
-        foreach ($row in @(Get-WCMTenantListWithNames -Prefix $pfx -ErrorAction SilentlyContinue)) {
+        foreach ($row in @(Get-WCMTenantListWithNames -Prefix $pfx -ForceRefreshFromGraph:$ForceRefreshFromGraph -ErrorAction SilentlyContinue)) {
             $tid = [string]$row.TenantId
             if (-not $merged.ContainsKey($tid)) {
                 $merged[$tid] = $row
@@ -774,8 +805,9 @@ function Register-GraphAppTenantDisplayNamesInWCM {
     $prefixes = if ($Prefix -eq 'Both') { @('EOA', 'ESR') } else { @($Prefix) }
     $registered = 0
     foreach ($pfx in $prefixes) {
-        foreach ($tid in @(Get-WCMTenantIds -Prefix $pfx)) {
-            if ([string]::IsNullOrWhiteSpace($tid)) { continue }
+        foreach ($tidRaw in @(Get-WCMTenantIds -Prefix $pfx)) {
+            if ([string]::IsNullOrWhiteSpace($tidRaw)) { continue }
+            $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $tidRaw
             if (-not $ForceRefresh -and (_Get-StoredDisplayName -TenantId $tid -Prefix $pfx)) { continue }
             $c = Get-GraphAppCredentialFromWCM -TenantId $tid -Prefix $pfx
             if (-not $c) { continue }

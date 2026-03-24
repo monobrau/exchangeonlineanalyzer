@@ -861,7 +861,7 @@ $bulkStartButton.add_Click({
 
     # Helper to refresh a per-client app reg tenant combo (with display names)
     $script:refreshAppRegTenantCombo = {
-        param([System.Windows.Forms.ComboBox]$combo)
+        param([System.Windows.Forms.ComboBox]$combo, [switch]$ForceRefreshFromGraph)
         if (-not $combo -or $combo.IsDisposed) { return }
         $sel = $combo.SelectedItem
         $combo.Items.Clear()
@@ -869,9 +869,17 @@ $bulkStartButton.add_Click({
             Import-Module (Join-Path $script:scriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction SilentlyContinue
             $list = @()
             if (Get-Command Get-WCMTenantListWithNamesForAppRegCombo -ErrorAction SilentlyContinue) {
-                $list = Get-WCMTenantListWithNamesForAppRegCombo
+                if ($ForceRefreshFromGraph) {
+                    $list = Get-WCMTenantListWithNamesForAppRegCombo -ForceRefreshFromGraph
+                } else {
+                    $list = Get-WCMTenantListWithNamesForAppRegCombo
+                }
             } elseif (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-                $list = Get-WCMTenantListWithNames
+                if ($ForceRefreshFromGraph) {
+                    $list = Get-WCMTenantListWithNames -ForceRefreshFromGraph
+                } else {
+                    $list = Get-WCMTenantListWithNames
+                }
             }
             foreach ($item in $list) {
                 $combo.Items.Add($item.DisplayText) | Out-Null
@@ -1151,21 +1159,26 @@ $bulkStartButton.add_Click({
         try {
             $authConsoleForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
             Import-Module (Join-Path $script:scriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
-            $updated = 0
-            if (Get-Command Register-GraphAppTenantDisplayNamesInWCM -ErrorAction SilentlyContinue) {
-                $updated = Register-GraphAppTenantDisplayNamesInWCM -ForceRefresh
-            }
+            $updated = Register-GraphAppTenantDisplayNamesInWCM -ForceRefresh
             foreach ($cn in $script:clientAuthControls.Keys) {
                 $c = $script:clientAuthControls[$cn]
                 if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
-                    & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+                    & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo -ForceRefreshFromGraph
                 }
             }
+            $tidSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach ($px in @('EOA', 'ESR')) {
+                foreach ($x in @(Get-WCMTenantIds -Prefix $px)) { [void]$tidSet.Add($x) }
+            }
+            $msg = "Reloaded friendly names from Microsoft Graph and refreshed every App reg tenant list. Windows Credential Manager display-name entries updated: $updated."
+            if ($tidSet.Count -gt 0 -and $updated -eq 0) {
+                $msg += "`n`nNo display names were saved. Ensure the app has admin consent for Organization.Read.All or Directory.Read.All (see Entra app registration API permissions), then try again. Check the PowerShell warning stream for Graph errors if this persists."
+            }
             [System.Windows.Forms.MessageBox]::Show(
-                "Reloaded friendly names from Microsoft Graph for all stored Graph apps and refreshed every App reg tenant list. Windows Credential Manager display-name entries updated: $updated.",
+                $msg,
                 "Refresh tenant names",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Information)
+                $(if ($tidSet.Count -gt 0 -and $updated -eq 0) { [System.Windows.Forms.MessageBoxIcon]::Warning } else { [System.Windows.Forms.MessageBoxIcon]::Information }))
         } catch {
             [System.Windows.Forms.MessageBox]::Show("Refresh failed: $($_.Exception.Message)", "Refresh tenant names", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         } finally {
