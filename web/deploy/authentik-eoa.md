@@ -37,9 +37,10 @@ After the provider exists, open the **provider** (not only the application).
 
 1. **Issuer** / OpenID configuration  
    - Often shown as **`https://<your-authentik-host>/application/o/<provider-slug>/`**  
+   - **This deployment:** `https://auth.knospe.org/application/o/eoa/`  
    - Copy this **exact** string (including trailing `/` if Authentik shows it).  
    - Sanity check: open  
-     `https://<your-authentik-host>/application/o/<provider-slug>/.well-known/openid-configuration`  
+     `https://auth.knospe.org/application/o/eoa/.well-known/openid-configuration`  
      in a browser — it must return JSON.
 
 2. **Client ID**  
@@ -60,13 +61,15 @@ After the provider exists, open the **provider** (not only the application).
 Copy [`env.eoa.knospe.example`](env.eoa.knospe.example) to `web/.env` and set:
 
 ```env
-EOA_OIDC_ISSUER=https://authentik.example.com/application/o/eoa/
+EOA_OIDC_ISSUER=https://auth.knospe.org/application/o/eoa/
 EOA_OIDC_CLIENT_ID=<client-id-from-authentik>
 EOA_OIDC_AUDIENCE=<same-as-client-id>
 EOA_OIDC_REDIRECT_URI=https://eoa.knospe.org/api/v1/auth/oidc/callback
 EOA_CORS_ORIGINS=https://eoa.knospe.org
 EOA_SESSION_SECRET=<long random string>
 ```
+
+Discovery URL (sanity check): `https://auth.knospe.org/application/o/eoa/.well-known/openid-configuration`
 
 Optional:
 
