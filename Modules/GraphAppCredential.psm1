@@ -19,6 +19,7 @@ $script:credReadNativeTypeLoaded = $false
 $script:credMgrListAvailable = $null   # $null = not yet checked
 $script:credMgrImported = $false
 $script:credMgrImportFailed = $false
+$script:credMgrCmdkeyFallbackWarned = $false
 
 # Cache Graph /organization displayName per tenant+prefix per session (avoids duplicate token + HTTP)
 $script:tenantOrgDisplayNameCache = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -86,6 +87,29 @@ function _EnsureCredentialManagerImported {
         $script:credMgrImportFailed = $true
         return $false
     }
+}
+
+function Reset-GraphAppCredentialManagerImportCache {
+    <#
+    .SYNOPSIS
+        Clears cached CredentialManager import state so the next WCM call retries Import-Module (e.g. after Install-Module).
+    #>
+    $script:credMgrListAvailable = $null
+    $script:credMgrImported = $false
+    $script:credMgrImportFailed = $false
+}
+
+function _Warn-OnceCmdkeyCredentialManager {
+    param([string]$Reason)
+    if ($script:credMgrCmdkeyFallbackWarned) { return }
+    $script:credMgrCmdkeyFallbackWarned = $true
+    $r = if ($Reason) { " ($Reason)" } else { '' }
+    Write-Warning @"
+GraphAppCredential: Using built-in cmdkey for WCM$r — client secrets can appear in process arguments.
+Install: Install-Module CredentialManager -Scope CurrentUser -Force
+Then restart this PowerShell session (or run Reset-GraphAppCredentialManagerImportCache and re-import this module).
+If Import-Module CredentialManager still fails in PowerShell 7, use Windows PowerShell 5.1 (powershell.exe) for bulk registration.
+"@
 }
 
 function _Get-SecureStringAsPlainForKey {
@@ -252,22 +276,29 @@ function Save-GraphAppCredentialToWCM {
     $target = "$credPrefix$TenantId"
     $userName = "${TenantId}|${ClientId}"
 
-    # Try CredentialManager first (works in Windows PowerShell 5.1)
-    # Use CurrentUser persistence to avoid UAC prompt (LocalMachine can freeze waiting for hidden elevation dialog)
+    # CredentialManager's New-StoredCredential uses System.Web (.NET Framework) — not available in PowerShell 7+ (Core).
+    $psCore = ($PSVersionTable.PSEdition -eq 'Core')
     $usedCredMgr = $false
-    if (_EnsureCredentialManagerImported) {
+    if (-not $psCore -and (_EnsureCredentialManagerImported)) {
         try {
             $cred = New-Object PSCredential $userName, (ConvertTo-SecureString $ClientSecret -AsPlainText -Force)
             New-StoredCredential -Target $target -Credentials $cred -ErrorAction Stop | Out-Null
             $usedCredMgr = $true
         } catch {
-            Write-Warning "CredentialManager failed; falling back to cmdkey. Install CredentialManager for secure storage: Install-Module CredentialManager -Scope CurrentUser"
+            _Warn-OnceCmdkeyCredentialManager -Reason "New-StoredCredential failed: $($_.Exception.Message)"
+        }
+    }
+    elseif (-not $usedCredMgr -and -not $script:credMgrCmdkeyFallbackWarned) {
+        if ($psCore) {
+            _Warn-OnceCmdkeyCredentialManager -Reason 'PowerShell 7+ cannot use CredentialManager for WCM writes (System.Web). Using cmdkey; run registration under Windows PowerShell 5.1 (powershell.exe) for secure storage.'
+        }
+        elseif (-not (_EnsureCredentialManagerImported)) {
+            _Warn-OnceCmdkeyCredentialManager -Reason 'CredentialManager module not available or Import-Module failed'
         }
     }
 
     if (-not $usedCredMgr) {
         # Fallback: cmdkey (built-in, works in pwsh). SECURITY: /pass: exposes secret in process argv.
-        Write-Warning "CredentialManager not installed. Client secret may be visible in process argv. Install for secure storage: Install-Module CredentialManager -Scope CurrentUser"
         try {
             $targetArg = "/generic:$target"
             $userArg = "/user:$userName"
@@ -285,13 +316,15 @@ function Save-GraphAppCredentialToWCM {
     if ($TenantDisplayName -and -not [string]::IsNullOrWhiteSpace($TenantDisplayName)) {
         $nameTarget = "${credPrefix}${TenantId}-DisplayName"
         try {
-            if (_EnsureCredentialManagerImported) {
+            if (-not $psCore -and (_EnsureCredentialManagerImported)) {
                 $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
                 New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null
             } else {
                 Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden | Out-Null
             }
-        } catch { /* non-fatal */ }
+        } catch {
+            # DisplayName WCM write is optional; main credential already saved.
+        }
     }
     [void]$script:tenantOrgDisplayNameCache.Remove("${Prefix}|$TenantId")
     [void]$script:tenantOrgDisplayNameCache.Remove($TenantId)
@@ -464,15 +497,21 @@ function Get-TenantDisplayNameFromWCM {
     <#
     .SYNOPSIS
         Resolves tenant ID to display name using Graph API (requires WCM credentials).
+    .PARAMETER ForceRefresh
+        Ignore session cache for this tenant/prefix (retry after failures or before re-register).
     .OUTPUTS
         Display name string, or $null if resolution fails
     #>
     param(
         [Parameter(Mandatory = $true)][string]$TenantId,
-        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
+        [Parameter(Mandatory = $false)][switch]$ForceRefresh
     )
     $cacheKey = "${Prefix}|$TenantId"
-    if ($script:tenantOrgDisplayNameCache.ContainsKey($cacheKey)) {
+    if ($ForceRefresh) {
+        [void]$script:tenantOrgDisplayNameCache.Remove($cacheKey)
+    }
+    elseif ($script:tenantOrgDisplayNameCache.ContainsKey($cacheKey)) {
         $cached = $script:tenantOrgDisplayNameCache[$cacheKey]
         return $cached
     }
@@ -561,6 +600,53 @@ function Get-WCMTenantListWithNamesForAppRegCombo {
     return @($merged.Values | Sort-Object DisplayText)
 }
 
+function Register-GraphAppTenantDisplayNamesInWCM {
+    <#
+    .SYNOPSIS
+        Creates WCM *-DisplayName entries for each stored Graph app tenant by calling Graph /organization.
+    .DESCRIPTION
+        Export-GraphAppCredentialsToFile only embeds TenantDisplayName when these entries exist (or when
+        -ResolveMissingDisplayNamesFromGraph is used). After registering on a PC where Graph works, export/import
+        carries friendly names to machines where Graph lookup may fail.
+    .PARAMETER Prefix
+        EOA, ESR, or Both (default).
+    .OUTPUTS
+        Count of tenants that received a new or updated DisplayName credential.
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR', 'Both')]
+        [string]$Prefix = 'Both'
+    )
+    $prefixes = if ($Prefix -eq 'Both') { @('EOA', 'ESR') } else { @($Prefix) }
+    $registered = 0
+    foreach ($pfx in $prefixes) {
+        foreach ($tid in @(Get-WCMTenantIds -Prefix $pfx)) {
+            if ([string]::IsNullOrWhiteSpace($tid)) { continue }
+            if (_Get-StoredDisplayName -TenantId $tid -Prefix $pfx) { continue }
+            $c = Get-GraphAppCredentialFromWCM -TenantId $tid -Prefix $pfx
+            if (-not $c) { continue }
+            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $pfx -ForceRefresh
+            if (-not $name) {
+                $alt = if ($pfx -eq 'EOA') { 'ESR' } else { 'EOA' }
+                $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt -ForceRefresh
+            }
+            if (-not $name) {
+                Write-Warning "Register-GraphAppTenantDisplayNamesInWCM [$pfx $tid]: could not resolve display name (Graph token or Organization.Read.All / network)."
+                continue
+            }
+            try {
+                Save-GraphAppCredentialToWCM -TenantId $c.TenantId -ClientId $c.ClientId -ClientSecret $c.ClientSecret -TenantDisplayName $name -Prefix $pfx
+                $registered++
+            }
+            catch {
+                Write-Warning "Register-GraphAppTenantDisplayNamesInWCM [$pfx $tid]: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $registered
+}
+
 function _Set-GraphAppFailureInCallerScope {
     <#
     .SYNOPSIS
@@ -639,7 +725,9 @@ function Get-GraphAppTokenFromWCM {
                 if ($j.error_description) { $detail = $j.error_description }
                 elseif ($j.error) { $detail = $j.error }
             }
-            catch { /* keep Exception.Message */ }
+            catch {
+                # JSON parse failed; keep $detail from Exception.Message
+            }
         }
         $msg = "Token request failed: $detail"
         Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
@@ -678,11 +766,16 @@ function Export-GraphAppCredentialsToFile {
         Output file path (e.g. .eoa-creds). Will be overwritten.
     .PARAMETER Password
         SecureString password for encryption. Required for security.
+    .PARAMETER ResolveMissingDisplayNamesFromGraph
+        When WCM has no *-DisplayName entry for a tenant, resolve display name via Graph and embed TenantDisplayName
+        in the file so Import recreates friendly labels on PCs where Graph lookup fails.
     #>
     param(
         [Parameter(Mandatory=$true)][string]$Path,
         [Parameter(Mandatory=$true)][SecureString]$Password,
-        [Parameter(Mandatory=$false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+        [Parameter(Mandatory=$false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
+        [Parameter(Mandatory=$false)]
+        [switch]$ResolveMissingDisplayNamesFromGraph
     )
     $ids = Get-WCMTenantIds -Prefix $Prefix
     if ($ids.Count -eq 0) {
@@ -693,6 +786,13 @@ function Export-GraphAppCredentialsToFile {
         $c = Get-GraphAppCredentialFromWCM -TenantId $tid -Prefix $Prefix
         if ($c) {
             $dn = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
+            if (-not $dn -and $ResolveMissingDisplayNamesFromGraph) {
+                $dn = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
+                if (-not $dn) {
+                    $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
+                    $dn = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt -ForceRefresh
+                }
+            }
             if ($dn) { $c | Add-Member -NotePropertyName 'TenantDisplayName' -NotePropertyValue $dn -Force }
             $c | Add-Member -NotePropertyName 'WcmPrefix' -NotePropertyValue $Prefix -Force
             [void]$creds.Add($c)
@@ -869,4 +969,4 @@ function Show-ClearLocalGraphWcmPicker {
     return $removed
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache

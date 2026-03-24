@@ -2420,7 +2420,7 @@ $btnExportAppCreds.Text = "Export App Creds"
 $btnExportAppCreds.Location = New-Object System.Drawing.Point(640, 638)
 $btnExportAppCreds.Size = New-Object System.Drawing.Size(120, 28)
 $btnExportAppCredsTooltip = New-Object System.Windows.Forms.ToolTip
-$btnExportAppCredsTooltip.SetToolTip($btnExportAppCreds, "Export app credentials from WCM to an encrypted file. Use Import to restore on another machine.")
+$btnExportAppCredsTooltip.SetToolTip($btnExportAppCreds, "Export app credentials from WCM to an encrypted file. Optional: embed tenant display names so Import on another PC shows friendly names without Graph.")
 $btnExportAppCreds.add_Click({
     try {
         Import-Module (Join-Path $script:EOA_AppRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
@@ -2430,24 +2430,29 @@ $btnExportAppCreds.add_Click({
             return
         }
         $pwdForm = New-Object System.Windows.Forms.Form
-        $pwdForm.Text = "Export Password"
-        $pwdForm.Size = New-Object System.Drawing.Size(320, 150)
+        $pwdForm.Text = "Export Graph app credentials"
+        $pwdForm.Size = New-Object System.Drawing.Size(360, 200)
         $pwdForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
         $pwdForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
         $lbl = New-Object System.Windows.Forms.Label
         $lbl.Text = "Enter password to encrypt the export file:"
         $lbl.Location = New-Object System.Drawing.Point(10, 10)
-        $lbl.Size = New-Object System.Drawing.Size(280, 20)
+        $lbl.Size = New-Object System.Drawing.Size(320, 20)
         $txtPwd = New-Object System.Windows.Forms.TextBox
         $txtPwd.PasswordChar = '*'
         $txtPwd.Location = New-Object System.Drawing.Point(10, 35)
-        $txtPwd.Size = New-Object System.Drawing.Size(280, 20)
+        $txtPwd.Size = New-Object System.Drawing.Size(320, 20)
+        $chkEmbedNames = New-Object System.Windows.Forms.CheckBox
+        $chkEmbedNames.Text = "Embed tenant display names for other PCs (stored WCM names; if missing, Microsoft Graph per tenant)."
+        $chkEmbedNames.Location = New-Object System.Drawing.Point(10, 62)
+        $chkEmbedNames.Size = New-Object System.Drawing.Size(320, 48)
+        $chkEmbedNames.Checked = $true
         $btnOk = New-Object System.Windows.Forms.Button
         $btnOk.Text = "OK"
-        $btnOk.Location = New-Object System.Drawing.Point(120, 70)
+        $btnOk.Location = New-Object System.Drawing.Point(130, 118)
         $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
         $pwdForm.AcceptButton = $btnOk
-        $pwdForm.Controls.AddRange(@($lbl, $txtPwd, $btnOk))
+        $pwdForm.Controls.AddRange(@($lbl, $txtPwd, $chkEmbedNames, $btnOk))
         if ($pwdForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
         $pwd = ConvertTo-SecureString $txtPwd.Text -AsPlainText -Force
         $txtPwd.Text = ""
@@ -2456,8 +2461,10 @@ $btnExportAppCreds.add_Click({
         $sfd.DefaultExt = "eoa-creds"
         $sfd.FileName = "GraphAppCredentials.eoa-creds"
         if ($sfd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
-        Export-GraphAppCredentialsToFile -Path $sfd.FileName -Password $pwd
-        [System.Windows.Forms.MessageBox]::Show("Exported $($ids.Count) credential(s) to $($sfd.FileName)", "Export", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $exportParams = @{ Path = $sfd.FileName; Password = $pwd }
+        if ($chkEmbedNames.Checked) { $exportParams['ResolveMissingDisplayNamesFromGraph'] = $true }
+        Export-GraphAppCredentialsToFile @exportParams
+        [System.Windows.Forms.MessageBox]::Show("Exported $($ids.Count) EOA credential(s) to $($sfd.FileName). Import on another PC with the same password; embedded display names are applied to WCM there.", "Export", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Export failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
@@ -2468,7 +2475,7 @@ $btnImportAppCreds.Text = "Import App Creds"
 $btnImportAppCreds.Location = New-Object System.Drawing.Point(765, 638)
 $btnImportAppCreds.Size = New-Object System.Drawing.Size(120, 28)
 $btnImportAppCredsTooltip = New-Object System.Windows.Forms.ToolTip
-$btnImportAppCredsTooltip.SetToolTip($btnImportAppCreds, "Import app credentials from an encrypted file into WCM.")
+$btnImportAppCredsTooltip.SetToolTip($btnImportAppCreds, "Import app credentials and tenant display names (if in the file) from an encrypted export into WCM.")
 $btnImportAppCreds.add_Click({
     try {
         Import-Module (Join-Path $script:EOA_AppRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
@@ -2498,7 +2505,7 @@ $btnImportAppCreds.add_Click({
         $pwd = ConvertTo-SecureString $txtPwd.Text -AsPlainText -Force
         $txtPwd.Text = ""
         $count = Import-GraphAppCredentialsFromFile -Path $ofd.FileName -Password $pwd
-        [System.Windows.Forms.MessageBox]::Show("Imported $count credential(s) into Windows Credential Manager.", "Import", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [System.Windows.Forms.MessageBox]::Show("Imported $count credential(s) into Windows Credential Manager. If the export included tenant display names, they were saved as WCM *-DisplayName entries for friendly dropdown labels on this PC.", "Import", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Import failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
