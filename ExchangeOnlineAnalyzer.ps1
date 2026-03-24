@@ -8740,7 +8740,8 @@ if (Test-Path `$ReportSelectionsFile) {
                 try {
                     $authConsoleForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
                     Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
-                    $updated = Register-GraphAppTenantDisplayNamesInWCM -ForceRefresh
+                    $regDiag = $null
+                    $updated = Register-GraphAppTenantDisplayNamesInWCM -ForceRefresh -DiagnosticMessages ([ref]$regDiag)
                     foreach ($cn in $script:clientAuthControls.Keys) {
                         $c = $script:clientAuthControls[$cn]
                         if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
@@ -8751,9 +8752,12 @@ if (Test-Path `$ReportSelectionsFile) {
                     foreach ($px in @('EOA', 'ESR')) {
                         foreach ($x in @(Get-WCMTenantIds -Prefix $px)) { [void]$tidSet.Add($x) }
                     }
-                    $msg = "Reloaded friendly names from Microsoft Graph and refreshed every App reg tenant list. Windows Credential Manager display-name entries updated: $updated."
+                    $msg = "Reloaded friendly names from Microsoft Graph and refreshed every App reg tenant list. Windows Credential Manager *-DisplayName entries verified after save: $updated."
                     if ($tidSet.Count -gt 0 -and $updated -eq 0) {
-                        $msg += "`n`nNo display names were saved. Ensure the app has admin consent for Organization.Read.All or Directory.Read.All (see Entra app registration API permissions), then try again. Check the PowerShell warning stream for Graph errors if this persists."
+                        $msg += "`n`nNo display names were stored in WCM. Typical causes: missing admin consent for Organization.Read.All or Directory.Read.All, invalid client secret, or WCM write blocked in PowerShell 7 (try Windows PowerShell 5.1)."
+                    }
+                    if ($regDiag -and @($regDiag).Count -gt 0) {
+                        $msg += "`n`nDetails:`n" + (($regDiag | Select-Object -First 8) -join "`n")
                     }
                     [System.Windows.Forms.MessageBox]::Show(
                         $msg,

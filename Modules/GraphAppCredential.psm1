@@ -25,6 +25,8 @@ $script:credMgrCmdkeyFallbackWarned = $false
 
 # Cache Graph /organization displayName per tenant+prefix per session (avoids duplicate token + HTTP)
 $script:tenantOrgDisplayNameCache = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+# Last token failure detail for Get-TenantDisplayNameFromWCM / UI (Get-GraphAppTokenFromWCM clears on entry; sets before each return $null)
+$script:_GraphAppTokenLastFailureMessage = $null
 
 function _Get-CredPrefixString {
     param([Parameter(Mandatory = $true)][ValidateSet('EOA', 'ESR')][string]$Prefix)
@@ -642,20 +644,50 @@ function Get-WCMTenantIds {
     return @($tenantIds | Sort-Object)
 }
 
+function _Format-GraphRestExceptionDetail {
+    param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+    if (-not $ErrorRecord) { return 'Unknown error' }
+    $msg = $ErrorRecord.Exception.Message
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $raw = [string]$ErrorRecord.ErrorDetails.Message
+        try {
+            $j = $raw | ConvertFrom-Json -ErrorAction Stop
+            if ($j.error.message) { return ($msg + ' — ' + [string]$j.error.message) }
+            if ($j.error.code) { return ($msg + ' — ' + [string]$j.error.code) }
+        } catch {
+            if ($raw.Length -lt 500) { return ($msg + ' — ' + $raw) }
+        }
+    }
+    return $msg
+}
+
+function _Set-DisplayNameLookupErrorRef {
+    param($Ref, $Message)
+    try {
+        if ($null -ne $Ref -and $Ref -is [System.Management.Automation.PSReference]) {
+            $Ref.Value = $Message
+        }
+    } catch { }
+}
+
 function Get-TenantDisplayNameFromWCM {
     <#
     .SYNOPSIS
         Resolves tenant ID to display name using Graph API (requires WCM credentials).
     .PARAMETER ForceRefresh
         Ignore session cache for this tenant/prefix (retry after failures or before re-register).
+    .PARAMETER LastError
+        Optional [ref] string assigned when this function returns $null (token or Graph failure reason).
     .OUTPUTS
         Display name string, or $null if resolution fails
     #>
     param(
         [Parameter(Mandatory = $true)][string]$TenantId,
         [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
-        [Parameter(Mandatory = $false)][switch]$ForceRefresh
+        [Parameter(Mandatory = $false)][switch]$ForceRefresh,
+        $LastError
     )
+    _Set-DisplayNameLookupErrorRef -Ref $LastError -Message $null
     $cacheKey = "${Prefix}|$TenantId"
     if ($ForceRefresh) {
         [void]$script:tenantOrgDisplayNameCache.Remove($cacheKey)
@@ -669,6 +701,9 @@ function Get-TenantDisplayNameFromWCM {
     }
     $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $Prefix
     if (-not $token) {
+        $why = $script:_GraphAppTokenLastFailureMessage
+        if (-not $why) { $why = 'App-only token request failed (check WCM client id/secret and app registration).' }
+        _Set-DisplayNameLookupErrorRef -Ref $LastError -Message $why
         return $null
     }
     try {
@@ -683,8 +718,11 @@ function Get-TenantDisplayNameFromWCM {
                 return $name
             }
         }
+        _Set-DisplayNameLookupErrorRef -Ref $LastError -Message 'Microsoft Graph returned no organization displayName (empty or missing field). Grant Organization.Read.All or Directory.Read.All + admin consent for the app.'
     } catch {
-        Write-Warning "Get-TenantDisplayNameFromWCM: Graph GET /organization failed ($Prefix, tenant $TenantId): $($_.Exception.Message)"
+        $detail = _Format-GraphRestExceptionDetail -ErrorRecord $_
+        Write-Warning "Get-TenantDisplayNameFromWCM: Graph GET /organization failed ($Prefix, tenant $TenantId): $detail"
+        _Set-DisplayNameLookupErrorRef -Ref $LastError -Message $detail
     }
     return $null
 }
@@ -792,7 +830,9 @@ function Register-GraphAppTenantDisplayNamesInWCM {
     .PARAMETER ForceRefresh
         When set, re-queries Microsoft Graph /organization for every stored tenant and rewrites WCM *-DisplayName even if one already exists.
     .OUTPUTS
-        Count of tenants that received a new or updated DisplayName credential.
+        Count of tenants where *-DisplayName was verified in WCM after save (not merely Save invoked).
+    .PARAMETER DiagnosticMessages
+        Optional [ref] to an object; after the run, .Value is a string[] of per-tenant failure lines (for UI).
     #>
     param(
         [Parameter(Mandatory = $false)]
@@ -800,35 +840,60 @@ function Register-GraphAppTenantDisplayNamesInWCM {
         [string]$Prefix = 'Both',
 
         [Parameter(Mandatory = $false)]
-        [switch]$ForceRefresh
+        [switch]$ForceRefresh,
+
+        $DiagnosticMessages
     )
     $prefixes = if ($Prefix -eq 'Both') { @('EOA', 'ESR') } else { @($Prefix) }
     $registered = 0
+    $diag = [System.Collections.Generic.List[string]]::new()
     foreach ($pfx in $prefixes) {
         foreach ($tidRaw in @(Get-WCMTenantIds -Prefix $pfx)) {
             if ([string]::IsNullOrWhiteSpace($tidRaw)) { continue }
             $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $tidRaw
             if (-not $ForceRefresh -and (_Get-StoredDisplayName -TenantId $tid -Prefix $pfx)) { continue }
             $c = Get-GraphAppCredentialFromWCM -TenantId $tid -Prefix $pfx
-            if (-not $c) { continue }
-            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $pfx -ForceRefresh
+            if (-not $c) {
+                [void]$diag.Add("[$pfx $tid] No app credentials found in WCM for this prefix.")
+                continue
+            }
+            $le = $null
+            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $pfx -ForceRefresh -LastError ([ref]$le)
             if (-not $name) {
                 $alt = if ($pfx -eq 'EOA') { 'ESR' } else { 'EOA' }
-                $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt -ForceRefresh
+                $le2 = $null
+                $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $alt -ForceRefresh -LastError ([ref]$le2)
             }
             if (-not $name) {
-                Write-Warning "Register-GraphAppTenantDisplayNamesInWCM [$pfx $tid]: could not resolve display name (Graph token or Organization.Read.All / network)."
+                $parts = [System.Collections.Generic.List[string]]::new()
+                if ($le) { [void]$parts.Add("$pfx`: $le") }
+                if ($le2) { [void]$parts.Add("$alt`: $le2") }
+                $line = if ($parts.Count -gt 0) { ($parts -join ' | ') } else { 'Could not resolve display name from Microsoft Graph.' }
+                [void]$diag.Add("[$pfx $tid] $line")
+                Write-Warning "Register-GraphAppTenantDisplayNamesInWCM [$pfx $tid]: $line"
                 continue
             }
             try {
                 Save-GraphAppCredentialToWCM -TenantId $c.TenantId -ClientId $c.ClientId -ClientSecret $c.ClientSecret -TenantDisplayName $name -Prefix $pfx
-                $registered++
             }
             catch {
+                [void]$diag.Add("[$pfx $tid] Save to WCM failed: $($_.Exception.Message)")
                 Write-Warning "Register-GraphAppTenantDisplayNamesInWCM [$pfx $tid]: $($_.Exception.Message)"
+                continue
             }
+            $verify = _Get-StoredDisplayName -TenantId $tid -Prefix $pfx
+            if ([string]::IsNullOrWhiteSpace($verify)) {
+                [void]$diag.Add("[$pfx $tid] Graph returned a display name but *-DisplayName is missing in WCM afterward (CredentialManager/cmdkey write failed; try Windows PowerShell 5.1).")
+                continue
+            }
+            $registered++
         }
     }
+    try {
+        if ($null -ne $DiagnosticMessages -and $DiagnosticMessages -is [System.Management.Automation.PSReference]) {
+            $DiagnosticMessages.Value = @($diag)
+        }
+    } catch { }
     return $registered
 }
 
@@ -866,9 +931,9 @@ function Get-GraphAppTokenFromWCM {
     .SYNOPSIS
         Gets an app-only access token using credentials from WCM. Returns $null if not found or token request fails.
     .PARAMETER FailureVariable
-        Optional. Name of a variable in the caller's scope to set with a short failure reason (for diagnostics).
+        Optional. Name (string) of a variable in a parent scope to set with a short failure reason, e.g. -FailureVariable 'wcmErr' (quotes required — not $wcmErr).
     .NOTES
-        Use -Verbose for additional detail. Use -FailureVariable err to capture why $null was returned.
+        Use -Verbose for additional detail. Also sets script-level detail for Get-TenantDisplayNameFromWCM when token acquisition fails.
     #>
     [CmdletBinding()]
     param(
@@ -876,10 +941,12 @@ function Get-GraphAppTokenFromWCM {
         [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
         [Parameter(Mandatory = $false)][string]$FailureVariable
     )
+    $script:_GraphAppTokenLastFailureMessage = $null
     $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId -Prefix $Prefix
     if (-not $cred) {
         $msg = "No app credentials found in WCM for tenant $TenantId (prefix $Prefix)."
         Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
+        $script:_GraphAppTokenLastFailureMessage = $msg
         _Report-GraphAppTokenFailure -FailureVariable $FailureVariable -TenantId $TenantId -Message $msg
         return $null
     }
@@ -897,6 +964,7 @@ function Get-GraphAppTokenFromWCM {
         if (-not $resp.access_token) {
             $msg = 'Token endpoint returned no access_token (check app registration and tenant).'
             Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
+            $script:_GraphAppTokenLastFailureMessage = $msg
             _Report-GraphAppTokenFailure -FailureVariable $FailureVariable -TenantId $TenantId -Message $msg
             return $null
         }
@@ -916,6 +984,7 @@ function Get-GraphAppTokenFromWCM {
         }
         $msg = "Token request failed: $detail"
         Write-Verbose "Get-GraphAppTokenFromWCM: $msg"
+        $script:_GraphAppTokenLastFailureMessage = $msg
         _Report-GraphAppTokenFailure -FailureVariable $FailureVariable -TenantId $TenantId -Message $msg
         return $null
     }

@@ -57,7 +57,7 @@ foreach ($pfx in $prefixes) {
         if ([string]::IsNullOrWhiteSpace($tid)) { continue }
 
         $tokenErr = $null
-        $tok = Get-GraphAppTokenFromWCM -TenantId $tid -Prefix $pfx -FailureVariable tokenErr -ErrorAction SilentlyContinue
+        $tok = Get-GraphAppTokenFromWCM -TenantId $tid -Prefix $pfx -FailureVariable 'tokenErr' -ErrorAction SilentlyContinue
         if (-not $tok) {
             [void]$rows.Add([pscustomobject]@{
                     TenantId    = $tid
