@@ -3,7 +3,8 @@
     Creates an Entra app registration for Graph security investigation reports (app-only) and grants admin consent.
 .DESCRIPTION
     Creates app "River Run Security Investigator" with permissions for inbox rules, audit logs, sign-in logs,
-    Conditional Access, app registrations, reports, SharePoint, security alerts, and MFA. Saves to WCM when -SaveToWCM.
+    Conditional Access, app registrations, organization read (tenant display name via GET /organization), reports,
+    SharePoint, security alerts, and MFA. Saves to WCM when -SaveToWCM.
     Requires: Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All (admin).
     If an app with this name already exists, prompts to replace (delete and recreate) or cancel.
 .PARAMETER SaveToWCM
@@ -72,12 +73,14 @@ $graphAppId = '00000003-0000-0000-c000-000000000000'
 # App role IDs for security investigation report (inbox rules, audit, sign-in, CA, apps, reports, sites, alerts, MFA)
 # Plus Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All for Entra Secret Rotate (secret rotation + Add ATR)
 # Mail.Read required for Get-MgUserMailFolderMessageRule (inbox rules); MailboxSettings.Read is for auto-reply etc.
+# Organization.Read.All: explicit app-only read for GET /organization (tenant displayName); see Microsoft Graph permissions reference.
 $appRoleIds = @(
     @{ id = '810c84a8-4a9e-49e6-bf7d-12d183f40d01'; name = 'Mail.Read' }
     @{ id = '40f97065-369a-49f4-947c-6a255697ae91'; name = 'MailboxSettings.Read' }
     @{ id = 'df021288-bdef-4463-88db-98f22de89214'; name = 'User.Read.All' }
     @{ id = 'b0afded3-3588-46d8-8b3d-9842eff778da'; name = 'AuditLog.Read.All' }
     @{ id = '7ab1d382-f21e-4acd-a863-ba3e13f7da61'; name = 'Directory.Read.All' }
+    @{ id = '498476ce-e0fe-48b0-b801-37ba7e2685c6'; name = 'Organization.Read.All' }
     @{ id = '246dd0d5-5bd0-4def-940b-0421030a5b68'; name = 'Policy.Read.All' }
     # Application permission required for CA Manager / app-only Conditional Access policy changes
     @{ id = '01c0a623-fc9b-48e9-b794-0756f8e8f067'; name = 'Policy.ReadWrite.ConditionalAccess' }

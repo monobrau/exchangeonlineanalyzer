@@ -758,20 +758,25 @@ function Register-GraphAppTenantDisplayNamesInWCM {
         carries friendly names to machines where Graph lookup may fail.
     .PARAMETER Prefix
         EOA, ESR, or Both (default).
+    .PARAMETER ForceRefresh
+        When set, re-queries Microsoft Graph /organization for every stored tenant and rewrites WCM *-DisplayName even if one already exists.
     .OUTPUTS
         Count of tenants that received a new or updated DisplayName credential.
     #>
     param(
         [Parameter(Mandatory = $false)]
         [ValidateSet('EOA', 'ESR', 'Both')]
-        [string]$Prefix = 'Both'
+        [string]$Prefix = 'Both',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$ForceRefresh
     )
     $prefixes = if ($Prefix -eq 'Both') { @('EOA', 'ESR') } else { @($Prefix) }
     $registered = 0
     foreach ($pfx in $prefixes) {
         foreach ($tid in @(Get-WCMTenantIds -Prefix $pfx)) {
             if ([string]::IsNullOrWhiteSpace($tid)) { continue }
-            if (_Get-StoredDisplayName -TenantId $tid -Prefix $pfx) { continue }
+            if (-not $ForceRefresh -and (_Get-StoredDisplayName -TenantId $tid -Prefix $pfx)) { continue }
             $c = Get-GraphAppCredentialFromWCM -TenantId $tid -Prefix $pfx
             if (-not $c) { continue }
             $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $pfx -ForceRefresh

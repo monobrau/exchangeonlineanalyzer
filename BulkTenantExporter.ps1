@@ -1141,6 +1141,38 @@ $bulkStartButton.add_Click({
         }
     })
 
+    # Refresh App reg tenant dropdown labels from Graph (all clients)
+    $refreshTenantNamesBtn = New-Object System.Windows.Forms.Button
+    $refreshTenantNamesBtn.Text = "Refresh tenant names"
+    $refreshTenantNamesBtn.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+    $refreshTenantNamesBtn.Location = New-Object System.Drawing.Point(225, 140)
+    $refreshTenantNamesBtn.Size = New-Object System.Drawing.Size(130, 28)
+    $refreshTenantNamesBtn.add_Click({
+        try {
+            $authConsoleForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+            Import-Module (Join-Path $script:scriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+            $updated = 0
+            if (Get-Command Register-GraphAppTenantDisplayNamesInWCM -ErrorAction SilentlyContinue) {
+                $updated = Register-GraphAppTenantDisplayNamesInWCM -ForceRefresh
+            }
+            foreach ($cn in $script:clientAuthControls.Keys) {
+                $c = $script:clientAuthControls[$cn]
+                if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
+                    & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+                }
+            }
+            [System.Windows.Forms.MessageBox]::Show(
+                "Reloaded friendly names from Microsoft Graph for all stored Graph apps and refreshed every App reg tenant list. Windows Credential Manager display-name entries updated: $updated.",
+                "Refresh tenant names",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information)
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Refresh failed: $($_.Exception.Message)", "Refresh tenant names", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        } finally {
+            $authConsoleForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        }
+    })
+
     # Analyze All Reports button - rule-based bulk analysis (no LLM)
     $analyzeAllReportsBtn = New-Object System.Windows.Forms.Button
     $analyzeAllReportsBtn.Text = "Analyze All Reports"
@@ -1192,7 +1224,7 @@ $bulkStartButton.add_Click({
     $clientRowSpacing = 10  # Increased spacing between rows
 
     # Add controls to form
-    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $analyzeAllReportsBtn, $authPanel))
+    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $refreshTenantNamesBtn, $analyzeAllReportsBtn, $authPanel))
 
     # Close button
     $authCloseBtn = New-Object System.Windows.Forms.Button
