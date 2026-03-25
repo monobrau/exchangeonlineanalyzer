@@ -89,6 +89,12 @@ This is **separate** from Authentik/API auth: the header **Sign in** still contr
 
 ## Deploy (Linux)
 
+After **`git pull`**, install Python deps in the same venv systemd uses:
+
+```bash
+cd web && .venv/bin/pip install -r requirements.txt && sudo systemctl restart eoa-api
+```
+
 Examples (adjust paths/users):
 
 - **[`deploy/eoa-api.service.example`](deploy/eoa-api.service.example)** — systemd unit for `uvicorn` on `127.0.0.1:8080`.

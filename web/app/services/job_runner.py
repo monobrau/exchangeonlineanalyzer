@@ -13,7 +13,6 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.services.graph_worker import graph_worker_configured, run_graph_bulk_job
 from app.db import SessionLocal
 from app.models import Job, JobStatus
 
@@ -135,29 +134,36 @@ def run_job(job_id: str) -> None:
         log_tail = ""
         artifact_uri: str | None = None
 
-        if settings.use_python_graph_worker and graph_worker_configured(settings):
-            ok, log_tail, artifact_uri = run_graph_bulk_job(job_id, job)
-            if not ok:
+        if settings.use_python_graph_worker:
+            # Only import graph_worker (and msal) when Graph creds are set — avoids crashing uvicorn
+            # if msal is not installed yet; run `pip install -r requirements.txt` on the server.
+            _gcid = (settings.graph_client_id or "").strip()
+            _gsec = (settings.graph_client_secret or "").strip()
+            if _gcid and _gsec:
+                from app.services.graph_worker import run_graph_bulk_job
+
+                ok, log_tail, artifact_uri = run_graph_bulk_job(job_id, job)
+                if not ok:
+                    job = db.get(Job, job_id)
+                    if job:
+                        job.status = JobStatus.failed.value
+                        job.updated_at = _utcnow()
+                        job.error_message = (log_tail or "graph worker failed")[:8000]
+                        job.artifact_uri = artifact_uri
+                        db.commit()
+                    logger.error("Job %s python-graph failed: %s", job_id, log_tail[:500])
+                    return
+
                 job = db.get(Job, job_id)
                 if job:
-                    job.status = JobStatus.failed.value
+                    job.status = JobStatus.succeeded.value
                     job.updated_at = _utcnow()
-                    job.error_message = (log_tail or "graph worker failed")[:8000]
                     job.artifact_uri = artifact_uri
+                    if len(log_tail) < 4000:
+                        job.error_message = None
                     db.commit()
-                logger.error("Job %s python-graph failed: %s", job_id, log_tail[:500])
+                logger.info("Job %s python-graph ok", job_id)
                 return
-
-            job = db.get(Job, job_id)
-            if job:
-                job.status = JobStatus.succeeded.value
-                job.updated_at = _utcnow()
-                job.artifact_uri = artifact_uri
-                if len(log_tail) < 4000:
-                    job.error_message = None
-                db.commit()
-            logger.info("Job %s python-graph ok", job_id)
-            return
 
         if settings.use_pwsh_stub_worker:
             ok, log_tail, artifact_uri = _run_pwsh_stub(job_id, job)
