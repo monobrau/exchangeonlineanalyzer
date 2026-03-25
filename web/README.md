@@ -64,9 +64,19 @@ If **`EOA_USE_PWSH_STUB_WORKER`** is false (default for local dev), the API uses
 
 ### Python Graph worker (Linux, optional fallback)
 
-1. Register an Entra app with a **client secret** and grant **application** permissions for the reports you need (e.g. `Organization.Read.All` for `organization`; add `User.Read.All`, `Policy.Read.All`, `Application.Read.All` as you enable more reports). **Admin-consent** the app in the target tenant.
-2. Set **`EOA_GRAPH_CLIENT_ID`**, **`EOA_GRAPH_CLIENT_SECRET`**, and **`EOA_USE_PYTHON_GRAPH_WORKER=true`** when you want Graph-based jobs **without** pwsh (or as fallback when pwsh is missing).
-3. **Smoke-test a report locally** (writes under `web/data/artifacts/<job-id>/`):
+1. Register an Entra app with a **client secret** and grant **application** permissions for the reports you need. **Admin-consent** the app in the target tenant. Examples:
+   - **organization** — `Organization.Read.All`
+   - **users** — `User.Read.All`
+   - **conditional_access** — `Policy.Read.All`
+   - **applications** — `Application.Read.All`
+   - **sign_in_logs** — `AuditLog.Read.All`
+   - **directory_audits** — `AuditLog.Read.All`
+   - **security_alerts** / **security_incidents** — `SecurityEvents.Read.All` / `SecurityIncident.Read.All` (or product-specific equivalents)
+   - **intune_devices** — `DeviceManagementManagedDevices.Read.All`
+   - **mfa_registration** — `Reports.Read.All`
+2. Job body **`options`** can list **`reports`** and/or set **`include_*`** booleans (same names as the web schema); the worker merges **`include_*`** into the Graph report list (see `GET /api/v1/export/options-schema`).
+3. Set **`EOA_GRAPH_CLIENT_ID`**, **`EOA_GRAPH_CLIENT_SECRET`**, and **`EOA_USE_PYTHON_GRAPH_WORKER=true`** when you want Graph-based jobs **without** pwsh (or as fallback when pwsh is missing).
+4. **Smoke-test a report locally** (writes under `web/data/artifacts/<job-id>/`):
 
 ```bash
 cd web

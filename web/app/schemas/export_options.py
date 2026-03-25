@@ -96,8 +96,9 @@ class WebBulkExportOptions(BaseModel):
     reports: list[str] = Field(
         default_factory=list,
         description=(
-            "Python Graph worker on Linux: subset names, e.g. organization, users, conditional_access, applications. "
-            "Aliases accepted by graph_worker (org, ca, apps). Separate from include_* EXO-heavy toggles."
+            "Python Graph worker: report keys — organization, users, conditional_access, applications, "
+            "sign_in_logs, directory_audits, security_alerts, security_incidents, intune_devices, mfa_registration "
+            "(aliases: org, ca, signins, …). Booleans include_* also add matching Graph reports when set."
         ),
     )
 

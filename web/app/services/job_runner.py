@@ -1,4 +1,4 @@
-"""Job execution: PowerShell (WebBulkJobStub.ps1) first, then optional Python Graph worker, else placeholder."""
+"""Job execution: PowerShell (web/pwsh/<EOA_PWSH_WORKER_SCRIPT>) first, then optional Python Graph worker, else placeholder."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def _write_worker_log(out_dir: Path, text: str) -> None:
 def _run_pwsh_stub(job_id: str, job: Job) -> tuple[bool, str, str | None]:
     """Returns (ok, log_text, artifact_uri)."""
     settings = get_settings()
-    script = settings.repo_root / "web" / "pwsh" / "WebBulkJobStub.ps1"
+    script = settings.repo_root / "web" / "pwsh" / settings.pwsh_worker_script
     if not script.is_file():
         return False, f"Missing worker script: {script}", None
 

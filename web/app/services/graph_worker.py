@@ -8,6 +8,12 @@ Typical application permissions by report:
   users — User.Read.All
   conditional_access — Policy.Read.All (or Policy.Read.ConditionalAccess)
   applications — Application.Read.All
+  sign_in_logs — AuditLog.Read.All
+  directory_audits — AuditLog.Read.All
+  security_alerts — SecurityEvents.Read.All (or SecurityAlert.Read.All per tenant product)
+  security_incidents — SecurityIncident.Read.All
+  intune_devices — DeviceManagementManagedDevices.Read.All
+  mfa_registration — Reports.Read.All (credential user registration report)
 """
 
 from __future__ import annotations
@@ -16,9 +22,10 @@ import json
 import logging
 import platform
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import msal
@@ -32,7 +39,20 @@ GRAPH_SCOPE = ["https://graph.microsoft.com/.default"]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # Canonical report keys (options.reports uses strings; aliases map here).
-REPORT_KEYS = frozenset({"organization", "users", "conditional_access", "applications"})
+REPORT_KEYS = frozenset(
+    {
+        "organization",
+        "users",
+        "conditional_access",
+        "applications",
+        "sign_in_logs",
+        "directory_audits",
+        "security_alerts",
+        "security_incidents",
+        "intune_devices",
+        "mfa_registration",
+    }
+)
 REPORT_ALIASES: dict[str, str] = {
     "organization": "organization",
     "org": "organization",
@@ -47,8 +67,25 @@ REPORT_ALIASES: dict[str, str] = {
     "apps": "applications",
     "app_registrations": "applications",
     "apps_registrations": "applications",
+    "sign_in_logs": "sign_in_logs",
+    "signins": "sign_in_logs",
+    "sign_in": "sign_in_logs",
+    "directory_audits": "directory_audits",
+    "audit_logs": "directory_audits",
+    "entra_audits": "directory_audits",
+    "security_alerts": "security_alerts",
+    "alerts": "security_alerts",
+    "defender_alerts": "security_alerts",
+    "security_incidents": "security_incidents",
+    "incidents": "security_incidents",
+    "intune_devices": "intune_devices",
+    "intune": "intune_devices",
+    "managed_devices": "intune_devices",
+    "mfa_registration": "mfa_registration",
+    "mfa": "mfa_registration",
+    "credential_registration": "mfa_registration",
 }
-# "rules" (inbox rules) is Exchange/Graph mail — not implemented in this worker yet; skipped with warning.
+# "rules" (inbox rules) is Exchange-heavy — not implemented in this worker; skipped with warning.
 
 USER_SELECT = "id,displayName,userPrincipalName,accountEnabled,assignedLicenses,userType"
 APPLICATION_SELECT = "id,appId,displayName,createdDateTime,signInAudience,publisherDomain"
@@ -60,17 +97,46 @@ def graph_worker_configured(settings: Settings) -> bool:
     return bool(cid and csec)
 
 
+def _merge_include_flags_into_reports(options: dict[str, Any], base: list[str]) -> list[str]:
+    """Append Graph-backed slices when include_* booleans match desktop BulkTenantExporter."""
+    out = list(base)
+
+    def add(name: str) -> None:
+        if name not in out:
+            out.append(name)
+
+    if options.get("include_sign_in_logs"):
+        add("sign_in_logs")
+    if options.get("include_audit_logs"):
+        add("directory_audits")
+    if options.get("include_security_alerts"):
+        add("security_alerts")
+    if options.get("include_security_incidents"):
+        add("security_incidents")
+    if options.get("include_conditional_access_policies"):
+        add("conditional_access")
+    if options.get("include_app_registrations"):
+        add("applications")
+    if options.get("include_intune_devices"):
+        add("intune_devices")
+    if options.get("include_mfa_coverage"):
+        add("mfa_registration")
+    return out
+
+
 def parse_requested_reports(options: dict[str, Any] | None) -> list[str]:
-    """Normalize options.reports to a list of canonical report keys. Default: organization only."""
+    """Normalize options.reports plus include_* flags to canonical report keys. Default: organization only."""
     if not options:
         return ["organization"]
     raw = options.get("reports")
     if raw is None:
-        return ["organization"]
+        base = ["organization"]
+        return _merge_include_flags_into_reports(options, base)
     if isinstance(raw, str):
         raw = [raw]
     if not isinstance(raw, list) or len(raw) == 0:
-        return ["organization"]
+        base = ["organization"]
+        return _merge_include_flags_into_reports(options, base)
     out: list[str] = []
     for x in raw:
         key = str(x).strip().lower()
@@ -83,7 +149,8 @@ def parse_requested_reports(options: dict[str, Any] | None) -> list[str]:
                 continue
         if canon not in out:
             out.append(canon)
-    return out if out else ["organization"]
+    base = out if out else ["organization"]
+    return _merge_include_flags_into_reports(options, base)
 
 
 def _artifact_dir(job_id: str) -> Path:
@@ -168,8 +235,22 @@ def _write_report_json(out_dir: Path, name: str, payload: dict[str, Any]) -> Non
     (out_dir / f"report_{name}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _days_from_options(options: dict[str, Any], *keys: str, default: int = 7, cap: int = 365) -> int:
+    for k in keys:
+        v = options.get(k)
+        if isinstance(v, int) and v >= 1:
+            return min(v, cap)
+    return default
+
+
+def _utc_start_iso_days_ago(days: int) -> str:
+    d = max(1, min(int(days), 365))
+    dt = datetime.now(timezone.utc) - timedelta(days=d)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 def _collect_organization(
-    out_dir: Path, token: str, tid: str
+    out_dir: Path, token: str, tid: str, _options: dict[str, Any]
 ) -> tuple[bool, str | None]:
     url = f"{GRAPH_BASE}/organization"
     data, status, err = _graph_get_json(url, token)
@@ -195,7 +276,7 @@ def _collect_organization(
     return True, None
 
 
-def _collect_users(out_dir: Path, token: str, tid: str) -> tuple[bool, str | None]:
+def _collect_users(out_dir: Path, token: str, tid: str, _options: dict[str, Any]) -> tuple[bool, str | None]:
     sel = USER_SELECT.replace(",", "%2C")
     first = f"{GRAPH_BASE}/users?$select={sel}&$top=999"
     users, err = graph_get_all_pages(first, token, max_items=100_000)
@@ -219,7 +300,9 @@ def _collect_users(out_dir: Path, token: str, tid: str) -> tuple[bool, str | Non
     return True, None
 
 
-def _collect_conditional_access(out_dir: Path, token: str, tid: str) -> tuple[bool, str | None]:
+def _collect_conditional_access(
+    out_dir: Path, token: str, tid: str, options: dict[str, Any]
+) -> tuple[bool, str | None]:
     first = f"{GRAPH_BASE}/identity/conditionalAccess/policies"
     policies, err = graph_get_all_pages(first, token, max_items=10_000)
     if err:
@@ -242,7 +325,9 @@ def _collect_conditional_access(out_dir: Path, token: str, tid: str) -> tuple[bo
     return True, None
 
 
-def _collect_applications(out_dir: Path, token: str, tid: str) -> tuple[bool, str | None]:
+def _collect_applications(
+    out_dir: Path, token: str, tid: str, _options: dict[str, Any]
+) -> tuple[bool, str | None]:
     sel = APPLICATION_SELECT.replace(",", "%2C")
     first = f"{GRAPH_BASE}/applications?$select={sel}&$top=999"
     apps, err = graph_get_all_pages(first, token, max_items=50_000)
@@ -262,6 +347,152 @@ def _collect_applications(out_dir: Path, token: str, tid: str) -> tuple[bool, st
             "count": len(apps),
             "applications": apps,
         },
+    )
+    return True, None
+
+
+def _collect_sign_in_logs(
+    out_dir: Path, token: str, tid: str, options: dict[str, Any]
+) -> tuple[bool, str | None]:
+    days = _days_from_options(options, "sign_in_logs_days_back", "days_back", default=7)
+    start = _utc_start_iso_days_ago(days)
+    filt = f"createdDateTime ge {start}"
+    first = f"{GRAPH_BASE}/auditLogs/signIns?$filter={quote(filt)}&$orderby=createdDateTime desc&$top=999"
+    rows, err = graph_get_all_pages(first, token, max_items=50_000)
+    if err:
+        _write_report_json(
+            out_dir,
+            "sign_in_logs",
+            {"ok": False, "tenantId": tid, "error": err, "daysBack": days, "signIns": []},
+        )
+        return False, err
+    _write_report_json(
+        out_dir,
+        "sign_in_logs",
+        {
+            "ok": True,
+            "tenantId": tid,
+            "daysBack": days,
+            "count": len(rows),
+            "signIns": rows,
+        },
+    )
+    return True, None
+
+
+def _collect_directory_audits(
+    out_dir: Path, token: str, tid: str, options: dict[str, Any]
+) -> tuple[bool, str | None]:
+    days = _days_from_options(options, "days_back", default=10)
+    start = _utc_start_iso_days_ago(days)
+    filt = f"activityDateTime ge {start}"
+    first = f"{GRAPH_BASE}/auditLogs/directoryAudits?$filter={quote(filt)}&$orderby=activityDateTime desc&$top=999"
+    rows, err = graph_get_all_pages(first, token, max_items=100_000)
+    if err:
+        _write_report_json(
+            out_dir,
+            "directory_audits",
+            {"ok": False, "tenantId": tid, "error": err, "daysBack": days, "directoryAudits": []},
+        )
+        return False, err
+    _write_report_json(
+        out_dir,
+        "directory_audits",
+        {
+            "ok": True,
+            "tenantId": tid,
+            "daysBack": days,
+            "count": len(rows),
+            "directoryAudits": rows,
+        },
+    )
+    return True, None
+
+
+def _collect_security_alerts(
+    out_dir: Path, token: str, tid: str, options: dict[str, Any]
+) -> tuple[bool, str | None]:
+    days = _days_from_options(options, "days_back", default=30)
+    start = _utc_start_iso_days_ago(days)
+    filt = f"createdDateTime ge {start}"
+    first = f"{GRAPH_BASE}/security/alerts_v2?$filter={quote(filt)}&$orderby=createdDateTime desc&$top=200"
+    rows, err = graph_get_all_pages(first, token, max_items=10_000, max_pages=200)
+    if err:
+        _write_report_json(
+            out_dir,
+            "security_alerts",
+            {"ok": False, "tenantId": tid, "error": err, "alerts": []},
+        )
+        return False, err
+    _write_report_json(
+        out_dir,
+        "security_alerts",
+        {"ok": True, "tenantId": tid, "daysBack": days, "count": len(rows), "alerts": rows},
+    )
+    return True, None
+
+
+def _collect_security_incidents(
+    out_dir: Path, token: str, tid: str, options: dict[str, Any]
+) -> tuple[bool, str | None]:
+    days = _days_from_options(options, "days_back", default=30)
+    start = _utc_start_iso_days_ago(days)
+    filt = f"createdDateTime ge {start}"
+    first = f"{GRAPH_BASE}/security/incidents?$filter={quote(filt)}&$orderby=createdDateTime desc&$top=100"
+    rows, err = graph_get_all_pages(first, token, max_items=5_000, max_pages=200)
+    if err:
+        _write_report_json(
+            out_dir,
+            "security_incidents",
+            {"ok": False, "tenantId": tid, "error": err, "incidents": []},
+        )
+        return False, err
+    _write_report_json(
+        out_dir,
+        "security_incidents",
+        {"ok": True, "tenantId": tid, "daysBack": days, "count": len(rows), "incidents": rows},
+    )
+    return True, None
+
+
+def _collect_intune_devices(
+    out_dir: Path, token: str, tid: str, _options: dict[str, Any]
+) -> tuple[bool, str | None]:
+    sel = "id,deviceName,operatingSystem,osVersion,userPrincipalName,complianceState,managementState"
+    sel_e = sel.replace(",", "%2C")
+    first = f"{GRAPH_BASE}/deviceManagement/managedDevices?$select={sel_e}&$top=999"
+    rows, err = graph_get_all_pages(first, token, max_items=100_000)
+    if err:
+        _write_report_json(
+            out_dir,
+            "intune_devices",
+            {"ok": False, "tenantId": tid, "error": err, "managedDevices": []},
+        )
+        return False, err
+    _write_report_json(
+        out_dir,
+        "intune_devices",
+        {"ok": True, "tenantId": tid, "count": len(rows), "managedDevices": rows},
+    )
+    return True, None
+
+
+def _collect_mfa_registration(
+    out_dir: Path, token: str, tid: str, _options: dict[str, Any]
+) -> tuple[bool, str | None]:
+    first = f"{GRAPH_BASE}/reports/credentialUserRegistrationDetails"
+    rows, err = graph_get_all_pages(first, token, max_items=200_000)
+    if err:
+        _write_report_json(
+            out_dir,
+            "mfa_registration",
+            {"ok": False, "tenantId": tid, "error": err, "rows": []},
+        )
+        return False, err
+    _write_report_json(
+        out_dir,
+        "mfa_registration",
+        {"ok": True, "tenantId": tid, "count": len(rows), "credentialUserRegistrationDetails": rows},
     )
     return True, None
 
@@ -325,6 +556,12 @@ def run_graph_bulk_job(job_id: str, job: Job) -> tuple[bool, str, str | None]:
         "users": _collect_users,
         "conditional_access": _collect_conditional_access,
         "applications": _collect_applications,
+        "sign_in_logs": _collect_sign_in_logs,
+        "directory_audits": _collect_directory_audits,
+        "security_alerts": _collect_security_alerts,
+        "security_incidents": _collect_security_incidents,
+        "intune_devices": _collect_intune_devices,
+        "mfa_registration": _collect_mfa_registration,
     }
 
     for name in reports:
@@ -333,7 +570,7 @@ def run_graph_bulk_job(job_id: str, job: Job) -> tuple[bool, str, str | None]:
             log_lines.append(f"skip: no collector for {name!r}")
             continue
         log_lines.append(f"collect: {name}...")
-        ok, err = fn(out_dir, token, tid)
+        ok, err = fn(out_dir, token, tid, options)
         if ok:
             reports_ok.append(name)
             log_lines.append(f"ok: {name}")

@@ -22,6 +22,21 @@ def test_parse_requested_reports_aliases_and_order() -> None:
     ]
 
 
+def test_parse_requested_reports_include_flags_merge_with_defaults() -> None:
+    assert parse_requested_reports({"include_sign_in_logs": True}) == ["organization", "sign_in_logs"]
+    assert parse_requested_reports({"include_audit_logs": True, "include_security_alerts": True}) == [
+        "organization",
+        "directory_audits",
+        "security_alerts",
+    ]
+
+
+def test_parse_requested_reports_include_merges_with_explicit_reports() -> None:
+    assert parse_requested_reports(
+        {"reports": ["users"], "include_sign_in_logs": True, "include_intune_devices": True}
+    ) == ["users", "sign_in_logs", "intune_devices"]
+
+
 def test_parse_requested_reports_unknown_falls_back_to_organization() -> None:
     assert parse_requested_reports({"reports": ["rules", "nope"]}) == ["organization"]
 

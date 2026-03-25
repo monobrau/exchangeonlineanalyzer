@@ -42,7 +42,8 @@ Browser (OIDC + optional MSAL)
 ### Phase 1 (now — contract & docs)
 - Document **all** desktop toggles in **`GET /api/v1/export/options-schema`** (see `export_options.py`).
 - Clients send **`options`** using **`snake_case`** keys aligned with this schema (e.g. `include_message_trace`, `days_back`).
-- **pwsh** worker remains **`WebBulkJobStub.ps1`** until Phase 2; **Python** worker extends **reports** incrementally.
+- **`WebBulkJobStub.ps1`** writes **`ReportSelections.json`** (same shape as the desktop exporter) plus **`summary.json`**.
+- **Python Graph worker** implements additional **`reports`**: sign-in logs, directory audits, security alerts/incidents, Intune devices, MFA registration report; **`include_*`** flags are merged into the report list automatically.
 
 ### Phase 2 — PowerShell worker = real bulk export (Windows host)
 - Replace stub with a script that:

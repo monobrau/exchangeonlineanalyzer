@@ -11,6 +11,7 @@ Reports default to "organization" if none given. Examples:
 
   python tools/run_graph_report.py 00000000-0000-0000-0000-000000000000
   python tools/run_graph_report.py 00000000-0000-0000-0000-000000000000 organization users
+  python tools/run_graph_report.py 00000000-0000-0000-0000-000000000000 sign_in_logs security_alerts
 """
 
 from __future__ import annotations

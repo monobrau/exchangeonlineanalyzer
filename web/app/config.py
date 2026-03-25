@@ -43,7 +43,10 @@ class Settings(BaseSettings):
     # PowerShell 7+ executable (Linux/macOS/Windows)
     pwsh_path: str = "pwsh"
 
-    # If true, run web/pwsh/WebBulkJobStub.ps1 when pwsh is available. Default false for dev/CI; set true on webhost.
+    # Script under web/pwsh/ (default WebBulkJobStub.ps1). Override for a custom worker entrypoint.
+    pwsh_worker_script: str = "WebBulkJobStub.ps1"
+
+    # If true, run web/pwsh/<pwsh_worker_script> when pwsh is available. Default false for dev/CI; set true on webhost.
     use_pwsh_stub_worker: bool = False
 
     # Linux-friendly worker: MSAL + Graph REST. Runs only if pwsh worker did not run (see job_runner order).
