@@ -44,32 +44,74 @@ async def require_user(
             detail="Missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = creds.credentials
+    token = (creds.credentials or "").strip()
     try:
-        meta = get_oidc_metadata(settings.oidc_issuer)
-        jwks_uri = str(meta["jwks_uri"])
-        # Must match JWT iss claim (Authentik matches discovery document issuer string)
-        iss = str(meta["issuer"])
-        jwks = _jwks_client_for(jwks_uri)
-        signing_key = jwks.get_signing_key_from_jwt(token)
-        audiences = _audiences(settings)
-        decode_kw: dict = {
-            "issuer": iss,
-            "algorithms": ["RS256", "ES256"],
-        }
-        if audiences:
-            aud = audiences if len(audiences) > 1 else audiences[0]
-            decode_kw["audience"] = aud
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            **decode_kw,
+        # Opaque OAuth tokens are not JWTs — fail clearly (callback should store id_token or JWT access).
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        header = jwt.get_unverified_header(token)
+    except Exception as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid token: not a JWT (opaque access token?). Re-sign in. ({e!s})",
+        ) from e
+
+    meta = get_oidc_metadata(settings.oidc_issuer)
+    iss_disc = str(meta["issuer"]).strip()
+    token_iss = unverified.get("iss")
+    if not token_iss:
+        raise HTTPException(status_code=401, detail="Invalid token: missing iss claim")
+    # Discovery issuer and JWT iss often differ only by trailing slash — compare normalized.
+    if token_iss.rstrip("/") != iss_disc.rstrip("/"):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                f"Invalid token: issuer mismatch (token iss={token_iss!r}, "
+                f"discovery issuer={iss_disc!r})"
+            ),
         )
-        sub = payload.get("sub")
-        if not sub:
-            raise HTTPException(status_code=401, detail="Token missing sub")
-        return str(sub)
+
+    audiences = _audiences(settings)
+    aud_kw: dict = {}
+    if audiences:
+        aud_kw["audience"] = audiences if len(audiences) > 1 else audiences[0]
+
+    alg = (header or {}).get("alg") or ""
+
+    try:
+        # Authentik / some IdPs issue HS256 access tokens signed with the OAuth client secret.
+        if alg == "HS256":
+            if not settings.oidc_client_secret:
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        "Invalid token: HS256 JWT requires EOA_OIDC_CLIENT_SECRET on the API "
+                        "(confidential client) to verify."
+                    ),
+                )
+            payload = jwt.decode(
+                token,
+                settings.oidc_client_secret,
+                algorithms=["HS256"],
+                issuer=token_iss,
+                **aud_kw,
+            )
+        else:
+            jwks_uri = str(meta["jwks_uri"])
+            jwks = _jwks_client_for(jwks_uri)
+            signing_key = jwks.get_signing_key_from_jwt(token)
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256", "ES256"],
+                issuer=token_iss,
+                **aud_kw,
+            )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e!s}") from e
+
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Token missing sub")
+    return str(sub)

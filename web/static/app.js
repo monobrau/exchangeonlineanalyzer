@@ -16,12 +16,21 @@ async function api(path, opts = {}) {
   if (token) headers.Authorization = `Bearer ${token}`;
   const r = await fetch(path, { ...opts, headers });
   if (r.status === 401) {
+    const raw = await r.text();
     let detail = "";
     try {
-      const j = JSON.parse(await r.text());
-      if (j && j.detail != null) detail = String(j.detail);
+      const j = JSON.parse(raw);
+      if (j && j.detail != null) {
+        if (Array.isArray(j.detail)) {
+          detail = j.detail
+            .map((x) => (x && typeof x === "object" && x.msg != null ? String(x.msg) : JSON.stringify(x)))
+            .join("; ");
+        } else {
+          detail = String(j.detail);
+        }
+      }
     } catch {
-      /* ignore */
+      if (raw && raw.trim()) detail = raw.trim().slice(0, 400);
     }
     throw new Error(
       detail ||
