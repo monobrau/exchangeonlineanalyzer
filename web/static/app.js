@@ -3,6 +3,15 @@ const $ = (sel) => document.querySelector(sel);
 /** Set after dynamic import of ./ms-graph.js (avoids aborting the whole app if MSAL CDN is blocked). */
 let getMsGraphTenantIdForJob = () => null;
 
+/** Matches index.html {{EOA_ASSET_V}} so dynamic import of ms-graph.js gets the same cache-bust as app.js. */
+function eoaAssetVersion() {
+  try {
+    return document.querySelector('meta[name="eoa-asset-version"]')?.getAttribute("content")?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
 /** When OIDC is on and there is no bearer token, main UI stays hidden (see initAuth). */
 let appUnlocked = true;
 
@@ -833,7 +842,9 @@ async function loadMsGraphModule() {
   window.__eoaMsGraphLoaded = true;
   const msMount = document.getElementById("ms-graph-mount");
   try {
-    const msUrl = new URL("./ms-graph.js", import.meta.url).href;
+    const v = eoaAssetVersion();
+    const rel = v ? `./ms-graph.js?v=${encodeURIComponent(v)}` : "./ms-graph.js";
+    const msUrl = new URL(rel, import.meta.url).href;
     const m = await import(msUrl);
     getMsGraphTenantIdForJob = m.getMsGraphTenantIdForJob;
     await m.initMicrosoftGraphUI();

@@ -138,6 +138,8 @@ def _oidc_locked_console_html() -> HTMLResponse:
     # View source: confirms which API build served this page (compare to git deploy).
     html = f"<!-- eoa-console build=api-{app.version} template=index.html has-ms-graph-outer -->\n" + html
     html = _inject_asset_version(html, app.version)
+    # Same as / when OIDC is off: expose resolved SPA client id for MSAL (public data only).
+    html = _inject_msal_bootstrap(html)
     return HTMLResponse(
         content=html,
         media_type="text/html; charset=utf-8",
