@@ -10,6 +10,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import require_user
 from app.config import get_settings
+from app.ms_graph_spa import resolve_ms_graph_spa_client_id
 from app.db import engine, init_db
 from app.routers import auth_oidc, export_meta, jobs
 
@@ -42,7 +43,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     description="Bulk export jobs API and browser console. OIDC optional (EOA_OIDC_ISSUER).",
-    version="0.8.1",
+    version="0.8.2",
     lifespan=lifespan,
 )
 
@@ -177,7 +178,7 @@ def ui_info() -> dict[str, object]:
         "api_version": app.version,
         "static_dir": str(STATIC_DIR.resolve()),
         "repo_root_config": str(s.repo_root.resolve()),
-        "ms_graph_spa_client_id_configured": bool((s.ms_graph_spa_client_id or "").strip()),
+        "ms_graph_spa_client_id_configured": bool(resolve_ms_graph_spa_client_id(s)),
         "index_html": index_html,
         "app_js": app_js_info,
         "ms_graph_js": ms_graph_js_info,

@@ -93,6 +93,14 @@ Exit code **0** means every requested report succeeded; **1** means at least one
 
 This is **separate** from Authentik/API auth: the header **Sign in** still controls access to `/api/v1/jobs` when `EOA_OIDC_ISSUER` is set. The **Microsoft 365** panel uses **MSAL** in the browser to sign in with a work account and call **Microsoft Graph** directly (delegated). **Creating app registrations** uses `POST https://graph.microsoft.com/v1.0/applications` from the browser with the signed-in user’s token.
 
+**OAuth always needs an Entra app registration** (a public “client ID”). You can supply it in any of these ways:
+
+1. **`EOA_MS_GRAPH_SPA_CLIENT_ID`** in `web/.env` (or systemd) — best for shared deployments.  
+2. **Bundled default** — set **`BUNDLED_MS_GRAPH_SPA_CLIENT_ID`** in **`web/app/bundled_ms_graph.py`** to a multi-tenant SPA’s client ID so the API enables MSAL **without** env (add redirect URIs for each host in that Entra app).  
+3. **Browser only** — leave the server unset; the UI asks once for the **Application (client) ID** and stores it in **`localStorage`** (`eoa_ms_graph_spa_client_id`). No server restart; use **Clear browser-stored client ID** to reset.
+
+Then:
+
 1. In **Entra ID** → **App registrations** → **New registration** (or use an existing app).  
    - **Supported account types**: match your scenario (single-tenant or multitenant).  
    - **Redirect URI**: platform **Single-page application (SPA)**. Add every URL users will open, exactly (path matters):  
@@ -101,8 +109,8 @@ This is **separate** from Authentik/API auth: the header **Sign in** still contr
      - For local dev: `http://127.0.0.1:8080/`, `http://127.0.0.1:8080/app`  
 2. **API permissions** → **Microsoft Graph** → **Delegated permissions**: add **`User.Read`**, **`Organization.Read.All`**, **`Application.ReadWrite.All`**.  
    - **`Application.ReadWrite.All`** almost always requires **Grant admin consent for \<tenant\>** (or an admin consent workflow). Without it, list/create/delete app registration calls return **403**.  
-3. Set **`EOA_MS_GRAPH_SPA_CLIENT_ID`** to that app’s **Application (client) ID** in `web/.env` (and restart the API). Optionally set **`EOA_MS_GRAPH_TENANT`** (default **`organizations`** for work accounts).  
-4. Open **`/`** or **`/app`**, expand **Microsoft 365**, **Sign in with Microsoft**. After an admin has consented permissions, use **Re-consent permissions** once if you still see consent or authorization errors (forces a fresh consent prompt).  
+3. Optionally set **`EOA_MS_GRAPH_TENANT`** (default **`organizations`** for work accounts) when using a server-side client ID.  
+4. Open **`/`** or **`/app`**, expand **Microsoft 365**, **Sign in with Microsoft** (after pasting client ID if prompted). After an admin has consented permissions, use **Re-consent permissions** once if you still see consent or authorization errors.  
 5. **App registrations** table: **Create** (display name), **Refresh list**, **Rename**, **Delete** — all call Graph interactively; no server-side Graph secret is used for this panel.
 
 ## Deploy (Linux)

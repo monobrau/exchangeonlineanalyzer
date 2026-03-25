@@ -48,6 +48,7 @@ def test_msal_config_when_disabled() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body.get("enabled") is False
+    assert len(body.get("scopes") or []) == 3
 
 
 def test_oidc_login_not_configured() -> None:

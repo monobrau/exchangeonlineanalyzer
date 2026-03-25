@@ -1,8 +1,20 @@
 /**
  * Microsoft sign-in (MSAL) + delegated Graph: tenant context + app registration CRUD.
  * MSAL is loaded dynamically so a CDN failure does not prevent ms-graph.js from loading.
+ *
+ * Client ID resolution: server (EOA_MS_GRAPH_SPA_CLIENT_ID or bundled in app) OR localStorage
+ * key eoa_ms_graph_spa_client_id — no server env required if the user pastes a GUID once.
  */
 let pca = null;
+
+const LOCAL_STORAGE_MS_CLIENT_ID = "eoa_ms_graph_spa_client_id";
+
+/** Must match app/ms_graph_spa.py DELEGATED_GRAPH_SCOPES */
+const DELEGATED_GRAPH_SCOPES = [
+  "User.Read",
+  "Organization.Read.All",
+  "Application.ReadWrite.All",
+];
 
 async function importMsalBrowser() {
   const urls = [
@@ -29,8 +41,28 @@ function redirectUriForPage() {
 
 async function fetchMsalConfig() {
   const r = await fetch("/api/v1/auth/msal-config", { credentials: "same-origin" });
-  if (!r.ok) return { enabled: false };
-  return r.json();
+  if (!r.ok) return { enabled: false, scopes: DELEGATED_GRAPH_SCOPES };
+  const cfg = await r.json();
+  try {
+    const stored =
+      typeof localStorage !== "undefined" ? localStorage.getItem(LOCAL_STORAGE_MS_CLIENT_ID) : null;
+    if (stored && /^[0-9a-f-]{36}$/i.test(stored.trim())) {
+      const cid = stored.trim();
+      if (!cfg.enabled || !(cfg.clientId || "").toString().trim()) {
+        return {
+          enabled: true,
+          clientId: cid,
+          authority: "https://login.microsoftonline.com/organizations",
+          scopes: Array.isArray(cfg.scopes) && cfg.scopes.length ? cfg.scopes : DELEGATED_GRAPH_SCOPES,
+          redirectPath: "/",
+          clientIdSource: "localStorage",
+        };
+      }
+    }
+  } catch {
+    /* private mode / no localStorage */
+  }
+  return cfg;
 }
 
 async function graphJson(path, token, opts = {}) {
@@ -91,10 +123,32 @@ export async function initMicrosoftGraphUI() {
 
   const cfg = await fetchMsalConfig();
   if (!cfg.enabled) {
-    mount.innerHTML =
-      '<p class="hint">Microsoft sign-in is off. Set <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> (Entra SPA app) and add this redirect URI: <code>' +
-      escapeHtml(redirectUriForPage()) +
-      "</code></p>";
+    mount.innerHTML = `
+      <p class="hint">Paste your Entra <strong>Application (client) ID</strong> for a <strong>single-page application</strong> registration (saved in this browser only). Then use <strong>Sign in with Microsoft</strong>. Or set <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> on the server.</p>
+      <div class="ms-row">
+        <input type="text" id="ms-client-id-input" class="input-grow" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" autocomplete="off" />
+        <button type="button" class="primary" id="ms-save-client-id">Save & continue</button>
+      </div>
+      <p id="ms-client-id-msg" class="msg" role="status"></p>
+      <p class="hint">Redirect URI in Entra must include <code>${escapeHtml(redirectUriForPage())}</code> · Delegated: User.Read, Organization.Read.All, Application.ReadWrite.All (admin consent).</p>
+    `;
+    const inp = document.getElementById("ms-client-id-input");
+    const btn = document.getElementById("ms-save-client-id");
+    const msg = document.getElementById("ms-client-id-msg");
+    btn.addEventListener("click", () => {
+      const v = (inp.value || "").trim();
+      if (!/^[0-9a-f-]{36}$/i.test(v)) {
+        msg.textContent = "Enter a valid GUID (client ID).";
+        return;
+      }
+      try {
+        localStorage.setItem(LOCAL_STORAGE_MS_CLIENT_ID, v);
+      } catch (e) {
+        msg.textContent = String(e.message || e);
+        return;
+      }
+      location.reload();
+    });
     return;
   }
 
@@ -139,7 +193,7 @@ export async function initMicrosoftGraphUI() {
   await pca.initialize();
   await pca.handleRedirectPromise();
 
-  const loginRequest = { scopes: cfg.scopes || ["User.Read"] };
+  const loginRequest = { scopes: cfg.scopes || DELEGATED_GRAPH_SCOPES };
 
   mount.innerHTML = `
     <div class="ms-row">
@@ -153,6 +207,9 @@ export async function initMicrosoftGraphUI() {
       <p class="mono small"><span id="ms-tenant-id">—</span></p>
       <button type="button" class="primary" id="ms-use-tenant">Use this tenant for bulk job</button>
     </div>
+    <p class="hint small" id="ms-clear-client-id-wrap" hidden>
+      <button type="button" class="linklike" id="ms-clear-saved-client-id">Clear browser-stored client ID</button>
+    </p>
     <hr class="sep" />
     <h3 class="h3">App registrations (Graph)</h3>
     <p class="hint">Creates and lists apps via <strong>delegated</strong> Graph from your browser (interactive login). Requires API permission <code>Application.ReadWrite.All</code> (Delegated) on the EOA SPA app — usually <strong>admin consent</strong> in Entra. If create/list fails with forbidden or consent errors, ask a Global Administrator to grant consent, then use <strong>Re-consent permissions</strong> and try again.</p>
@@ -175,6 +232,19 @@ export async function initMicrosoftGraphUI() {
   const el = (id) => document.getElementById(id);
   const tenantMsg = el("ms-tenant-msg");
   const appsMsg = el("ms-apps-msg");
+
+  if (cfg.clientIdSource === "localStorage") {
+    const w = el("ms-clear-client-id-wrap");
+    if (w) w.hidden = false;
+    el("ms-clear-saved-client-id")?.addEventListener("click", () => {
+      try {
+        localStorage.removeItem(LOCAL_STORAGE_MS_CLIENT_ID);
+      } catch {
+        /* ignore */
+      }
+      location.reload();
+    });
+  }
 
   async function refreshTenantUi() {
     const acc = pca.getActiveAccount() || pca.getAllAccounts()[0];

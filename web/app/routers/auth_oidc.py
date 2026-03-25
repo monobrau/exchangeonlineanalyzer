@@ -20,6 +20,7 @@ from app.auth import (
     extract_sub_after_token_exchange,
 )
 from app.config import get_settings
+from app.ms_graph_spa import DELEGATED_GRAPH_SCOPES, resolve_ms_graph_spa_client_id
 from app.oidc_metadata import get_oidc_metadata
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -100,7 +101,7 @@ def auth_status() -> dict:
 def msal_config() -> dict:
     """Public SPA config for @azure/msal-browser (no secrets)."""
     s = get_settings()
-    cid = (s.ms_graph_spa_client_id or "").strip()
+    cid = resolve_ms_graph_spa_client_id(s)
     ten = (s.ms_graph_tenant or "organizations").strip() or "organizations"
     if not cid:
         return {
@@ -108,20 +109,14 @@ def msal_config() -> dict:
             "clientId": None,
             "authority": None,
             "redirectPath": "/",
-            "scopes": [],
+            "scopes": DELEGATED_GRAPH_SCOPES,
         }
-    # Graph delegated scopes only (MSAL acquires tokens for https://graph.microsoft.com)
-    scopes = [
-        "User.Read",
-        "Organization.Read.All",
-        "Application.ReadWrite.All",
-    ]
     return {
         "enabled": True,
         "clientId": cid,
         "authority": f"https://login.microsoftonline.com/{ten}",
         "redirectPath": "/",
-        "scopes": scopes,
+        "scopes": DELEGATED_GRAPH_SCOPES,
     }
 
 
