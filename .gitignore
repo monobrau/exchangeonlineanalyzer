@@ -74,14 +74,5 @@ BulkTenantWorker.ps1
 # Build output
 Release/
 
-# Python web API
-web/.venv/
-web/**/__pycache__/
-web/**/*.pyc
-web/data/*.db
-web/data/artifacts/
-web/data/job_payloads/
-web/data/eoa_gui.env
-web/.env
-web/.pytest_cache/
+# Archived: Python web API was removed from this repo (see C:\git\archives\exchangeonlineanalyzer-web-archive.tgz).
 
