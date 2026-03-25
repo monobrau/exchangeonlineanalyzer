@@ -3,6 +3,16 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
+def test_export_options_schema() -> None:
+    with TestClient(app) as client:
+        r = client.get("/api/v1/export/options-schema")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("schema_version") == 1
+    assert "json_schema" in body
+    assert body["json_schema"].get("title") == "WebBulkExportOptions"
+
+
 def test_health() -> None:
     with TestClient(app) as client:
         r = client.get("/health")

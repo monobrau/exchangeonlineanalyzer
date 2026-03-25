@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # If true, run web/pwsh/WebBulkJobStub.ps1 when pwsh is available. Default false for dev/CI; set true on webhost.
     use_pwsh_stub_worker: bool = False
 
-    # Linux-friendly worker: MSAL client credentials + Graph REST (no pwsh/Windows). Takes priority over pwsh stub when configured.
+    # Linux-friendly worker: MSAL + Graph REST. Runs only if pwsh worker did not run (see job_runner order).
     use_python_graph_worker: bool = False
     graph_client_id: str = ""
     graph_client_secret: str = ""

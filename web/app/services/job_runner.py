@@ -1,4 +1,4 @@
-"""Job execution: Python Graph worker (MSAL), PowerShell stub (WebBulkJobStub.ps1), or placeholder."""
+"""Job execution: PowerShell (WebBulkJobStub.ps1) first, then optional Python Graph worker, else placeholder."""
 
 from __future__ import annotations
 
@@ -108,8 +108,8 @@ def _run_placeholder_only(job_id: str, *, note: str = "") -> None:
     p = out / "placeholder.txt"
     lines = [
         "Placeholder worker (Python): no worker ran.",
-        "Option A — Linux/no Windows: set EOA_USE_PYTHON_GRAPH_WORKER=true plus EOA_GRAPH_CLIENT_ID and EOA_GRAPH_CLIENT_SECRET (Entra app with admin consent per tenant).",
-        "Option B — pwsh stub: set EOA_USE_PWSH_STUB_WORKER=true and install PowerShell 7 (pwsh).",
+        "Set EOA_USE_PWSH_STUB_WORKER=true and install PowerShell 7 (pwsh) on PATH to run web/pwsh/WebBulkJobStub.ps1 for each job.",
+        "Optional: EOA_USE_PYTHON_GRAPH_WORKER=true plus EOA_GRAPH_* for the Python Graph worker (runs only if pwsh is not used or unavailable).",
     ]
     if note:
         lines.insert(0, note)
@@ -134,9 +134,39 @@ def run_job(job_id: str) -> None:
         log_tail = ""
         artifact_uri: str | None = None
 
+        # 1) PowerShell worker first when enabled (typical production: WebBulkJobStub.ps1 or future real exporter).
+        if settings.use_pwsh_stub_worker and _pwsh_executable_exists(settings.pwsh_path):
+            ok, log_tail, artifact_uri = _run_pwsh_stub(job_id, job)
+            if not ok:
+                job = db.get(Job, job_id)
+                if job:
+                    job.status = JobStatus.failed.value
+                    job.updated_at = _utcnow()
+                    job.error_message = (log_tail or "pwsh failed")[:8000]
+                    job.artifact_uri = artifact_uri
+                    db.commit()
+                logger.error("Job %s pwsh failed: %s", job_id, log_tail[:500])
+                return
+
+            job = db.get(Job, job_id)
+            if job:
+                job.status = JobStatus.succeeded.value
+                job.updated_at = _utcnow()
+                job.artifact_uri = artifact_uri
+                if len(log_tail) < 4000:
+                    job.error_message = None
+                db.commit()
+            logger.info("Job %s pwsh ok", job_id)
+            return
+
+        if settings.use_pwsh_stub_worker and not _pwsh_executable_exists(settings.pwsh_path):
+            logger.warning(
+                "EOA_USE_PWSH_STUB_WORKER is true but %s not found; trying python graph or placeholder",
+                settings.pwsh_path,
+            )
+
+        # 2) Python Graph worker (optional) when pwsh not used or pwsh missing.
         if settings.use_python_graph_worker:
-            # Only import graph_worker (and msal) when Graph creds are set — avoids crashing uvicorn
-            # if msal is not installed yet; run `pip install -r requirements.txt` on the server.
             _gcid = (settings.graph_client_id or "").strip()
             _gsec = (settings.graph_client_secret or "").strip()
             if _gcid and _gsec:
@@ -165,35 +195,7 @@ def run_job(job_id: str) -> None:
                 logger.info("Job %s python-graph ok", job_id)
                 return
 
-        if settings.use_pwsh_stub_worker:
-            ok, log_tail, artifact_uri = _run_pwsh_stub(job_id, job)
-            if not ok:
-                job = db.get(Job, job_id)
-                if job:
-                    job.status = JobStatus.failed.value
-                    job.updated_at = _utcnow()
-                    job.error_message = (log_tail or "pwsh failed")[:8000]
-                    job.artifact_uri = artifact_uri
-                    db.commit()
-                logger.error("Job %s pwsh failed: %s", job_id, log_tail[:500])
-                return
-
-            job = db.get(Job, job_id)
-            if job:
-                job.status = JobStatus.succeeded.value
-                job.updated_at = _utcnow()
-                job.artifact_uri = artifact_uri
-                if len(log_tail) < 4000:
-                    job.error_message = None
-                db.commit()
-            logger.info("Job %s pwsh ok", job_id)
-            return
-
         if settings.use_pwsh_stub_worker and not _pwsh_executable_exists(settings.pwsh_path):
-            logger.warning(
-                "EOA_USE_PWSH_STUB_WORKER is true but %s not found; using Python placeholder",
-                settings.pwsh_path,
-            )
             _run_placeholder_only(
                 job_id,
                 note=f"Skipped pwsh worker: executable not found ({settings.pwsh_path}).",

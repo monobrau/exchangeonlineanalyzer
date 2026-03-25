@@ -25,6 +25,7 @@ With Authentik enabled, open the app in the browser and set `sessionStorage.setI
 |--------|------|--------|
 | GET | `/health` | Liveness |
 | GET | `/api/v1/ui-info` | **Live deploy check:** files under `web/static` this process reads (`index_html.has_ms_graph_outer`, etc.); no auth |
+| GET | `/api/v1/export/options-schema` | JSON Schema for `options` on `POST /api/v1/jobs/bulk` (parity with desktop bulk exporter); see `web/docs/bulk-export-parity.md` |
 | GET | `/api/v1/me` | Current user `sub` when `EOA_OIDC_ISSUER` is set |
 | GET | `/api/v1/jobs` | List jobs |
 | POST | `/api/v1/jobs/bulk` | Create bulk export job (body: `tenant_ids`, `options`) |
@@ -57,12 +58,14 @@ See `.env.example`. Database defaults to `web/data/eoa_jobs.db`.
 2. Set **`EOA_USE_PWSH_STUB_WORKER=true`** so each job runs **`web/pwsh/WebBulkJobStub.ps1`** (writes **`web/data/artifacts/<job_id>/summary.json`**). This proves the API → `pwsh` → disk pipeline; replace the script with real **`BulkExportWorker.ps1`** orchestration later.
 3. Set **`EOA_REPO_ROOT`** to the repo root if the API working directory is not the repo (default: parent of `web/`).
 
-If **`EOA_USE_PWSH_STUB_WORKER`** is false (default for local dev), the API uses a short **in-process placeholder** only.
+If **`EOA_USE_PWSH_STUB_WORKER`** is false (default for local dev), the API uses a short **in-process placeholder** only (unless the Python Graph worker is enabled below).
 
-### Python Graph worker (Linux, no PowerShell)
+**Worker order:** when both are enabled, **PowerShell runs first** (`web/pwsh/WebBulkJobStub.ps1`); the Python Graph worker runs only if pwsh is disabled or `pwsh` is not on `PATH`.
+
+### Python Graph worker (Linux, optional fallback)
 
 1. Register an Entra app with a **client secret** and grant **application** permissions for the reports you need (e.g. `Organization.Read.All` for `organization`; add `User.Read.All`, `Policy.Read.All`, `Application.Read.All` as you enable more reports). **Admin-consent** the app in the target tenant.
-2. Set **`EOA_GRAPH_CLIENT_ID`**, **`EOA_GRAPH_CLIENT_SECRET`**, and enable the worker with **`EOA_USE_PYTHON_GRAPH_WORKER=true`** when running jobs through the API.
+2. Set **`EOA_GRAPH_CLIENT_ID`**, **`EOA_GRAPH_CLIENT_SECRET`**, and **`EOA_USE_PYTHON_GRAPH_WORKER=true`** when you want Graph-based jobs **without** pwsh (or as fallback when pwsh is missing).
 3. **Smoke-test a report locally** (writes under `web/data/artifacts/<job-id>/`):
 
 ```bash

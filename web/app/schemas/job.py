@@ -11,10 +11,9 @@ class BulkJobCreate(BaseModel):
     options: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Exporter options. Python Graph worker (Linux): use key 'reports' — list of strings: "
-            "organization, users, conditional_access, applications "
-            "(aliases: org, ca, apps, …). Default is ['organization']. "
-            "Other keys reserved for parity with BulkTenantExporter."
+            "Exporter options (snake_case). GET /api/v1/export/options-schema returns JSON Schema. "
+            "Python Graph worker: key 'reports' — organization, users, conditional_access, applications (aliases org, ca, apps). "
+            "include_* booleans mirror BulkTenantExporter Include*; EXO-heavy slices need a Windows + ExchangeOnlineManagement worker."
         ),
     )
 

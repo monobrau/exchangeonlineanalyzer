@@ -11,7 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.auth import require_user
 from app.config import get_settings
 from app.db import engine, init_db
-from app.routers import auth_oidc, jobs
+from app.routers import auth_oidc, export_meta, jobs
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -79,6 +79,7 @@ app.add_middleware(
 )
 
 app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(export_meta.router, prefix="/api/v1")
 app.include_router(auth_oidc.router, prefix="/api/v1")
 
 
