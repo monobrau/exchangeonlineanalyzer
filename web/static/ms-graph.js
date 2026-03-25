@@ -71,6 +71,20 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+/** Turn Graph/HTTP error body into a short user-facing string. */
+function formatGraphError(err) {
+  const raw = String(err && err.message ? err.message : err);
+  try {
+    const j = JSON.parse(raw);
+    const msg = j.error && j.error.message;
+    const code = j.error && j.error.code;
+    if (msg) return code ? `${code}: ${msg}` : msg;
+  } catch {
+    /* not JSON */
+  }
+  return raw.slice(0, 1200);
+}
+
 export async function initMicrosoftGraphUI() {
   const mount = document.getElementById("ms-graph-mount");
   if (!mount) return;
@@ -107,7 +121,7 @@ export async function initMicrosoftGraphUI() {
       return r.accessToken;
     } catch (e) {
       if (e instanceof InteractionRequiredAuthError) {
-        const r = await pca.acquireTokenPopup(req);
+        const r = await pca.acquireTokenPopup({ ...req, prompt: "consent" });
         return r.accessToken;
       }
       throw e;
@@ -130,6 +144,7 @@ export async function initMicrosoftGraphUI() {
   mount.innerHTML = `
     <div class="ms-row">
       <button type="button" class="btn-ms" id="ms-signin">Sign in with Microsoft</button>
+      <button type="button" class="ghost" id="ms-reconsent" hidden title="Use after admin grants Application.ReadWrite.All">Re-consent permissions</button>
       <button type="button" class="ghost" id="ms-signout" hidden>Sign out (Microsoft)</button>
     </div>
     <p id="ms-tenant-msg" class="msg" role="status"></p>
@@ -140,7 +155,7 @@ export async function initMicrosoftGraphUI() {
     </div>
     <hr class="sep" />
     <h3 class="h3">App registrations (Graph)</h3>
-    <p class="hint">Delegated <code>Application.ReadWrite.All</code> (admin consent). Operations call Microsoft Graph from your browser.</p>
+    <p class="hint">Creates and lists apps via <strong>delegated</strong> Graph from your browser (interactive login). Requires API permission <code>Application.ReadWrite.All</code> (Delegated) on the EOA SPA app — usually <strong>admin consent</strong> in Entra. If create/list fails with forbidden or consent errors, ask a Global Administrator to grant consent, then use <strong>Re-consent permissions</strong> and try again.</p>
     <div class="ms-row">
       <input type="text" id="ms-new-app-name" class="input-grow" placeholder="New app display name" maxlength="200" />
       <button type="button" class="primary" id="ms-create-app">Create</button>
@@ -164,6 +179,7 @@ export async function initMicrosoftGraphUI() {
   async function refreshTenantUi() {
     const acc = pca.getActiveAccount() || pca.getAllAccounts()[0];
     el("ms-signout").hidden = !acc;
+    el("ms-reconsent").hidden = !acc;
     if (!acc) {
       el("ms-tenant-box").hidden = true;
       return;
@@ -178,7 +194,7 @@ export async function initMicrosoftGraphUI() {
       const v = org && org.value && org.value[0];
       el("ms-tenant-name").textContent = (v && v.displayName) || "(organization)";
     } catch (e) {
-      tenantMsg.textContent = String(e.message || e);
+      tenantMsg.textContent = formatGraphError(e);
       el("ms-tenant-name").textContent = "—";
     }
     el("ms-tenant-box").hidden = false;
@@ -258,13 +274,13 @@ export async function initMicrosoftGraphUI() {
               appsMsg.textContent = "Updated.";
               await refreshAppsTable();
             } catch (e) {
-              appsMsg.textContent = String(e.message || e);
+              appsMsg.textContent = formatGraphError(e);
             }
           }
         });
       });
     } catch (e) {
-      appsMsg.textContent = String(e.message || e);
+      appsMsg.textContent = formatGraphError(e);
       tbody.innerHTML = '<tr><td colspan="4" class="empty">Could not load applications.</td></tr>';
     }
   }
@@ -276,7 +292,19 @@ export async function initMicrosoftGraphUI() {
       await refreshTenantUi();
       await refreshAppsTable();
     } catch (e) {
-      tenantMsg.textContent = String(e.message || e);
+      tenantMsg.textContent = formatGraphError(e);
+    }
+  });
+
+  el("ms-reconsent").addEventListener("click", async () => {
+    tenantMsg.textContent = "";
+    try {
+      await pca.loginPopup({ ...loginRequest, prompt: "consent" });
+      await refreshTenantUi();
+      await refreshAppsTable();
+      tenantMsg.textContent = "Permissions refreshed.";
+    } catch (e) {
+      tenantMsg.textContent = formatGraphError(e);
     }
   });
 
@@ -319,7 +347,7 @@ export async function initMicrosoftGraphUI() {
       appsMsg.textContent = "Created.";
       await refreshAppsTable();
     } catch (e) {
-      appsMsg.textContent = String(e.message || e);
+      appsMsg.textContent = formatGraphError(e);
     }
   });
 
