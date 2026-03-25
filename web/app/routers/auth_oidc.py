@@ -10,9 +10,10 @@ import base64
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.auth import ACCESS_TOKEN_COOKIE_NAME
 from app.config import get_settings
 from app.oidc_metadata import get_oidc_metadata
 
@@ -57,6 +58,24 @@ def _pkce_pair() -> tuple[str, str]:
 def _oidc_ready() -> bool:
     s = get_settings()
     return bool(s.oidc_issuer and s.oidc_client_id and s.oidc_redirect_uri)
+
+
+def _cookie_secure() -> bool:
+    """Match SessionMiddleware https_only when public redirect URI is HTTPS."""
+    return (get_settings().oidc_redirect_uri or "").strip().casefold().startswith("https://")
+
+
+@router.post("/logout")
+def auth_logout(response: Response) -> dict:
+    """Clear HttpOnly access cookie (sessionStorage cleared by client)."""
+    response.delete_cookie(
+        ACCESS_TOKEN_COOKIE_NAME,
+        path="/",
+        secure=_cookie_secure(),
+        httponly=True,
+        samesite="lax",
+    )
+    return {"ok": True}
 
 
 @router.get("/status")
@@ -184,4 +203,15 @@ location.replace("/app");
 </script>
 <p>Signed in. <a href="/app">Continue</a></p>
 </body></html>"""
-    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
+    resp = HTMLResponse(content=html, media_type="text/html; charset=utf-8")
+    # HttpOnly cookie: works when proxies strip Authorization; sessionStorage alone is not enough.
+    resp.set_cookie(
+        key=ACCESS_TOKEN_COOKIE_NAME,
+        value=bearer,
+        max_age=3600,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
+    return resp

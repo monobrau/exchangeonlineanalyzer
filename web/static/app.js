@@ -14,7 +14,7 @@ async function api(path, opts = {}) {
   const headers = { ...opts.headers };
   const token = sessionStorage.getItem("eoa_bearer");
   if (token) headers.Authorization = `Bearer ${token}`;
-  const r = await fetch(path, { ...opts, headers });
+  const r = await fetch(path, { ...opts, headers, credentials: "same-origin" });
   if (r.status === 401) {
     const raw = await r.text();
     let detail = "";
@@ -70,7 +70,10 @@ async function downloadArtifact(jobId, filename) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   const q = new URLSearchParams({ file: filename });
-  const r = await fetch(`/api/v1/jobs/${jobId}/artifact?${q}`, { headers });
+  const r = await fetch(`/api/v1/jobs/${jobId}/artifact?${q}`, {
+    headers,
+    credentials: "same-origin",
+  });
   if (r.status === 401) {
     throw new Error("Unauthorized (401). Set eoa_bearer in sessionStorage if OIDC is on.");
   }
@@ -208,9 +211,15 @@ async function initAuth() {
       const href = "/api/v1/auth/oidc/login";
       login.setAttribute("href", href);
       if (gateBtn) gateBtn.setAttribute("href", href);
-      const hasToken = !!sessionStorage.getItem("eoa_bearer");
-      out.style.display = hasToken ? "inline-block" : "none";
-      if (!hasToken) {
+      let hasSession = false;
+      try {
+        const mr = await fetch("/api/v1/me", { credentials: "same-origin" });
+        hasSession = mr.ok;
+      } catch {
+        hasSession = false;
+      }
+      out.style.display = hasSession ? "inline-block" : "none";
+      if (!hasSession) {
         lockAppUi();
       } else {
         unlockAppUi();
@@ -222,8 +231,13 @@ async function initAuth() {
     unlockAppUi();
   }
 
-  out.addEventListener("click", (e) => {
+  out.addEventListener("click", async (e) => {
     e.preventDefault();
+    try {
+      await fetch("/api/v1/auth/logout", { method: "POST", credentials: "same-origin" });
+    } catch {
+      /* ignore */
+    }
     sessionStorage.removeItem("eoa_bearer");
     out.style.display = "none";
     location.href = "/";

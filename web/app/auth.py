@@ -3,12 +3,15 @@
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 
 from app.config import get_settings
 from app.oidc_metadata import get_oidc_metadata
+
+# HttpOnly cookie set on OIDC callback — survives when reverse proxies strip Authorization headers.
+ACCESS_TOKEN_COOKIE_NAME = "eoa_access_token"
 
 security = HTTPBearer(auto_error=False)
 _jwks_by_uri: dict[str, PyJWKClient] = {}
@@ -32,19 +35,24 @@ def _audiences(settings) -> list[str]:
 
 
 async def require_user(
+    request: Request,
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
 ) -> str | None:
     """Return Authentik `sub` if JWT is valid; if OIDC not configured, return None (open API)."""
     settings = get_settings()
     if not settings.oidc_issuer:
         return None
-    if creds is None or not creds.credentials:
+    token = ""
+    if creds and creds.credentials:
+        token = (creds.credentials or "").strip()
+    if not token:
+        token = (request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) or "").strip()
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing bearer token",
+            detail="Missing bearer token or session cookie (re-sign in)",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = (creds.credentials or "").strip()
     try:
         # Opaque OAuth tokens are not JWTs — fail clearly (callback should store id_token or JWT access).
         unverified = jwt.decode(token, options={"verify_signature": False})
