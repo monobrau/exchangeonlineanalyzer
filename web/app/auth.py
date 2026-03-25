@@ -12,6 +12,8 @@ from app.oidc_metadata import get_oidc_metadata
 
 # HttpOnly cookie set on OIDC callback — survives when reverse proxies strip Authorization headers.
 ACCESS_TOKEN_COOKIE_NAME = "eoa_access_token"
+# Set on successful OAuth callback (same signed session as PKCE); used when JWT cookie is missing/stripped.
+OIDC_SUB_SESSION_KEY = "oidc_sub"
 
 security = HTTPBearer(auto_error=False)
 _jwks_by_uri: dict[str, PyJWKClient] = {}
@@ -34,19 +36,12 @@ def _audiences(settings) -> list[str]:
     return []
 
 
-async def require_user(
-    request: Request,
-    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
-) -> str | None:
-    """Return Authentik `sub` if JWT is valid; if OIDC not configured, return None (open API)."""
+def validate_oidc_jwt_token(token: str) -> str:
+    """Validate a Bearer/cookie JWT and return `sub`. Raises HTTPException(401) on failure."""
     settings = get_settings()
     if not settings.oidc_issuer:
-        return None
-    # Prefer HttpOnly cookie (set on OIDC callback) over Authorization header.
-    # Stale opaque tokens left in sessionStorage would otherwise win and always 401.
-    token = (request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) or "").strip()
-    if not token and creds and creds.credentials:
-        token = (creds.credentials or "").strip()
+        raise HTTPException(status_code=401, detail="OIDC not configured")
+    token = (token or "").strip()
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -54,7 +49,6 @@ async def require_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        # Opaque OAuth tokens are not JWTs — fail clearly (callback should store id_token or JWT access).
         unverified = jwt.decode(token, options={"verify_signature": False})
         header = jwt.get_unverified_header(token)
     except Exception as e:
@@ -68,7 +62,6 @@ async def require_user(
     token_iss = unverified.get("iss")
     if not token_iss:
         raise HTTPException(status_code=401, detail="Invalid token: missing iss claim")
-    # Discovery issuer and JWT iss often differ only by trailing slash — compare normalized.
     if token_iss.rstrip("/") != iss_disc.rstrip("/"):
         raise HTTPException(
             status_code=401,
@@ -86,7 +79,6 @@ async def require_user(
     alg = (header or {}).get("alg") or ""
 
     try:
-        # Authentik / some IdPs issue HS256 access tokens signed with the OAuth client secret.
         if alg == "HS256":
             if not settings.oidc_client_secret:
                 raise HTTPException(
@@ -123,3 +115,30 @@ async def require_user(
     if not sub:
         raise HTTPException(status_code=401, detail="Token missing sub")
     return str(sub)
+
+
+async def require_user(
+    request: Request,
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+) -> str | None:
+    """Return Authentik `sub` if JWT is valid; if OIDC not configured, return None (open API)."""
+    settings = get_settings()
+    if not settings.oidc_issuer:
+        return None
+    # Prefer HttpOnly cookie over Authorization (stale sessionStorage Bearer loses to cookie order).
+    token = (request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) or "").strip()
+    if not token and creds and creds.credentials:
+        token = (creds.credentials or "").strip()
+
+    if token:
+        return validate_oidc_jwt_token(token)
+
+    sub_session = request.session.get(OIDC_SUB_SESSION_KEY)
+    if sub_session:
+        return str(sub_session)
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing bearer token or session cookie (re-sign in)",
+        headers={"WWW-Authenticate": "Bearer"},
+    )

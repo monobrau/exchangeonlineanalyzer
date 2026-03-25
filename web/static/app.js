@@ -198,6 +198,14 @@ function lockAppUi() {
   if (main) main.hidden = true;
 }
 
+function setJobsPlaceholderWhenLocked() {
+  const tbody = $("#jobs-body");
+  const msg = $("#list-msg");
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6" class="empty">Sign in to load jobs.</td></tr>';
+  if (msg) msg.textContent = "";
+}
+
 async function initAuth() {
   const login = $("#auth-login");
   const out = $("#auth-logout");
@@ -260,7 +268,10 @@ async function initAuth() {
 
 (async () => {
   await initAuth();
-  if (!appUnlocked) return;
+  if (!appUnlocked) {
+    setJobsPlaceholderWhenLocked();
+    return;
+  }
   await loadJobs();
 })();
 

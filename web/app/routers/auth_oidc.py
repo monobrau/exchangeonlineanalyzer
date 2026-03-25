@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.auth import ACCESS_TOKEN_COOKIE_NAME
+from app.auth import ACCESS_TOKEN_COOKIE_NAME, OIDC_SUB_SESSION_KEY, validate_oidc_jwt_token
 from app.config import get_settings
 from app.oidc_metadata import get_oidc_metadata
 
@@ -66,8 +66,9 @@ def _cookie_secure() -> bool:
 
 
 @router.post("/logout")
-def auth_logout(response: Response) -> dict:
-    """Clear HttpOnly access cookie (sessionStorage cleared by client)."""
+def auth_logout(request: Request, response: Response) -> dict:
+    """Clear HttpOnly access cookie and server-side OIDC session (client clears sessionStorage)."""
+    request.session.pop(OIDC_SUB_SESSION_KEY, None)
     response.delete_cookie(
         ACCESS_TOKEN_COOKIE_NAME,
         path="/",
@@ -191,6 +192,17 @@ def oidc_callback(
     bearer = _pick_browser_bearer_token(body)
     if not bearer:
         raise HTTPException(status_code=502, detail="No access_token or id_token in token response")
+
+    try:
+        sub = validate_oidc_jwt_token(bearer)
+    except HTTPException as e:
+        detail = html.escape(str(e.detail) if getattr(e, "detail", None) else str(e))
+        return HTMLResponse(
+            f"<!DOCTYPE html><html><body><p>Token validation failed: {detail}</p>"
+            f'<p><a href="/">Home</a></p></body></html>',
+            status_code=400,
+        )
+    request.session[OIDC_SUB_SESSION_KEY] = sub
 
     # One-page handoff: store bearer for existing fetch() + /api/v1 calls
     js_token = json.dumps(bearer)
