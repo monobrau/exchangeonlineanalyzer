@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
@@ -14,6 +14,11 @@ from app.db import engine, init_db
 from app.routers import auth_oidc, jobs
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+
+def _oidc_browser_ready() -> bool:
+    s = get_settings()
+    return bool(s.oidc_issuer and s.oidc_client_id and s.oidc_redirect_uri)
 
 
 @asynccontextmanager
@@ -66,9 +71,30 @@ app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(auth_oidc.router, prefix="/api/v1")
 
 
-@app.get("/")
-def index_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+@app.get("/", response_model=None)
+def index_page() -> FileResponse | HTMLResponse:
+    """Without OIDC, serve static index. With OIDC, serve HTML that hides the console until JS confirms a token (no flash)."""
+    path = STATIC_DIR / "index.html"
+    if not _oidc_browser_ready():
+        return FileResponse(path)
+    html = path.read_text(encoding="utf-8")
+    if '<body class="auth-locked">' not in html:
+        html = html.replace("<body>", '<body class="auth-locked">', 1)
+    html = html.replace(
+        'id="auth-gate" class="auth-gate panel" hidden',
+        'id="auth-gate" class="auth-gate panel"',
+        1,
+    )
+    html = html.replace(
+        '<main class="layout" id="app-main">',
+        '<main class="layout" id="app-main" hidden>',
+        1,
+    )
+    return HTMLResponse(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

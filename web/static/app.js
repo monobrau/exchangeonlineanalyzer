@@ -158,14 +158,28 @@ $("#job-form").addEventListener("submit", async (ev) => {
 
 $("#refresh").addEventListener("click", () => loadJobs());
 
+function unlockAppUi() {
+  appUnlocked = true;
+  document.body.classList.remove("auth-locked");
+  const gate = $("#auth-gate");
+  const main = $("#app-main");
+  if (gate) gate.hidden = true;
+  if (main) main.hidden = false;
+}
+
+function lockAppUi() {
+  appUnlocked = false;
+  document.body.classList.add("auth-locked");
+  const gate = $("#auth-gate");
+  const main = $("#app-main");
+  if (gate) gate.hidden = false;
+  if (main) main.hidden = true;
+}
+
 async function initAuth() {
   const login = $("#auth-login");
   const out = $("#auth-logout");
-  const gate = $("#auth-gate");
   const gateBtn = $("#auth-gate-btn");
-  appUnlocked = true;
-  document.body.classList.remove("auth-locked");
-  if (gate) gate.hidden = true;
 
   try {
     const r = await fetch("/api/v1/auth/status");
@@ -178,14 +192,17 @@ async function initAuth() {
       const hasToken = !!sessionStorage.getItem("eoa_bearer");
       out.style.display = hasToken ? "inline-block" : "none";
       if (!hasToken) {
-        appUnlocked = false;
-        document.body.classList.add("auth-locked");
-        if (gate) gate.hidden = false;
+        lockAppUi();
+      } else {
+        unlockAppUi();
       }
+    } else {
+      unlockAppUi();
     }
   } catch {
-    /* ignore */
+    unlockAppUi();
   }
+
   out.addEventListener("click", (e) => {
     e.preventDefault();
     sessionStorage.removeItem("eoa_bearer");
