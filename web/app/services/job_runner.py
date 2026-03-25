@@ -37,6 +37,17 @@ def _payload_path(job_id: str) -> Path:
     return d / f"{job_id}.json"
 
 
+def _pwsh_executable_exists(pwsh: str) -> bool:
+    return shutil.which(pwsh) is not None or Path(pwsh).is_file()
+
+
+def _write_worker_log(out_dir: Path, text: str) -> None:
+    try:
+        (out_dir / "worker.log").write_text(text, encoding="utf-8")
+    except OSError:
+        logger.warning("Could not write worker.log under %s", out_dir)
+
+
 def _run_pwsh_stub(job_id: str, job: Job) -> tuple[bool, str, str | None]:
     """Returns (ok, log_text, artifact_uri)."""
     settings = get_settings()
@@ -45,7 +56,7 @@ def _run_pwsh_stub(job_id: str, job: Job) -> tuple[bool, str, str | None]:
         return False, f"Missing worker script: {script}", None
 
     pwsh = settings.pwsh_path
-    if shutil.which(pwsh) is None and Path(pwsh).is_file() is False:
+    if not _pwsh_executable_exists(pwsh):
         return False, f"Executable not found: {pwsh}", None
 
     out_dir = _artifact_dir(job_id)
@@ -82,18 +93,26 @@ def _run_pwsh_stub(job_id: str, job: Job) -> tuple[bool, str, str | None]:
 
     log = (proc.stdout or "") + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else "")
     if proc.returncode != 0:
+        _write_worker_log(out_dir, log)
         return False, log or f"exit {proc.returncode}", None
 
+    _write_worker_log(out_dir, log)
     summary = out_dir / "summary.json"
     uri = f"file://{summary.resolve()}" if summary.is_file() else f"file://{out_dir.resolve()}/"
     return True, log, uri
 
 
-def _run_placeholder_only(job_id: str) -> None:
+def _run_placeholder_only(job_id: str, *, note: str = "") -> None:
     time.sleep(1.5)
     out = _artifact_dir(job_id)
     p = out / "placeholder.txt"
-    p.write_text("Placeholder worker (pwsh disabled or unavailable).\n", encoding="utf-8")
+    lines = [
+        "Placeholder worker (Python): no PowerShell stub ran.",
+        "Set EOA_USE_PWSH_STUB_WORKER=true and install PowerShell 7 (pwsh) on the host to run web/pwsh/WebBulkJobStub.ps1.",
+    ]
+    if note:
+        lines.insert(0, note)
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     logger.info("Placeholder finished %s", job_id)
 
 
@@ -138,7 +157,17 @@ def run_job(job_id: str) -> None:
             logger.info("Job %s pwsh ok", job_id)
             return
 
-        _run_placeholder_only(job_id)
+        if settings.use_pwsh_stub_worker and not _pwsh_executable_exists(settings.pwsh_path):
+            logger.warning(
+                "EOA_USE_PWSH_STUB_WORKER is true but %s not found; using Python placeholder",
+                settings.pwsh_path,
+            )
+            _run_placeholder_only(
+                job_id,
+                note=f"Skipped pwsh worker: executable not found ({settings.pwsh_path}).",
+            )
+        else:
+            _run_placeholder_only(job_id)
         job = db.get(Job, job_id)
         if not job:
             return

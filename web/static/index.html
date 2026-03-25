@@ -33,7 +33,7 @@
   <main class="layout" id="app-main">
     <section class="panel" aria-labelledby="new-job-title">
       <h2 id="new-job-title">New job</h2>
-      <p class="hint">Tenant IDs (one per line or comma-separated). Options as JSON (advanced). On the server, set <code>EOA_USE_PWSH_STUB_WORKER=true</code> to run <code>web/pwsh/WebBulkJobStub.ps1</code> via <code>pwsh</code>.</p>
+      <p class="hint">Tenant IDs (one per line or comma-separated). Options as JSON (advanced). With <code>EOA_USE_PWSH_STUB_WORKER=true</code> and <code>pwsh</code> on the server, each job runs <code>web/pwsh/WebBulkJobStub.ps1</code> and writes <code>summary.json</code> (+ <code>worker.log</code>). Otherwise a Python placeholder artifact is produced.</p>
       <form id="job-form">
         <label for="tenant-ids">Tenant IDs</label>
         <textarea id="tenant-ids" name="tenant_ids" rows="4" placeholder="aaaaaaaa-bbbb-cccc-dddddddddddd"></textarea>
@@ -76,6 +76,6 @@
     <span>Placeholder worker runs on the server after each create (replace with PowerShell bulk export).</span>
   </footer>
 
-  <script src="/static/app.js?v=11" type="module"></script>
+  <script src="/static/app.js?v=12" type="module"></script>
 </body>
 </html>
