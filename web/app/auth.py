@@ -128,6 +128,56 @@ def validate_oidc_jwt_token(token: str) -> str:
     return str(sub)
 
 
+def extract_sub_after_token_exchange(token: str) -> str:
+    """
+    Get `sub` from a JWT returned by the IdP token endpoint without JWKS (no signature verification).
+
+    Only safe immediately after a successful authorization_code → token exchange: the token was
+    just received over HTTPS from the IdP. Use when JWKS fetch is blocked (403 from Cloudflare, etc.).
+    """
+    settings = get_settings()
+    if not settings.oidc_issuer:
+        raise HTTPException(status_code=401, detail="OIDC not configured")
+    token = (token or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Empty token from IdP")
+    try:
+        payload = jwt.decode(token, options={"verify_signature": False})
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Not a valid JWT: {e!s}") from e
+
+    try:
+        meta = get_oidc_metadata(settings.oidc_issuer)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"OIDC discovery failed: {e!s}",
+        ) from e
+
+    iss_disc = str(meta.get("issuer") or "").strip()
+    token_iss = payload.get("iss")
+    if not token_iss:
+        raise HTTPException(status_code=401, detail="Token missing iss claim")
+    if token_iss.rstrip("/") != iss_disc.rstrip("/"):
+        raise HTTPException(
+            status_code=401,
+            detail="Token issuer does not match OIDC discovery issuer",
+        )
+
+    audiences = _audiences(settings)
+    if audiences:
+        aud_claim = payload.get("aud")
+        if aud_claim is not None:
+            aud_list = aud_claim if isinstance(aud_claim, list) else [aud_claim]
+            if not any(str(x) in audiences for x in aud_list):
+                raise HTTPException(status_code=401, detail="Token audience does not match client")
+
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Token missing sub")
+    return str(sub)
+
+
 async def require_user(
     request: Request,
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
@@ -142,7 +192,14 @@ async def require_user(
         token = (creds.credentials or "").strip()
 
     if token:
-        return validate_oidc_jwt_token(token)
+        try:
+            return validate_oidc_jwt_token(token)
+        except HTTPException:
+            # JWKS blocked (403) or invalid cookie — use server session from OAuth callback if present.
+            sub_session = request.session.get(OIDC_SUB_SESSION_KEY)
+            if sub_session:
+                return str(sub_session)
+            raise
 
     sub_session = request.session.get(OIDC_SUB_SESSION_KEY)
     if sub_session:

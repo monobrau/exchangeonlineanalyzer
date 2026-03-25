@@ -14,7 +14,11 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.auth import ACCESS_TOKEN_COOKIE_NAME, OIDC_SUB_SESSION_KEY, validate_oidc_jwt_token
+from app.auth import (
+    ACCESS_TOKEN_COOKIE_NAME,
+    OIDC_SUB_SESSION_KEY,
+    extract_sub_after_token_exchange,
+)
 from app.config import get_settings
 from app.oidc_metadata import get_oidc_metadata
 
@@ -223,7 +227,9 @@ def oidc_callback(
         raise HTTPException(status_code=502, detail="No access_token or id_token in token response")
 
     try:
-        sub = validate_oidc_jwt_token(bearer)
+        # Do not use JWKS here: many hosts get HTTP 403 fetching JWKS behind Cloudflare/WAF.
+        # Token is trusted — it was just returned by the IdP token endpoint for this code+PKCE.
+        sub = extract_sub_after_token_exchange(bearer)
     except HTTPException as e:
         raw = e.detail
         if isinstance(raw, (list, dict)):
@@ -257,7 +263,8 @@ def oidc_callback(
 
     # One-page handoff: store bearer for existing fetch() + /api/v1 calls
     js_token = json.dumps(bearer)
-    html = f"""<!DOCTYPE html>
+    # Name must not be `html` — it shadows the stdlib html module used in except blocks above.
+    handoff_html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><title>Signed in</title></head>
 <body>
 <script>
@@ -266,7 +273,7 @@ location.replace("/app");
 </script>
 <p>Signed in. <a href="/app">Continue</a></p>
 </body></html>"""
-    resp = HTMLResponse(content=html, media_type="text/html; charset=utf-8")
+    resp = HTMLResponse(content=handoff_html, media_type="text/html; charset=utf-8")
     # HttpOnly cookie (optional): session oidc_sub still works if cookie is omitted or too large.
     if len(bearer.encode("utf-8")) > 3800:
         logger.warning(
