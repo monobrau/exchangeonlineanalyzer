@@ -43,7 +43,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     description="Bulk export jobs API and browser console. OIDC optional (EOA_OIDC_ISSUER).",
-    version="0.8.2",
+    version="0.8.3",
     lifespan=lifespan,
 )
 

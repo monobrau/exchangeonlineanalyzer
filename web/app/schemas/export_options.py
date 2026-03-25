@@ -51,6 +51,12 @@ class WebBulkExportOptions(BaseModel):
     ticket_numbers: list[str] = Field(default_factory=list, description="Ticket IDs for report header/metadata.")
     ticket_content: str | None = Field(default=None, description="Free-text ticket context for metadata.")
 
+    max_tenants: int | None = Field(
+        default=None,
+        ge=1,
+        description="Python Graph worker: max directory tenants to process from tenant_ids (capped by EOA_GRAPH_MAX_TENANTS_PER_JOB, default 300).",
+    )
+
     include_message_trace: bool | None = Field(
         default=None,
         description="Exchange message trace — requires EXO on worker host for full parity.",

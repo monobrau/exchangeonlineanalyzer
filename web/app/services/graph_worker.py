@@ -97,6 +97,21 @@ def graph_worker_configured(settings: Settings) -> bool:
     return bool(cid and csec)
 
 
+def _safe_tenant_folder_name(tid: str) -> str:
+    """Filesystem-safe folder segment for a tenant id (GUID)."""
+    s = "".join(c for c in tid if c.isalnum() or c in "-")
+    return s or "unknown"
+
+
+def _effective_max_tenants(options: dict[str, Any], settings: Settings) -> int:
+    """Job options.max_tenants cannot exceed settings.graph_max_tenants_per_job."""
+    cap = max(1, int(settings.graph_max_tenants_per_job))
+    raw = options.get("max_tenants")
+    if isinstance(raw, int) and raw >= 1:
+        return min(raw, cap)
+    return cap
+
+
 def _merge_include_flags_into_reports(options: dict[str, Any], base: list[str]) -> list[str]:
     """Append Graph-backed slices when include_* booleans match desktop BulkTenantExporter."""
     out = list(base)
@@ -498,19 +513,31 @@ def _collect_mfa_registration(
 
 
 def run_graph_bulk_job(job_id: str, job: Job) -> tuple[bool, str, str | None]:
-    """Returns (ok, log_text, artifact_uri). Writes summary.json, graph.json, report_*.json."""
+    """Returns (ok, log_text, artifact_uri). Writes summary.json, graph.json, report_*.json.
+
+    Supports many tenant_ids (default cap EOA_GRAPH_MAX_TENANTS_PER_JOB=300). Uses app-only tokens
+    per tenant — no interactive login. Multi-tenant: reports under tenants/<guid>/; single tenant:
+    reports at artifact root (backward compatible).
+    """
     settings = get_settings()
     out_dir = _artifact_dir(job_id)
     body = job.request_payload or {}
-    tenant_ids = body.get("tenant_ids") or []
+    raw_tenant_ids = body.get("tenant_ids") or []
     options = body.get("options") if isinstance(body.get("options"), dict) else {}
     reports = parse_requested_reports(options)
+
+    tenant_ids = [str(x).strip() for x in raw_tenant_ids if str(x).strip()]
+    max_n = _effective_max_tenants(options, settings)
+    truncated = False
+    if len(tenant_ids) > max_n:
+        tenant_ids = tenant_ids[:max_n]
+        truncated = True
 
     if not tenant_ids:
         msg = "No tenant_ids in job payload; cannot acquire tenant-scoped token."
         _write_worker_log(out_dir, msg)
         summary = {
-            "workerVersion": "3",
+            "workerVersion": "4",
             "workerBackend": "python-graph",
             "jobId": job_id,
             "ok": False,
@@ -521,35 +548,17 @@ def run_graph_bulk_job(job_id: str, job: Job) -> tuple[bool, str, str | None]:
         (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return False, msg, f"file://{out_dir.resolve()}/"
 
-    tid = str(tenant_ids[0]).strip()
+    multi = len(tenant_ids) > 1
     client_id = settings.graph_client_id.strip()
     client_secret = settings.graph_client_secret.strip()
 
     log_lines: list[str] = [
-        f"python-graph worker job={job_id} tenant={tid}",
+        f"python-graph worker job={job_id} tenants={len(tenant_ids)} multi={multi} truncated={truncated}",
         f"reports={reports}",
         f"platform={platform.system()} python={sys.version.split()[0]}",
     ]
-
-    token, terr = acquire_graph_token(tid, client_id, client_secret)
-    if not token:
-        log_lines.append(f"token_error: {terr}")
-        _write_worker_log(out_dir, "\n".join(log_lines))
-        summary = {
-            "workerVersion": "3",
-            "workerBackend": "python-graph",
-            "jobId": job_id,
-            "ok": False,
-            "tenantId": tid,
-            "error": terr,
-            "reportsRequested": reports,
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
-        (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        return False, "\n".join(log_lines), f"file://{out_dir.resolve()}/"
-
-    reports_failed: dict[str, str] = {}
-    reports_ok: list[str] = []
+    if truncated:
+        log_lines.append(f"warning: tenant list truncated to max_tenants={max_n}")
 
     collectors: dict[str, Any] = {
         "organization": _collect_organization,
@@ -564,54 +573,83 @@ def run_graph_bulk_job(job_id: str, job: Job) -> tuple[bool, str, str | None]:
         "mfa_registration": _collect_mfa_registration,
     }
 
-    for name in reports:
-        fn = collectors.get(name)
-        if not fn:
-            log_lines.append(f"skip: no collector for {name!r}")
+    tenant_results: dict[str, Any] = {}
+    overall_ok = True
+
+    for tid in tenant_ids:
+        tdir = out_dir if not multi else out_dir / "tenants" / _safe_tenant_folder_name(tid)
+        if multi:
+            tdir.mkdir(parents=True, exist_ok=True)
+
+        log_lines.append(f"--- tenant {tid} ---")
+        token, terr = acquire_graph_token(tid, client_id, client_secret)
+        if not token:
+            log_lines.append(f"token_error: {terr}")
+            tenant_results[tid] = {"ok": False, "error": terr, "reportsCompleted": [], "reportsFailed": {}}
+            overall_ok = False
             continue
-        log_lines.append(f"collect: {name}...")
-        ok, err = fn(out_dir, token, tid, options)
-        if ok:
-            reports_ok.append(name)
-            log_lines.append(f"ok: {name}")
-        else:
-            reports_failed[name] = err or "unknown error"
-            log_lines.append(f"failed: {name}: {err}")
+
+        reports_failed: dict[str, str] = {}
+        reports_ok: list[str] = []
+
+        for name in reports:
+            fn = collectors.get(name)
+            if not fn:
+                log_lines.append(f"skip: no collector for {name!r}")
+                continue
+            log_lines.append(f"collect: {name}...")
+            ok, err = fn(tdir, token, tid, options)
+            if ok:
+                reports_ok.append(name)
+                log_lines.append(f"ok: {name}")
+            else:
+                reports_failed[name] = err or "unknown error"
+                log_lines.append(f"failed: {name}: {err}")
+                overall_ok = False
+
+        tenant_results[tid] = {
+            "ok": len(reports_failed) == 0,
+            "reportsCompleted": reports_ok,
+            "reportsFailed": reports_failed,
+        }
 
     graph_artifact = {
-        "tenantId": tid,
-        "tenantIdsInPayload": tenant_ids[:20],
+        "tenantIdsProcessed": tenant_ids,
+        "tenantIdsTruncated": truncated,
+        "maxTenants": max_n,
+        "multiTenantLayout": multi,
         "options": options,
         "reportsRequested": reports,
-        "reportsCompleted": reports_ok,
-        "reportsFailed": reports_failed,
+        "perTenant": tenant_results,
     }
     (out_dir / "graph.json").write_text(json.dumps(graph_artifact, indent=2), encoding="utf-8")
 
     summary = {
-        "workerVersion": "3",
+        "workerVersion": "4",
         "workerBackend": "python-graph",
         "jobId": job_id,
         "tenantCount": len(tenant_ids),
         "tenantIdsSample": tenant_ids[:5],
+        "tenantIdsTruncated": truncated,
+        "maxTenantsPerJob": max_n,
+        "multiTenantArtifactLayout": multi,
         "options": options,
         "reportsRequested": reports,
-        "reportsCompleted": reports_ok,
-        "reportsFailed": reports_failed,
+        "perTenant": tenant_results,
         "repoRootEnv": str(settings.repo_root) if settings.repo_root else None,
         "message": (
-            "Python Graph worker: MSAL app-only token; per-report JSON under report_*.json."
+            "Python Graph worker: MSAL app-only token per tenant; "
+            + ("report_*.json under tenants/<id>/ when multiple tenants." if multi else "report_*.json at artifact root.")
         ),
         "python": sys.version.split()[0],
         "os": platform.platform(),
-        "ok": len(reports_failed) == 0,
+        "ok": overall_ok,
         "at": datetime.now(timezone.utc).isoformat(),
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     log_text = "\n".join(log_lines)
     _write_worker_log(out_dir, log_text)
-    ok_job = len(reports_failed) == 0
     summary_path = out_dir / "summary.json"
     uri = f"file://{summary_path.resolve()}"
-    return ok_job, log_text, uri
+    return overall_ok, log_text, uri

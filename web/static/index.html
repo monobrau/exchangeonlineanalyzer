@@ -42,7 +42,7 @@
   <main class="layout" id="app-main">
     <section class="panel" aria-labelledby="new-job-title">
       <h2 id="new-job-title">New job</h2>
-      <p class="hint">Tenant: sign in above, click &quot;Use this tenant&quot;, or paste tenant ID(s) (GUID). One per line or comma-separated. Options as JSON (advanced). Server worker: Python Graph, pwsh stub, or placeholder — see README.</p>
+      <p class="hint">Tenant ID(s): many GUIDs supported (e.g. hundreds) for the Python Graph worker — use app-only credentials and consent per customer tenant; see <code>web/docs/multi-tenant-scaling.md</code>. Or sign in above / paste IDs. Options JSON can set <code>max_tenants</code>.</p>
       <form id="job-form">
         <label for="tenant-ids">Tenant ID(s)</label>
         <textarea id="tenant-ids" name="tenant_ids" rows="4" placeholder="Filled from Microsoft sign-in, or paste GUID(s)"></textarea>

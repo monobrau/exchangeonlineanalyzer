@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     use_python_graph_worker: bool = False
     graph_client_id: str = ""
     graph_client_secret: str = ""
+    # Cap tenant_ids processed per job (Python Graph worker). Override with options.max_tenants (cannot exceed this cap).
+    graph_max_tenants_per_job: int = 300
 
     # Microsoft Graph SPA (browser MSAL): Entra app registration — "Single-page application", public client.
     # Used for sign-in with Microsoft (tenant context + delegated Graph for app registration CRUD).

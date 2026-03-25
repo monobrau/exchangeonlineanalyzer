@@ -54,3 +54,37 @@ def test_run_graph_bulk_job_success_path(mock_get, mock_token, monkeypatch) -> N
     mock_get.assert_called_once()
 
     get_settings.cache_clear()
+
+
+@patch("app.services.graph_worker.acquire_graph_token")
+@patch("app.services.graph_worker._graph_get_json")
+def test_run_graph_bulk_job_two_tenants(mock_get, mock_token, monkeypatch) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setenv("EOA_GRAPH_CLIENT_ID", "cid")
+    monkeypatch.setenv("EOA_GRAPH_CLIENT_SECRET", "sec")
+    get_settings.cache_clear()
+
+    mock_token.return_value = ("fake-token", None)
+    mock_get.return_value = (
+        {"value": [{"displayName": "Contoso", "id": "org-guid", "verifiedDomains": []}]},
+        200,
+        None,
+    )
+
+    class _Job:
+        request_payload = {
+            "tenant_ids": [
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            ],
+            "options": {"reports": ["organization"]},
+        }
+
+    ok, log, _uri = run_graph_bulk_job("multi-job", _Job())  # type: ignore[arg-type]
+    assert ok is True
+    assert mock_token.call_count == 2
+    assert mock_get.call_count == 2
+    assert "multi=True" in log
+
+    get_settings.cache_clear()

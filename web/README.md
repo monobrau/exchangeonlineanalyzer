@@ -89,6 +89,10 @@ python tools/run_graph_report.py <YOUR-TENANT-GUID> organization
 
 Exit code **0** means every requested report succeeded; **1** means at least one failed (check `report_*.json` and `worker.log`). **2** means credentials were not set.
 
+### Many tenants (no per-tenant login)
+
+For **large numbers of customer directories** (e.g. 300), use the **Python Graph worker** with **`EOA_GRAPH_CLIENT_ID`** + **`EOA_GRAPH_CLIENT_SECRET`** (application permissions) and pass **`tenant_ids`** in the job body — **not** interactive Microsoft sign-in per tenant. Each tenant must have **admin-consented** your app. Cap: **`EOA_GRAPH_MAX_TENANTS_PER_JOB`** (default 300); optional **`options.max_tenants`**. See **[`docs/multi-tenant-scaling.md`](docs/multi-tenant-scaling.md)**.
+
 ### Microsoft sign-in (browser) — tenant without pasting GUIDs + app registrations
 
 This is **separate** from Authentik/API auth: the header **Sign in** still controls access to `/api/v1/jobs` when `EOA_OIDC_ISSUER` is set. The **Microsoft 365** panel uses **MSAL** in the browser to sign in with a work account and call **Microsoft Graph** directly (delegated). **Creating app registrations** uses `POST https://graph.microsoft.com/v1.0/applications` from the browser with the signed-in user’s token.
