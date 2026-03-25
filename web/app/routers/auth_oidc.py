@@ -98,7 +98,14 @@ def oidc_login(request: Request) -> RedirectResponse:
             detail="OIDC browser login not configured (EOA_OIDC_ISSUER, EOA_OIDC_CLIENT_ID, EOA_OIDC_REDIRECT_URI)",
         )
     s = get_settings()
-    meta = get_oidc_metadata(s.oidc_issuer)
+    try:
+        meta = get_oidc_metadata(s.oidc_issuer)
+    except Exception as e:
+        logger.exception("OIDC login: discovery failed")
+        raise HTTPException(
+            status_code=503,
+            detail=f"OIDC discovery failed (cannot load issuer metadata): {e!s}",
+        ) from e
     auth_ep = meta.get("authorization_endpoint")
     if not auth_ep:
         raise HTTPException(status_code=500, detail="OIDC metadata missing authorization_endpoint")
@@ -154,10 +161,22 @@ def oidc_callback(
         raise HTTPException(status_code=501, detail="OIDC not configured")
 
     s = get_settings()
-    meta = get_oidc_metadata(s.oidc_issuer)
+    try:
+        meta = get_oidc_metadata(s.oidc_issuer)
+    except Exception as e:
+        logger.exception("OIDC callback: discovery failed")
+        return HTMLResponse(
+            f"<!DOCTYPE html><html><body><p>OIDC discovery failed.</p>"
+            f"<pre>{html.escape(str(e))}</pre><p><a href=\"/\">Home</a></p></body></html>",
+            status_code=503,
+        )
     token_ep = meta.get("token_endpoint")
     if not token_ep:
-        raise HTTPException(status_code=500, detail="OIDC metadata missing token_endpoint")
+        return HTMLResponse(
+            "<!DOCTYPE html><html><body><p>OIDC metadata missing token_endpoint.</p>"
+            '<p><a href="/">Home</a></p></body></html>',
+            status_code=500,
+        )
 
     data = {
         "grant_type": "authorization_code",
@@ -169,11 +188,19 @@ def oidc_callback(
     if s.oidc_client_secret:
         data["client_secret"] = s.oidc_client_secret
 
-    with httpx.Client(timeout=30.0) as client:
-        tr = client.post(
-            token_ep,
-            data=data,
-            headers={"Accept": "application/json"},
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            tr = client.post(
+                token_ep,
+                data=data,
+                headers={"Accept": "application/json"},
+            )
+    except Exception as e:
+        logger.exception("OIDC callback: token endpoint request failed")
+        return HTMLResponse(
+            f"<!DOCTYPE html><html><body><p>Token request failed (network or IdP error).</p>"
+            f"<pre>{html.escape(str(e))}</pre><p><a href=\"/\">Home</a></p></body></html>",
+            status_code=502,
         )
     request.session.pop("oidc_state", None)
     request.session.pop("oidc_pkce_verifier", None)
@@ -240,14 +267,22 @@ location.replace("/app");
 <p>Signed in. <a href="/app">Continue</a></p>
 </body></html>"""
     resp = HTMLResponse(content=html, media_type="text/html; charset=utf-8")
-    # HttpOnly cookie: works when proxies strip Authorization; sessionStorage alone is not enough.
-    resp.set_cookie(
-        key=ACCESS_TOKEN_COOKIE_NAME,
-        value=bearer,
-        max_age=3600,
-        httponly=True,
-        secure=_cookie_secure(),
-        samesite="lax",
-        path="/",
-    )
+    # HttpOnly cookie (optional): session oidc_sub still works if cookie is omitted or too large.
+    if len(bearer.encode("utf-8")) > 3800:
+        logger.warning(
+            "OIDC access token exceeds safe cookie size; skipping eoa_access_token cookie (session still has sub)"
+        )
+    else:
+        try:
+            resp.set_cookie(
+                key=ACCESS_TOKEN_COOKIE_NAME,
+                value=bearer,
+                max_age=3600,
+                httponly=True,
+                secure=_cookie_secure(),
+                samesite="lax",
+                path="/",
+            )
+        except Exception as e:
+            logger.warning("Could not set access token cookie: %s", e)
     return resp
