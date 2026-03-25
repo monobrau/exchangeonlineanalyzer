@@ -16,7 +16,17 @@ async function api(path, opts = {}) {
   if (token) headers.Authorization = `Bearer ${token}`;
   const r = await fetch(path, { ...opts, headers });
   if (r.status === 401) {
-    throw new Error("Unauthorized (401). Set OIDC or paste a Bearer token in sessionStorage key eoa_bearer).");
+    let detail = "";
+    try {
+      const j = JSON.parse(await r.text());
+      if (j && j.detail != null) detail = String(j.detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      detail ||
+        "Unauthorized (401). Set OIDC or paste a Bearer token in sessionStorage key eoa_bearer)."
+    );
   }
   if (!r.ok) {
     const t = await r.text();

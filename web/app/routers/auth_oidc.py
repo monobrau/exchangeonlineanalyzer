@@ -19,6 +19,34 @@ from app.oidc_metadata import get_oidc_metadata
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _looks_like_jwt(token: str) -> bool:
+    """Three base64url segments — opaque OAuth tokens are usually not shaped like this."""
+    if not token or not isinstance(token, str):
+        return False
+    parts = token.split(".")
+    return len(parts) == 3 and all(len(p) > 0 for p in parts)
+
+
+def _pick_browser_bearer_token(body: dict) -> str | None:
+    """
+    Prefer a JWT the API can validate with JWKS (RS256/ES256).
+
+    Many providers (including some Authentik setups) return an opaque access_token; the
+    id_token from openid scope is always a JWT. Storing opaque tokens causes 401 on /api/v1/*.
+    """
+    access = body.get("access_token")
+    id_token = body.get("id_token")
+    if access and _looks_like_jwt(access):
+        return access
+    if id_token and _looks_like_jwt(id_token):
+        return id_token
+    if access:
+        return access
+    if id_token:
+        return id_token
+    return None
+
+
 def _pkce_pair() -> tuple[str, str]:
     verifier = secrets.token_urlsafe(48)[:128]
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -141,12 +169,12 @@ def oidc_callback(
     except Exception:
         raise HTTPException(status_code=502, detail="Invalid token response") from None
 
-    access = body.get("access_token")
-    if not access:
-        raise HTTPException(status_code=502, detail="No access_token in response")
+    bearer = _pick_browser_bearer_token(body)
+    if not bearer:
+        raise HTTPException(status_code=502, detail="No access_token or id_token in token response")
 
     # One-page handoff: store bearer for existing fetch() + /api/v1 calls
-    js_token = json.dumps(access)
+    js_token = json.dumps(bearer)
     html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><title>Signed in</title></head>
 <body>
