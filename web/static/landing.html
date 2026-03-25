@@ -4,19 +4,26 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Exchange Online Analyzer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body class="landing-body">
-  <div class="landing-wrap">
-    <div class="landing-brand">
-      <span class="brand-mark">EOA</span>
+  <div class="landing-bg" aria-hidden="true"></div>
+  <main class="landing-main">
+    <div class="landing-card">
+      <div class="landing-badge">
+        <span class="brand-mark">EOA</span>
+      </div>
+      <h1 class="landing-title">Exchange Online Analyzer</h1>
+      <p class="landing-lead">Bulk export jobs for Microsoft 365 and Exchange Online—run from the browser, backed by your tenant exports.</p>
+      <div class="landing-actions">
+        <a class="landing-cta" href="/api/v1/auth/oidc/login">Sign in to continue</a>
+      </div>
+      <p class="landing-hint">You’ll sign in with Authentik, then we’ll open the web console.</p>
     </div>
-    <h1 class="landing-title">Exchange Online Analyzer</h1>
-    <p class="landing-lead">Bulk export jobs for Microsoft 365 / Exchange Online.</p>
-    <p class="landing-actions">
-      <a class="gate-signin" href="/api/v1/auth/oidc/login">Sign in</a>
-    </p>
-    <p class="landing-hint">You’ll authenticate with Authentik, then open the web console.</p>
-  </div>
+    <p class="landing-foot">Secured with OpenID Connect · Session token stored in the browser for API calls</p>
+  </main>
 </body>
 </html>
