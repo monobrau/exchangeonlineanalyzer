@@ -348,14 +348,19 @@ html.landing-html {
   height: 100%;
 }
 
-/* Grid centering: more reliable than flex here; pair with html { height: 100% } */
+/*
+  Flex centers <main> in the viewport. .landing-bg is position:fixed so it is not a flex item—
+  otherwise two in-flow children would stack and push the card down (the “low in the window” bug).
+*/
 body.landing-body {
   margin: 0;
-  min-height: 100vh;
+  min-height: 100svh;
   min-height: 100dvh;
   min-height: -webkit-fill-available;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   padding: clamp(1rem, 5vw, 2rem);
   position: relative;
   overflow-x: hidden;
