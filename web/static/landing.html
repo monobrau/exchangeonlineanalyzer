@@ -36,7 +36,10 @@
       <div class="landing-actions">
         <a class="landing-cta" href="/api/v1/auth/oidc/login">Sign in to continue</a>
       </div>
-      <p class="landing-hint">You’ll sign in with Authentik, then we’ll open the web console.</p>
+      <div class="landing-actions landing-actions-row2">
+        <a class="landing-cta landing-cta-secondary" href="/app">Open full console</a>
+      </div>
+      <p class="landing-hint">After sign-in you’ll land on the console. Or open <strong>/app</strong> for jobs, Microsoft 365 sign-in, and app registration tools (requires <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> on the server).</p>
     </div>
     <p class="landing-foot">Secured with OpenID Connect · Session token stored in the browser for API calls</p>
   </main>

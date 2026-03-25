@@ -1,5 +1,8 @@
 const $ = (sel) => document.querySelector(sel);
 
+/** Set after dynamic import of ./ms-graph.js (avoids aborting the whole app if MSAL CDN is blocked). */
+let getMsGraphTenantIdForJob = () => null;
+
 /** When OIDC is on and there is no bearer token, main UI stays hidden (see initAuth). */
 let appUnlocked = true;
 
@@ -152,7 +155,11 @@ $("#job-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const formMsg = $("#form-msg");
   formMsg.textContent = "";
-  const tenant_ids = parseTenantIds($("#tenant-ids").value);
+  let tenant_ids = parseTenantIds($("#tenant-ids").value);
+  if (tenant_ids.length === 0) {
+    const tid = getMsGraphTenantIdForJob();
+    if (tid) tenant_ids = [tid];
+  }
   let options = {};
   try {
     options = JSON.parse($("#options-json").value || "{}");
@@ -161,7 +168,8 @@ $("#job-form").addEventListener("submit", async (ev) => {
     return;
   }
   if (tenant_ids.length === 0) {
-    formMsg.textContent = "Add at least one tenant ID.";
+    formMsg.textContent =
+      "Sign in with Microsoft above (tenant auto-filled) or paste at least one tenant ID (GUID).";
     return;
   }
   try {
@@ -268,6 +276,20 @@ async function initAuth() {
 
 (async () => {
   await initAuth();
+  const msMount = document.getElementById("ms-graph-mount");
+  try {
+    const msUrl = new URL("./ms-graph.js?v=15", import.meta.url).href;
+    const m = await import(msUrl);
+    getMsGraphTenantIdForJob = m.getMsGraphTenantIdForJob;
+    await m.initMicrosoftGraphUI();
+  } catch (e) {
+    console.error("EOA: Microsoft 365 panel failed to load", e);
+    if (msMount) {
+      msMount.innerHTML = `<p class="msg">Microsoft 365 controls could not load: ${escapeHtml(
+        String(e.message || e)
+      )}</p><p class="hint">Often: network blocked the MSAL script (CDN), or <code>ms-graph.js</code> failed to load. Open DevTools (F12) → Console / Network. Ensure you are on <strong>/app</strong> (full console), not only the landing page.</p>`;
+    }
+  }
   if (!appUnlocked) {
     setJobsPlaceholderWhenLocked();
     return;

@@ -17,6 +17,27 @@ def test_auth_status() -> None:
     body = r.json()
     assert "oidc_login_enabled" in body
     assert body["oidc_login_enabled"] is False
+    assert body.get("ms_graph_spa_enabled") is False
+
+
+def test_ui_info() -> None:
+    with TestClient(app) as client:
+        r = client.get("/api/v1/ui-info")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("api_version")
+    assert body["index_html"]["exists"] is True
+    assert body["index_html"]["has_ms_graph_outer"] is True
+    assert body["app_js"]["has_dynamic_ms_graph_import"] is True
+    assert body["ms_graph_js"]["has_dynamic_msal_loader"] is True
+
+
+def test_msal_config_when_disabled() -> None:
+    with TestClient(app) as client:
+        r = client.get("/api/v1/auth/msal-config")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("enabled") is False
 
 
 def test_oidc_login_not_configured() -> None:

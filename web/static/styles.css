@@ -446,6 +446,25 @@ body.landing-body {
   margin: 0 0 1.25rem;
 }
 
+.landing-actions-row2 {
+  margin: 0 0 1rem;
+  display: flex;
+  justify-content: center;
+}
+
+.landing-cta-secondary {
+  background: transparent !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+}
+
+.landing-cta-secondary:hover {
+  border-color: var(--accent) !important;
+  filter: none !important;
+  transform: none !important;
+}
+
 .landing-cta {
   display: inline-flex;
   align-items: center;
@@ -496,4 +515,83 @@ body.landing-body {
   line-height: 1.45;
   max-width: 24rem;
   letter-spacing: 0.02em;
+}
+
+/* Microsoft Graph (MSAL) panel — outside #app-main so visible when OIDC locks the console */
+.ms-graph-outer {
+  max-width: 960px;
+  margin: 1.25rem auto 0;
+  padding: 0 1.5rem;
+}
+
+.ms-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  margin: 0.75rem 0;
+}
+
+.btn-ms {
+  font-family: inherit;
+  font-weight: 600;
+  padding: 0.45rem 1rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  background: #2f2f2f;
+  color: #fff;
+  border: 1px solid #3d3d3d;
+}
+
+.btn-ms:hover {
+  background: #3d3d3d;
+}
+
+.ms-tenant-box {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.ms-tenant-box .small {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.25rem 0;
+}
+
+.h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.35rem;
+}
+
+.input-grow {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #0f1419;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.ms-apps-table {
+  font-size: 0.88rem;
+}
+
+.ms-actions {
+  white-space: nowrap;
+}
+
+.linklike.danger {
+  color: var(--danger);
 }

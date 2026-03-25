@@ -88,9 +88,40 @@ def auth_logout(request: Request, response: Response) -> dict:
 @router.get("/status")
 def auth_status() -> dict:
     s = get_settings()
+    ms_cid = (s.ms_graph_spa_client_id or "").strip()
     return {
         "oidc_login_enabled": _oidc_ready(),
         "issuer": s.oidc_issuer or None,
+        "ms_graph_spa_enabled": bool(ms_cid),
+    }
+
+
+@router.get("/msal-config")
+def msal_config() -> dict:
+    """Public SPA config for @azure/msal-browser (no secrets)."""
+    s = get_settings()
+    cid = (s.ms_graph_spa_client_id or "").strip()
+    ten = (s.ms_graph_tenant or "organizations").strip() or "organizations"
+    if not cid:
+        return {
+            "enabled": False,
+            "clientId": None,
+            "authority": None,
+            "redirectPath": "/",
+            "scopes": [],
+        }
+    # Graph delegated scopes only (MSAL acquires tokens for https://graph.microsoft.com)
+    scopes = [
+        "User.Read",
+        "Organization.Read.All",
+        "Application.ReadWrite.All",
+    ]
+    return {
+        "enabled": True,
+        "clientId": cid,
+        "authority": f"https://login.microsoftonline.com/{ten}",
+        "redirectPath": "/",
+        "scopes": scopes,
     }
 
 

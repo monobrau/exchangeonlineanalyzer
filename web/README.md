@@ -24,6 +24,7 @@ With Authentik enabled, open the app in the browser and set `sessionStorage.setI
 | Method | Path | Notes |
 |--------|------|--------|
 | GET | `/health` | Liveness |
+| GET | `/api/v1/ui-info` | **Live deploy check:** files under `web/static` this process reads (`index_html.has_ms_graph_outer`, etc.); no auth |
 | GET | `/api/v1/me` | Current user `sub` when `EOA_OIDC_ISSUER` is set |
 | GET | `/api/v1/jobs` | List jobs |
 | POST | `/api/v1/jobs/bulk` | Create bulk export job (body: `tenant_ids`, `options`) |
@@ -57,6 +58,34 @@ See `.env.example`. Database defaults to `web/data/eoa_jobs.db`.
 3. Set **`EOA_REPO_ROOT`** to the repo root if the API working directory is not the repo (default: parent of `web/`).
 
 If **`EOA_USE_PWSH_STUB_WORKER`** is false (default for local dev), the API uses a short **in-process placeholder** only.
+
+### Python Graph worker (Linux, no PowerShell)
+
+1. Register an Entra app with a **client secret** and grant **application** permissions for the reports you need (e.g. `Organization.Read.All` for `organization`; add `User.Read.All`, `Policy.Read.All`, `Application.Read.All` as you enable more reports). **Admin-consent** the app in the target tenant.
+2. Set **`EOA_GRAPH_CLIENT_ID`**, **`EOA_GRAPH_CLIENT_SECRET`**, and enable the worker with **`EOA_USE_PYTHON_GRAPH_WORKER=true`** when running jobs through the API.
+3. **Smoke-test a report locally** (writes under `web/data/artifacts/<job-id>/`):
+
+```bash
+cd web
+# Windows PowerShell: $env:EOA_GRAPH_CLIENT_ID='...'; $env:EOA_GRAPH_CLIENT_SECRET='...'
+export EOA_GRAPH_CLIENT_ID=...
+export EOA_GRAPH_CLIENT_SECRET=...
+python tools/run_graph_report.py <YOUR-TENANT-GUID> organization
+# optional: python tools/run_graph_report.py <TENANT-GUID> organization users
+```
+
+Exit code **0** means every requested report succeeded; **1** means at least one failed (check `report_*.json` and `worker.log`). **2** means credentials were not set.
+
+### Microsoft sign-in (browser) — tenant without pasting GUIDs + app registrations
+
+This is **separate** from Authentik/API auth: the header **Sign in** still controls access to `/api/v1/jobs` when `EOA_OIDC_ISSUER` is set. The **Microsoft 365** panel uses **MSAL** in the browser to sign in with a work account and call **Microsoft Graph** directly (delegated).
+
+1. In **Entra ID**, register a **single-page application** (public client).  
+   - **Redirect URIs** must include the exact origins you use, e.g. `http://127.0.0.1:8080/`, `http://127.0.0.1:8080/app`, and HTTPS equivalents.  
+2. **API permissions** (delegated): `User.Read`, `Organization.Read.All`, `Application.ReadWrite.All` — **admin consent** in the tenant for app CRUD.  
+3. Set **`EOA_MS_GRAPH_SPA_CLIENT_ID`** (and optionally **`EOA_MS_GRAPH_TENANT`**, default `organizations`).  
+4. Open the console: tenant **display name** and **directory (tenant) ID** appear after **Sign in with Microsoft**. Use **Use this tenant for bulk job** to fill the job field, or submit with an empty tenant field — the signed-in tenant ID is used automatically.  
+5. **App registrations**: create, rename, or delete apps from the table (Graph calls from the browser).
 
 ## Deploy (Linux)
 

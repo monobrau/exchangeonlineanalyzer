@@ -30,13 +30,22 @@
     <p><a id="auth-gate-btn" class="gate-signin" href="/api/v1/auth/oidc/login">Sign in</a></p>
   </div>
 
+  <!-- Outside #app-main so Microsoft sign-in stays visible when OIDC locks the rest of the console -->
+  <section class="panel ms-graph-outer" aria-labelledby="ms-title">
+    <h2 id="ms-title">Microsoft 365 (sign-in &amp; apps)</h2>
+    <p class="hint">Sign in with your work account to use your tenant automatically (no GUID paste). Manage Entra app registrations here (delegated Graph). Separate from Authentik/API sign-in in the header.</p>
+    <div id="ms-graph-mount">
+      <p class="hint">Loading Microsoft 365 controls…</p>
+    </div>
+  </section>
+
   <main class="layout" id="app-main">
     <section class="panel" aria-labelledby="new-job-title">
       <h2 id="new-job-title">New job</h2>
-      <p class="hint">Tenant IDs (one per line or comma-separated). Options as JSON (advanced). With <code>EOA_USE_PWSH_STUB_WORKER=true</code> and <code>pwsh</code> on the server, each job runs <code>web/pwsh/WebBulkJobStub.ps1</code> and writes <code>summary.json</code> (+ <code>worker.log</code>). Otherwise a Python placeholder artifact is produced.</p>
+      <p class="hint">Tenant: sign in above, click &quot;Use this tenant&quot;, or paste tenant ID(s) (GUID). One per line or comma-separated. Options as JSON (advanced). Server worker: Python Graph, pwsh stub, or placeholder — see README.</p>
       <form id="job-form">
-        <label for="tenant-ids">Tenant IDs</label>
-        <textarea id="tenant-ids" name="tenant_ids" rows="4" placeholder="aaaaaaaa-bbbb-cccc-dddddddddddd"></textarea>
+        <label for="tenant-ids">Tenant ID(s)</label>
+        <textarea id="tenant-ids" name="tenant_ids" rows="4" placeholder="Filled from Microsoft sign-in, or paste GUID(s)"></textarea>
         <label for="options-json">Options (JSON object)</label>
         <textarea id="options-json" name="options" rows="3">{}</textarea>
         <div class="actions">
@@ -76,6 +85,6 @@
     <span>Placeholder worker runs on the server after each create (replace with PowerShell bulk export).</span>
   </footer>
 
-  <script src="/static/app.js?v=12" type="module"></script>
+  <script src="/static/app.js?v=15" type="module"></script>
 </body>
 </html>

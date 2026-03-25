@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,7 +31,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     description="Bulk export jobs API and browser console. OIDC optional (EOA_OIDC_ISSUER).",
-    version="0.6.0",
+    version="0.7.3",
     lifespan=lifespan,
 )
 
@@ -71,6 +71,16 @@ app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(auth_oidc.router, prefix="/api/v1")
 
 
+@app.middleware("http")
+async def _no_cache_static_js_css(request: Request, call_next):
+    """Avoid stale app.js/ms-graph.js after deploy (some proxies cache /static aggressively)."""
+    response = await call_next(request)
+    p = request.url.path
+    if p.startswith("/static/") and (p.endswith(".js") or p.endswith(".css")):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 def _oidc_locked_console_html() -> HTMLResponse:
     """Full console HTML with locked shell until sessionStorage has a bearer token."""
     path = STATIC_DIR / "index.html"
@@ -87,10 +97,15 @@ def _oidc_locked_console_html() -> HTMLResponse:
         '<main class="layout" id="app-main" hidden>',
         1,
     )
+    # View source: confirms which API build served this page (compare to git deploy).
+    html = f"<!-- eoa-console build=api-{app.version} template=index.html has-ms-graph-outer -->\n" + html
     return HTMLResponse(
         content=html,
         media_type="text/html; charset=utf-8",
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
     )
 
 
@@ -113,12 +128,44 @@ def app_console_page() -> HTMLResponse | RedirectResponse:
     return _oidc_locked_console_html()
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/v1/ui-info")
+def ui_info() -> dict[str, object]:
+    """Which UI files this process reads from disk — curl the live server to verify deploy (no auth)."""
+    s = get_settings()
+    index = STATIC_DIR / "index.html"
+    app_js = STATIC_DIR / "app.js"
+    ms_js = STATIC_DIR / "ms-graph.js"
+    index_html: dict[str, bool] = {
+        "exists": index.is_file(),
+        "has_ms_graph_outer": False,
+        "has_ms_graph_mount": False,
+    }
+    if index.is_file():
+        t = index.read_text(encoding="utf-8")
+        index_html["has_ms_graph_outer"] = "ms-graph-outer" in t
+        index_html["has_ms_graph_mount"] = "ms-graph-mount" in t
+    app_js_info: dict[str, bool] = {"exists": app_js.is_file(), "has_dynamic_ms_graph_import": False}
+    if app_js.is_file():
+        aj = app_js.read_text(encoding="utf-8")
+        app_js_info["has_dynamic_ms_graph_import"] = "ms-graph.js" in aj and "import(" in aj
+    ms_graph_js_info: dict[str, bool] = {"exists": ms_js.is_file(), "has_dynamic_msal_loader": False}
+    if ms_js.is_file():
+        mj = ms_js.read_text(encoding="utf-8")
+        ms_graph_js_info["has_dynamic_msal_loader"] = "importMsalBrowser" in mj
+    return {
+        "api_version": app.version,
+        "static_dir": str(STATIC_DIR.resolve()),
+        "repo_root_config": str(s.repo_root.resolve()),
+        "ms_graph_spa_client_id_configured": bool((s.ms_graph_spa_client_id or "").strip()),
+        "index_html": index_html,
+        "app_js": app_js_info,
+        "ms_graph_js": ms_graph_js_info,
+    }
 
 
 @app.get("/ready")
@@ -136,3 +183,7 @@ def ready() -> dict[str, str]:
 def me(sub: str | None = Depends(require_user)) -> dict[str, str | None]:
     """Return current subject when OIDC is configured; otherwise dev mode."""
     return {"sub": sub, "auth": "oidc" if get_settings().oidc_issuer else "disabled"}
+
+
+# Mount static last so /api/v1/* and /health are never shadowed by the static app.
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

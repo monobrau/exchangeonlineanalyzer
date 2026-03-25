@@ -10,7 +10,12 @@ class BulkJobCreate(BaseModel):
     tenant_ids: list[str] = Field(default_factory=list, description="Entra tenant id(s) to process")
     options: dict[str, Any] = Field(
         default_factory=dict,
-        description="Report flags and exporter options (parity with BulkTenantExporter)",
+        description=(
+            "Exporter options. Python Graph worker (Linux): use key 'reports' — list of strings: "
+            "organization, users, conditional_access, applications "
+            "(aliases: org, ca, apps, …). Default is ['organization']. "
+            "Other keys reserved for parity with BulkTenantExporter."
+        ),
     )
 
 

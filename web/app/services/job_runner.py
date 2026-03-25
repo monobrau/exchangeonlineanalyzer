@@ -1,4 +1,4 @@
-"""Job execution: PowerShell stub (WebBulkJobStub.ps1) or Python placeholder."""
+"""Job execution: Python Graph worker (MSAL), PowerShell stub (WebBulkJobStub.ps1), or placeholder."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.services.graph_worker import graph_worker_configured, run_graph_bulk_job
 from app.db import SessionLocal
 from app.models import Job, JobStatus
 
@@ -107,8 +108,9 @@ def _run_placeholder_only(job_id: str, *, note: str = "") -> None:
     out = _artifact_dir(job_id)
     p = out / "placeholder.txt"
     lines = [
-        "Placeholder worker (Python): no PowerShell stub ran.",
-        "Set EOA_USE_PWSH_STUB_WORKER=true and install PowerShell 7 (pwsh) on the host to run web/pwsh/WebBulkJobStub.ps1.",
+        "Placeholder worker (Python): no worker ran.",
+        "Option A — Linux/no Windows: set EOA_USE_PYTHON_GRAPH_WORKER=true plus EOA_GRAPH_CLIENT_ID and EOA_GRAPH_CLIENT_SECRET (Entra app with admin consent per tenant).",
+        "Option B — pwsh stub: set EOA_USE_PWSH_STUB_WORKER=true and install PowerShell 7 (pwsh).",
     ]
     if note:
         lines.insert(0, note)
@@ -132,6 +134,30 @@ def run_job(job_id: str) -> None:
         ok = False
         log_tail = ""
         artifact_uri: str | None = None
+
+        if settings.use_python_graph_worker and graph_worker_configured(settings):
+            ok, log_tail, artifact_uri = run_graph_bulk_job(job_id, job)
+            if not ok:
+                job = db.get(Job, job_id)
+                if job:
+                    job.status = JobStatus.failed.value
+                    job.updated_at = _utcnow()
+                    job.error_message = (log_tail or "graph worker failed")[:8000]
+                    job.artifact_uri = artifact_uri
+                    db.commit()
+                logger.error("Job %s python-graph failed: %s", job_id, log_tail[:500])
+                return
+
+            job = db.get(Job, job_id)
+            if job:
+                job.status = JobStatus.succeeded.value
+                job.updated_at = _utcnow()
+                job.artifact_uri = artifact_uri
+                if len(log_tail) < 4000:
+                    job.error_message = None
+                db.commit()
+            logger.info("Job %s python-graph ok", job_id)
+            return
 
         if settings.use_pwsh_stub_worker:
             ok, log_tail, artifact_uri = _run_pwsh_stub(job_id, job)

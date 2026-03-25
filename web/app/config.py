@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     # If true, run web/pwsh/WebBulkJobStub.ps1 when pwsh is available. Default false for dev/CI; set true on webhost.
     use_pwsh_stub_worker: bool = False
 
+    # Linux-friendly worker: MSAL client credentials + Graph REST (no pwsh/Windows). Takes priority over pwsh stub when configured.
+    use_python_graph_worker: bool = False
+    graph_client_id: str = ""
+    graph_client_secret: str = ""
+
+    # Microsoft Graph SPA (browser MSAL): Entra app registration — "Single-page application", public client.
+    # Used for sign-in with Microsoft (tenant context + delegated Graph for app registration CRUD).
+    # Register redirect URIs: e.g. http://127.0.0.1:8080/ and http://127.0.0.1:8080/app (and HTTPS equivalents).
+    ms_graph_spa_client_id: str = ""
+    # Authority tenant: organizations | common | consumers | or a directory (tenant) GUID
+    ms_graph_tenant: str = "organizations"
+
     # CORS: "*" or comma-separated origins (e.g. https://app.example.com,http://localhost:5173)
     cors_origins: str = "*"
 
@@ -60,6 +72,13 @@ class Settings(BaseSettings):
     )
     @classmethod
     def _strip_oidc_strings(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    @field_validator("ms_graph_spa_client_id", "ms_graph_tenant", mode="before")
+    @classmethod
+    def _strip_ms_graph_strings(cls, v: object) -> object:
         if isinstance(v, str):
             return v.strip()
         return v

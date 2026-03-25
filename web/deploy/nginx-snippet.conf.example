@@ -1,5 +1,9 @@
 # Example: reverse-proxy the API (and optionally serve TLS at nginx).
 # Adjust server_name and paths; include inside a server { } block.
+#
+# After UI deploys, avoid caching HTML/JS at the edge:
+#   proxy_cache off;  (or location = /app { proxy_cache off; ... })
+# Cloudflare: set "Cache Level: Bypass" for /app and optionally /static/*.js
 
 location / {
     proxy_pass http://127.0.0.1:18080;  # uvicorn; webhost uses 8080 for blingus nginx
