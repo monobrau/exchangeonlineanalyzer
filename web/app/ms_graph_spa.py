@@ -14,8 +14,15 @@ DELEGATED_GRAPH_SCOPES = [
 
 
 def resolve_ms_graph_spa_client_id(settings: Settings) -> str:
-    """EOA_MS_GRAPH_SPA_CLIENT_ID wins; else bundled public app ID (may be empty)."""
-    return (settings.ms_graph_spa_client_id or "").strip() or BUNDLED_MS_GRAPH_SPA_CLIENT_ID.strip()
+    """EOA_MS_GRAPH_SPA_CLIENT_ID wins; optional reuse of Graph worker app id; else bundled (may be empty)."""
+    explicit = (settings.ms_graph_spa_client_id or "").strip()
+    if explicit:
+        return explicit
+    if settings.ms_graph_spa_use_graph_app_id:
+        g = (settings.graph_client_id or "").strip()
+        if g:
+            return g
+    return BUNDLED_MS_GRAPH_SPA_CLIENT_ID.strip()
 
 
 def resolve_delegated_graph_scopes(settings: Settings) -> list[str]:

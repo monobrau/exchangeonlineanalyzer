@@ -193,6 +193,14 @@ RUNTIME_FIELDS: tuple[RuntimeField, ...] = (
         "When the queue is empty, jobs use this Entra directory id. Set in Settings instead of browser sign-in.",
     ),
     RuntimeField(
+        "EOA_MS_GRAPH_SPA_USE_GRAPH_APP_ID",
+        "ms_graph_spa_use_graph_app_id",
+        "bool",
+        "microsoft_spa",
+        "Browser MSAL: reuse Graph worker app ID",
+        "Default on: when SPA client ID is empty, use EOA_GRAPH_CLIENT_ID so M365 sign-in works without a separate SPA env var if the same Entra app has a Single-page application platform with this site redirect (e.g. https://your-host/app). Set false only if Graph is a confidential-only app.",
+    ),
+    RuntimeField(
         "EOA_MS_GRAPH_SPA_CLIENT_ID",
         "ms_graph_spa_client_id",
         "str",

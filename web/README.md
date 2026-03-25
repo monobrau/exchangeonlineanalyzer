@@ -107,14 +107,15 @@ This is **separate** from Authentik/API auth: the header **Sign in** still contr
 
 **OAuth always needs an Entra app registration** (a public “client ID”). You can supply it in any of these ways:
 
-1. **`EOA_MS_GRAPH_SPA_CLIENT_ID`** in `web/.env` (or systemd) — best for shared deployments.  
-2. **Bundled default** — set **`BUNDLED_MS_GRAPH_SPA_CLIENT_ID`** in **`web/app/bundled_ms_graph.py`** to a multi-tenant SPA’s client ID so the API enables MSAL **without** env (add redirect URIs for each host in that Entra app).  
-3. **Browser only** — leave the server unset; the UI asks once for the **Application (client) ID** and stores it in **`localStorage`** (`eoa_ms_graph_spa_client_id`). No server restart; use **Clear browser-stored client ID** to reset.
+1. **Same app as the Graph worker (default)** — **`EOA_MS_GRAPH_SPA_USE_GRAPH_APP_ID`** defaults to **true**. When **`EOA_GRAPH_CLIENT_ID`** is set and that Entra app has a **Single-page application** platform with redirect URIs for this host (`/` and `/app`), browser **Sign in with Microsoft** works **without** a separate **`EOA_MS_GRAPH_SPA_CLIENT_ID`** or Settings change. Add the SPA platform and redirects in Entra if you only had a confidential / worker registration before. Set **`EOA_MS_GRAPH_SPA_USE_GRAPH_APP_ID=false`** only if the Graph app cannot be used as an SPA.  
+2. **`EOA_MS_GRAPH_SPA_CLIENT_ID`** in `web/.env` (or systemd) — use when the interactive SPA is a different registration than the Python Graph worker.  
+3. **Bundled default** — set **`BUNDLED_MS_GRAPH_SPA_CLIENT_ID`** in **`web/app/bundled_ms_graph.py`** (or run **`web/tools/Register-EoaMsalSpaApp.ps1`** once and paste the printed ID) so the API enables MSAL without env.  
+4. **Browser only** — paste the **Application (client) ID** once in the Microsoft 365 panel; it is stored in **`localStorage`** (`eoa_ms_graph_spa_client_id`). Use **Clear browser-stored client ID** to reset.
 
 Then:
 
 1. In **Entra ID** → **App registrations** → **New registration** (or use an existing app).  
-   - **Supported account types**: match your scenario (single-tenant or multitenant).  
+   - **Supported account types**: use **this directory only** (single-tenant) for one org or your own deployment; use **any organizational directory** (multitenant) only if you ship one client ID to many customer tenants (ISV). The helper script **`Register-EoaMsalSpaApp.ps1`** defaults to single-tenant; pass **`-Multitenant`** for `AzureADMultipleOrgs`.  
    - **Redirect URI**: platform **Single-page application (SPA)**. Add every URL users will open, exactly (path matters):  
      - `https://<your-host>/`  
      - `https://<your-host>/app`  

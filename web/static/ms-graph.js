@@ -2,7 +2,7 @@
  * Microsoft sign-in (MSAL) + delegated Graph: tenant context + app registration CRUD.
  * MSAL is loaded dynamically so a CDN failure does not prevent ms-graph.js from loading.
  *
- * Client ID resolution: server (EOA_MS_GRAPH_SPA_CLIENT_ID or bundled in app), optional
+ * Client ID resolution: server (EOA_MS_GRAPH_SPA_CLIENT_ID, optional EOA_MS_GRAPH_SPA_USE_GRAPH_APP_ID, or bundled in app), optional
  * OSS fork default in this file, OR localStorage key eoa_ms_graph_spa_client_id (advanced).
  */
 let pca = null;
@@ -10,7 +10,7 @@ let pca = null;
 const LOCAL_STORAGE_MS_CLIENT_ID = "eoa_ms_graph_spa_client_id";
 
 /**
- * Optional: set to your public multi-tenant SPA Application (client) ID so "Add client" works
+ * Optional: set to your public SPA Application (client) ID (same as server bundle) when static-served without API
  * without server env or pasting (same as BUNDLED_MS_GRAPH_SPA_CLIENT_ID on the API).
  * @type {string}
  */
@@ -80,8 +80,20 @@ function readMsalBootstrap() {
   }
 }
 
+function readStoredMsClientId() {
+  try {
+    const stored =
+      typeof localStorage !== "undefined" ? localStorage.getItem(LOCAL_STORAGE_MS_CLIENT_ID) : null;
+    if (stored && /^[0-9a-f-]{36}$/i.test(stored.trim())) return stored.trim();
+  } catch {
+    /* private mode / no localStorage */
+  }
+  return "";
+}
+
 async function fetchMsalConfig() {
   const boot = readMsalBootstrap();
+  const lsId = readStoredMsClientId();
   let cfg = {
     enabled: false,
     scopes: DELEGATED_GRAPH_SCOPES,
@@ -105,7 +117,8 @@ async function fetchMsalConfig() {
     String(cfg.clientId || "").trim() ||
     String(cfg.fallback_client_id || "").trim() ||
     String(OSS_DEFAULT_SPA_CLIENT_ID || "").trim() ||
-    boot.clientId;
+    boot.clientId ||
+    lsId;
 
   if (effectiveServer && /^[0-9a-f-]{36}$/i.test(effectiveServer)) {
     let source = "server";
@@ -113,6 +126,7 @@ async function fetchMsalConfig() {
       if (String(cfg.fallback_client_id || "").trim()) source = "fallback";
       else if (String(OSS_DEFAULT_SPA_CLIENT_ID || "").trim()) source = "oss-default";
       else if (boot.clientId === effectiveServer) source = "bootstrap";
+      else if (lsId === effectiveServer) source = "localStorage";
     }
     return {
       enabled: true,
@@ -124,25 +138,6 @@ async function fetchMsalConfig() {
     };
   }
 
-  try {
-    const stored =
-      typeof localStorage !== "undefined" ? localStorage.getItem(LOCAL_STORAGE_MS_CLIENT_ID) : null;
-    if (stored && /^[0-9a-f-]{36}$/i.test(stored.trim())) {
-      const cid = stored.trim();
-      if (!cfg.enabled || !(cfg.clientId || "").toString().trim()) {
-        return {
-          enabled: true,
-          clientId: cid,
-          authority: authorityFromMsalHints(mergedCfg),
-          scopes,
-          redirectPath: "/",
-          clientIdSource: "localStorage",
-        };
-      }
-    }
-  } catch {
-    /* private mode / no localStorage */
-  }
   return cfg;
 }
 
@@ -206,21 +201,19 @@ export async function initMicrosoftGraphUI() {
   if (!cfg.enabled) {
     mount.innerHTML = `
       <div class="ms-add-client-block">
-        <p class="ms-add-client-lead"><strong>Add a client</strong> — sign in with your work account to capture which Microsoft 365 <strong>directory (tenant)</strong> bulk jobs should use. No tenant ID field; the login establishes context.</p>
-        <p class="hint">Microsoft 365 sign-in needs a <strong>public</strong> SPA Application (client) ID (it is not a secret). Set <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> in <strong>Settings</strong> (writes <code>eoa_gui.env</code>), <code>web/.env</code>, or <code>BUNDLED_MS_GRAPH_SPA_CLIENT_ID</code>, then <strong>reload this page</strong> — the <strong>Add client</strong> (Sign in) button appears automatically. Open the console from this site (e.g. <code>/</code> or <code>/app</code>) so the server can inject config; do not rely on a bare <code>/static/index.html</code> URL alone. Register this redirect URI on your Entra SPA app: <code>${escapeHtml(redirectUriForPage())}</code></p>
+        <h3 class="h3 ms-m365-title">Sign in with Microsoft</h3>
+        <p class="ms-add-client-lead">Use your work account so the console knows which Microsoft 365 <strong>directory (tenant)</strong> to use for bulk jobs. No separate tenant GUID field.</p>
+        <p class="hint">Microsoft sign-in uses <strong>MSAL</strong> in the browser. By default the API reuses <code>EOA_GRAPH_CLIENT_ID</code> when <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> is unset (same Entra app must have a <strong>Single-page application</strong> redirect for this page: <code>${escapeHtml(redirectUriForPage())}</code>). Or set <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> / <code>BUNDLED_MS_GRAPH_SPA_CLIENT_ID</code>, or paste once below (stored in this browser only).</p>
         <div class="ms-row">
           <button type="button" class="primary" id="ms-open-deployment-settings">Open deployment settings</button>
         </div>
-        <details class="ms-advanced-clientid">
-          <summary>Advanced — browser-only client ID</summary>
-          <p class="hint small">If you cannot change server settings, paste your Entra <strong>SPA</strong> Application (client) ID once (stored in this browser only).</p>
-          <div class="ms-row">
-            <input type="text" id="ms-client-id-input" class="input-grow" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" autocomplete="off" />
-            <button type="button" class="ghost" id="ms-save-client-id">Save &amp; reload</button>
-          </div>
-          <p id="ms-client-id-msg" class="msg" role="status"></p>
-        </details>
-        <p class="hint small">Delegated scopes: Settings / <code>EOA_MS_GRAPH_DELEGATED_SCOPES</code> (defaults include User.Read, Organization.Read.All, Application.ReadWrite.All — admin consent may apply).</p>
+        <p class="hint small"><strong>One-time browser setup</strong> (no server restart): paste your Entra <strong>SPA</strong> Application (client) ID, then <strong>Save &amp; reload</strong>.</p>
+        <div class="ms-row">
+          <input type="text" id="ms-client-id-input" class="input-grow" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" autocomplete="off" aria-label="Entra SPA application client ID" />
+          <button type="button" class="primary" id="ms-save-client-id">Save &amp; reload</button>
+        </div>
+        <p id="ms-client-id-msg" class="msg" role="status"></p>
+        <p class="hint small">Delegated scopes: <code>EOA_MS_GRAPH_DELEGATED_SCOPES</code> (defaults include User.Read, Organization.Read.All, Application.ReadWrite.All — admin consent may apply). Open the site from <code>/</code> or <code>/app</code> so the server injects MSAL config.</p>
       </div>
     `;
     document.getElementById("ms-open-deployment-settings")?.addEventListener("click", () => {
@@ -291,7 +284,7 @@ export async function initMicrosoftGraphUI() {
 
   mount.innerHTML = `
     <div class="ms-row">
-      <button type="button" class="btn-ms" id="ms-signin" title="Sign in with Microsoft to link this directory (tenant) for bulk jobs">Add client</button>
+      <button type="button" class="btn-ms" id="ms-signin" title="Sign in with Microsoft to link this directory (tenant) for bulk jobs">Sign in with Microsoft</button>
       <button type="button" class="ghost" id="ms-reconsent" hidden title="Use after admin grants Application.ReadWrite.All">Re-consent permissions</button>
       <button type="button" class="ghost" id="ms-signout" hidden>Sign out (Microsoft)</button>
     </div>

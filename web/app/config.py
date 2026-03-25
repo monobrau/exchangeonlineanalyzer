@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     # Used for sign-in with Microsoft (tenant context + delegated Graph for app registration CRUD).
     # Register redirect URIs: e.g. http://127.0.0.1:8080/ and http://127.0.0.1:8080/app (and HTTPS equivalents).
     ms_graph_spa_client_id: str = ""
+    # When true and ms_graph_spa_client_id is empty, reuse graph_client_id for MSAL (same Entra app must have SPA platform).
+    ms_graph_spa_use_graph_app_id: bool = True
     # Authority tenant: organizations | common | consumers | or a directory (tenant) GUID
     ms_graph_tenant: str = "organizations"
     # Comma-separated delegated Graph scopes for browser MSAL (empty = default set in ms_graph_spa.py).
