@@ -39,6 +39,8 @@ sudo systemctl restart cloudflared
 sudo systemctl status cloudflared --no-pager
 ```
 
+**522 from Cloudflare:** If `cloudflared` exits cleanly, `Restart=on-failure` may **not** bring it back, which breaks the tunnel for **all** clients until a manual restart. Use a drop-in: **`/etc/systemd/system/cloudflared.service.d/override.conf`** with `[Service]` **`Restart=always`** and **`RestartSec=5`**, then `daemon-reload` and `restart cloudflared`.
+
 ## 3. App environment (`web/.env` on the server)
 
 Use the **public HTTPS URL** (no port):
