@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
@@ -71,12 +71,9 @@ app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(auth_oidc.router, prefix="/api/v1")
 
 
-@app.get("/", response_model=None)
-def index_page() -> FileResponse | HTMLResponse:
-    """Without OIDC, serve static index. With OIDC, serve HTML that hides the console until JS confirms a token (no flash)."""
+def _oidc_locked_console_html() -> HTMLResponse:
+    """Full console HTML with locked shell until sessionStorage has a bearer token."""
     path = STATIC_DIR / "index.html"
-    if not _oidc_browser_ready():
-        return FileResponse(path)
     html = path.read_text(encoding="utf-8")
     if '<body class="auth-locked">' not in html:
         html = html.replace("<body>", '<body class="auth-locked">', 1)
@@ -95,6 +92,25 @@ def index_page() -> FileResponse | HTMLResponse:
         media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
+
+
+@app.get("/", response_model=None)
+def root_page() -> FileResponse:
+    """OIDC: minimal landing only. No OIDC: full console at / (local dev)."""
+    if _oidc_browser_ready():
+        return FileResponse(
+            STATIC_DIR / "landing.html",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/app", response_model=None)
+def app_console_page() -> HTMLResponse | RedirectResponse:
+    """Full bulk-export console. OIDC: locked shell until token in sessionStorage. No OIDC: use / instead."""
+    if not _oidc_browser_ready():
+        return RedirectResponse("/", status_code=302)
+    return _oidc_locked_console_html()
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -152,8 +152,8 @@ def oidc_callback(
 <body>
 <script>
 sessionStorage.setItem("eoa_bearer", {js_token});
-location.replace("/");
+location.replace("/app");
 </script>
-<p>Signed in. <a href="/">Continue</a></p>
+<p>Signed in. <a href="/app">Continue</a></p>
 </body></html>"""
     return HTMLResponse(content=html, media_type="text/html; charset=utf-8")

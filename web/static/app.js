@@ -207,7 +207,7 @@ async function initAuth() {
     e.preventDefault();
     sessionStorage.removeItem("eoa_bearer");
     out.style.display = "none";
-    location.reload();
+    location.href = "/";
   });
 }
 

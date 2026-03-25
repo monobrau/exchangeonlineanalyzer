@@ -92,7 +92,7 @@ sudo systemctl restart eoa-api
 |--------|----------------|
 | OIDC enabled | `GET https://eoa.knospe.org/api/v1/auth/status` → `"oidc_login_enabled": true` |
 | OIDC discovery | `GET https://eoa.knospe.org/api/v1/me` without `Authorization` → **401** when issuer is set |
-| Browser login | Open `/`, **Sign in** → Authentik → back to app with token in `sessionStorage` (`eoa_bearer`) |
+| Browser login | Open **`/`** (minimal landing) → **Sign in** → Authentik → redirect to **`/app`** (console) with token in `sessionStorage` (`eoa_bearer`) |
 | API | `GET /api/v1/jobs` with `Authorization: Bearer <access_token>` → **200** |
 
 ---
