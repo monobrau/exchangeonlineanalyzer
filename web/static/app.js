@@ -855,8 +855,7 @@ async function loadMsGraphModule() {
     setJobsPlaceholderWhenLocked();
     return;
   }
-  await loadConnectionsStatus();
-  await loadMsGraphModule();
+  await Promise.all([loadConnectionsStatus(), loadMsGraphModule()]);
   renderTenantQueue();
   updateJobTenantHint();
   await loadJobs();

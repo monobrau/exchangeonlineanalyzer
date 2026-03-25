@@ -5,9 +5,8 @@ from __future__ import annotations
 import re
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
-from app.auth import require_user
 from app.config import get_settings
 
 router = APIRouter(prefix="/connections", tags=["connections"])
@@ -26,8 +25,13 @@ def _norm_guid(s: str) -> str | None:
 
 
 @router.get("/status")
-def connections_status(_: str | None = Depends(require_user)) -> dict:
-    """Whether Graph/EXO are configured via env (app-only); optional default tenant for jobs."""
+def connections_status() -> dict:
+    """Whether Graph/EXO are configured via env (app-only); optional default tenant for jobs.
+
+    Intentionally unauthenticated so the dashboard can paint status whenever the HTML loads
+    (OIDC session quirks were leaving the panel stuck on "Loading…").
+    Response contains no secrets — only booleans and optional non-secret identifiers.
+    """
     s = get_settings()
     graph_ok = bool(s.graph_client_id.strip() and s.graph_client_secret.strip())
     exo_skip = s.exo_skip_connect
