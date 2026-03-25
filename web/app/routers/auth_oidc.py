@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import secrets
 import base64
 from urllib.parse import urlencode
@@ -18,6 +19,7 @@ from app.config import get_settings
 from app.oidc_metadata import get_oidc_metadata
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 def _looks_like_jwt(token: str) -> bool:
@@ -196,13 +198,35 @@ def oidc_callback(
     try:
         sub = validate_oidc_jwt_token(bearer)
     except HTTPException as e:
-        detail = html.escape(str(e.detail) if getattr(e, "detail", None) else str(e))
+        raw = e.detail
+        if isinstance(raw, (list, dict)):
+            detail = html.escape(str(raw))
+        else:
+            detail = html.escape(str(raw) if raw is not None else str(e))
+        code = int(e.status_code) if getattr(e, "status_code", None) else 400
+        if code not in (400, 401, 403, 503):
+            code = 400
         return HTMLResponse(
             f"<!DOCTYPE html><html><body><p>Token validation failed: {detail}</p>"
             f'<p><a href="/">Home</a></p></body></html>',
-            status_code=400,
+            status_code=code,
         )
-    request.session[OIDC_SUB_SESSION_KEY] = sub
+    except Exception as e:
+        logger.exception("OIDC callback failed after token exchange")
+        return HTMLResponse(
+            "<!DOCTYPE html><html><body><p>Sign-in failed (server error). Try again.</p>"
+            '<p><a href="/">Home</a></p></body></html>',
+            status_code=500,
+        )
+    try:
+        request.session[OIDC_SUB_SESSION_KEY] = sub
+    except Exception as e:
+        logger.exception("OIDC callback failed storing session")
+        return HTMLResponse(
+            "<!DOCTYPE html><html><body><p>Sign-in failed (could not save session).</p>"
+            '<p><a href="/">Home</a></p></body></html>',
+            status_code=500,
+        )
 
     # One-page handoff: store bearer for existing fetch() + /api/v1 calls
     js_token = json.dumps(bearer)

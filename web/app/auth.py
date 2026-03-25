@@ -57,8 +57,17 @@ def validate_oidc_jwt_token(token: str) -> str:
             detail=f"Invalid token: not a JWT (opaque access token?). Re-sign in. ({e!s})",
         ) from e
 
-    meta = get_oidc_metadata(settings.oidc_issuer)
-    iss_disc = str(meta["issuer"]).strip()
+    try:
+        meta = get_oidc_metadata(settings.oidc_issuer)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"OIDC discovery failed (cannot reach issuer metadata): {e!s}",
+        ) from e
+
+    iss_disc = str(meta.get("issuer") or "").strip()
+    if not iss_disc:
+        raise HTTPException(status_code=503, detail="OIDC discovery document missing issuer")
     token_iss = unverified.get("iss")
     if not token_iss:
         raise HTTPException(status_code=401, detail="Invalid token: missing iss claim")
@@ -96,7 +105,9 @@ def validate_oidc_jwt_token(token: str) -> str:
                 **aud_kw,
             )
         else:
-            jwks_uri = str(meta["jwks_uri"])
+            jwks_uri = str(meta.get("jwks_uri") or "").strip()
+            if not jwks_uri:
+                raise HTTPException(status_code=503, detail="OIDC discovery document missing jwks_uri")
             jwks = _jwks_client_for(jwks_uri)
             signing_key = jwks.get_signing_key_from_jwt(token)
             payload = jwt.decode(
