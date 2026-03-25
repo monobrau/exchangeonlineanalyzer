@@ -202,32 +202,46 @@ async function initAuth() {
   const login = $("#auth-login");
   const out = $("#auth-logout");
   const gateBtn = $("#auth-gate-btn");
+  const loginHref = "/api/v1/auth/oidc/login";
 
+  let oidcEnabled = false;
   try {
-    const r = await fetch("/api/v1/auth/status");
-    const s = await r.json();
-    if (s.oidc_login_enabled) {
-      login.style.display = "";
-      const href = "/api/v1/auth/oidc/login";
-      login.setAttribute("href", href);
-      if (gateBtn) gateBtn.setAttribute("href", href);
-      let hasSession = false;
-      try {
-        const mr = await fetch("/api/v1/me", { credentials: "same-origin" });
-        hasSession = mr.ok;
-      } catch {
-        hasSession = false;
-      }
-      out.style.display = hasSession ? "inline-block" : "none";
-      if (!hasSession) {
-        lockAppUi();
-      } else {
-        unlockAppUi();
-      }
-    } else {
-      unlockAppUi();
+    const sr = await fetch("/api/v1/auth/status", { credentials: "same-origin" });
+    if (sr.ok) {
+      const st = await sr.json();
+      oidcEnabled = !!st.oidc_login_enabled;
     }
   } catch {
+    /* ignore */
+  }
+
+  let me = null;
+  let meHttp = 0;
+  try {
+    const mr = await fetch("/api/v1/me", { credentials: "same-origin" });
+    meHttp = mr.status;
+    if (mr.ok) me = await mr.json();
+  } catch {
+    me = null;
+  }
+
+  function wireOidcLoginLinks() {
+    login.style.display = "";
+    login.setAttribute("href", loginHref);
+    if (gateBtn) gateBtn.setAttribute("href", loginHref);
+  }
+
+  if (me && me.auth === "disabled") {
+    unlockAppUi();
+  } else if (me && me.auth === "oidc" && me.sub) {
+    wireOidcLoginLinks();
+    out.style.display = "inline-block";
+    unlockAppUi();
+  } else if (oidcEnabled || meHttp === 401) {
+    wireOidcLoginLinks();
+    out.style.display = "none";
+    lockAppUi();
+  } else {
     unlockAppUi();
   }
 

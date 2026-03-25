@@ -42,11 +42,11 @@ async def require_user(
     settings = get_settings()
     if not settings.oidc_issuer:
         return None
-    token = ""
-    if creds and creds.credentials:
+    # Prefer HttpOnly cookie (set on OIDC callback) over Authorization header.
+    # Stale opaque tokens left in sessionStorage would otherwise win and always 401.
+    token = (request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) or "").strip()
+    if not token and creds and creds.credentials:
         token = (creds.credentials or "").strip()
-    if not token:
-        token = (request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) or "").strip()
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
