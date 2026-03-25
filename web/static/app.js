@@ -1,5 +1,8 @@
 const $ = (sel) => document.querySelector(sel);
 
+/** When OIDC is on and there is no bearer token, main UI stays hidden (see initAuth). */
+let appUnlocked = true;
+
 function parseTenantIds(raw) {
   return raw
     .split(/[\n,]+/)
@@ -158,13 +161,27 @@ $("#refresh").addEventListener("click", () => loadJobs());
 async function initAuth() {
   const login = $("#auth-login");
   const out = $("#auth-logout");
+  const gate = $("#auth-gate");
+  const gateBtn = $("#auth-gate-btn");
+  appUnlocked = true;
+  document.body.classList.remove("auth-locked");
+  if (gate) gate.hidden = true;
+
   try {
     const r = await fetch("/api/v1/auth/status");
     const s = await r.json();
     if (s.oidc_login_enabled) {
       login.style.display = "";
-      login.setAttribute("href", "/api/v1/auth/oidc/login");
-      out.style.display = sessionStorage.getItem("eoa_bearer") ? "inline-block" : "none";
+      const href = "/api/v1/auth/oidc/login";
+      login.setAttribute("href", href);
+      if (gateBtn) gateBtn.setAttribute("href", href);
+      const hasToken = !!sessionStorage.getItem("eoa_bearer");
+      out.style.display = hasToken ? "inline-block" : "none";
+      if (!hasToken) {
+        appUnlocked = false;
+        document.body.classList.add("auth-locked");
+        if (gate) gate.hidden = false;
+      }
     }
   } catch {
     /* ignore */
@@ -179,7 +196,11 @@ async function initAuth() {
 
 (async () => {
   await initAuth();
+  if (!appUnlocked) return;
   await loadJobs();
 })();
 
-setInterval(loadJobs, 8000);
+setInterval(() => {
+  if (!appUnlocked) return;
+  loadJobs();
+}, 8000);

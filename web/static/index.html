@@ -24,7 +24,13 @@
     </nav>
   </header>
 
-  <main class="layout">
+  <div id="auth-gate" class="auth-gate panel" hidden>
+    <h2>Authentication required</h2>
+    <p>Sign in to view and create bulk export jobs.</p>
+    <p><a id="auth-gate-btn" class="gate-signin" href="/api/v1/auth/oidc/login">Sign in</a></p>
+  </div>
+
+  <main class="layout" id="app-main">
     <section class="panel" aria-labelledby="new-job-title">
       <h2 id="new-job-title">New job</h2>
       <p class="hint">Tenant IDs (one per line or comma-separated). Options as JSON (advanced). On the server, set <code>EOA_USE_PWSH_STUB_WORKER=true</code> to run <code>web/pwsh/WebBulkJobStub.ps1</code> via <code>pwsh</code>.</p>
@@ -66,7 +72,7 @@
     </section>
   </main>
 
-  <footer class="foot">
+  <footer class="foot" id="app-footer">
     <span>Placeholder worker runs on the server after each create (replace with PowerShell bulk export).</span>
   </footer>
 
