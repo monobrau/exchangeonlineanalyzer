@@ -12,7 +12,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
-- **Browser UI:** `http://127.0.0.1:8080/` — bulk job form and recent jobs table
+- **Browser UI:** `http://127.0.0.1:8080/` — Microsoft 365 sign-in, app registration tools, bulk job form (checkboxes; tenant from sign-in — no JSON/GUID paste)
 - Health: `GET http://127.0.0.1:8080/health`
 - Readiness: `GET http://127.0.0.1:8080/ready` (checks DB)
 - OpenAPI: `http://127.0.0.1:8080/docs`
@@ -89,11 +89,11 @@ python tools/run_graph_report.py <YOUR-TENANT-GUID> organization
 
 Exit code **0** means every requested report succeeded; **1** means at least one failed (check `report_*.json` and `worker.log`). **2** means credentials were not set.
 
-### Many tenants (no per-tenant login)
+### Console vs API
 
-For **large numbers of customer directories** (e.g. 300), use the **Python Graph worker** with **`EOA_GRAPH_CLIENT_ID`** + **`EOA_GRAPH_CLIENT_SECRET`** (application permissions) and pass **`tenant_ids`** in the job body — **not** interactive Microsoft sign-in per tenant. Each tenant must have **admin-consented** your app. Cap: **`EOA_GRAPH_MAX_TENANTS_PER_JOB`** (default 300); optional **`options.max_tenants`**. See **[`docs/multi-tenant-scaling.md`](docs/multi-tenant-scaling.md)**.
+The **web console** targets **interactive** Microsoft sign-in for the active directory and **checkbox** options (parity with desktop report toggles). **`POST /api/v1/jobs/bulk`** still accepts arbitrary **`tenant_ids`** for **automated** callers (e.g. Python Graph worker with app-only creds). See **[`docs/multi-tenant-scaling.md`](docs/multi-tenant-scaling.md)**.
 
-### Microsoft sign-in (browser) — tenant without pasting GUIDs + app registrations
+### Microsoft sign-in (browser) — app registrations + tenant for jobs
 
 This is **separate** from Authentik/API auth: the header **Sign in** still controls access to `/api/v1/jobs` when `EOA_OIDC_ISSUER` is set. The **Microsoft 365** panel uses **MSAL** in the browser to sign in with a work account and call **Microsoft Graph** directly (delegated). **Creating app registrations** uses `POST https://graph.microsoft.com/v1.0/applications` from the browser with the signed-in user’s token.
 
@@ -115,7 +115,8 @@ Then:
    - **`Application.ReadWrite.All`** almost always requires **Grant admin consent for \<tenant\>** (or an admin consent workflow). Without it, list/create/delete app registration calls return **403**.  
 3. Optionally set **`EOA_MS_GRAPH_TENANT`** (default **`organizations`** for work accounts) when using a server-side client ID.  
 4. Open **`/`** or **`/app`**, expand **Microsoft 365**, **Sign in with Microsoft** (after pasting client ID if prompted). After an admin has consented permissions, use **Re-consent permissions** once if you still see consent or authorization errors.  
-5. **App registrations** table: **Create** (display name), **Refresh list**, **Rename**, **Delete** — all call Graph interactively; no server-side Graph secret is used for this panel.
+5. **App registrations** table: **Create** (display name), **Refresh list**, **Rename**, **Delete** — all call Graph interactively; no server-side Graph secret is used for this panel.  
+6. **Bulk jobs** use the same sign-in for **tenant context** (no tenant ID or options JSON in the form).
 
 ## Deploy (Linux)
 

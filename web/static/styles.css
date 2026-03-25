@@ -595,3 +595,73 @@ body.landing-body {
 .linklike.danger {
   color: var(--danger);
 }
+
+/* Job form — checkboxes, no JSON / tenant paste */
+.job-tenant-status.job-tenant-warn {
+  color: var(--warn);
+}
+
+.job-range-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  align-items: center;
+  margin: 0.75rem 0 1rem;
+}
+
+.job-inline-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.job-inline-label input,
+.job-inline-label select {
+  min-width: 6rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #0f1419;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.job-fieldset {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.job-fieldset legend {
+  padding: 0 0.35rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.job-fieldset .small {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.job-chk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.35rem 0.75rem;
+}
+
+.job-chk {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.job-chk input {
+  accent-color: var(--accent);
+}

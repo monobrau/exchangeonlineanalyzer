@@ -7,13 +7,16 @@ from pydantic import BaseModel, Field
 class BulkJobCreate(BaseModel):
     """Body for POST /api/v1/jobs/bulk — mirrors BulkTenantExporter options over time."""
 
-    tenant_ids: list[str] = Field(default_factory=list, description="Entra tenant id(s) to process")
+    tenant_ids: list[str] = Field(
+        default_factory=list,
+        description="Entra directory id(s). Web UI sends the signed-in tenant only; integrations may send more.",
+    )
     options: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Exporter options (snake_case). GET /api/v1/export/options-schema returns JSON Schema. "
-            "Python Graph worker: key 'reports' — organization, users, conditional_access, applications (aliases org, ca, apps). "
-            "include_* booleans mirror BulkTenantExporter Include*; EXO-heavy slices need a Windows + ExchangeOnlineManagement worker."
+            "Exporter options (snake_case): include_* booleans, days_back, sign_in_logs_days_back, etc. "
+            "Web UI builds this from checkboxes; GET /api/v1/export/options-schema for the full schema. "
+            "Python Graph worker merges include_* into Graph reports; EXO slices need Windows + interactive EXO (BulkTenantExporter)."
         ),
     )
 

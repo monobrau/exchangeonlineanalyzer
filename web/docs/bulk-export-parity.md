@@ -56,7 +56,7 @@ Browser (OIDC + optional MSAL)
 - For each **Graph-backed** `Include*` flag, add a **report** implementation in **`graph_worker.py`** (or split modules) with required **application permissions** and admin consent documentation.
 
 ### Phase 4 — UI
-- Replace free-form JSON with **checkboxes** / **date range** / **user search** in `static/` that POST the structured **`options`** object.
+- **Done (web console):** **checkboxes** + **days** controls; **`tenant_ids`** from **Microsoft sign-in** only (no JSON/GUID paste). **User search** for selected mailboxes remains a desktop / future web enhancement.
 
 ## Payload shape (target)
 

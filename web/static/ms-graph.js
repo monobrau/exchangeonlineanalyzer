@@ -16,6 +16,14 @@ const DELEGATED_GRAPH_SCOPES = [
   "Application.ReadWrite.All",
 ];
 
+function broadcastMsGraphTenant(detail) {
+  try {
+    window.dispatchEvent(new CustomEvent("eoa-ms-tenant", { detail }));
+  } catch {
+    /* ignore */
+  }
+}
+
 async function importMsalBrowser() {
   const urls = [
     "https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.26.1/+esm",
@@ -205,7 +213,7 @@ export async function initMicrosoftGraphUI() {
     <div id="ms-tenant-box" class="ms-tenant-box" hidden>
       <p><strong>Tenant</strong> <span id="ms-tenant-name">—</span></p>
       <p class="mono small"><span id="ms-tenant-id">—</span></p>
-      <button type="button" class="primary" id="ms-use-tenant">Use this tenant for bulk job</button>
+      <p class="hint small">Bulk jobs below use this directory automatically — no tenant ID field.</p>
     </div>
     <p class="hint small" id="ms-clear-client-id-wrap" hidden>
       <button type="button" class="linklike" id="ms-clear-saved-client-id">Clear browser-stored client ID</button>
@@ -262,10 +270,13 @@ export async function initMicrosoftGraphUI() {
       const token = await acquireToken(loginRequest.scopes);
       const org = await graphJson("/organization", token);
       const v = org && org.value && org.value[0];
-      el("ms-tenant-name").textContent = (v && v.displayName) || "(organization)";
+      const dname = (v && v.displayName) || "(organization)";
+      el("ms-tenant-name").textContent = dname;
+      broadcastMsGraphTenant({ tenantId: tid, displayName: dname });
     } catch (e) {
       tenantMsg.textContent = formatGraphError(e);
       el("ms-tenant-name").textContent = "—";
+      broadcastMsGraphTenant({ tenantId: tid, displayName: "" });
     }
     el("ms-tenant-box").hidden = false;
   }
@@ -386,15 +397,7 @@ export async function initMicrosoftGraphUI() {
       '<tr><td colspan="4" class="empty">Sign in with Microsoft to manage app registrations.</td></tr>';
     appsMsg.textContent = "";
     tenantMsg.textContent = "Signed out.";
-  });
-
-  el("ms-use-tenant").addEventListener("click", () => {
-    const tid = el("ms-tenant-id").textContent.trim();
-    const ta = document.getElementById("tenant-ids");
-    if (ta && tid) {
-      ta.value = tid;
-      tenantMsg.textContent = "Tenant ID copied into the bulk job field.";
-    }
+    broadcastMsGraphTenant({ tenantId: null, displayName: "" });
   });
 
   el("ms-create-app").addEventListener("click", async () => {

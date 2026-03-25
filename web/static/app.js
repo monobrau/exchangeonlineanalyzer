@@ -6,11 +6,42 @@ let getMsGraphTenantIdForJob = () => null;
 /** When OIDC is on and there is no bearer token, main UI stays hidden (see initAuth). */
 let appUnlocked = true;
 
-function parseTenantIds(raw) {
-  return raw
-    .split(/[\n,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+window.addEventListener("eoa-ms-tenant", (ev) => {
+  const p = document.getElementById("job-tenant-status");
+  if (!p) return;
+  const d = ev.detail || {};
+  if (d.tenantId) {
+    const name = d.displayName && String(d.displayName).trim() ? `${d.displayName} · ` : "";
+    p.textContent = `Signed-in directory: ${name}jobs use this tenant automatically.`;
+    p.classList.remove("job-tenant-warn");
+  } else {
+    p.textContent = "Sign in with Microsoft in the section above before creating a job.";
+    p.classList.add("job-tenant-warn");
+  }
+});
+
+function collectJobOptionsFromDom() {
+  const daysEl = document.getElementById("job-days-back");
+  const signEl = document.getElementById("job-signin-days");
+  let days = parseInt(daysEl?.value || "10", 10);
+  if (!Number.isFinite(days)) days = 10;
+  days = Math.min(365, Math.max(1, days));
+  let signDays = parseInt(signEl?.value || "7", 10);
+  if (![1, 7, 30].includes(signDays)) signDays = 7;
+  const opts = {
+    days_back: days,
+    message_trace_days_back: days,
+    sign_in_logs_days_back: signDays,
+  };
+  document.querySelectorAll("#job-form input[type=checkbox][data-opt]").forEach((cb) => {
+    const k = cb.getAttribute("data-opt");
+    if (k && cb.checked) opts[k] = true;
+  });
+  return opts;
+}
+
+function anyReportCheckboxChecked() {
+  return [...document.querySelectorAll("#job-form input[type=checkbox][data-opt]")].some((cb) => cb.checked);
 }
 
 async function api(path, opts = {}) {
@@ -151,40 +182,35 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-$("#job-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const formMsg = $("#form-msg");
-  formMsg.textContent = "";
-  let tenant_ids = parseTenantIds($("#tenant-ids").value);
-  if (tenant_ids.length === 0) {
-    const tid = getMsGraphTenantIdForJob();
-    if (tid) tenant_ids = [tid];
-  }
-  let options = {};
-  try {
-    options = JSON.parse($("#options-json").value || "{}");
-  } catch {
-    formMsg.textContent = "Options must be valid JSON.";
-    return;
-  }
-  if (tenant_ids.length === 0) {
-    formMsg.textContent =
-      "Sign in with Microsoft above (tenant auto-filled) or paste at least one tenant ID (GUID).";
-    return;
-  }
-  try {
-    await api("/api/v1/jobs/bulk", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenant_ids, options }),
-    });
-    formMsg.textContent = "Job created.";
-    $("#tenant-ids").value = "";
-    await loadJobs();
-  } catch (e) {
-    formMsg.textContent = String(e.message || e);
-  }
-});
+const jobForm = $("#job-form");
+if (jobForm) {
+  jobForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const formMsg = $("#form-msg");
+    formMsg.textContent = "";
+    if (!anyReportCheckboxChecked()) {
+      formMsg.textContent = "Select at least one report.";
+      return;
+    }
+    const tenantId = getMsGraphTenantIdForJob();
+    if (!tenantId) {
+      formMsg.textContent = "Sign in with Microsoft in the Microsoft 365 section first.";
+      return;
+    }
+    const options = collectJobOptionsFromDom();
+    try {
+      await api("/api/v1/jobs/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenant_ids: [tenantId], options }),
+      });
+      formMsg.textContent = "Job created.";
+      await loadJobs();
+    } catch (e) {
+      formMsg.textContent = String(e.message || e);
+    }
+  });
+}
 
 $("#refresh").addEventListener("click", () => loadJobs());
 
