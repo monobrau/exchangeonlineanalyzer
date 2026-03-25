@@ -278,7 +278,7 @@ async function initAuth() {
   await initAuth();
   const msMount = document.getElementById("ms-graph-mount");
   try {
-    const msUrl = new URL("./ms-graph.js?v=15", import.meta.url).href;
+    const msUrl = new URL("./ms-graph.js", import.meta.url).href;
     const m = await import(msUrl);
     getMsGraphTenantIdForJob = m.getMsGraphTenantIdForJob;
     await m.initMicrosoftGraphUI();

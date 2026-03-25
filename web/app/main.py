@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
@@ -14,6 +14,17 @@ from app.db import engine, init_db
 from app.routers import auth_oidc, jobs
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+_HTML_NO_STORE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+    "CDN-Cache-Control": "no-store",
+}
+
+
+def _inject_asset_version(html: str, version: str) -> str:
+    """Bust CDN/browser caches: CSS/JS URLs change when API version changes."""
+    return html.replace("{{EOA_ASSET_V}}", version)
 
 
 def _oidc_browser_ready() -> bool:
@@ -31,7 +42,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     description="Bulk export jobs API and browser console. OIDC optional (EOA_OIDC_ISSUER).",
-    version="0.7.3",
+    version="0.8.0",
     lifespan=lifespan,
 )
 
@@ -72,12 +83,17 @@ app.include_router(auth_oidc.router, prefix="/api/v1")
 
 
 @app.middleware("http")
-async def _no_cache_static_js_css(request: Request, call_next):
-    """Avoid stale app.js/ms-graph.js after deploy (some proxies cache /static aggressively)."""
+async def _cache_control_headers(request: Request, call_next):
+    """Discourage edge caches (Cloudflare) from serving stale HTML/CSS/JS."""
     response = await call_next(request)
     p = request.url.path
     if p.startswith("/static/") and (p.endswith(".js") or p.endswith(".css")):
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        response.headers["CDN-Cache-Control"] = "no-cache"
+    ct = (response.headers.get("content-type") or "").lower()
+    if "text/html" in ct:
+        for k, v in _HTML_NO_STORE.items():
+            response.headers[k] = v
     return response
 
 
@@ -99,25 +115,24 @@ def _oidc_locked_console_html() -> HTMLResponse:
     )
     # View source: confirms which API build served this page (compare to git deploy).
     html = f"<!-- eoa-console build=api-{app.version} template=index.html has-ms-graph-outer -->\n" + html
+    html = _inject_asset_version(html, app.version)
     return HTMLResponse(
         content=html,
         media_type="text/html; charset=utf-8",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate",
-            "Pragma": "no-cache",
-        },
+        headers=dict(_HTML_NO_STORE),
     )
 
 
 @app.get("/", response_model=None)
-def root_page() -> FileResponse:
+def root_page() -> HTMLResponse:
     """OIDC: minimal landing only. No OIDC: full console at / (local dev)."""
     if _oidc_browser_ready():
-        return FileResponse(
-            STATIC_DIR / "landing.html",
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-        )
-    return FileResponse(STATIC_DIR / "index.html")
+        raw = (STATIC_DIR / "landing.html").read_text(encoding="utf-8")
+        body = _inject_asset_version(raw, app.version)
+        return HTMLResponse(content=body, media_type="text/html; charset=utf-8", headers=dict(_HTML_NO_STORE))
+    raw = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    body = _inject_asset_version(raw, app.version)
+    return HTMLResponse(content=body, media_type="text/html; charset=utf-8", headers=dict(_HTML_NO_STORE))
 
 
 @app.get("/app", response_model=None)

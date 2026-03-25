@@ -95,6 +95,8 @@ After **`git pull`**, install Python deps in the same venv systemd uses:
 cd web && .venv/bin/pip install -r requirements.txt && sudo systemctl restart eoa-api
 ```
 
+HTML/CSS/JS responses include **`CDN-Cache-Control`** and asset URLs use **`?v=<api version>`** so each deploy changes filenames. If the public URL still looks stale, **purge Cloudflare cache** for the hostname once (browser hard refresh is not enough when the edge cached HTML).
+
 Examples (adjust paths/users):
 
 - **[`deploy/eoa-api.service.example`](deploy/eoa-api.service.example)** — systemd unit for `uvicorn` on `127.0.0.1:8080`.
