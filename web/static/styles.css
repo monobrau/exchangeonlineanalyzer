@@ -344,18 +344,23 @@ button.linklike:hover {
 }
 
 /* Landing (/) when OIDC is enabled — no console UI */
+html.landing-html {
+  height: 100%;
+}
+
+/* Grid centering: more reliable than flex here; pair with html { height: 100% } */
 body.landing-body {
   margin: 0;
   min-height: 100vh;
   min-height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  min-height: -webkit-fill-available;
+  display: grid;
+  place-items: center;
   padding: clamp(1rem, 5vw, 2rem);
   position: relative;
   overflow-x: hidden;
   font-family: "Outfit", var(--sans);
+  box-sizing: border-box;
 }
 
 .landing-bg {
@@ -384,8 +389,8 @@ body.landing-body {
 .landing-main {
   position: relative;
   z-index: 1;
-  width: 100%;
-  max-width: 28rem;
+  width: min(100%, 28rem);
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
