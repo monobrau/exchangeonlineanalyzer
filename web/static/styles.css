@@ -601,6 +601,135 @@ body.landing-body {
   color: var(--warn);
 }
 
+button.ghost.sm {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+}
+
+.tenant-queue-panel {
+  margin: 1rem 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.tenant-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  margin: 0.5rem 0;
+}
+
+.queue-tenant-input {
+  min-width: 14rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #0f1419;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.tenant-queue-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+}
+
+.tenant-queue-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  margin: 0.25rem 0;
+  font-size: 0.88rem;
+}
+
+.job-activity-hint {
+  margin: 0 0 0.5rem;
+}
+
+.job-activity-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin: 0 0 1rem;
+}
+
+.job-activity-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0.5rem 0.75rem;
+}
+
+.job-activity-card--min .job-activity-body {
+  display: none;
+}
+
+.job-activity-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.6rem;
+}
+
+.job-activity-spacer {
+  flex: 1 1 auto;
+}
+
+.job-activity-body {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.job-activity-time {
+  font-size: 0.8rem;
+}
+
+.job-activity-dl {
+  margin-top: 0.25rem;
+}
+
+.conn-panel {
+  max-width: 960px;
+  margin: 1.25rem auto 0;
+  padding: 0 1.5rem;
+}
+
+.conn-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.conn-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+}
+
+.conn-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.ms-graph-outer .hint {
+  margin-top: 0.5rem;
+}
+
 .job-range-row {
   display: flex;
   flex-wrap: wrap;
@@ -664,4 +793,139 @@ body.landing-body {
 
 .job-chk input {
   accent-color: var(--accent);
+}
+
+/* Settings modal (runtime env overrides) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow-y: auto;
+  background: rgba(6, 10, 14, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.modal-overlay[hidden] {
+  display: none !important;
+}
+
+.modal-panel {
+  width: min(44rem, 100%);
+  margin: 2vh auto;
+  padding: 1.25rem 1.35rem 1.5rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.settings-note {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+}
+
+.settings-scroll {
+  max-height: min(62vh, 32rem);
+  overflow-y: auto;
+  padding-right: 0.35rem;
+}
+
+.settings-section {
+  margin: 1rem 0 1.25rem;
+}
+
+.settings-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.settings-field {
+  margin-bottom: 0.85rem;
+}
+
+.settings-field label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.settings-field .field-hint {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.settings-field input[type="text"],
+.settings-field input[type="password"],
+.settings-field input[type="number"] {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #0f1419;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.settings-field input[type="checkbox"] {
+  accent-color: var(--accent);
+  margin-right: 0.35rem;
+}
+
+.settings-row-inline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.settings-secret-clear {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.modal-actions {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.modal-actions code {
+  font-size: 0.85em;
+}
+
+.warn-tag {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bg);
+  background: var(--warn);
+  border-radius: 4px;
+  vertical-align: middle;
 }

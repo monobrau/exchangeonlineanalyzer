@@ -10,9 +10,10 @@ python -m venv .venv
 . .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+python -m pytest tests/ -q
 ```
 
-- **Browser UI:** `http://127.0.0.1:8080/` — Microsoft 365 sign-in, app registration tools, bulk job form (checkboxes; tenant from sign-in — no JSON/GUID paste)
+- **Browser UI:** `http://127.0.0.1:8080/` — Microsoft 365 **Add client** sign-in, app registration tools, bulk job form, optional **client queue** (one job per tenant GUID), **Run activity** cards, **Run again** (loads `request_payload`)
 - Health: `GET http://127.0.0.1:8080/health`
 - Readiness: `GET http://127.0.0.1:8080/ready` (checks DB)
 - OpenAPI: `http://127.0.0.1:8080/docs`
@@ -27,9 +28,10 @@ With Authentik enabled, open the app in the browser and set `sessionStorage.setI
 | GET | `/api/v1/ui-info` | **Live deploy check:** files under `web/static` this process reads (`index_html.has_ms_graph_outer`, etc.); no auth |
 | GET | `/api/v1/export/options-schema` | JSON Schema for `options` on `POST /api/v1/jobs/bulk` (parity with desktop bulk exporter); see `web/docs/bulk-export-parity.md` |
 | GET | `/api/v1/me` | Current user `sub` when `EOA_OIDC_ISSUER` is set |
+| GET | `/api/v1/connections/status` | Graph/EXO configured (server env) + optional default job tenant GUID |
 | GET | `/api/v1/jobs` | List jobs |
 | POST | `/api/v1/jobs/bulk` | Create bulk export job (body: `tenant_ids`, `options`) |
-| GET | `/api/v1/jobs/{uuid}` | Job status |
+| GET | `/api/v1/jobs/{uuid}` | Job status and `request_payload` (tenant_ids + options snapshot for **Run again**) |
 | GET | `/api/v1/jobs/{uuid}/artifacts` | List artifact filenames for that job |
 | GET | `/api/v1/jobs/{uuid}/artifact?file=summary.json` | Download file from `web/data/artifacts/{uuid}/` (requires `succeeded`) |
 
@@ -52,15 +54,19 @@ Use **`EOA_CORS_ORIGINS`** with your real UI origin when not same-host.
 
 See `.env.example`. Database defaults to `web/data/eoa_jobs.db`.
 
+### Settings in the browser
+
+The header **Settings** button opens a panel that reads the **effective** configuration (base `web/.env` plus overrides). **Save** writes **`web/data/eoa_gui.env`**, which overrides the same keys from `.env` for this process after save (settings cache is reloaded). The **Microsoft 365 — browser sign-in (MSAL)** section includes **SPA client ID**, **authority tenant**, and **delegated scopes** so you can enable and tune M365 auth without editing files. Secrets are never shown in full; use **Remove override** to drop a gui-only secret and fall back to `.env`. **CORS** and **session secret** still require an **API process restart** to apply to middleware. `EOA_DATABASE_URL` / app name are not exposed in the GUI—edit `web/.env` manually if needed.
+
 ### PowerShell stub worker (Linux / webhost)
 
 1. Install **PowerShell 7** (`pwsh`) and ensure it is on `PATH` (or set **`EOA_PWSH_PATH`**).
-2. Set **`EOA_USE_PWSH_STUB_WORKER=true`** so each job runs **`web/pwsh/WebBulkJobStub.ps1`** (writes **`web/data/artifacts/<job_id>/summary.json`**). This proves the API → `pwsh` → disk pipeline; replace the script with real **`BulkExportWorker.ps1`** orchestration later.
+2. Set **`EOA_USE_PWSH_STUB_WORKER=true`** so each job runs a pwsh script (default **`web/pwsh/WebBulkJobStub.ps1`** — writes **`ReportSelections.json`** + **`summary.json`**). For **Exchange Online + Graph** using the same **`New-SecurityInvestigationReport`** path as the desktop exporter, set **`EOA_PWSH_WORKER_SCRIPT=WebExoLinuxRunner.ps1`** and configure **EXO + Graph app-only** env vars (no secrets in job JSON). See **[`docs/exo-linux-runner.md`](docs/exo-linux-runner.md)**.
 3. Set **`EOA_REPO_ROOT`** to the repo root if the API working directory is not the repo (default: parent of `web/`).
 
 If **`EOA_USE_PWSH_STUB_WORKER`** is false (default for local dev), the API uses a short **in-process placeholder** only (unless the Python Graph worker is enabled below).
 
-**Worker order:** when both are enabled, **PowerShell runs first** (`web/pwsh/WebBulkJobStub.ps1`); the Python Graph worker runs only if pwsh is disabled or `pwsh` is not on `PATH`.
+**Worker order:** by default, **PowerShell runs first** (`web/pwsh/WebBulkJobStub.ps1`); the Python Graph worker runs only if pwsh is disabled or `pwsh` is not on `PATH`. To run **Graph first** when both workers are enabled (so `summary.json` and `report_*.json` come from Graph and the stub writes `pwsh_summary.json`), set **`EOA_PYTHON_GRAPH_BEFORE_PWSH=true`** (requires **`EOA_USE_PYTHON_GRAPH_WORKER=true`** and **`EOA_GRAPH_*`** app credentials). See [`docs/first-report-milestone.md`](docs/first-report-milestone.md).
 
 ### Python Graph worker (Linux, optional fallback)
 
@@ -93,6 +99,8 @@ Exit code **0** means every requested report succeeded; **1** means at least one
 
 The **web console** targets **interactive** Microsoft sign-in for the active directory and **checkbox** options (parity with desktop report toggles). **`POST /api/v1/jobs/bulk`** still accepts arbitrary **`tenant_ids`** for **automated** callers (e.g. Python Graph worker with app-only creds). See **[`docs/multi-tenant-scaling.md`](docs/multi-tenant-scaling.md)**.
 
+The API **injects** `window.__EOA_MSAL_BOOTSTRAP__` into **`/`** and **`/app`** HTML (same resolved `EOA_MS_GRAPH_SPA_CLIENT_ID` as `/api/v1/auth/msal-config`) so **Add client / Sign in** works after you configure the SPA id and **reload**, without depending on the static file path alone.
+
 ### Microsoft sign-in (browser) — app registrations + tenant for jobs
 
 This is **separate** from Authentik/API auth: the header **Sign in** still controls access to `/api/v1/jobs` when `EOA_OIDC_ISSUER` is set. The **Microsoft 365** panel uses **MSAL** in the browser to sign in with a work account and call **Microsoft Graph** directly (delegated). **Creating app registrations** uses `POST https://graph.microsoft.com/v1.0/applications` from the browser with the signed-in user’s token.
@@ -114,9 +122,10 @@ Then:
 2. **API permissions** → **Microsoft Graph** → **Delegated permissions**: add **`User.Read`**, **`Organization.Read.All`**, **`Application.ReadWrite.All`**.  
    - **`Application.ReadWrite.All`** almost always requires **Grant admin consent for \<tenant\>** (or an admin consent workflow). Without it, list/create/delete app registration calls return **403**.  
 3. Optionally set **`EOA_MS_GRAPH_TENANT`** (default **`organizations`** for work accounts) when using a server-side client ID.  
-4. Open **`/`** or **`/app`**, expand **Microsoft 365**, **Sign in with Microsoft** (after pasting client ID if prompted). After an admin has consented permissions, use **Re-consent permissions** once if you still see consent or authorization errors.  
-5. **App registrations** table: **Create** (display name), **Refresh list**, **Rename**, **Delete** — all call Graph interactively; no server-side Graph secret is used for this panel.  
-6. **Bulk jobs** use the same sign-in for **tenant context** (no tenant ID or options JSON in the form).
+4. Optional: **`EOA_MS_GRAPH_DELEGATED_SCOPES`** — comma-separated delegated Graph scopes for the browser (empty = default `User.Read`, `Organization.Read.All`, `Application.ReadWrite.All`). Set this in **Settings** or `.env` / `eoa_gui.env` when you need different or extra permissions (admin consent may be required).  
+5. Open **`/`** or **`/app`**, expand **Microsoft 365**, **Sign in with Microsoft** (after pasting client ID if prompted). After an admin has consented permissions, use **Re-consent permissions** once if you still see consent or authorization errors.  
+6. **App registrations** table: **Create** (display name), **Refresh list**, **Rename**, **Delete** — all call Graph interactively; no server-side Graph secret is used for this panel.  
+7. **Bulk jobs**: **Microsoft 365 interactive sign-in** supplies the Entra **tenant** for jobs when the queue is empty (no manual default GUID required). The **client queue** creates **one job per tenant**; optional **`EOA_JOB_DEFAULT_TENANT_ID`** is a fallback only. **GET** `/api/v1/jobs/{id}` includes **`request_payload`** for **Run again**.
 
 ## Deploy (Linux)
 

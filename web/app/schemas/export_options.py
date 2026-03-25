@@ -56,6 +56,10 @@ class WebBulkExportOptions(BaseModel):
         ge=1,
         description="Python Graph worker: max directory tenants to process from tenant_ids (capped by EOA_GRAPH_MAX_TENANTS_PER_JOB, default 300).",
     )
+    minimal_graph_test: bool | None = Field(
+        default=None,
+        description="When true, Python Graph worker requests only the organization report (smoke test).",
+    )
 
     include_message_trace: bool | None = Field(
         default=None,

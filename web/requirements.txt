@@ -1,4 +1,6 @@
 # Exchange Online Analyzer — web API (FastAPI)
+# Explicit pydantic range avoids global-env pydantic-core skew when running pytest outside a venv.
+pydantic>=2.10,<3
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 sqlalchemy>=2.0.36

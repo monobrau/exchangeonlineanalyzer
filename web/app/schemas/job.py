@@ -31,6 +31,10 @@ class JobOut(BaseModel):
     error_message: str | None = None
     artifact_uri: str | None = None
     artifact_files: list[str] | None = None
+    request_payload: dict[str, Any] | None = Field(
+        default=None,
+        description="Original POST body snapshot (tenant_ids + options) for Run again in the UI.",
+    )
 
     model_config = {"from_attributes": True}
 

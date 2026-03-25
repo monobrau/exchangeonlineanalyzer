@@ -1,9 +1,10 @@
-"""Job execution: PowerShell (web/pwsh/<EOA_PWSH_WORKER_SCRIPT>) first, then optional Python Graph worker, else placeholder."""
+"""Job execution: PowerShell stub and/or Python Graph worker (order controlled by EOA_PYTHON_GRAPH_BEFORE_PWSH)."""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -48,8 +49,13 @@ def _write_worker_log(out_dir: Path, text: str) -> None:
         logger.warning("Could not write worker.log under %s", out_dir)
 
 
-def _run_pwsh_stub(job_id: str, job: Job) -> tuple[bool, str, str | None]:
-    """Returns (ok, log_text, artifact_uri)."""
+def _run_pwsh_stub(
+    job_id: str,
+    job: Job,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[bool, str, str | None]:
+    """Returns (ok, log_text, artifact_uri). extra_env merged into process env (e.g. EOA_PWSH_SUMMARY_NAME)."""
     settings = get_settings()
     script = settings.repo_root / "web" / "pwsh" / settings.pwsh_worker_script
     if not script.is_file():
@@ -67,7 +73,6 @@ def _run_pwsh_stub(job_id: str, job: Job) -> tuple[bool, str, str | None]:
     cmd = [
         pwsh,
         "-NoProfile",
-        "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
@@ -79,6 +84,8 @@ def _run_pwsh_stub(job_id: str, job: Job) -> tuple[bool, str, str | None]:
         "-OutputDir",
         str(out_dir),
     ]
+    if get_settings().pwsh_noninteractive:
+        cmd.insert(2, "-NonInteractive")
     logger.info("Running %s", " ".join(cmd))
     try:
         proc = subprocess.run(
@@ -109,7 +116,8 @@ def _run_placeholder_only(job_id: str, *, note: str = "") -> None:
     lines = [
         "Placeholder worker (Python): no worker ran.",
         "Set EOA_USE_PWSH_STUB_WORKER=true and install PowerShell 7 (pwsh) on PATH to run web/pwsh/WebBulkJobStub.ps1 for each job.",
-        "Optional: EOA_USE_PYTHON_GRAPH_WORKER=true plus EOA_GRAPH_* for the Python Graph worker (runs only if pwsh is not used or unavailable).",
+        "Optional: EOA_USE_PYTHON_GRAPH_WORKER=true plus EOA_GRAPH_* for the Python Graph worker.",
+        "If both workers run, set EOA_PYTHON_GRAPH_BEFORE_PWSH=true so Graph runs first; pwsh writes pwsh_summary.json.",
     ]
     if note:
         lines.insert(0, note)
@@ -133,10 +141,38 @@ def run_job(job_id: str) -> None:
         ok = False
         log_tail = ""
         artifact_uri: str | None = None
+        _gcid = (settings.graph_client_id or "").strip()
+        _gsec = (settings.graph_client_secret or "").strip()
+        graph_creds_ok = bool(_gcid and _gsec)
+        graph_done = False
 
-        # 1) PowerShell worker first when enabled (typical production: WebBulkJobStub.ps1 or future real exporter).
+        # Optional: run Python Graph before pwsh so summary.json / report_*.json come from Graph; pwsh uses another summary name.
+        if (
+            settings.python_graph_before_pwsh
+            and settings.use_python_graph_worker
+            and graph_creds_ok
+        ):
+            from app.services.graph_worker import run_graph_bulk_job
+
+            ok, log_tail, artifact_uri = run_graph_bulk_job(job_id, job)
+            if not ok:
+                job = db.get(Job, job_id)
+                if job:
+                    job.status = JobStatus.failed.value
+                    job.updated_at = _utcnow()
+                    job.error_message = (log_tail or "graph worker failed")[:8000]
+                    job.artifact_uri = artifact_uri
+                    db.commit()
+                logger.error("Job %s python-graph (before pwsh) failed: %s", job_id, log_tail[:500])
+                return
+            graph_done = True
+
+        # 1) PowerShell worker when enabled (first if python_graph_before_pwsh is false; after Graph if true).
         if settings.use_pwsh_stub_worker and _pwsh_executable_exists(settings.pwsh_path):
-            ok, log_tail, artifact_uri = _run_pwsh_stub(job_id, job)
+            pwsh_extra = (
+                {"EOA_PWSH_SUMMARY_NAME": "pwsh_summary.json"} if graph_done else None
+            )
+            ok, log_tail, artifact_uri = _run_pwsh_stub(job_id, job, extra_env=pwsh_extra)
             if not ok:
                 job = db.get(Job, job_id)
                 if job:
@@ -165,35 +201,45 @@ def run_job(job_id: str) -> None:
                 settings.pwsh_path,
             )
 
-        # 2) Python Graph worker (optional) when pwsh not used or pwsh missing.
-        if settings.use_python_graph_worker:
-            _gcid = (settings.graph_client_id or "").strip()
-            _gsec = (settings.graph_client_secret or "").strip()
-            if _gcid and _gsec:
-                from app.services.graph_worker import run_graph_bulk_job
+        # Graph already ran (graph_done) but pwsh disabled or missing — finalize success.
+        if graph_done:
+            job = db.get(Job, job_id)
+            if job:
+                job.status = JobStatus.succeeded.value
+                job.updated_at = _utcnow()
+                job.artifact_uri = artifact_uri
+                if len(log_tail) < 4000:
+                    job.error_message = None
+                db.commit()
+            logger.info("Job %s python-graph ok (no pwsh)", job_id)
+            return
 
-                ok, log_tail, artifact_uri = run_graph_bulk_job(job_id, job)
-                if not ok:
-                    job = db.get(Job, job_id)
-                    if job:
-                        job.status = JobStatus.failed.value
-                        job.updated_at = _utcnow()
-                        job.error_message = (log_tail or "graph worker failed")[:8000]
-                        job.artifact_uri = artifact_uri
-                        db.commit()
-                    logger.error("Job %s python-graph failed: %s", job_id, log_tail[:500])
-                    return
+        # 2) Python Graph worker when pwsh did not run (classic order: pwsh-first path skipped above).
+        if settings.use_python_graph_worker and graph_creds_ok:
+            from app.services.graph_worker import run_graph_bulk_job
 
+            ok, log_tail, artifact_uri = run_graph_bulk_job(job_id, job)
+            if not ok:
                 job = db.get(Job, job_id)
                 if job:
-                    job.status = JobStatus.succeeded.value
+                    job.status = JobStatus.failed.value
                     job.updated_at = _utcnow()
+                    job.error_message = (log_tail or "graph worker failed")[:8000]
                     job.artifact_uri = artifact_uri
-                    if len(log_tail) < 4000:
-                        job.error_message = None
                     db.commit()
-                logger.info("Job %s python-graph ok", job_id)
+                logger.error("Job %s python-graph failed: %s", job_id, log_tail[:500])
                 return
+
+            job = db.get(Job, job_id)
+            if job:
+                job.status = JobStatus.succeeded.value
+                job.updated_at = _utcnow()
+                job.artifact_uri = artifact_uri
+                if len(log_tail) < 4000:
+                    job.error_message = None
+                db.commit()
+            logger.info("Job %s python-graph ok", job_id)
+            return
 
         if settings.use_pwsh_stub_worker and not _pwsh_executable_exists(settings.pwsh_path):
             _run_placeholder_only(

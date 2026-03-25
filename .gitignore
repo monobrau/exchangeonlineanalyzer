@@ -81,6 +81,7 @@ web/**/*.pyc
 web/data/*.db
 web/data/artifacts/
 web/data/job_payloads/
+web/data/eoa_gui.env
 web/.env
 web/.pytest_cache/
 

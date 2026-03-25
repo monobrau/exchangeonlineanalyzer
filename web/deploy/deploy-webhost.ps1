@@ -5,10 +5,13 @@
 
 .EXAMPLE
   pwsh web/deploy/deploy-webhost.ps1
-  pwsh web/deploy/deploy-webhost.ps1 -SshTarget 'cknospe@your-server.example.com' -Branch main
+  pwsh web/deploy/deploy-webhost.ps1 -SshTarget 'cknospe@192.168.1.50' -Branch main
+
+  # SSH must target the webhost LAN IP (or VPN/jump). The public site hostname (e.g. eoa.knospe.org) is HTTPS-only — not SSH.
 #>
 param(
     [string]$Branch = "",
+    # Override with user@LAN_IP; public DNS hostname typically does not accept SSH.
     [string]$SshTarget = "cknospe@eoa.knospe.org",
     [string]$RepoRootOnServer = "/home/cknospe/git/exchangeonlineanalyzer"
 )

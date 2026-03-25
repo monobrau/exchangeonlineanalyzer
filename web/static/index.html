@@ -18,6 +18,7 @@
     <nav class="nav">
       <a id="auth-login" class="auth-link" href="#" style="display:none">Sign in</a>
       <button type="button" id="auth-logout" class="linklike nav-btn" style="display:none">Sign out</button>
+      <button type="button" id="btn-settings" class="ghost nav-btn" title="Runtime environment overrides">Settings</button>
       <a href="/docs" target="_blank" rel="noopener">OpenAPI</a>
       <a href="/health" target="_blank">Health</a>
       <a href="/ready" target="_blank">Ready</a>
@@ -30,9 +31,21 @@
     <p><a id="auth-gate-btn" class="gate-signin" href="/api/v1/auth/oidc/login">Sign in</a></p>
   </div>
 
+  <section class="panel conn-panel" aria-labelledby="conn-title">
+    <h2 id="conn-title">Connections (server)</h2>
+    <p class="hint">
+      <strong>Graph</strong> and <strong>Exchange Online</strong> workers use app-only credentials from Settings / env.
+      <strong>Which tenant</strong> a job targets comes from <strong>Microsoft sign-in</strong> below (or the tenant queue) — not from typing a default GUID unless you choose to in Settings.
+    </p>
+    <div id="conn-status-mount"><p class="hint">Loading connection status…</p></div>
+  </section>
+
   <section class="panel ms-graph-outer" aria-labelledby="ms-title">
-    <h2 id="ms-title">Microsoft 365 (interactive sign-in &amp; app registrations)</h2>
-    <p class="hint">Sign in with your work account. Use the table below to create or adjust Entra app registrations and API permissions (delegated Graph). The bulk job below uses this signed-in directory automatically — you never paste a tenant ID or JSON.</p>
+    <h2 id="ms-title">Microsoft 365 (interactive sign-in)</h2>
+    <p class="hint">
+      Sign in with your work account. Your directory is detected automatically and used for bulk jobs when the queue is empty (or use <strong>Add signed-in directory</strong> to queue it).
+      Optional app registration tools load here after sign-in.
+    </p>
     <div id="ms-graph-mount">
       <p class="hint">Loading Microsoft 365 controls…</p>
     </div>
@@ -41,9 +54,32 @@
   <main class="layout" id="app-main">
     <section class="panel" aria-labelledby="new-job-title">
       <h2 id="new-job-title">New bulk export job</h2>
-      <p id="job-tenant-status" class="job-tenant-status hint" role="status">
-        Sign in with Microsoft in the section above before creating a job.
+      <p id="job-tenant-status" class="job-tenant-status hint job-tenant-warn" role="status">
+        Sign in with Microsoft above to capture your tenant, or add tenant GUIDs to the queue.
       </p>
+      <div class="tenant-queue-panel">
+        <h3 class="h3">Tenant directories for this run</h3>
+        <p class="hint small">
+          Creates <strong>one job per Entra directory</strong>. Your sign-in is applied automatically to the queue; you can add more GUIDs or clear and use only the signed-in tenant when the queue is empty.
+        </p>
+        <div class="tenant-queue-actions">
+          <button type="button" class="ghost" id="btn-queue-add" title="Use the tenant from Microsoft sign-in above">
+            Add signed-in directory
+          </button>
+          <input
+            type="text"
+            id="queue-tenant-input"
+            class="mono queue-tenant-input"
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            spellcheck="false"
+            autocomplete="off"
+            aria-label="Additional tenant id (GUID)"
+          />
+          <button type="button" class="ghost" id="btn-queue-add-manual">Add tenant ID</button>
+          <button type="button" class="ghost" id="btn-queue-clear">Clear queue</button>
+        </div>
+        <ul id="tenant-queue-list" class="tenant-queue-list"></ul>
+      </div>
       <form id="job-form">
         <div class="job-range-row">
           <label class="job-inline-label">Days to analyze
@@ -57,6 +93,12 @@
             </select>
           </label>
         </div>
+        <p class="job-minimal-wrap">
+          <label class="job-chk">
+            <input type="checkbox" id="job-minimal-graph" />
+            Minimal server job: <strong>organization</strong> report only (Graph app credentials on the server)
+          </label>
+        </p>
 
         <fieldset class="job-fieldset">
           <legend>Exchange Online</legend>
@@ -111,20 +153,24 @@
         <h2 id="jobs-title">Recent jobs</h2>
         <button type="button" id="refresh" class="ghost">Refresh</button>
       </div>
+      <p class="hint small job-activity-hint">Run activity — minimize or dismiss cards (jobs remain in the table).</p>
+      <div id="job-activity-strip" class="job-activity-strip" aria-live="polite"></div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>ID</th>
+              <th>Tenant</th>
               <th>Status</th>
               <th>Created</th>
               <th>Artifact</th>
               <th>Download</th>
               <th>Error</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="jobs-body">
-            <tr><td colspan="6" class="empty">Loading…</td></tr>
+            <tr><td colspan="8" class="empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -132,8 +178,25 @@
     </section>
   </main>
 
+  <div id="settings-modal" class="modal-overlay" hidden aria-modal="true" role="dialog" aria-labelledby="settings-modal-title">
+    <div class="modal-panel settings-panel">
+      <div class="modal-head">
+        <h2 id="settings-modal-title">Runtime settings</h2>
+        <button type="button" id="settings-close" class="ghost">Close</button>
+      </div>
+      <p class="hint settings-note" id="settings-note"></p>
+      <div class="settings-scroll">
+        <form id="settings-form"></form>
+      </div>
+      <p id="settings-msg" class="msg" role="status"></p>
+      <div class="modal-actions">
+        <button type="button" id="settings-save" class="primary">Save to <code>eoa_gui.env</code></button>
+      </div>
+    </div>
+  </div>
+
   <footer class="foot" id="app-footer">
-    <span>Tenant context comes from Microsoft sign-in above. Exchange Online slices need the PowerShell bulk worker with interactive EXO (see <code>BulkTenantExporter.ps1</code>).</span>
+    <span>Interactive sign-in supplies tenant context for jobs. Graph/EXO workers use server app-only credentials from Settings.</span>
   </footer>
 
   <script src="/static/app.js?v={{EOA_ASSET_V}}" type="module"></script>

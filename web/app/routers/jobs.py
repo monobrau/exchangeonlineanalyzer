@@ -114,7 +114,7 @@ def get_job_by_id(
     job_id: UUID,
     db: Session = Depends(get_db),
     _: str | None = Depends(require_user),
-) -> Job:
+) -> JobOut:
     job = db.get(Job, str(job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

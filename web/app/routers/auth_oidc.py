@@ -19,8 +19,9 @@ from app.auth import (
     OIDC_SUB_SESSION_KEY,
     extract_sub_after_token_exchange,
 )
+from app.bundled_ms_graph import BUNDLED_MS_GRAPH_SPA_CLIENT_ID
 from app.config import get_settings
-from app.ms_graph_spa import DELEGATED_GRAPH_SCOPES, resolve_ms_graph_spa_client_id
+from app.ms_graph_spa import resolve_delegated_graph_scopes, resolve_ms_graph_spa_client_id
 from app.oidc_metadata import get_oidc_metadata
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -89,7 +90,7 @@ def auth_logout(request: Request, response: Response) -> dict:
 @router.get("/status")
 def auth_status() -> dict:
     s = get_settings()
-    ms_cid = (s.ms_graph_spa_client_id or "").strip()
+    ms_cid = resolve_ms_graph_spa_client_id(s)
     return {
         "oidc_login_enabled": _oidc_ready(),
         "issuer": s.oidc_issuer or None,
@@ -103,20 +104,29 @@ def msal_config() -> dict:
     s = get_settings()
     cid = resolve_ms_graph_spa_client_id(s)
     ten = (s.ms_graph_tenant or "organizations").strip() or "organizations"
+    scopes = resolve_delegated_graph_scopes(s)
+    fb = (BUNDLED_MS_GRAPH_SPA_CLIENT_ID or "").strip() or None
     if not cid:
+        # No server/bundled client ID — browser may still use localStorage (see ms-graph.js).
+        # Expose tenant + authority so MSAL matches EOA_MS_GRAPH_TENANT / delegated scopes from Settings.
+        # fallback_client_id duplicates bundled for the browser merge path (same as resolve when set).
         return {
             "enabled": False,
             "clientId": None,
             "authority": None,
             "redirectPath": "/",
-            "scopes": DELEGATED_GRAPH_SCOPES,
+            "scopes": scopes,
+            "ms_graph_tenant": ten,
+            "suggestedAuthority": f"https://login.microsoftonline.com/{ten}",
+            "fallback_client_id": fb,
         }
     return {
         "enabled": True,
         "clientId": cid,
         "authority": f"https://login.microsoftonline.com/{ten}",
         "redirectPath": "/",
-        "scopes": DELEGATED_GRAPH_SCOPES,
+        "scopes": scopes,
+        "fallback_client_id": fb,
     }
 
 

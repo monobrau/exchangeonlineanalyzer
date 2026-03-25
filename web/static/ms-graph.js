@@ -2,12 +2,19 @@
  * Microsoft sign-in (MSAL) + delegated Graph: tenant context + app registration CRUD.
  * MSAL is loaded dynamically so a CDN failure does not prevent ms-graph.js from loading.
  *
- * Client ID resolution: server (EOA_MS_GRAPH_SPA_CLIENT_ID or bundled in app) OR localStorage
- * key eoa_ms_graph_spa_client_id — no server env required if the user pastes a GUID once.
+ * Client ID resolution: server (EOA_MS_GRAPH_SPA_CLIENT_ID or bundled in app), optional
+ * OSS fork default in this file, OR localStorage key eoa_ms_graph_spa_client_id (advanced).
  */
 let pca = null;
 
 const LOCAL_STORAGE_MS_CLIENT_ID = "eoa_ms_graph_spa_client_id";
+
+/**
+ * Optional: set to your public multi-tenant SPA Application (client) ID so "Add client" works
+ * without server env or pasting (same as BUNDLED_MS_GRAPH_SPA_CLIENT_ID on the API).
+ * @type {string}
+ */
+const OSS_DEFAULT_SPA_CLIENT_ID = "";
 
 /** Must match app/ms_graph_spa.py DELEGATED_GRAPH_SCOPES */
 const DELEGATED_GRAPH_SCOPES = [
@@ -47,10 +54,76 @@ function redirectUriForPage() {
   return `${origin}/`;
 }
 
+function authorityFromMsalHints(cfg) {
+  const a = (cfg.authority || "").toString().trim();
+  if (a) return a;
+  const s = (cfg.suggestedAuthority || "").toString().trim();
+  if (s) return s;
+  const ten = (cfg.ms_graph_tenant || "").toString().trim();
+  if (ten) return `https://login.microsoftonline.com/${ten}`;
+  return "https://login.microsoftonline.com/organizations";
+}
+
+/** Populated by FastAPI when serving index.html (same resolve as /api/v1/auth/msal-config). */
+function readMsalBootstrap() {
+  try {
+    const b = window.__EOA_MSAL_BOOTSTRAP__;
+    if (!b || typeof b !== "object") return { clientId: "", authority: "" };
+    const c = String(b.clientId || "").trim();
+    const a = String(b.authority || "").trim();
+    return {
+      clientId: /^[0-9a-f-]{36}$/i.test(c) ? c : "",
+      authority: a,
+    };
+  } catch {
+    return { clientId: "", authority: "" };
+  }
+}
+
 async function fetchMsalConfig() {
-  const r = await fetch("/api/v1/auth/msal-config", { credentials: "same-origin" });
-  if (!r.ok) return { enabled: false, scopes: DELEGATED_GRAPH_SCOPES };
-  const cfg = await r.json();
+  const boot = readMsalBootstrap();
+  let cfg = {
+    enabled: false,
+    scopes: DELEGATED_GRAPH_SCOPES,
+    ms_graph_tenant: "organizations",
+  };
+  try {
+    const r = await fetch("/api/v1/auth/msal-config", { credentials: "same-origin" });
+    if (r.ok) cfg = await r.json();
+  } catch {
+    /* Network error — may still use HTML bootstrap client id */
+  }
+  const scopes =
+    Array.isArray(cfg.scopes) && cfg.scopes.length ? cfg.scopes : DELEGATED_GRAPH_SCOPES;
+
+  const mergedCfg = { ...cfg };
+  if (!String(mergedCfg.authority || "").trim() && boot.authority) {
+    mergedCfg.authority = boot.authority;
+  }
+
+  const effectiveServer =
+    String(cfg.clientId || "").trim() ||
+    String(cfg.fallback_client_id || "").trim() ||
+    String(OSS_DEFAULT_SPA_CLIENT_ID || "").trim() ||
+    boot.clientId;
+
+  if (effectiveServer && /^[0-9a-f-]{36}$/i.test(effectiveServer)) {
+    let source = "server";
+    if (!String(cfg.clientId || "").trim()) {
+      if (String(cfg.fallback_client_id || "").trim()) source = "fallback";
+      else if (String(OSS_DEFAULT_SPA_CLIENT_ID || "").trim()) source = "oss-default";
+      else if (boot.clientId === effectiveServer) source = "bootstrap";
+    }
+    return {
+      enabled: true,
+      clientId: effectiveServer,
+      authority: authorityFromMsalHints(mergedCfg),
+      scopes,
+      redirectPath: "/",
+      clientIdSource: source,
+    };
+  }
+
   try {
     const stored =
       typeof localStorage !== "undefined" ? localStorage.getItem(LOCAL_STORAGE_MS_CLIENT_ID) : null;
@@ -60,8 +133,8 @@ async function fetchMsalConfig() {
         return {
           enabled: true,
           clientId: cid,
-          authority: "https://login.microsoftonline.com/organizations",
-          scopes: Array.isArray(cfg.scopes) && cfg.scopes.length ? cfg.scopes : DELEGATED_GRAPH_SCOPES,
+          authority: authorityFromMsalHints(mergedCfg),
+          scopes,
           redirectPath: "/",
           clientIdSource: "localStorage",
         };
@@ -132,27 +205,40 @@ export async function initMicrosoftGraphUI() {
   const cfg = await fetchMsalConfig();
   if (!cfg.enabled) {
     mount.innerHTML = `
-      <p class="hint">Paste your Entra <strong>Application (client) ID</strong> for a <strong>single-page application</strong> registration (saved in this browser only). Then use <strong>Sign in with Microsoft</strong>. Or set <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> on the server.</p>
-      <div class="ms-row">
-        <input type="text" id="ms-client-id-input" class="input-grow" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" autocomplete="off" />
-        <button type="button" class="primary" id="ms-save-client-id">Save & continue</button>
+      <div class="ms-add-client-block">
+        <p class="ms-add-client-lead"><strong>Add a client</strong> — sign in with your work account to capture which Microsoft 365 <strong>directory (tenant)</strong> bulk jobs should use. No tenant ID field; the login establishes context.</p>
+        <p class="hint">Microsoft 365 sign-in needs a <strong>public</strong> SPA Application (client) ID (it is not a secret). Set <code>EOA_MS_GRAPH_SPA_CLIENT_ID</code> in <strong>Settings</strong> (writes <code>eoa_gui.env</code>), <code>web/.env</code>, or <code>BUNDLED_MS_GRAPH_SPA_CLIENT_ID</code>, then <strong>reload this page</strong> — the <strong>Add client</strong> (Sign in) button appears automatically. Open the console from this site (e.g. <code>/</code> or <code>/app</code>) so the server can inject config; do not rely on a bare <code>/static/index.html</code> URL alone. Register this redirect URI on your Entra SPA app: <code>${escapeHtml(redirectUriForPage())}</code></p>
+        <div class="ms-row">
+          <button type="button" class="primary" id="ms-open-deployment-settings">Open deployment settings</button>
+        </div>
+        <details class="ms-advanced-clientid">
+          <summary>Advanced — browser-only client ID</summary>
+          <p class="hint small">If you cannot change server settings, paste your Entra <strong>SPA</strong> Application (client) ID once (stored in this browser only).</p>
+          <div class="ms-row">
+            <input type="text" id="ms-client-id-input" class="input-grow" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" autocomplete="off" />
+            <button type="button" class="ghost" id="ms-save-client-id">Save &amp; reload</button>
+          </div>
+          <p id="ms-client-id-msg" class="msg" role="status"></p>
+        </details>
+        <p class="hint small">Delegated scopes: Settings / <code>EOA_MS_GRAPH_DELEGATED_SCOPES</code> (defaults include User.Read, Organization.Read.All, Application.ReadWrite.All — admin consent may apply).</p>
       </div>
-      <p id="ms-client-id-msg" class="msg" role="status"></p>
-      <p class="hint">Redirect URI in Entra must include <code>${escapeHtml(redirectUriForPage())}</code> · Delegated: User.Read, Organization.Read.All, Application.ReadWrite.All (admin consent).</p>
     `;
+    document.getElementById("ms-open-deployment-settings")?.addEventListener("click", () => {
+      document.getElementById("btn-settings")?.click();
+    });
     const inp = document.getElementById("ms-client-id-input");
     const btn = document.getElementById("ms-save-client-id");
     const msg = document.getElementById("ms-client-id-msg");
-    btn.addEventListener("click", () => {
+    btn?.addEventListener("click", () => {
       const v = (inp.value || "").trim();
       if (!/^[0-9a-f-]{36}$/i.test(v)) {
-        msg.textContent = "Enter a valid GUID (client ID).";
+        if (msg) msg.textContent = "Enter a valid GUID (client ID).";
         return;
       }
       try {
         localStorage.setItem(LOCAL_STORAGE_MS_CLIENT_ID, v);
       } catch (e) {
-        msg.textContent = String(e.message || e);
+        if (msg) msg.textContent = String(e.message || e);
         return;
       }
       location.reload();
@@ -205,7 +291,7 @@ export async function initMicrosoftGraphUI() {
 
   mount.innerHTML = `
     <div class="ms-row">
-      <button type="button" class="btn-ms" id="ms-signin">Sign in with Microsoft</button>
+      <button type="button" class="btn-ms" id="ms-signin" title="Sign in with Microsoft to link this directory (tenant) for bulk jobs">Add client</button>
       <button type="button" class="ghost" id="ms-reconsent" hidden title="Use after admin grants Application.ReadWrite.All">Re-consent permissions</button>
       <button type="button" class="ghost" id="ms-signout" hidden>Sign out (Microsoft)</button>
     </div>
@@ -214,6 +300,10 @@ export async function initMicrosoftGraphUI() {
       <p><strong>Tenant</strong> <span id="ms-tenant-name">—</span></p>
       <p class="mono small"><span id="ms-tenant-id">—</span></p>
       <p class="hint small">Bulk jobs below use this directory automatically — no tenant ID field.</p>
+      <div class="ms-row">
+        <button type="button" class="ghost" id="ms-dl-org">Download organization.json (interactive Graph)</button>
+      </div>
+      <p id="ms-dl-org-msg" class="msg" role="status"></p>
     </div>
     <p class="hint small" id="ms-clear-client-id-wrap" hidden>
       <button type="button" class="linklike" id="ms-clear-saved-client-id">Clear browser-stored client ID</button>
@@ -386,6 +476,24 @@ export async function initMicrosoftGraphUI() {
       tenantMsg.textContent = "Permissions refreshed.";
     } catch (e) {
       tenantMsg.textContent = formatGraphError(e);
+    }
+  });
+
+  el("ms-dl-org")?.addEventListener("click", async () => {
+    const m = el("ms-dl-org-msg");
+    if (m) m.textContent = "";
+    try {
+      const token = await acquireToken(loginRequest.scopes);
+      const org = await graphJson("/organization", token);
+      const blob = new Blob([JSON.stringify(org, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "organization.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      if (m) m.textContent = "Downloaded.";
+    } catch (e) {
+      if (m) m.textContent = formatGraphError(e);
     }
   });
 

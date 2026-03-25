@@ -42,6 +42,17 @@ def test_ui_info() -> None:
     assert body["ms_graph_js"]["has_dynamic_msal_loader"] is True
 
 
+def test_connections_status() -> None:
+    with TestClient(app) as client:
+        r = client.get("/api/v1/connections/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert "graph_app_configured" in body
+    assert body["graph_app_configured"] is False
+    assert body["exo"] in ("skipped", "ready", "not_configured")
+    assert body.get("job_default_tenant_id") is None
+
+
 def test_msal_config_when_disabled() -> None:
     with TestClient(app) as client:
         r = client.get("/api/v1/auth/msal-config")
@@ -49,6 +60,9 @@ def test_msal_config_when_disabled() -> None:
     body = r.json()
     assert body.get("enabled") is False
     assert len(body.get("scopes") or []) == 3
+    assert body.get("ms_graph_tenant") == "organizations"
+    assert "login.microsoftonline.com" in (body.get("suggestedAuthority") or "")
+    assert "fallback_client_id" in body
 
 
 def test_oidc_login_not_configured() -> None:
@@ -74,10 +88,14 @@ def test_create_and_get_job() -> None:
         jid = r.json()["id"]
         g = client.get(f"/api/v1/jobs/{jid}")
     assert g.status_code == 200
-    assert g.json()["id"] == jid
+    body = g.json()
+    assert body["id"] == jid
     # Placeholder worker runs inline under TestClient
-    assert g.json()["status"] == "succeeded"
-    assert "placeholder.txt" in (g.json().get("artifact_files") or [])
+    assert body["status"] == "succeeded"
+    assert "placeholder.txt" in (body.get("artifact_files") or [])
+    rp = body.get("request_payload")
+    assert rp is not None
+    assert rp.get("tenant_ids") == ["11111111-1111-1111-1111-111111111111"]
 
 
 def test_index_and_static() -> None:
@@ -85,6 +103,9 @@ def test_index_and_static() -> None:
         r = client.get("/")
         assert r.status_code == 200
         assert b"Bulk export jobs" in r.content
+        assert b"eoa-msal-bootstrap" in r.content
+        assert b"__EOA_MSAL_BOOTSTRAP__" in r.content
+        assert b"Connections (server)" in r.content
         s = client.get("/static/styles.css")
         assert s.status_code == 200
 

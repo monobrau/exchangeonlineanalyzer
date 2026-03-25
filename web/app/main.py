@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from app.auth import require_user
 from app.config import get_settings
 from app.ms_graph_spa import resolve_ms_graph_spa_client_id
 from app.db import engine, init_db
-from app.routers import auth_oidc, export_meta, jobs
+from app.routers import auth_oidc, connections, export_meta, jobs, settings_env
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -26,6 +27,23 @@ _HTML_NO_STORE = {
 def _inject_asset_version(html: str, version: str) -> str:
     """Bust CDN/browser caches: CSS/JS URLs change when API version changes."""
     return html.replace("{{EOA_ASSET_V}}", version)
+
+
+def _inject_msal_bootstrap(html: str) -> str:
+    """Expose resolved SPA client id in HTML so MSAL can start without relying on /auth/msal-config alone."""
+    s = get_settings()
+    cid = resolve_ms_graph_spa_client_id(s)
+    ten = (s.ms_graph_tenant or "organizations").strip() or "organizations"
+    authority = f"https://login.microsoftonline.com/{ten}"
+    payload = {
+        "clientId": cid if cid else None,
+        "authority": authority,
+        "ms_graph_tenant": ten,
+    }
+    script = f'<script id="eoa-msal-bootstrap">window.__EOA_MSAL_BOOTSTRAP__={json.dumps(payload)};</script>'
+    if "</head>" in html:
+        return html.replace("</head>", f"{script}\n</head>", 1)
+    return script + html
 
 
 def _oidc_browser_ready() -> bool:
@@ -82,6 +100,8 @@ app.add_middleware(
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(export_meta.router, prefix="/api/v1")
 app.include_router(auth_oidc.router, prefix="/api/v1")
+app.include_router(settings_env.router, prefix="/api/v1")
+app.include_router(connections.router, prefix="/api/v1")
 
 
 @app.middleware("http")
@@ -134,6 +154,7 @@ def root_page() -> HTMLResponse:
         return HTMLResponse(content=body, media_type="text/html; charset=utf-8", headers=dict(_HTML_NO_STORE))
     raw = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     body = _inject_asset_version(raw, app.version)
+    body = _inject_msal_bootstrap(body)
     return HTMLResponse(content=body, media_type="text/html; charset=utf-8", headers=dict(_HTML_NO_STORE))
 
 

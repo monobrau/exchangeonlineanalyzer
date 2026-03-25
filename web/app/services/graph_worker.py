@@ -143,6 +143,8 @@ def parse_requested_reports(options: dict[str, Any] | None) -> list[str]:
     """Normalize options.reports plus include_* flags to canonical report keys. Default: organization only."""
     if not options:
         return ["organization"]
+    if options.get("minimal_graph_test"):
+        return ["organization"]
     raw = options.get("reports")
     if raw is None:
         base = ["organization"]

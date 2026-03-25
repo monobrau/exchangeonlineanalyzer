@@ -86,7 +86,12 @@ $summary = [ordered]@{
     at                  = (Get-Date).ToUniversalTime().ToString('o')
 }
 
-$jsonPath = Join-Path $OutputDir 'summary.json'
+$summaryFileName = if ($env:EOA_PWSH_SUMMARY_NAME -and $env:EOA_PWSH_SUMMARY_NAME.Trim()) {
+    $env:EOA_PWSH_SUMMARY_NAME.Trim()
+} else {
+    'summary.json'
+}
+$jsonPath = Join-Path $OutputDir $summaryFileName
 ($summary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $jsonPath -Encoding UTF8
 
 "OK wrote $jsonPath and $rsPath"
