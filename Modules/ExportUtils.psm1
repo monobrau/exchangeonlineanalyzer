@@ -3,6 +3,32 @@ function Invoke-DoEventsSafe {
     try { [System.Windows.Forms.Application]::DoEvents() } catch { }
 }
 
+function Invoke-MgGraphRequestWithRetry {
+    param(
+        [string]$Uri,
+        [string]$Method = 'GET',
+        [int]$MaxRetries = 3,
+        [int]$DefaultWaitSeconds = 10
+    )
+    for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
+        try {
+            return (Invoke-MgGraphRequest -Method $Method -Uri $Uri -ErrorAction Stop)
+        } catch {
+            $is429 = $_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*"
+            if (-not $is429 -or $attempt -gt $MaxRetries) { throw }
+            $wait = $DefaultWaitSeconds
+            if ($_.Exception.Response) {
+                try {
+                    $retryHeader = $_.Exception.Response.Headers | Where-Object { $_.Key -ieq 'Retry-After' } | Select-Object -First 1
+                    if ($retryHeader.Value) { $parsed = 0; if ([int]::TryParse(($retryHeader.Value | Select-Object -First 1), [ref]$parsed) -and $parsed -gt 0) { $wait = $parsed } }
+                } catch {}
+            }
+            Write-Warning "Rate limited (attempt $attempt/$MaxRetries). Waiting $wait seconds..."
+            Start-Sleep -Seconds $wait
+        }
+    }
+}
+
 # Get current tenant ID from Graph or Exchange context (for WCM lookup)
 function Get-CurrentTenantId {
     try {
@@ -163,7 +189,7 @@ function Get-MfaCoverageReport {
                 }
             } else {
                 # No selection - get all users
-                $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop
+                $userPage = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -PageSize 999 -ErrorAction Stop
             }
 
             foreach ($u in $userPage) {
@@ -277,7 +303,7 @@ function Get-UserSecurityGroupsReport {
             }
         } else {
             # No selection - get all users
-            try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -ErrorAction Stop } catch {}
+            try { $users = Get-MgUser -All -Property 'id,displayName,userPrincipalName' -PageSize 999 -ErrorAction Stop } catch {}
         }
 
         foreach ($u in $users) {
@@ -467,7 +493,7 @@ function Invoke-IndependentGraphCollectorsParallel {
     foreach ($mod in @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Reports', 'Microsoft.Graph.Users', 'Microsoft.Graph.Identity.SignIns', 'Microsoft.Graph.Applications', 'Microsoft.Graph.Identity.ConditionalAccess')) {
         try { $iss.ImportPSModule($mod) } catch { }
     }
-    $runspacePool = [runspacefactory]::CreateRunspacePool(1, [Math]::Min(4, [Math]::Max(1, $collectorNames.Count)), $iss, $Host)
+    $runspacePool = [runspacefactory]::CreateRunspacePool(1, [Math]::Min(8, [Math]::Max(1, $collectorNames.Count)), $iss, $Host)
     $runspacePool.Open()
     $jobs = New-Object System.Collections.ArrayList
     foreach ($name in $collectorNames) {
@@ -5147,7 +5173,7 @@ function Get-AllUsersLicenseReport {
         } else {
             # Get all users if no selection
             Write-Host "Processing licenses for all users (this may take a few minutes)..." -ForegroundColor Cyan
-            $users = Get-MgUser -All -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -ErrorAction Stop
+            $users = Get-MgUser -All -Property Id,UserPrincipalName,DisplayName,AssignedLicenses,AccountEnabled -PageSize 999 -ErrorAction Stop
         }
 
         $totalUsers = $users.Count
@@ -5453,14 +5479,10 @@ function Get-SharePointActivityLogs {
             
             Write-Host "  Collected $($results.Count) SharePoint activity entries" -ForegroundColor Gray
         } catch {
-            # Handle rate limiting (429 errors) and other API errors
-            if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
-                Write-Warning "Rate limited, waiting 60 seconds before retry..."
-                Start-Sleep -Seconds 60
-                # Retry once
+            $is429 = $_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*"
+            if ($is429) {
                 try {
-                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-                    # Parse response again (same logic as above)
+                    $response = Invoke-MgGraphRequestWithRetry -Uri $uri -MaxRetries 3 -DefaultWaitSeconds 10
                     if ($response -is [string]) {
                         $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                         if ($csvLines.Count -gt 1) {
@@ -5468,17 +5490,13 @@ function Get-SharePointActivityLogs {
                             for ($i = 1; $i -lt $csvLines.Count; $i++) {
                                 $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
                                 $row = @{}
-                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
-                                    $row[$headers[$j]] = $values[$j]
-                                }
-                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
-                                    [void]$results.Add([PSCustomObject]$row)
-                                }
+                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) { $row[$headers[$j]] = $values[$j] }
+                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) { [void]$results.Add([PSCustomObject]$row) }
                             }
                         }
                     }
                 } catch {
-                    Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
+                    Write-Warning "All retries after rate limit failed (SharePoint): $($_.Exception.Message)"
                     throw
                 }
             } else {
@@ -5651,13 +5669,10 @@ function Get-OneDriveActivityLogs {
             
             Write-Host "  Collected $($results.Count) OneDrive activity entries" -ForegroundColor Gray
         } catch {
-            # Handle rate limiting (429 errors) and other API errors
-            if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
-                Write-Warning "Rate limited, waiting 60 seconds before retry..."
-                Start-Sleep -Seconds 60
-                # Retry once
+            $is429 = $_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*"
+            if ($is429) {
                 try {
-                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                    $response = Invoke-MgGraphRequestWithRetry -Uri $uri -MaxRetries 3 -DefaultWaitSeconds 10
                     if ($response -is [string]) {
                         $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                         if ($csvLines.Count -gt 1) {
@@ -5665,17 +5680,13 @@ function Get-OneDriveActivityLogs {
                             for ($i = 1; $i -lt $csvLines.Count; $i++) {
                                 $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
                                 $row = @{}
-                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
-                                    $row[$headers[$j]] = $values[$j]
-                                }
-                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
-                                    [void]$results.Add([PSCustomObject]$row)
-                                }
+                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) { $row[$headers[$j]] = $values[$j] }
+                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) { [void]$results.Add([PSCustomObject]$row) }
                             }
                         }
                     }
                 } catch {
-                    Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
+                    Write-Warning "All retries after rate limit failed (OneDrive): $($_.Exception.Message)"
                 }
             } else {
                 throw
@@ -5840,13 +5851,10 @@ function Get-TeamsActivityLogs {
             
             Write-Host "  Collected $($results.Count) Teams activity entries" -ForegroundColor Gray
         } catch {
-            # Handle rate limiting (429 errors) and other API errors
-            if ($_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*") {
-                Write-Warning "Rate limited, waiting 60 seconds before retry..."
-                Start-Sleep -Seconds 60
-                # Retry once
+            $is429 = $_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*"
+            if ($is429) {
                 try {
-                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                    $response = Invoke-MgGraphRequestWithRetry -Uri $uri -MaxRetries 3 -DefaultWaitSeconds 10
                     if ($response -is [string]) {
                         $csvLines = $response -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                         if ($csvLines.Count -gt 1) {
@@ -5854,17 +5862,13 @@ function Get-TeamsActivityLogs {
                             for ($i = 1; $i -lt $csvLines.Count; $i++) {
                                 $values = ($csvLines[$i] -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)').ForEach({ $_.Trim('"') })
                                 $row = @{}
-                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) {
-                                    $row[$headers[$j]] = $values[$j]
-                                }
-                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
-                                    [void]$results.Add([PSCustomObject]$row)
-                                }
+                                for ($j = 0; $j -lt [Math]::Min($headers.Count, $values.Count); $j++) { $row[$headers[$j]] = $values[$j] }
+                                if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) { [void]$results.Add([PSCustomObject]$row) }
                             }
                         }
                     }
                 } catch {
-                    Write-Warning "Retry after rate limit also failed: $($_.Exception.Message)"
+                    Write-Warning "All retries after rate limit failed (Teams): $($_.Exception.Message)"
                 }
             } else {
                 throw

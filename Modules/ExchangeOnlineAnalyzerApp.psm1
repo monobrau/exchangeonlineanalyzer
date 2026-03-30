@@ -2391,16 +2391,16 @@ $btnCreateGraphApp.Text = "Create Graph App"
 $btnCreateGraphApp.Location = New-Object System.Drawing.Point(350, 638)
 $btnCreateGraphApp.Size = New-Object System.Drawing.Size(140, 28)
 $btnCreateGraphAppTooltip = New-Object System.Windows.Forms.ToolTip
-$btnCreateGraphAppTooltip.SetToolTip($btnCreateGraphApp, "Create app registration (River Run Security Investigator), grant permissions, and save credentials to Windows Credential Manager. A new window will open for sign-in.")
+$btnCreateGraphAppTooltip.SetToolTip($btnCreateGraphApp, "Create app registration (River Run Security Investigator), grant permissions, and save credentials to Windows Credential Manager. A new window opens for sign-in.")
 $btnCreateGraphApp.add_Click({
-    $scriptPath = Join-Path $script:EOA_AppRoot "New-GraphInboxRulesApp.ps1"
-    if (-not (Test-Path $scriptPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    $launcherPath = Join-Path $script:EOA_AppRoot "Start-NewGraphInboxRulesApp.ps1"
+    if (-not (Test-Path $launcherPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Script not found: $launcherPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
     try {
         $psExe = (Get-Process -Id $PID).Path
-        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM" -Wait
         [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to run script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -6558,10 +6558,14 @@ $securityInvestigationButton.add_Click({
                             if ($createResult -eq [System.Windows.Forms.DialogResult]::Yes) {
                                 $progressLabel.Text = "Opening app creation script..."
                                 [System.Windows.Forms.Application]::DoEvents()
-                                $scriptPath = Join-Path $script:EOA_AppRoot "New-GraphInboxRulesApp.ps1"
-                                if (Test-Path $scriptPath) {
+                                $launcherPath = Join-Path $script:EOA_AppRoot "Start-NewGraphInboxRulesApp.ps1"
+                                if (Test-Path $launcherPath) {
                                     $psExe = (Get-Process -Id $PID).Path
-                                    Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+                                    $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM"
+                                    if ($tenantId -and $tenantId -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+                                        $argLine += " -TenantId `"$($tenantId.Trim())`""
+                                    }
+                                    Start-Process $psExe -ArgumentList $argLine -Wait
                                 }
                                 $progressLabel.Text = "Retrying connections..."
                                 [System.Windows.Forms.Application]::DoEvents()

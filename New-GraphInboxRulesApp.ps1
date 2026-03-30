@@ -10,22 +10,52 @@
 .PARAMETER SaveToWCM
     Save TenantId, ClientId, ClientSecret to Windows Credential Manager for this tenant.
     Requires: Install-Module CredentialManager
+.PARAMETER TenantId
+    Optional. If set, passed to Connect-MgGraph for tenant-scoped sign-in.
+.PARAMETER UseDeviceCode
+    Use device code sign-in instead of the default interactive/WAM flow.
 .EXAMPLE
     .\New-GraphInboxRulesApp.ps1 -SaveToWCM
+.EXAMPLE
+    .\New-GraphInboxRulesApp.ps1 -SaveToWCM -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 #>
 
 #Requires -Version 5.1
 
-param([switch]$SaveToWCM = $false)
+param(
+    [switch]$SaveToWCM = $false,
+    [string]$TenantId = $null,
+    [switch]$UseDeviceCode = $false
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$scopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
 Write-Host "`n=== Create Graph Inbox Rules App ===" -ForegroundColor Cyan
-Write-Host "Connecting with Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All..." -ForegroundColor Yellow
 
-# Clear cached tokens so you can sign in with a different tenant (avoids reusing previous tenant's token)
+$guidPattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
+$resolvedTenantId = $null
+if ($TenantId -and $TenantId.Trim() -notmatch $guidPattern) {
+    Write-Error "Invalid -TenantId: expected a directory GUID."
+    exit 1
+}
+if ($TenantId -and $TenantId.Trim() -match $guidPattern) {
+    $resolvedTenantId = $TenantId.Trim()
+    Write-Host "Using -TenantId: $resolvedTenantId" -ForegroundColor Gray
+}
+
+$scopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
+
+# Bypass WAM (mandatory since Graph SDK 2.34+) so MSAL uses the system browser with an
+# account picker instead of silently reusing the last-used Windows broker account.
+$env:MSAL_FORCE_WAM = '0'
+
+# Clear inherited broker env vars from the parent process
+foreach ($k in @('AZURE_IDENTITY_DISABLE_BROKER', 'MSAL_DISABLE_BROKER', 'MSAL_EXPERIMENTAL_DISABLE_BROKER')) {
+    if (Test-Path "Env:\$k") { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
+}
+
+# Clear persisted MSAL / Graph token state so we don't silently reuse a prior session
 try {
     Disconnect-MgGraph -ErrorAction SilentlyContinue
     $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
@@ -35,7 +65,6 @@ try {
     $msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
     if ($msalCache -and (Test-Path $msalCache)) { Remove-Item $msalCache -Force -ErrorAction SilentlyContinue }
 } catch {}
-# Use a fresh cache directory so no cached tokens are loaded - forces account picker
 $authCacheDir = Join-Path $env:TEMP "EOA_GraphAppCreate_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 try {
     if (Test-Path $authCacheDir) { Remove-Item -Path $authCacheDir -Recurse -Force -ErrorAction SilentlyContinue }
@@ -43,29 +72,72 @@ try {
     $env:MSAL_CACHE_DIR = $authCacheDir
     $env:IDENTITY_SERVICE_CACHE_DIR = $authCacheDir
 } catch {}
-# Clear Graph module cache
 try {
     $graphCache = Join-Path $env:LOCALAPPDATA "Microsoft\Graph"
     if (Test-Path $graphCache) { Get-ChildItem -Path $graphCache -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
 } catch {}
-
-# Disable WAM so Connect-MgGraph uses system browser (better account picker for multi-tenant)
-$env:AZURE_IDENTITY_DISABLE_BROKER = "true"
-$env:MSAL_DISABLE_BROKER = "1"
-
 try {
-    Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
-} catch {
-    Write-Error "Graph connect failed: $_"
+    $defaultMsalCache = Join-Path $env:LOCALAPPDATA ".IdentityService"
+    if (Test-Path $defaultMsalCache) {
+        Get-ChildItem -Path $defaultMsalCache -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
+
+function Connect-GraphWithScopes {
+    param([string[]]$Scopes, [string]$TenantId, [switch]$UseDeviceCode)
+
+    $connectParams = @{
+        Scopes       = $Scopes
+        ContextScope = 'Process'
+        NoWelcome    = $true
+        ErrorAction  = 'Stop'
+    }
+    if ($UseDeviceCode) { $connectParams.UseDeviceCode = $true }
+    if ($TenantId)      { $connectParams.TenantId = $TenantId }
+
+    if ($UseDeviceCode) {
+        Write-Host "Connecting (device code) with $($Scopes -join ', ')..." -ForegroundColor Yellow
+    } else {
+        Write-Host "Connecting (browser) with $($Scopes -join ', ')..." -ForegroundColor Yellow
+    }
+    Connect-MgGraph @connectParams
 }
 
-$tenantId = (Get-MgContext).TenantId
-$tenantDisplayName = $tenantId
-try {
-    $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
-    if ($org.value -and $org.value[0].displayName) { $tenantDisplayName = $org.value[0].displayName }
-} catch {}
-Write-Host "Connected. Tenant: $tenantDisplayName ($tenantId)" -ForegroundColor Green
+# --- Connect and verify tenant -----------------------------------------------
+$maxAttempts = 3
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+        if ($attempt -eq 1) {
+            Connect-GraphWithScopes -Scopes $scopes -TenantId $resolvedTenantId -UseDeviceCode:$UseDeviceCode
+        } else {
+            Write-Host "`nRetrying with device code (choose the correct account in the browser)..." -ForegroundColor Cyan
+            Connect-GraphWithScopes -Scopes $scopes -TenantId $resolvedTenantId -UseDeviceCode
+        }
+    } catch {
+        Write-Error "Graph connect failed: $_"
+        exit 1
+    }
+
+    $tenantId = (Get-MgContext).TenantId
+    $tenantDisplayName = $tenantId
+    try {
+        $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
+        if ($org.value -and $org.value[0].displayName) { $tenantDisplayName = $org.value[0].displayName }
+    } catch {}
+    Write-Host "Connected. Tenant: $tenantDisplayName ($tenantId)" -ForegroundColor Green
+
+    Write-Host "`nIs this the correct tenant? (Y/n): " -ForegroundColor Yellow -NoNewline
+    $confirm = Read-Host
+    if ($confirm -eq '' -or $confirm -ieq 'y') { break }
+
+    Write-Host "Wrong tenant — disconnecting..." -ForegroundColor Yellow
+    Disconnect-MgGraph -ErrorAction SilentlyContinue
+
+    if ($attempt -eq $maxAttempts) {
+        Write-Error "Unable to connect to the desired tenant after $maxAttempts attempts."
+        exit 1
+    }
+}
 
 # Microsoft Graph resource app ID
 $graphAppId = '00000003-0000-0000-c000-000000000000'

@@ -259,7 +259,7 @@ try {
     
     # Main command loop - wait for commands from GUI
     $commandFile = Join-Path $CommandDir "Client$($ClientNumber)_Command.txt"
-    $pollInterval = 500  # milliseconds
+    $pollInterval = 200  # milliseconds
     
     Write-Host "Ready! Waiting for Graph Auth command from GUI..." -ForegroundColor Green
     Write-Status "Ready! Waiting for Graph Auth command from GUI..."
@@ -1317,6 +1317,30 @@ try {
                 Write-Status "Authentication cancelled and reset"
                 Write-Host "Authentication cancelled and reset. All token caches cleared. Ready for new authentication attempt." -ForegroundColor Green
                 Write-CommandResponse "CANCEL_AUTH_SUCCESS"
+            } elseif ($command -eq "GRAPH_DISCONNECT") {
+                Write-Host "GRAPH_DISCONNECT: signing out Microsoft Graph only (Exchange stays connected)..." -ForegroundColor Yellow
+                try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch {}
+                try {
+                    $gs = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                    if ($gs -and $gs.AuthContext) { $gs.AuthContext.ClearTokenCache(); Write-Host "Cleared Graph token cache" -ForegroundColor Cyan }
+                } catch {}
+                try {
+                    $msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+                    if ($msalCache -and (Test-Path $msalCache)) { Remove-Item $msalCache -Force -ErrorAction SilentlyContinue }
+                } catch {}
+                try {
+                    if ($env:MSAL_CACHE_DIR -and (Test-Path $env:MSAL_CACHE_DIR)) {
+                        Get-ChildItem -Path $env:MSAL_CACHE_DIR -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+                try {
+                    if ($env:IDENTITY_SERVICE_CACHE_DIR -and (Test-Path $env:IDENTITY_SERVICE_CACHE_DIR)) {
+                        Get-ChildItem -Path $env:IDENTITY_SERVICE_CACHE_DIR -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+                Write-Status "Microsoft Graph disconnected"
+                Write-Host "Graph session ended in this window. Use Graph Auth to sign in again." -ForegroundColor Green
+                Write-CommandResponse "GRAPH_DISCONNECT_SUCCESS"
             } elseif ($command -eq "EXIT") {
                 Write-Host "Exit command received. Closing window..." -ForegroundColor Yellow
                 break

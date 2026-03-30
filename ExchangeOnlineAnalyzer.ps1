@@ -2432,16 +2432,16 @@ $btnCreateGraphApp.Text = "Create Graph App"
 $btnCreateGraphApp.Location = New-Object System.Drawing.Point(350, 638)
 $btnCreateGraphApp.Size = New-Object System.Drawing.Size(140, 28)
 $btnCreateGraphAppTooltip = New-Object System.Windows.Forms.ToolTip
-$btnCreateGraphAppTooltip.SetToolTip($btnCreateGraphApp, "Create app registration (River Run Security Investigator), grant permissions, and save credentials to Windows Credential Manager. A new window will open for sign-in.")
+$btnCreateGraphAppTooltip.SetToolTip($btnCreateGraphApp, "Create app registration (River Run Security Investigator), grant permissions, and save credentials to Windows Credential Manager. A new window opens for sign-in.")
 $btnCreateGraphApp.add_Click({
-    $scriptPath = Join-Path $PSScriptRoot "New-GraphInboxRulesApp.ps1"
-    if (-not (Test-Path $scriptPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    $launcherPath = Join-Path $PSScriptRoot "Start-NewGraphInboxRulesApp.ps1"
+    if (-not (Test-Path $launcherPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Script not found: $launcherPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
     try {
         $psExe = (Get-Process -Id $PID).Path
-        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM" -Wait
         [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to run script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -6607,10 +6607,14 @@ $securityInvestigationButton.add_Click({
                             if ($createResult -eq [System.Windows.Forms.DialogResult]::Yes) {
                                 $progressLabel.Text = "Opening app creation script..."
                                 [System.Windows.Forms.Application]::DoEvents()
-                                $scriptPath = Join-Path $PSScriptRoot "New-GraphInboxRulesApp.ps1"
-                                if (Test-Path $scriptPath) {
+                                $launcherPath = Join-Path $PSScriptRoot "Start-NewGraphInboxRulesApp.ps1"
+                                if (Test-Path $launcherPath) {
                                     $psExe = (Get-Process -Id $PID).Path
-                                    Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+                                    $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM"
+                                    if ($tenantId -and $tenantId -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+                                        $argLine += " -TenantId `"$($tenantId.Trim())`""
+                                    }
+                                    Start-Process $psExe -ArgumentList $argLine -Wait
                                 }
                                 $progressLabel.Text = "Retrying connections..."
                                 [System.Windows.Forms.Application]::DoEvents()
@@ -7584,7 +7588,7 @@ if (Test-Path `$ReportSelectionsFile) {
     
     # Main command loop - wait for commands from GUI
     `$commandFile = Join-Path `$CommandDir "Client`$(`$ClientNumber)_Command.txt"
-    `$pollInterval = 500  # milliseconds
+    `$pollInterval = 200  # milliseconds
     
     Write-Host "Ready! Waiting for Graph Auth command from GUI..." -ForegroundColor Green
     Write-Status "Ready! Waiting for Graph Auth command from GUI..."
@@ -8333,6 +8337,30 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Status "Authentication cancelled and reset"
                 Write-Host "Authentication cancelled and reset. All token caches cleared. Ready for new authentication attempt." -ForegroundColor Green
                 Write-CommandResponse "CANCEL_AUTH_SUCCESS"
+            } elseif (`$command -eq "GRAPH_DISCONNECT") {
+                Write-Host "GRAPH_DISCONNECT: signing out Microsoft Graph only (Exchange stays connected)..." -ForegroundColor Yellow
+                try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch {}
+                try {
+                    `$gs = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+                    if (`$gs -and `$gs.AuthContext) { `$gs.AuthContext.ClearTokenCache(); Write-Host "Cleared Graph token cache" -ForegroundColor Cyan }
+                } catch {}
+                try {
+                    `$msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
+                    if (`$msalCache -and (Test-Path `$msalCache)) { Remove-Item `$msalCache -Force -ErrorAction SilentlyContinue }
+                } catch {}
+                try {
+                    if (`$env:MSAL_CACHE_DIR -and (Test-Path `$env:MSAL_CACHE_DIR)) {
+                        Get-ChildItem -Path `$env:MSAL_CACHE_DIR -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+                try {
+                    if (`$env:IDENTITY_SERVICE_CACHE_DIR -and (Test-Path `$env:IDENTITY_SERVICE_CACHE_DIR)) {
+                        Get-ChildItem -Path `$env:IDENTITY_SERVICE_CACHE_DIR -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+                Write-Status "Microsoft Graph disconnected"
+                Write-Host "Graph session ended in this window. Use Graph Auth to sign in again." -ForegroundColor Green
+                Write-CommandResponse "GRAPH_DISCONNECT_SUCCESS"
             } elseif (`$command -eq "EXIT") {
                 Write-Host "Exit command received. Closing window..." -ForegroundColor Yellow
                 break
@@ -8472,14 +8500,14 @@ if (Test-Path `$ReportSelectionsFile) {
             $createGraphAppBtn.BackColor = [System.Drawing.Color]::FromArgb(96, 125, 139)
             $createGraphAppBtn.ForeColor = [System.Drawing.Color]::White
             $createGraphAppBtn.add_Click({
-                $scriptPath = Join-Path $PSScriptRoot "New-GraphInboxRulesApp.ps1"
-                if (-not (Test-Path $scriptPath)) {
-                    [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                $launcherPath = Join-Path $PSScriptRoot "Start-NewGraphInboxRulesApp.ps1"
+                if (-not (Test-Path $launcherPath)) {
+                    [System.Windows.Forms.MessageBox]::Show("Script not found: $launcherPath", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     return
                 }
                 try {
                     $psExe = (Get-Process -Id $PID).Path
-                    Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+                    Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM" -Wait
                     [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to. Click Graph Auth again to use app-only credentials.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                     foreach ($cn in $script:clientAuthControls.Keys) {
                         $c = $script:clientAuthControls[$cn]
@@ -8898,6 +8926,10 @@ if (Test-Path `$ReportSelectionsFile) {
                 if ($controls.UseInteractiveGraphCheckBox -and -not $controls.UseInteractiveGraphCheckBox.IsDisposed) {
                     $controls.UseInteractiveGraphCheckBox.Visible = $required.NeedsGraph -and -not $state.GraphAuthenticated
                 }
+                if ($controls.LogoutGraphButton -and -not $controls.LogoutGraphButton.IsDisposed) {
+                    $controls.LogoutGraphButton.Visible = $required.NeedsGraph -and $state.GraphAuthenticated
+                    $controls.LogoutGraphButton.Enabled = $required.NeedsGraph -and $state.GraphAuthenticated
+                }
             }
 
             # Update Generate Reports button visibility based on auth state and report selections
@@ -8926,7 +8958,6 @@ if (Test-Path `$ReportSelectionsFile) {
                     return @()
                 }
                 
-                # Parse comma-separated search terms
                 $searchTerms = $SearchTerms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
                 
                 if ($searchTerms.Count -eq 0) {
@@ -8935,7 +8966,6 @@ if (Test-Path `$ReportSelectionsFile) {
                 
                 $allFoundUsers = @()
                 
-                # Check if Graph is connected
                 try {
                     $null = Get-MgContext -ErrorAction Stop
                 } catch {
@@ -8947,105 +8977,59 @@ if (Test-Path `$ReportSelectionsFile) {
                     $StatusLabel.Text = "Searching for users..."
                 }
                 
-                # Search for each term individually and combine results
                 foreach ($searchTerm in $searchTerms) {
                     Write-Host "Searching for users matching: '$searchTerm'"
                     
                     $users = @()
+
+                    # $search is case-insensitive and replaces the old 4x startsWith calls
                     try {
-                        # Try server-side filtering first (startsWith) - case-sensitive but we'll also try case variations
-                        # Microsoft Graph OData filters are case-sensitive, so try both original and lowercase
-                        $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                        $searchTermLower = $searchTerm.ToLower()
-                        $searchTermUpper = $searchTerm.ToUpper()
-                        $searchTermTitle = (Get-Culture).TextInfo.ToTitleCase($searchTermLower)
-                        $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                        $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                        $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                        $users = @($users1) + @($users2) + @($users3) + @($users4) | Sort-Object UserPrincipalName -Unique
-                        Write-Host "  Found $($users.Count) users with startsWith filter (tried multiple case variations)"
+                        $escapedTerm = $searchTerm -replace '"', '\"'
+                        $usersDisplayName = Get-MgUser -Search "displayName:$escapedTerm" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -ErrorAction SilentlyContinue
+                        $usersUpn = Get-MgUser -Search "userPrincipalName:$escapedTerm" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -ErrorAction SilentlyContinue
+                        $users = @($usersDisplayName) + @($usersUpn) | Sort-Object UserPrincipalName -Unique
+                        Write-Host "  Found $($users.Count) users with `$search filter" -ForegroundColor Gray
                     } catch {
-                        Write-Host "  startsWith filter failed: $($_.Exception.Message), trying alternatives..."
+                        Write-Host "  `$search failed: $($_.Exception.Message), trying startsWith fallback..." -ForegroundColor Yellow
                     }
                     
+                    # Fallback: single startsWith call (original casing only)
                     if ($users.Count -eq 0) {
-                        # Try alternative search methods
                         try {
-                            # Try exact match (case-sensitive first, then variations)
-                            $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            $usersAlt1 = $usersAlt1 | Sort-Object UserPrincipalName -Unique
-                            Write-Host "  Alternative search 1 (exact DisplayName match): Found $($usersAlt1.Count) users"
-                            
-                            $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                            $usersAlt2 = $usersAlt2 | Sort-Object UserPrincipalName -Unique
-                            Write-Host "  Alternative search 2 (exact UserPrincipalName match): Found $($usersAlt2.Count) users"
-                            
-                            # Try case-insensitive search by getting all users and filtering client-side
-                            Write-Host "  Fetching all users for client-side filtering..."
-                            try {
-                                $allUsers = Get-MgUser -All -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
-                                Write-Host "  Retrieved $($allUsers.Count) total users from tenant"
-                                
-                                # Use case-insensitive matching with -ilike
-                                $searchTermPattern = "*$searchTerm*"
-                                $usersAlt3 = $allUsers | Where-Object { 
-                                    ($_.DisplayName -and $_.DisplayName -ilike $searchTermPattern) -or 
-                                    ($_.UserPrincipalName -and $_.UserPrincipalName -ilike $searchTermPattern)
-                                }
-                                Write-Host "  Alternative search 3 (client-side filtering): Found $($usersAlt3.Count) users matching '$searchTerm'"
-                                
-                                # Show sample matches for debugging
-                                if ($usersAlt3.Count -gt 0 -and $usersAlt3.Count -le 5) {
-                                    Write-Host "  Sample matches:" -ForegroundColor Gray
-                                    foreach ($u in $usersAlt3) {
-                                        Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
-                                    }
-                                } elseif ($usersAlt3.Count -gt 5) {
-                                    Write-Host "  Sample matches (first 5):" -ForegroundColor Gray
-                                    foreach ($u in ($usersAlt3 | Select-Object -First 5)) {
-                                        Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
-                                    }
-                                }
-                            } catch {
-                                Write-Host "  Failed to retrieve all users for client-side filtering: $($_.Exception.Message)" -ForegroundColor Yellow
-                                $usersAlt3 = @()
-                            }
-                            
-                            # Combine all results
-                            $users = @($usersAlt1) + @($usersAlt2) + @($usersAlt3) | Sort-Object UserPrincipalName -Unique
-                            Write-Host "  Combined alternative searches: Found $($users.Count) users"
+                            $users = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -ErrorAction SilentlyContinue
+                            if ($users) { Write-Host "  Fallback startsWith found $($users.Count) users" -ForegroundColor Gray }
                         } catch {
-                            Write-Host "  Alternative searches also failed: $($_.Exception.Message)" -ForegroundColor Red
-                        }
-                    } else {
-                        # Show sample matches for startsWith results too
-                        if ($users.Count -gt 0 -and $users.Count -le 5) {
-                            Write-Host "  Sample matches:" -ForegroundColor Gray
-                            foreach ($u in $users) {
-                                Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
-                            }
-                        } elseif ($users.Count -gt 5) {
-                            Write-Host "  Sample matches (first 5):" -ForegroundColor Gray
-                            foreach ($u in ($users | Select-Object -First 5)) {
-                                Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray
-                            }
+                            Write-Host "  startsWith also failed: $($_.Exception.Message)" -ForegroundColor Yellow
                         }
                     }
-                    
-                    # Add found users to the collection (will deduplicate later)
+
+                    # Last resort: exact eq match
+                    if (-not $users -or $users.Count -eq 0) {
+                        try {
+                            $usersEq1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            $usersEq2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                            $users = @($usersEq1) + @($usersEq2) | Sort-Object UserPrincipalName -Unique
+                            if ($users.Count -gt 0) { Write-Host "  Exact eq match found $($users.Count) users" -ForegroundColor Gray }
+                        } catch {
+                            Write-Host "  All search methods failed: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+
                     if ($users.Count -gt 0) {
+                        if ($users.Count -le 5) {
+                            foreach ($u in $users) { Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray }
+                        } else {
+                            foreach ($u in ($users | Select-Object -First 5)) { Write-Host "    - $($u.DisplayName) ($($u.UserPrincipalName))" -ForegroundColor Gray }
+                            Write-Host "    ... and $($users.Count - 5) more" -ForegroundColor Gray
+                        }
                         $allFoundUsers += $users
                     }
                 }
                 
-                # Remove duplicates based on UserPrincipalName
                 $uniqueUsers = $allFoundUsers | Sort-Object UserPrincipalName -Unique
                 
                 Write-Host "Total unique users found: $($uniqueUsers.Count)"
                 
-                # Return array of UserPrincipalNames
                 return ($uniqueUsers | ForEach-Object { $_.UserPrincipalName })
             }
 
@@ -9525,10 +9509,22 @@ if (Test-Path `$ReportSelectionsFile) {
                 $removeTenantBtn.Tag = $ClientNumber
                 $removeTenantBtn.ForeColor = [System.Drawing.Color]::DarkRed
 
+                # Log out Graph only (worker session) — disconnect Graph + clear token cache; leaves Exchange as-is
+                $logoutGraphBtn = New-Object System.Windows.Forms.Button
+                $logoutGraphBtn.Text = "Log out Graph"
+                $logoutGraphBtn.Location = New-Object System.Drawing.Point(860, ($yPos + 10))
+                $logoutGraphBtn.Size = New-Object System.Drawing.Size(105, 30)
+                $logoutGraphBtn.Enabled = $false
+                $logoutGraphBtn.Visible = $false
+                $logoutGraphBtn.Tag = $ClientNumber
+                $logoutGraphBtn.ForeColor = [System.Drawing.Color]::FromArgb(183, 28, 28)
+                $logoutGraphBtnTooltip = New-Object System.Windows.Forms.ToolTip
+                $logoutGraphBtnTooltip.SetToolTip($logoutGraphBtn, "Disconnect Microsoft Graph in this client's PowerShell window and clear its Graph token cache. Exchange Online stays signed in. Use when Graph is stuck on the wrong tenant or before re-running Graph Auth.")
+
                 # Reset Auth button
                 $resetAuthBtn = New-Object System.Windows.Forms.Button
                 $resetAuthBtn.Text = "Reset Auth"
-                $resetAuthBtn.Location = New-Object System.Drawing.Point(860, ($yPos + 10))
+                $resetAuthBtn.Location = New-Object System.Drawing.Point(970, ($yPos + 10))
                 $resetAuthBtn.Size = New-Object System.Drawing.Size(100, 30)
                 $resetAuthBtn.Enabled = $true
                 $resetAuthBtn.Tag = $ClientNumber
@@ -9657,7 +9653,7 @@ if (Test-Path `$ReportSelectionsFile) {
                 $extractEmailsBtn.ForeColor = [System.Drawing.Color]::White
 
                 # Add controls to panel
-                $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $useInteractiveGraphCheckBox, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $viewReportsBtn))
+                $script:authPanel.Controls.AddRange(@($borderPanel, $toggleBtn, $clientLabel, $statusLabel, $warningLabel, $graphStatusLabel, $exchangeStatusLabel, $openReportsBtn, $removeMinimizedBtn, $graphAuthBtn, $exchangeAuthBtn, $removeTenantBtn, $logoutGraphBtn, $resetAuthBtn, $appRegTenantLabel, $appRegTenantCombo, $useInteractiveGraphCheckBox, $userFilterCheckBox, $userSearchTextBox, $validateUsersBtn, $userValidationLabel, $generateReportsBtn, $ticketLabel, $ticketTextBox, $ticketNumbersLabel, $extractEmailsBtn, $viewReportsBtn))
 
                 # Store controls and state
                 $script:clientAuthStates[$ClientNumber] = @{
@@ -9683,6 +9679,7 @@ if (Test-Path `$ReportSelectionsFile) {
                     GraphButton = $graphAuthBtn
                     ExchangeButton = $exchangeAuthBtn
                     RemoveButton = $removeTenantBtn
+                    LogoutGraphButton = $logoutGraphBtn
                     ResetButton = $resetAuthBtn
                     UserFilterCheckBox = $userFilterCheckBox
                     UserSearchTextBox = $userSearchTextBox
@@ -10622,6 +10619,7 @@ if (Test-Path `$ReportSelectionsFile) {
                         $script:clientAuthControls[$clientNum].ValidateUsersButton.Visible = $true
                         $script:clientAuthControls[$clientNum].UserValidationLabel.Visible = $true
                         
+                        Update-AuthButtonVisibilityForClient -ClientNumber $clientNum
                         $script:authStatusTextBox.AppendText("Client $clientNum Graph authentication successful! Tenant: $tenantName`r`n")
                     } elseif ($response -like "GRAPH_AUTH_FAILED:*") {
                         $errorMsg = $response -replace "GRAPH_AUTH_FAILED:", ""
@@ -10764,6 +10762,48 @@ if (Test-Path `$ReportSelectionsFile) {
                     [System.Windows.Forms.Application]::DoEvents()
                 })
                 
+                # Log out Graph only (worker disconnect + token cache clear; Exchange unchanged)
+                $logoutGraphBtn.add_Click({
+                    $clientNum = $this.Tag
+                    if (-not $clientNum) { $clientNum = $capturedClientNum }
+                    if (-not $script:clientAuthStates[$clientNum].GraphAuthenticated) { return }
+                    $script:authStatusTextBox.AppendText("Client ${clientNum}: Signing out Microsoft Graph in worker session...`r`n")
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    $resp = Send-CommandToSession -ClientNumber $clientNum -Command "GRAPH_DISCONNECT" -TimeoutSeconds 30
+                    if ($resp -eq "GRAPH_DISCONNECT_SUCCESS") {
+                        $script:clientAuthStates[$clientNum].GraphAuthenticated = $false
+                        $script:clientAuthStates[$clientNum].GraphContext = $null
+                        if ($script:clientAuthControls[$clientNum].GraphButton -and -not $script:clientAuthControls[$clientNum].GraphButton.IsDisposed) {
+                            $script:clientAuthControls[$clientNum].GraphButton.Text = "Graph Auth"
+                            $script:clientAuthControls[$clientNum].GraphButton.Enabled = $true
+                        }
+                        $required = Get-CurrentRequiredAuth
+                        if ($required.NeedsExchange -and $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
+                            $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph signed out — sign in to Graph again for reports that need it"
+                            $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
+                        } else {
+                            $script:clientAuthControls[$clientNum].StatusLabel.Text = if ($required.NeedsGraph) { "Ready for Graph Auth" } else { $script:clientAuthControls[$clientNum].StatusLabel.Text }
+                            $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Blue
+                        }
+                        if ($script:clientAuthControls[$clientNum].AppRegTenantLabel) { $script:clientAuthControls[$clientNum].AppRegTenantLabel.Visible = $required.NeedsGraph }
+                        if ($script:clientAuthControls[$clientNum].AppRegTenantCombo) { $script:clientAuthControls[$clientNum].AppRegTenantCombo.Visible = $required.NeedsGraph }
+                        if ($script:clientAuthControls[$clientNum].UseInteractiveGraphCheckBox) { $script:clientAuthControls[$clientNum].UseInteractiveGraphCheckBox.Visible = $required.NeedsGraph }
+                        $script:clientAuthControls[$clientNum].UserFilterCheckBox.Visible = $false
+                        $script:clientAuthControls[$clientNum].UserFilterCheckBox.Enabled = $false
+                        $script:clientAuthControls[$clientNum].UserSearchTextBox.Visible = $false
+                        $script:clientAuthControls[$clientNum].ValidateUsersButton.Visible = $false
+                        $script:clientAuthControls[$clientNum].UserValidationLabel.Visible = $false
+                        Update-AuthButtonVisibilityForClient -ClientNumber $clientNum
+                        Update-GenerateReportsButtonForClient -ClientNumber $clientNum
+                        $script:authStatusTextBox.AppendText("Client ${clientNum}: Graph signed out. Click Graph Auth to sign in again.`r`n")
+                    } else {
+                        $script:authStatusTextBox.AppendText("Client ${clientNum}: Graph sign-out failed or timed out (response: $resp). Try Reset Auth.`r`n")
+                    }
+                    $script:authStatusTextBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                })
+
                 # Reset Auth button handler
                 $resetAuthBtn.add_Click({
                     $clientNum = $this.Tag
