@@ -2440,9 +2440,10 @@ $btnCreateGraphApp.add_Click({
         return
     }
     try {
-        $psExe = (Get-Process -Id $PID).Path
-        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM" -Wait
-        [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+        $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $PSScriptRoot
+        $mb = Show-GraphAppCreateResultMessage -CreateOutcome $outcome
+        [System.Windows.Forms.MessageBox]::Show($mb.Text, $mb.Title, [System.Windows.Forms.MessageBoxButtons]::OK, $mb.Icon) | Out-Null
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to run script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
@@ -6801,6 +6802,8 @@ $securityInvestigationButton.add_Click({
                         if ($filePaths.SignInLogsCsv) { $exportedFiles += "SignInLogs.csv" }
                         if ($filePaths.SignInLogsJson) { $exportedFiles += "SignInLogs.json" }
                         if ($filePaths.SignInLogsError) { $exportedFiles += "SignInLogs_Error.txt" }
+                        if ($filePaths.SignInLogsInfo) { $exportedFiles += "SignInLogs_NoResults.txt" }
+                        if ($filePaths.SignInLogsExportIssue) { $exportedFiles += "SignInLogs_ExportIssue.txt" }
                         if ($filePaths.ConditionalAccessPoliciesCsv) { $exportedFiles += "ConditionalAccessPolicies.csv" }
                         if ($filePaths.ConditionalAccessPoliciesJson) { $exportedFiles += "ConditionalAccessPolicies.json" }
                         if ($filePaths.ConditionalAccessPoliciesError) { $exportedFiles += "ConditionalAccessPolicies_Error.txt" }
@@ -6874,6 +6877,8 @@ $securityInvestigationButton.add_Click({
                                         "SignInLogs.csv" { $filePath = $filePaths.SignInLogsCsv }
                                         "SignInLogs.json" { $filePath = $filePaths.SignInLogsJson }
                                         "SignInLogs_Error.txt" { $filePath = $filePaths.SignInLogsError }
+                                        "SignInLogs_NoResults.txt" { $filePath = $filePaths.SignInLogsInfo }
+                                        "SignInLogs_ExportIssue.txt" { $filePath = $filePaths.SignInLogsExportIssue }
                                         "ConditionalAccessPolicies.csv" { $filePath = $filePaths.ConditionalAccessPoliciesCsv }
                                         "ConditionalAccessPolicies.json" { $filePath = $filePaths.ConditionalAccessPoliciesJson }
                                         "ConditionalAccessPolicies_Error.txt" { $filePath = $filePaths.ConditionalAccessPoliciesError }
@@ -8461,7 +8466,9 @@ if (Test-Path `$ReportSelectionsFile) {
                         $combo.SelectedIndex = 0
                         if ($sel -and $combo.Items.Contains($sel)) { $combo.SelectedItem = $sel }
                     }
-                } catch {}
+                } catch {
+                    Write-Warning "Could not refresh App reg tenant list: $($_.Exception.Message)"
+                }
             }
 
             # Add Tenant button
@@ -8506,13 +8513,24 @@ if (Test-Path `$ReportSelectionsFile) {
                     return
                 }
                 try {
-                    $psExe = (Get-Process -Id $PID).Path
-                    Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM" -Wait
-                    [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to. Click Graph Auth again to use app-only credentials.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-                    foreach ($cn in $script:clientAuthControls.Keys) {
-                        $c = $script:clientAuthControls[$cn]
-                        if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
-                            & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+                    Import-Module (Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+                    $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $PSScriptRoot
+                    $mb = Show-GraphAppCreateResultMessage -CreateOutcome $outcome
+                    [System.Windows.Forms.MessageBox]::Show($mb.Text, $mb.Title, [System.Windows.Forms.MessageBoxButtons]::OK, $mb.Icon) | Out-Null
+                    $r = $outcome.Result
+                    if ($r -and $r.TenantId) {
+                        foreach ($cn in $script:clientAuthControls.Keys) {
+                            $c = $script:clientAuthControls[$cn]
+                            if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
+                                & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo -ForceRefreshFromGraph
+                                $needle = [string]$r.TenantId
+                                for ($i = 0; $i -lt $c.AppRegTenantCombo.Items.Count; $i++) {
+                                    if ([string]$c.AppRegTenantCombo.Items[$i] -match [regex]::Escape($needle)) {
+                                        $c.AppRegTenantCombo.SelectedIndex = $i
+                                        break
+                                    }
+                                }
+                            }
                         }
                     }
                 } catch {
@@ -8780,8 +8798,11 @@ if (Test-Path `$ReportSelectionsFile) {
                     foreach ($px in @('EOA', 'ESR')) {
                         foreach ($x in @(Get-WCMTenantIds -Prefix $px)) { [void]$tidSet.Add($x) }
                     }
-                    $msg = "Reloaded friendly names from Microsoft Graph and refreshed every App reg tenant list. Windows Credential Manager *-DisplayName entries verified after save: $updated."
-                    if ($tidSet.Count -gt 0 -and $updated -eq 0) {
+                    $msg = "Credential Manager has $($tidSet.Count) Graph app tenant(s). *-DisplayName entries verified after Graph lookup: $updated. App reg tenant dropdowns were refreshed."
+                    if ($tidSet.Count -eq 0) {
+                        $msg += "`n`nNo EOA/ESR Graph app credentials are stored on this PC. Run Create Graph App while signed into the client tenant, or Import an .eoa-creds file. Refresh cannot add a tenant that is not in Credential Manager yet."
+                    }
+                    elseif ($updated -eq 0) {
                         $msg += "`n`nNo display names were stored in WCM. Typical causes: missing admin consent for Organization.Read.All or Directory.Read.All, invalid client secret, or WCM write blocked in PowerShell 7 (try Windows PowerShell 5.1)."
                     }
                     if ($regDiag -and @($regDiag).Count -gt 0) {
@@ -10303,8 +10324,9 @@ if (Test-Path `$ReportSelectionsFile) {
                         }
                     }
                     
-                    # Get validated users or search terms
+                    # Get validated users or search terms only when user filtering is ON (tenant-wide / all-users when OFF)
                     $selectedUsers = @()
+                    if ($controls.UserFilterCheckBox.Checked) {
                     if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
                         $selectedUsers = $script:clientValidatedUsers[$clientNum]
                     } elseif ($script:clientSearchTerms.ContainsKey($clientNum)) {
@@ -10340,6 +10362,9 @@ if (Test-Path `$ReportSelectionsFile) {
                             [System.Windows.Forms.Application]::DoEvents()
                             return
                         }
+                    }
+                    } else {
+                        Write-Host "Generate Reports: User filter disabled — using tenant-wide scope (e.g. all users for sign-in logs)" -ForegroundColor Cyan
                     }
                     
                     # Build GENERATE_REPORTS command

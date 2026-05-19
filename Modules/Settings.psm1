@@ -1093,6 +1093,22 @@ Action: Draft email asking for confirmation.
 
 
 
+E. Threat Mitigated / User Downloads (Investigation Checklist — Endpoint Triage)
+
+When the ticket or telemetry involves a file detected under a user's Downloads folder (or similar user-writable download paths), treat browser provenance as a standard investigation step—not optional.
+
+**Browser history databases (SQLite):** Copy or forensically open the relevant profile DB while preserving chain of custody. Typical locations (replace `{Profile}` with Default or the active profile name, e.g. `Default`, `Profile 1`):
+
+- **Microsoft Edge:** `%LOCALAPPDATA%\Microsoft\Edge\User Data\{Profile}\History` (Chrome-compatible schema; table of interest is commonly `downloads` alongside ``urls``).
+- **Google Chrome:** `%LOCALAPPDATA%\Google\Chrome\User Data\{Profile}\History`
+- **Mozilla Firefox:** `places.sqlite` under the Firefox profile directory (use `moz_places` / download history tooling appropriate to Firefox).
+
+**What to check:** In Chromium-based browsers, inspect the **downloads** table (and related URL tables as needed) for rows matching the quarantined file name or download path. Review **tab_url** and **tab_referrer_url** (or equivalent linkage) for that file and for any other suspicious executables downloaded to the same folder in the same session or day.
+
+**Malvertising / drive-by context:** Referrers such as **googleads.g.doubleclick.net**, **googlesyndication.com** (including safeframe paths), or other **ad network / programmatic ad** domains support a **malvertising** origin narrative. Say so explicitly when the evidence fits—it changes client recommendations from a generic "one-off malware blocked" to a conversation about **ad blocking**, **browser hardening**, **Safe Browsing / filtering**, and repeat exposure if the same user shows multiple similar downloads over time.
+
+
+
 III. Output Format
 
 Subject: Security Alert: Ticket #$(if ($ticketNumsArray.Count -gt 0) { $ticketNumsArray[0] } else { '[Ticket Number]' }) - [Brief Subject]
@@ -1120,6 +1136,10 @@ Source: [ISP Name / Location] (IP: [IP Address])
 
 
 Evidence: Explain why it is classified this way (e.g., "This is a standard residential ISP," or "The rule name '.' is a known indicator of compromise"). Cite the specific log file used (e.g., ``).]
+
+
+
+[Pattern note (when applicable): If triage shows **repeated** risky behavior by the same user across this ticket and prior context (e.g., multiple malvertising-driven downloads, repeated phishing link engagement, recurring high-risk sign-ins), briefly name the **pattern** in plain language—not only this single incident—and connect it to **longer-term** mitigations the MSP can help with: ad/content filtering, security awareness, Conditional Access or device compliance, etc. Prefer one substantive "we are seeing a trend" paragraph over five separate one-off emails that teach nothing cumulative.]
 
 
 

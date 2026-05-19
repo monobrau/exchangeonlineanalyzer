@@ -27,6 +27,25 @@ param(
     $Owner = $null
 )
 
+# Windows Forms expects STA. PowerShell 7 defaults to MTA; self-restart does not run when launched
+# in-process from Exchange Online Analyzer (already STA and $Owner is not cross-process).
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
+        $path = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+        if ($path) {
+            $pwsh = (Get-Process -Id $PID -ErrorAction SilentlyContinue).Path
+            if ($pwsh) {
+                $restartArgs = [System.Collections.ArrayList]@(
+                    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', $path
+                )
+                if ($args.Count -gt 0) { $null = $restartArgs.AddRange($args) }
+                & $pwsh @restartArgs
+                exit $LASTEXITCODE
+            }
+        }
+    }
+}
+
 # Set error action preference
 $ErrorActionPreference = "Stop"
 
@@ -280,7 +299,7 @@ $bulkUnifiedAuditLogsCheckBox.Checked = $false
 
 $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkInboxRulesCheckBox.Text = "Inbox Rules"
-$bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 115)
+$bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
 $bulkInboxRulesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkInboxRulesCheckBox.Checked = $true
 
@@ -292,20 +311,20 @@ $bulkTransportRulesCheckBox.Checked = $true
 
 $bulkMailFlowCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailFlowCheckBox.Text = "Mail Flow Connectors"
-$bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 165)
+$bulkMailFlowCheckBox.Location = New-Object System.Drawing.Point(10, 140)
 $bulkMailFlowCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMailFlowCheckBox.Checked = $true
 
 $bulkMailboxForwardingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMailboxForwardingCheckBox.Text = "Mailbox Forwarding & Delegation"
-$bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 190)
+$bulkMailboxForwardingCheckBox.Location = New-Object System.Drawing.Point(10, 165)
 $bulkMailboxForwardingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMailboxForwardingCheckBox.Checked = $true
 
 # Entra ID / Identity & Access Reports
 $bulkAuditLogsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAuditLogsCheckBox.Text = "Audit Logs (Graph)"
-$bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 215)
+$bulkAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 190)
 $bulkAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAuditLogsCheckBox.Checked = $true
 
@@ -317,38 +336,38 @@ $bulkSignInLogsCheckBox.Checked = $true
 
 $bulkMfaCoverageCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkMfaCoverageCheckBox.Text = "MFA Coverage"
-$bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 290)
+$bulkMfaCoverageCheckBox.Location = New-Object System.Drawing.Point(10, 265)
 $bulkMfaCoverageCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkMfaCoverageCheckBox.Checked = $true
 
 $bulkCaPoliciesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkCaPoliciesCheckBox.Text = "Conditional Access Policies"
-$bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 315)
+$bulkCaPoliciesCheckBox.Location = New-Object System.Drawing.Point(10, 290)
 $bulkCaPoliciesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkCaPoliciesCheckBox.Checked = $true
 
 $bulkAppRegistrationsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAppRegistrationsCheckBox.Text = "App Registrations"
-$bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 340)
+$bulkAppRegistrationsCheckBox.Location = New-Object System.Drawing.Point(10, 315)
 $bulkAppRegistrationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAppRegistrationsCheckBox.Checked = $true
 
 # Security Reports
 $bulkSecurityAlertsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSecurityAlertsCheckBox.Text = "Security Alerts (requires E5/SecurityAlert.Read.All)"
-$bulkSecurityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
+$bulkSecurityAlertsCheckBox.Location = New-Object System.Drawing.Point(10, 340)
 $bulkSecurityAlertsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSecurityAlertsCheckBox.Checked = $true
 
 $bulkSecurityIncidentsCheckBox = New-Object System.Windows.Forms.CheckBox
     $bulkSecurityIncidentsCheckBox.Text = "Security Incidents (requires E5/SecurityIncident.Read.All)"
-    $bulkSecurityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 390)
+    $bulkSecurityIncidentsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
     $bulkSecurityIncidentsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
     $bulkSecurityIncidentsCheckBox.Checked = $false  # Off by default - requires extra permission for 250 tenants
 
 $bulkDLPViolationsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkDLPViolationsCheckBox.Text = "DLP Violations (requires AuditLog.Read.All)"
-$bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 365)
+$bulkDLPViolationsCheckBox.Location = New-Object System.Drawing.Point(10, 390)
 $bulkDLPViolationsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkDLPViolationsCheckBox.Checked = $true
 
@@ -367,49 +386,49 @@ $bulkOneDriveActivityCheckBox.Checked = $true
 
 $bulkTeamsActivityCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkTeamsActivityCheckBox.Text = "Teams Activity (requires E5/Reports.Read.All)"
-$bulkTeamsActivityCheckBox.Location = New-Object System.Drawing.Point(10, 490)
+$bulkTeamsActivityCheckBox.Location = New-Object System.Drawing.Point(10, 465)
 $bulkTeamsActivityCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkTeamsActivityCheckBox.Checked = $true
 
 $bulkSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointSharingCheckBox.Text = "SharePoint Sharing Links"
-$bulkSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 515)
+$bulkSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 490)
 $bulkSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointSharingCheckBox.Checked = $true
 
 $bulkAnonymousSharePointSharingCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkAnonymousSharePointSharingCheckBox.Text = "Anonymous SharePoint Sharing (requires AuditLog.Read.All)"
-$bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 540)
+$bulkAnonymousSharePointSharingCheckBox.Location = New-Object System.Drawing.Point(10, 515)
 $bulkAnonymousSharePointSharingCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkAnonymousSharePointSharingCheckBox.Checked = $true
 
 $bulkSharePointFileSharingLinksCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointFileSharingLinksCheckBox.Text = "SharePoint File Sharing Links"
-$bulkSharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 565)
+$bulkSharePointFileSharingLinksCheckBox.Location = New-Object System.Drawing.Point(10, 540)
 $bulkSharePointFileSharingLinksCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointFileSharingLinksCheckBox.Checked = $true
 
 # Device Management Reports
 $bulkIntuneDevicesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkIntuneDevicesCheckBox.Text = "Intune Device Records (requires DeviceManagementManagedDevices.Read.All)"
-$bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 590)
+$bulkIntuneDevicesCheckBox.Location = New-Object System.Drawing.Point(10, 565)
 $bulkIntuneDevicesCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkIntuneDevicesCheckBox.Checked = $true
 
 # Detailed File Action Logs
 $bulkSharePointOneDriveFileActionsCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkSharePointOneDriveFileActionsCheckBox.Text = "SharePoint/OneDrive File Actions (detailed audit log - requires View-Only Audit Logs)"
-$bulkSharePointOneDriveFileActionsCheckBox.Location = New-Object System.Drawing.Point(10, 615)
+$bulkSharePointOneDriveFileActionsCheckBox.Location = New-Object System.Drawing.Point(10, 590)
 $bulkSharePointOneDriveFileActionsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
 
 $bulkSignInLogsDaysLabel = New-Object System.Windows.Forms.Label
 $bulkSignInLogsDaysLabel.Text = "Sign-In Logs Days:"
-$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 265)
+$bulkSignInLogsDaysLabel.Location = New-Object System.Drawing.Point(30, 240)
 $bulkSignInLogsDaysLabel.Size = New-Object System.Drawing.Size(120, 20)
 
 $bulkSignInLogsDaysComboBox = New-Object System.Windows.Forms.ComboBox
-$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 263)
+$bulkSignInLogsDaysComboBox.Location = New-Object System.Drawing.Point(160, 238)
 $bulkSignInLogsDaysComboBox.Size = New-Object System.Drawing.Size(100, 20)
 $bulkSignInLogsDaysComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $bulkSignInLogsDaysComboBox.Items.AddRange(@("1 day", "7 days", "30 days"))
@@ -837,7 +856,9 @@ $bulkStartButton.add_Click({
                 $combo.SelectedIndex = 0
                 if ($sel -and $combo.Items.Contains($sel)) { $combo.SelectedItem = $sel }
             }
-        } catch {}
+        } catch {
+            Write-Warning "Could not refresh App reg tenant list: $($_.Exception.Message)"
+        }
     }
 
     # Add Tenant button
@@ -882,13 +903,24 @@ $bulkStartButton.add_Click({
             return
         }
         try {
-            $psExe = (Get-Process -Id $PID).Path
-            Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`" -SaveToWCM" -Wait
-            [System.Windows.Forms.MessageBox]::Show("App creation completed. Credentials saved to Windows Credential Manager for the tenant you signed in to. Click Graph Auth again to use app-only credentials.", "Create Graph App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            foreach ($cn in $script:clientAuthControls.Keys) {
-                $c = $script:clientAuthControls[$cn]
-                if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
-                    & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo
+            Import-Module (Join-Path $script:scriptRoot "Modules\GraphAppCredential.psm1") -Force -ErrorAction Stop
+            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:scriptRoot
+            $mb = Show-GraphAppCreateResultMessage -CreateOutcome $outcome
+            [System.Windows.Forms.MessageBox]::Show($mb.Text, $mb.Title, [System.Windows.Forms.MessageBoxButtons]::OK, $mb.Icon) | Out-Null
+            $r = $outcome.Result
+            if ($r -and $r.TenantId) {
+                foreach ($cn in $script:clientAuthControls.Keys) {
+                    $c = $script:clientAuthControls[$cn]
+                    if ($c.AppRegTenantCombo -and -not $c.AppRegTenantCombo.IsDisposed) {
+                        & $script:refreshAppRegTenantCombo -combo $c.AppRegTenantCombo -ForceRefreshFromGraph
+                        $needle = [string]$r.TenantId
+                        for ($i = 0; $i -lt $c.AppRegTenantCombo.Items.Count; $i++) {
+                            if ([string]$c.AppRegTenantCombo.Items[$i] -match [regex]::Escape($needle)) {
+                                $c.AppRegTenantCombo.SelectedIndex = $i
+                                break
+                            }
+                        }
+                    }
                 }
             }
         } catch {
@@ -1120,8 +1152,11 @@ $bulkStartButton.add_Click({
             foreach ($px in @('EOA', 'ESR')) {
                 foreach ($x in @(Get-WCMTenantIds -Prefix $px)) { [void]$tidSet.Add($x) }
             }
-            $msg = "Reloaded friendly names from Microsoft Graph and refreshed every App reg tenant list. Windows Credential Manager *-DisplayName entries verified after save: $updated."
-            if ($tidSet.Count -gt 0 -and $updated -eq 0) {
+            $msg = "Credential Manager has $($tidSet.Count) Graph app tenant(s). *-DisplayName entries verified after Graph lookup: $updated. App reg tenant dropdowns were refreshed."
+            if ($tidSet.Count -eq 0) {
+                $msg += "`n`nNo EOA/ESR Graph app credentials are stored on this PC. Run Create Graph App while signed into the client tenant, or Import an .eoa-creds file. Refresh cannot add a tenant that is not in Credential Manager yet."
+            }
+            elseif ($updated -eq 0) {
                 $msg += "`n`nNo display names were stored in WCM. Typical causes: missing admin consent for Organization.Read.All or Directory.Read.All, invalid client secret, or WCM write blocked in PowerShell 7 (try Windows PowerShell 5.1)."
             }
             if ($regDiag -and @($regDiag).Count -gt 0) {
@@ -3182,8 +3217,10 @@ try {
                 }
             }
             
-            # Get validated users or search terms
+            # Get validated users or search terms only when user filtering is ON.
+            # If the filter is OFF, leave $selectedUsers empty so sign-in logs and other Graph calls use tenant-wide (all-users) scope — stale validated users must not apply.
             $selectedUsers = @()
+            if ($controls.UserFilterCheckBox.Checked) {
             if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
                 $selectedUsers = $script:clientValidatedUsers[$clientNum]
             } else {
@@ -3274,6 +3311,9 @@ try {
                     [System.Windows.Forms.Application]::DoEvents()
                     return
                 }
+            }
+            } else {
+                Write-Host "Generate Reports: User filter disabled — using tenant-wide scope (e.g. all users for sign-in logs)" -ForegroundColor Cyan
             }
             
             # Build GENERATE_REPORTS command

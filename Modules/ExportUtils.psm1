@@ -1658,6 +1658,26 @@ Note: Unified audit logs require Exchange Online connection and 'View-Only Audit
                 $errorFile = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix_Error.txt"
                 "Error collecting Sign-in Logs:`n$($report.SignInLogsError)`n`nNote: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days of data." | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.SignInLogsError = $errorFile
+                Write-Host "Sign-in log collection failed - see SignInLogs$ticketSuffix_Error.txt" -ForegroundColor Yellow
+            } elseif ($IncludeSignInLogs) {
+                # Requested but no rows and no error (e.g. legitimately empty range) — still emit a marker file so bulk exports show sign-in was attempted
+                $infoFile = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix_NoResults.txt"
+                $infoMsg = @"
+Sign-in Logs Query Completed - No Results Found
+
+Sign-in logs were requested but no rows were returned (no exception was recorded).
+
+Date range: last $SignInLogsDaysBack day(s) from collection settings (or report date range if used)
+Query time: $($report.Timestamp)
+
+If you expected data:
+- Confirm AuditLog.Read.All (and licensing for ranges over 7 days on non-Premium tenants)
+- Try all-users mode (clear per-user filters) if you used user-scoped export
+- Check Entra portal Sign-in logs for the same window
+"@
+                $infoMsg | Out-File -FilePath $infoFile -Encoding utf8
+                $report.FilePaths.SignInLogsInfo = $infoFile
+                Write-Host "Sign-in logs: no rows exported (see SignInLogs$ticketSuffix_NoResults.txt)" -ForegroundColor Yellow
             }
 
             # Intune Device Records export
@@ -1985,6 +2005,7 @@ Note: Security alerts require SecurityAlert.Read.All permission and Microsoft De
             }
 
             # Security Incidents export
+            Write-Host "Exporting Security Incidents..." -ForegroundColor Gray
             $csv = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix.json"
             if ($report.SecurityIncidentsError) {
@@ -2023,6 +2044,7 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
 
             # User Security Posture export (combined MFA + Groups + Mailbox Forwarding/Delegation)
             try {
+                Write-Host "Building User Security Posture export (MFA + groups + forwarding)..." -ForegroundColor Gray
                 $userPosture = New-Object System.Collections.Generic.List[object]
 
                 # Create lookup dictionary for mailbox forwarding/delegation by UPN
@@ -2095,8 +2117,19 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                     }
                 } catch {}
 
+                $userExportCount = @($usersToExport).Count
+                $doEntraPerUserDetail = $entraModuleLoaded -and $graphConnected
+                if ($userExportCount -gt 0) {
+                    Write-Host "  User Security Posture: $userExportCount user row(s) to build$(if ($doEntraPerUserDetail) { ' (per-user Entra MFA detail — may take several minutes for full tenant)' } else { '' })" -ForegroundColor Gray
+                }
+
                 # Build user posture for each user
-                foreach ($mfaUser in $usersToExport) {
+                $postureIdx = 0
+                foreach ($mfaUser in @($usersToExport)) {
+                    $postureIdx++
+                    if ($postureIdx -eq 1 -or $postureIdx % 25 -eq 0 -or $postureIdx -eq $userExportCount) {
+                        Write-Host "  User posture progress: $postureIdx / $userExportCount" -ForegroundColor DarkGray
+                    }
                     $upn = $mfaUser.UserPrincipalName
                     $mbxData = $mbxLookup[$upn]
                     $groupsData = $groupsLookup[$upn]
@@ -2106,7 +2139,7 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                     $perUserMfaDetails = $null
                     $perUserMfaOverallStatus = $null
                     $perUserMfaSummary = $null
-                    if ($entraModuleLoaded -and $graphConnected) {
+                    if ($doEntraPerUserDetail) {
                         try {
                             $mfaStatus = Get-EntraUserMfaStatus -UserPrincipalName $upn -ErrorAction SilentlyContinue
                             if ($mfaStatus) {
@@ -2150,12 +2183,46 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                 # Export combined user security posture
                 if ($userPosture.Count -gt 0) {
                     $csv = Join-Path $report.OutputFolder "UserSecurityPosture$ticketSuffix.csv"
-                    try { $userPosture | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8; $report.FilePaths.UserSecurityPostureCsv = $csv } catch {}
+                    try {
+                        $userPosture | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                        $report.FilePaths.UserSecurityPostureCsv = $csv
+                        Write-Host "Exported $($userPosture.Count) User Security Posture row(s)" -ForegroundColor Green
+                    } catch {}
                 }
             } catch {
                 Write-Warning "Failed to create UserSecurityPosture export: $($_.Exception.Message)"
             }
         } catch { $exportError = $_ }
+
+        Write-Host "Primary CSV export phase complete." -ForegroundColor Gray
+
+        # Safety net: when sign-in logs were requested, ensure at least one sign-in artifact exists.
+        # This prevents silent "no file" outcomes if an unexpected export-phase exception skips that section.
+        if ($IncludeSignInLogs) {
+            $hasSignInArtifact = ($report.FilePaths.SignInLogsCsv -or $report.FilePaths.SignInLogsJson -or $report.FilePaths.SignInLogsError -or $report.FilePaths.SignInLogsInfo)
+            if (-not $hasSignInArtifact -and $report.OutputFolder) {
+                $fallback = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix`_ExportIssue.txt"
+                $msg = @"
+Sign-in Logs Export Artifact Missing
+
+Sign-in logs were requested, but no SignInLogs CSV/JSON/Error/NoResults file was created.
+This usually indicates another export-phase exception interrupted sign-in artifact writing.
+
+Timestamp: $($report.Timestamp)
+Output folder: $($report.OutputFolder)
+IncludeSignInLogs: $IncludeSignInLogs
+SignInLogsError (if set): $($report.SignInLogsError)
+Export phase error (if set): $(if ($exportError) { $exportError.Exception.Message } else { 'None captured' })
+"@
+                try {
+                    $msg | Out-File -FilePath $fallback -Encoding utf8
+                    $report.FilePaths.SignInLogsExportIssue = $fallback
+                    Write-Warning "Sign-in logs requested but no sign-in artifact was produced. See SignInLogs$ticketSuffix`_ExportIssue.txt"
+                } catch {
+                    Write-Warning "Failed to write sign-in export fallback marker: $($_.Exception.Message)"
+                }
+            }
+        }
 
         # Rule-based automated analysis (reduces LLM reliance)
         try {
@@ -3302,7 +3369,7 @@ function Get-GraphSignInLogs {
         $context = Get-MgContext -ErrorAction SilentlyContinue
         if (-not $context) {
             Write-Warning "Microsoft Graph not connected. Cannot collect sign-in logs."
-            return @()
+            throw 'Microsoft Graph is not connected. Sign-in logs require an active Graph session (interactive auth or valid access token) in this runspace.'
         }
         
         # Free tenants are limited to 7 days, Premium tenants can go up to 30 days
@@ -3639,8 +3706,10 @@ function Get-GraphSignInLogs {
         
         return [System.Collections.ArrayList]$allLogs
     } catch {
+        # Must propagate: callers use try/catch to set SignInLogsError and write SignInLogs*_Error.txt.
+        # Returning @() here hid permission, licensing, and Graph connection failures as "no data".
         Write-Error "Failed to collect sign-in logs: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -4519,6 +4588,22 @@ Action: Draft email asking for confirmation.
 
 
 
+E. Threat Mitigated / User Downloads (Investigation Checklist — Endpoint Triage)
+
+When the ticket or telemetry involves a file detected under a user's Downloads folder (or similar user-writable download paths), treat browser provenance as a standard investigation step—not optional.
+
+**Browser history databases (SQLite):** Copy or forensically open the relevant profile DB while preserving chain of custody. Typical locations (replace `{Profile}` with Default or the active profile name, e.g. `Default`, `Profile 1`):
+
+- **Microsoft Edge:** `%LOCALAPPDATA%\Microsoft\Edge\User Data\{Profile}\History` (Chrome-compatible schema; table of interest is commonly `downloads` alongside ``urls``).
+- **Google Chrome:** `%LOCALAPPDATA%\Google\Chrome\User Data\{Profile}\History`
+- **Mozilla Firefox:** `places.sqlite` under the Firefox profile directory (use `moz_places` / download history tooling appropriate to Firefox).
+
+**What to check:** In Chromium-based browsers, inspect the **downloads** table (and related URL tables as needed) for rows matching the quarantined file name or download path. Review **tab_url** and **tab_referrer_url** (or equivalent linkage) for that file and for any other suspicious executables downloaded to the same folder in the same session or day.
+
+**Malvertising / drive-by context:** Referrers such as **googleads.g.doubleclick.net**, **googlesyndication.com** (including safeframe paths), or other **ad network / programmatic ad** domains support a **malvertising** origin narrative. Say so explicitly when the evidence fits—it changes client recommendations from a generic "one-off malware blocked" to a conversation about **ad blocking**, **browser hardening**, **Safe Browsing / filtering**, and repeat exposure if the same user shows multiple similar downloads over time.
+
+
+
 III. Output Format
 
 Subject: Security Alert: Ticket #[Ticket Number] - [Brief Subject]
@@ -4546,6 +4631,10 @@ Source: [ISP Name / Location] (IP: [IP Address])
 
 
 Evidence: Explain why it is classified this way (e.g., "This is a standard residential ISP," or "The rule name '.' is a known indicator of compromise"). Cite the specific log file used (e.g., SignInLogs.csv or AuditLogs.csv).]
+
+
+
+[Pattern note (when applicable): If triage shows **repeated** risky behavior by the same user across this ticket and prior context (e.g., multiple malvertising-driven downloads, repeated phishing link engagement, recurring high-risk sign-ins), briefly name the **pattern** in plain language—not only this single incident—and connect it to **longer-term** mitigations the MSP can help with: ad/content filtering, security awareness, Conditional Access or device compliance, etc. Prefer one substantive "we are seeing a trend" paragraph over five separate one-off emails that teach nothing cumulative.]
 
 
 

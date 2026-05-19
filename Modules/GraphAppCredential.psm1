@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Store and retrieve Graph app credentials (app-only) in Windows Credential Manager.
 .DESCRIPTION
@@ -126,7 +126,7 @@ function _Warn-OnceCmdkeyCredentialManager {
     $script:credMgrCmdkeyFallbackWarned = $true
     $r = if ($Reason) { " ($Reason)" } else { '' }
     Write-Warning @"
-GraphAppCredential: Using built-in cmdkey for WCM$r — client secrets can appear in process arguments.
+GraphAppCredential: Using built-in cmdkey for WCM$r  - client secrets can appear in process arguments.
 Install: Install-Module CredentialManager -Scope CurrentUser -Force
 Then restart this PowerShell session (or run Reset-GraphAppCredentialManagerImportCache and re-import this module).
 If Import-Module CredentialManager still fails in PowerShell 7, use Windows PowerShell 5.1 (powershell.exe) for bulk registration.
@@ -155,34 +155,66 @@ function _Get-SecureStringAsPlainForKey {
 function _Ensure-CredReadNativeType {
     <#
     .SYNOPSIS
-        Ensures EOACredRead.Util (CredRead/CredFree P/Invoke) is loaded exactly once.
+        Ensures EOACredRead.CredReadHelper (CredRead/CredFree in C#) is loaded exactly once.
     #>
     if ($script:credReadNativeTypeLoaded) { return $true }
-    $sig = @'
-[DllImport("Advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
-public static extern bool CredRead(string target, uint type, int reservedFlag, out IntPtr credentialPtr);
+    $csharp = @'
+using System;
+using System.Runtime.InteropServices;
 
-[DllImport("Advapi32.dll", EntryPoint = "CredFree", SetLastError = true)]
-public static extern bool CredFree(IntPtr cred);
+namespace EOACredRead {
+    public static class CredReadHelper {
+        [DllImport("Advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CredRead(string target, int type, int reservedFlag, out IntPtr credentialPtr);
 
-[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-public struct NativeCredential {
-    public uint Flags;
-    public uint Type;
-    public IntPtr TargetName;
-    public IntPtr Comment;
-    public long LastWritten;
-    public uint CredentialBlobSize;
-    public IntPtr CredentialBlob;
-    public uint Persist;
-    public uint AttributeCount;
-    public IntPtr Attributes;
-    public IntPtr TargetAlias;
-    public IntPtr UserName;
+        [DllImport("Advapi32.dll", EntryPoint = "CredFree", SetLastError = true)]
+        private static extern bool CredFree(IntPtr cred);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct NativeCredential {
+            public uint Flags;
+            public uint Type;
+            public IntPtr TargetName;
+            public IntPtr Comment;
+            public long LastWritten;
+            public uint CredentialBlobSize;
+            public IntPtr CredentialBlob;
+            public uint Persist;
+            public uint AttributeCount;
+            public IntPtr Attributes;
+            public IntPtr TargetAlias;
+            public IntPtr UserName;
+        }
+
+        public static bool TryRead(string target, out string userName, out string secret) {
+            userName = null;
+            secret = null;
+            IntPtr ptr;
+            if (!CredRead(target, 1, 0, out ptr) || ptr == IntPtr.Zero) {
+                return false;
+            }
+            try {
+                NativeCredential n = (NativeCredential)Marshal.PtrToStructure(ptr, typeof(NativeCredential));
+                if (n.UserName != IntPtr.Zero) {
+                    userName = Marshal.PtrToStringUni(n.UserName);
+                }
+                if (n.CredentialBlob != IntPtr.Zero && n.CredentialBlobSize > 0) {
+                    secret = Marshal.PtrToStringUni(n.CredentialBlob, (int)(n.CredentialBlobSize / 2));
+                    if (secret != null) {
+                        secret = secret.TrimEnd('\0');
+                    }
+                }
+                return !string.IsNullOrEmpty(secret);
+            }
+            finally {
+                CredFree(ptr);
+            }
+        }
+    }
 }
 '@
     try {
-        Add-Type -MemberDefinition $sig -Namespace 'EOACredRead' -Name 'Util' -ErrorAction Stop
+        Add-Type -TypeDefinition $csharp -Language CSharp -ErrorAction Stop
         $script:credReadNativeTypeLoaded = $true
         return $true
     }
@@ -192,7 +224,7 @@ public struct NativeCredential {
             $script:credReadNativeTypeLoaded = $true
             return $true
         }
-        Write-Warning "GraphAppCredential: Could not load CredRead native type (P/Invoke). WCM read fallback may fail: $msg"
+        Write-Warning "GraphAppCredential: Could not load CredRead helper (P/Invoke). WCM read fallback may fail: $msg"
         return $false
     }
 }
@@ -246,7 +278,7 @@ function _Normalize-DisplayNameBlob {
 function _Write-GenericWcmSecretNative {
     <#
     .SYNOPSIS
-        Writes a generic credential via CredWriteW (UTF-16 secret). Used for *-DisplayName so cmdkey argv is not used.
+        Writes a generic credential via CredWriteW (UTF-16 secret). Avoids cmdkey argv issues (&, quotes, Unicode in secrets).
         Tries CRED_PERSIST_LOCAL_MACHINE (2) then CRED_PERSIST_ENTERPRISE (3); some vaults reject one or the other.
     #>
     param(
@@ -293,7 +325,7 @@ function _Write-GenericWcmSecretNative {
             $lastErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
             Write-Verbose "_Write-GenericWcmSecretNative: CredWrite Persist=$persist failed LastError=$lastErr Target=$TargetName"
         }
-        Write-Warning "GraphAppCredential: CredWrite could not save *-DisplayName for target '$TargetName' (tried persist 2 and 3). Last Win32 error: $lastErr"
+        Write-Warning "GraphAppCredential: CredWrite could not save WCM target '$TargetName' (tried persist 2 and 3). Last Win32 error: $lastErr"
         return $false
     }
     finally {
@@ -410,40 +442,51 @@ function Save-GraphAppCredentialToWCM {
     $target = "$credPrefix$TenantId"
     $userName = "${TenantId}|${ClientId}"
 
-    # CredentialManager's New-StoredCredential uses System.Web (.NET Framework) — not available in PowerShell 7+ (Core).
+    # CredentialManager's New-StoredCredential uses System.Web (.NET Framework) - not available in PowerShell 7+ (Core).
     $psCore = ($PSVersionTable.PSEdition -eq 'Core')
-    $usedCredMgr = $false
+    $mainCredSaved = $false
     if (-not $psCore -and (_EnsureCredentialManagerImported)) {
         try {
             $cred = New-Object PSCredential $userName, (ConvertTo-SecureString $ClientSecret -AsPlainText -Force)
             New-StoredCredential -Target $target -Credentials $cred -ErrorAction Stop | Out-Null
-            $usedCredMgr = $true
+            $mainCredSaved = $true
         } catch {
             _Warn-OnceCmdkeyCredentialManager -Reason "New-StoredCredential failed: $($_.Exception.Message)"
         }
     }
-    elseif (-not $usedCredMgr -and -not $script:credMgrCmdkeyFallbackWarned) {
+    elseif (-not $mainCredSaved -and -not $script:credMgrCmdkeyFallbackWarned) {
         if ($psCore) {
-            _Warn-OnceCmdkeyCredentialManager -Reason 'PowerShell 7+ cannot use CredentialManager for WCM writes (System.Web). Using cmdkey; run registration under Windows PowerShell 5.1 (powershell.exe) for secure storage.'
+            _Warn-OnceCmdkeyCredentialManager -Reason 'PowerShell 7+ cannot use CredentialManager for WCM writes (System.Web). Using CredWrite/cmdkey fallback.'
         }
         elseif (-not (_EnsureCredentialManagerImported)) {
             _Warn-OnceCmdkeyCredentialManager -Reason 'CredentialManager module not available or Import-Module failed'
         }
     }
 
-    if (-not $usedCredMgr) {
-        # Fallback: cmdkey (built-in, works in pwsh). SECURITY: /pass: exposes secret in process argv.
-        try {
-            $targetArg = "/generic:$target"
-            $userArg = "/user:$userName"
-            $passArg = "/pass:$ClientSecret"
-            $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList $targetArg, $userArg, $passArg -Wait -PassThru -WindowStyle Hidden
-            if ($proc.ExitCode -ne 0) {
-                throw "cmdkey exited with code $($proc.ExitCode)"
-            }
-        } catch {
-            throw "Could not save to WCM: $($_.Exception.Message). Ensure CredentialManager is installed (Install-Module CredentialManager -Scope CurrentUser) or run from Windows PowerShell 5.1."
+    if (-not $mainCredSaved) {
+        if (_Write-GenericWcmSecretNative -TargetName $target -UserName $userName -SecretText $ClientSecret) {
+            $mainCredSaved = $true
         }
+        else {
+            # Last resort: cmdkey (breaks when secret or user contains &, ", etc.)
+            try {
+                $targetArg = "/generic:$target"
+                $userArg = "/user:$userName"
+                $passArg = "/pass:$ClientSecret"
+                $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList $targetArg, $userArg, $passArg -Wait -PassThru -WindowStyle Hidden
+                if ($proc.ExitCode -ne 0) {
+                    throw "cmdkey exited with code $($proc.ExitCode)"
+                }
+                $mainCredSaved = $true
+            } catch {
+                throw "Could not save to WCM: $($_.Exception.Message). Install-Module CredentialManager -Scope CurrentUser, or run Create Graph App from Windows PowerShell 5.1."
+            }
+        }
+    }
+
+    $readBack = Get-GraphAppCredentialFromWCM -TenantId $TenantId -Prefix $Prefix
+    if (-not $readBack -or [string]::IsNullOrWhiteSpace($readBack.ClientSecret)) {
+        throw "Graph app credential could not be read back from Windows Credential Manager for tenant $TenantId."
     }
 
     # Store tenant display name for dropdown (avoids Graph API lookup later)
@@ -463,11 +506,7 @@ function Save-GraphAppCredentialToWCM {
                 $dnOk = $true
             }
             if (-not $dnOk) {
-                $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden
-                if ($proc.ExitCode -eq 0) { $dnOk = $true }
-                else {
-                    Write-Warning "GraphAppCredential: cmdkey could not save *-DisplayName for $TenantId (exit $($proc.ExitCode))."
-                }
+                Write-Warning "GraphAppCredential: Could not save *-DisplayName for $TenantId (name will still resolve via Graph when online)."
             }
         } catch {
             Write-Warning "GraphAppCredential: Could not save *-DisplayName for $TenantId : $($_.Exception.Message)"
@@ -652,10 +691,10 @@ function _Format-GraphRestExceptionDetail {
         $raw = [string]$ErrorRecord.ErrorDetails.Message
         try {
             $j = $raw | ConvertFrom-Json -ErrorAction Stop
-            if ($j.error.message) { return ($msg + ' — ' + [string]$j.error.message) }
-            if ($j.error.code) { return ($msg + ' — ' + [string]$j.error.code) }
+            if ($j.error.message) { return ($msg + '  - ' + [string]$j.error.message) }
+            if ($j.error.code) { return ($msg + '  - ' + [string]$j.error.code) }
         } catch {
-            if ($raw.Length -lt 500) { return ($msg + ' — ' + $raw) }
+            if ($raw.Length -lt 500) { return ($msg + '  - ' + $raw) }
         }
     }
     return $msg
@@ -694,7 +733,7 @@ function Get-TenantDisplayNameFromWCM {
     }
     elseif ($script:tenantOrgDisplayNameCache.ContainsKey($cacheKey)) {
         $cached = $script:tenantOrgDisplayNameCache[$cacheKey]
-        # Do not treat cached failure ($null) as final — allow retry on next call (same session).
+        # Do not treat cached failure ($null) as final  - allow retry on next call (same session).
         if ($null -ne $cached -and -not [string]::IsNullOrWhiteSpace([string]$cached)) {
             return [string]$cached
         }
@@ -931,7 +970,7 @@ function Get-GraphAppTokenFromWCM {
     .SYNOPSIS
         Gets an app-only access token using credentials from WCM. Returns $null if not found or token request fails.
     .PARAMETER FailureVariable
-        Optional. Name (string) of a variable in a parent scope to set with a short failure reason, e.g. -FailureVariable 'wcmErr' (quotes required — not $wcmErr).
+        Optional. Name (string) of a variable in a parent scope to set with a short failure reason, e.g. -FailureVariable 'wcmErr' (quotes required  - not $wcmErr).
     .NOTES
         Use -Verbose for additional detail. Also sets script-level detail for Get-TenantDisplayNameFromWCM when token acquisition fails.
     #>
@@ -994,20 +1033,14 @@ function _ReadCredentialViaCredRead {
     param([string]$Target)
     if (-not $Target) { return $null }
     if (-not (_Ensure-CredReadNativeType)) { return $null }
-    $ptr = [IntPtr]::Zero
-    $ok = [EOACredRead.Util]::CredRead($Target, 1, 0, [ref]$ptr)
-    if (-not $ok -or $ptr -eq [IntPtr]::Zero) { return $null }
     try {
-        $ncred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [EOACredRead.Util+NativeCredential])
-        $userName = if ($ncred.UserName -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ncred.UserName) } else { $null }
-        $blob = $null
-        if ($ncred.CredentialBlob -ne [IntPtr]::Zero -and $ncred.CredentialBlobSize -gt 0) {
-            $blob = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ncred.CredentialBlob, [int]$ncred.CredentialBlobSize / 2)
-        }
-        [EOACredRead.Util]::CredFree($ptr) | Out-Null
-        return [pscustomobject]@{ UserName = $userName; CredentialBlob = $blob }
+        $userName = [string]::Empty
+        $secret = [string]::Empty
+        $ok = [EOACredRead.CredReadHelper]::TryRead($Target, [ref]$userName, [ref]$secret)
+        if (-not $ok -or [string]::IsNullOrWhiteSpace($secret)) { return $null }
+        return [pscustomobject]@{ UserName = $userName; CredentialBlob = $secret }
     } catch {
-        try { [EOACredRead.Util]::CredFree($ptr) | Out-Null } catch {}
+        Write-Warning "GraphAppCredential: CredRead failed for target '$Target': $($_.Exception.Message)"
         return $null
     }
 }
@@ -1183,7 +1216,7 @@ function Import-GraphAppCredentialsFromFile {
         if (-not [string]::IsNullOrWhiteSpace([string]$dnProbe)) { $withDisplayName++ }
     }
     if ($withDisplayName -eq 0 -and $creds.Count -gt 0) {
-        Write-Warning "Import: no TenantDisplayName fields in this file — export on a PC with 'Embed tenant display names' checked (or run Register-GraphAppTenantDisplayNamesInWCM before export). Dropdowns may show GUIDs until names are stored."
+        Write-Warning "Import: no TenantDisplayName fields in this file  - export on a PC with 'Embed tenant display names' checked (or run Register-GraphAppTenantDisplayNamesInWCM before export). Dropdowns may show GUIDs until names are stored."
     }
     $count = 0
     foreach ($c in $creds) {
@@ -1305,4 +1338,110 @@ function Show-ClearLocalGraphWcmPicker {
     return $removed
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache
+function Invoke-GraphAppCreateWithWcmSave {
+    <#
+    .SYNOPSIS
+        Runs Start-NewGraphInboxRulesApp.ps1 -SaveToWCM in the same PowerShell host family as the caller (pwsh stays pwsh).
+    .OUTPUTS
+        PSCustomObject with ExitCode, Result, LogPath
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot,
+
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId
+    )
+    $launcherPath = Join-Path $ProjectRoot 'Start-NewGraphInboxRulesApp.ps1'
+    if (-not (Test-Path -LiteralPath $launcherPath)) {
+        throw "Script not found: $launcherPath"
+    }
+    # Same executable as the GUI (pwsh when you launch from pwsh). Do not switch to Windows PowerShell 5.1:
+    # -NoProfile there hides Microsoft.Graph modules installed for pwsh.
+    $psExe = (Get-Process -Id $PID -ErrorAction Stop).Path
+    $resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+    $logPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+    foreach ($p in @($resultPath, $logPath, "${logPath}.err")) {
+        if ($p -and (Test-Path -LiteralPath $p)) {
+            Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $argList = [System.Collections.ArrayList]@(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherPath, '-SaveToWCM'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        $tid = $TenantId.Trim()
+        [void]$argList.Add('-TenantId')
+        [void]$argList.Add($tid)
+    }
+    # Interactive console required for browser sign-in and Read-Host (Y/n). Redirecting stdout breaks both.
+    $proc = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru `
+        -WorkingDirectory $ProjectRoot
+    $result = $null
+    if (Test-Path -LiteralPath $resultPath) {
+        try {
+            $result = Get-Content -LiteralPath $resultPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        } catch { }
+    }
+    return [pscustomobject]@{
+        ExitCode = $proc.ExitCode
+        Result   = $result
+        LogPath  = $logPath
+    }
+}
+
+function Show-GraphAppCreateResultMessage {
+    <#
+    .SYNOPSIS
+        MessageBox text for Invoke-GraphAppCreateWithWcmSave outcome (Information vs Warning).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $CreateOutcome
+    )
+    try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue } catch { }
+    $r = $CreateOutcome.Result
+    if ($CreateOutcome.ExitCode -eq 0 -and $r -and $r.WcmSaved) {
+        $dn = if ($r.TenantDisplayName) { $r.TenantDisplayName } else { $r.TenantId }
+        return @{
+            Text = "App created and saved to Windows Credential Manager for:`n$dn`n($($r.TenantId))`n`nSelect this tenant in App reg tenant, then run Graph Auth."
+            Title = 'Create Graph App'
+            Icon  = [System.Windows.Forms.MessageBoxIcon]::Information
+        }
+    }
+    $detailParts = [System.Collections.Generic.List[string]]::new()
+    if ($r -and $r.ScriptError) { [void]$detailParts.Add([string]$r.ScriptError) }
+    elseif ($r -and $r.WcmError) { [void]$detailParts.Add([string]$r.WcmError) }
+    elseif ($CreateOutcome.ExitCode -eq 2) { [void]$detailParts.Add('Credential Manager save failed or could not be verified.') }
+    elseif ($CreateOutcome.ExitCode -eq -1073741510) {
+        [void]$detailParts.Add('The Create Graph App console was closed or cancelled before the script finished.')
+        [void]$detailParts.Add('Sign in to the correct tenant in the browser, then type Y at "Is this the correct tenant?" and complete any replace (y/n) prompts.')
+    }
+    else { [void]$detailParts.Add("Script exit code $($CreateOutcome.ExitCode).") }
+    $logPath = $CreateOutcome.LogPath
+    if ($logPath -and (Test-Path -LiteralPath $logPath)) {
+        try {
+            $tail = @(Get-Content -LiteralPath $logPath -Tail 6 -ErrorAction SilentlyContinue)
+            if ($tail.Count -gt 0) {
+                [void]$detailParts.Add('')
+                [void]$detailParts.Add('Last output:')
+                [void]$detailParts.Add(($tail -join "`n"))
+            }
+        } catch { }
+    }
+    $detail = $detailParts -join "`n"
+    $tid = if ($r -and $r.TenantId) { "`nTenant: $($r.TenantId)" } else { '' }
+    $title = if ($CreateOutcome.ExitCode -eq 2) { 'Create Graph App - WCM save failed' } else { 'Create Graph App failed' }
+    $intro = if ($CreateOutcome.ExitCode -eq 2) {
+        "The Entra app may exist, but credentials were NOT stored in Windows Credential Manager on this PC.$tid"
+    } else {
+        "Create Graph App did not finish successfully.$tid"
+    }
+    return @{
+        Text  = "$intro`n`n$detail`n`nIf Graph module errors persist, in pwsh run:`n  Update-Module Microsoft.Graph* -Scope CurrentUser -Force`n  (or: Install-Module Microsoft.Graph -Scope CurrentUser -Force)"
+        Title = $title
+        Icon  = [System.Windows.Forms.MessageBoxIcon]::Warning
+    }
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage

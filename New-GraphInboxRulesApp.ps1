@@ -30,14 +30,121 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+$script:graphAppCreateTenantId = $null
+$script:graphAppCreateTenantDisplayName = $null
+$script:graphAppCreateClientId = $null
+$script:graphAppCreateScriptError = $null
+$script:graphAppCreateWcmSaved = $false
+$script:graphAppCreateWcmError = $null
 
+function Write-GraphAppCreateResultFile {
+    try {
+        @{
+            TenantId          = $script:graphAppCreateTenantId
+            TenantDisplayName = $script:graphAppCreateTenantDisplayName
+            ClientId          = $script:graphAppCreateClientId
+            WcmSaved          = [bool]$script:graphAppCreateWcmSaved
+            WcmError          = $script:graphAppCreateWcmError
+            ScriptError       = $script:graphAppCreateScriptError
+            Timestamp         = (Get-Date).ToString('o')
+        } | ConvertTo-Json | Set-Content -Path $resultPath -Encoding UTF8 -Force
+    } catch {
+        Write-Warning "Could not write result file $resultPath : $($_.Exception.Message)"
+    }
+}
+
+function Resolve-GraphAppCreateModuleVersion {
+    <#
+    .SYNOPSIS
+        Highest version where required Graph submodules are all installed (avoids Auth 2.37 + Applications 2.36 mismatch).
+    #>
+    $required = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications')
+    $candidates = @(Get-Module -ListAvailable -Name Microsoft.Graph.Authentication | Sort-Object Version -Descending)
+    if ($candidates.Count -eq 0) {
+        throw "Microsoft Graph PowerShell SDK not installed. In pwsh run: Install-Module Microsoft.Graph -Scope CurrentUser -Force"
+    }
+    foreach ($c in $candidates) {
+        $ver = $c.Version
+        $ok = $true
+        foreach ($name in $required) {
+            if (-not (Get-Module -ListAvailable -Name $name | Where-Object { $_.Version -eq $ver })) {
+                $ok = $false
+                break
+            }
+        }
+        if ($ok) { return $ver }
+    }
+    $latestAuth = $candidates[0].Version
+    throw @"
+Microsoft Graph submodules are out of sync (e.g. Authentication $latestAuth but Applications not installed at that version).
+In pwsh run: Update-Module Microsoft.Graph* -Scope CurrentUser -Force
+"@
+}
+
+function Import-GraphAppCreateModuleStack {
+    <#
+    .SYNOPSIS
+        Loads only missing Graph submodules needed for app registration (same version). Skips Import-Module when already loaded.
+    #>
+    $previousAutoLoad = $PSModuleAutoloadingPreference
+    $PSModuleAutoloadingPreference = 'None'
+
+    try {
+        $ver = Resolve-GraphAppCreateModuleVersion
+        $stack = [System.Collections.Generic.List[string]]::new()
+        [void]$stack.Add('Microsoft.Graph.Authentication')
+        [void]$stack.Add('Microsoft.Graph.Applications')
+        if (Get-Module -ListAvailable -Name Microsoft.Graph.Identity.DirectoryManagement | Where-Object { $_.Version -eq $ver }) {
+            [void]$stack.Add('Microsoft.Graph.Identity.DirectoryManagement')
+        }
+
+        $loaded = @(Get-Module -Name $stack -ErrorAction SilentlyContinue)
+        $wrongVersion = @($loaded | Where-Object { $_.Version -ne $ver })
+        if ($wrongVersion.Count -gt 0) {
+            Write-Host "Reloading Graph modules (version mismatch)..." -ForegroundColor Gray
+            foreach ($m in $loaded) {
+                Remove-Module -Name $m.Name -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        $toImport = [System.Collections.Generic.List[string]]::new()
+        foreach ($name in $stack) {
+            $m = Get-Module -Name $name -ErrorAction SilentlyContinue
+            if ($m -and $m.Version -eq $ver) { continue }
+            [void]$toImport.Add($name)
+        }
+
+        if ($toImport.Count -eq 0) {
+            Write-Host "Graph modules already loaded (version $ver)." -ForegroundColor Gray
+            return
+        }
+
+        Write-Host "Loading Graph modules for app create (version $ver)..." -ForegroundColor Gray
+        foreach ($name in $toImport) {
+            Write-Host "  $name" -ForegroundColor DarkGray
+            Import-Module $name -RequiredVersion $ver -ErrorAction Stop
+        }
+    }
+    finally {
+        $PSModuleAutoloadingPreference = $previousAutoLoad
+    }
+}
+
+$script:graphAppCreateTranscriptPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+try {
+    Start-Transcript -Path $script:graphAppCreateTranscriptPath -Force -ErrorAction SilentlyContinue | Out-Null
+} catch { }
+
+try {
 Write-Host "`n=== Create Graph Inbox Rules App ===" -ForegroundColor Cyan
+Write-Host "Complete browser sign-in and answer the prompts below. Do not close this window until you see 'App Created' or an error." -ForegroundColor Yellow
+Import-GraphAppCreateModuleStack
 
 $guidPattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
 $resolvedTenantId = $null
 if ($TenantId -and $TenantId.Trim() -notmatch $guidPattern) {
-    Write-Error "Invalid -TenantId: expected a directory GUID."
-    exit 1
+    throw "Invalid -TenantId: expected a directory GUID."
 }
 if ($TenantId -and $TenantId.Trim() -match $guidPattern) {
     $resolvedTenantId = $TenantId.Trim()
@@ -55,16 +162,8 @@ foreach ($k in @('AZURE_IDENTITY_DISABLE_BROKER', 'MSAL_DISABLE_BROKER', 'MSAL_E
     if (Test-Path "Env:\$k") { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
 }
 
-# Clear persisted MSAL / Graph token state so we don't silently reuse a prior session
-try {
-    Disconnect-MgGraph -ErrorAction SilentlyContinue
-    $graphSession = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
-    if ($graphSession -and $graphSession.AuthContext) { $graphSession.AuthContext.ClearTokenCache() }
-} catch {}
-try {
-    $msalCache = [Microsoft.Identity.Client.TokenCacheHelper]::GetCacheFilePath()
-    if ($msalCache -and (Test-Path $msalCache)) { Remove-Item $msalCache -Force -ErrorAction SilentlyContinue }
-} catch {}
+# Isolated MSAL cache for this run (do not call Disconnect-MgGraph / GraphSession here - loading those
+# assemblies before Connect-MgGraph causes "assembly already loaded" version conflicts in pwsh).
 $authCacheDir = Join-Path $env:TEMP "EOA_GraphAppCreate_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 try {
     if (Test-Path $authCacheDir) { Remove-Item -Path $authCacheDir -Recurse -Force -ErrorAction SilentlyContinue }
@@ -114,28 +213,31 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             Connect-GraphWithScopes -Scopes $scopes -TenantId $resolvedTenantId -UseDeviceCode
         }
     } catch {
-        Write-Error "Graph connect failed: $_"
-        exit 1
+        throw "Graph connect failed: $($_.Exception.Message)"
     }
 
     $tenantId = (Get-MgContext).TenantId
+    $script:graphAppCreateTenantId = $tenantId
     $tenantDisplayName = $tenantId
+    $script:graphAppCreateTenantDisplayName = $tenantDisplayName
     try {
         $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
-        if ($org.value -and $org.value[0].displayName) { $tenantDisplayName = $org.value[0].displayName }
+        if ($org.value -and $org.value[0].displayName) {
+            $tenantDisplayName = $org.value[0].displayName
+            $script:graphAppCreateTenantDisplayName = $tenantDisplayName
+        }
     } catch {}
     Write-Host "Connected. Tenant: $tenantDisplayName ($tenantId)" -ForegroundColor Green
 
-    Write-Host "`nIs this the correct tenant? (Y/n): " -ForegroundColor Yellow -NoNewline
+    Write-Host "`n>>> Is this the correct tenant? Type Y and press Enter (n = sign in to a different tenant): " -ForegroundColor Yellow -NoNewline
     $confirm = Read-Host
     if ($confirm -eq '' -or $confirm -ieq 'y') { break }
 
-    Write-Host "Wrong tenant — disconnecting..." -ForegroundColor Yellow
-    Disconnect-MgGraph -ErrorAction SilentlyContinue
+    Write-Host "Wrong tenant - disconnecting..." -ForegroundColor Yellow
+    try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch { }
 
     if ($attempt -eq $maxAttempts) {
-        Write-Error "Unable to connect to the desired tenant after $maxAttempts attempts."
-        exit 1
+        throw "Unable to connect to the desired tenant after $maxAttempts attempts."
     }
 }
 
@@ -207,11 +309,6 @@ if ($existingApps.Count -gt 0) {
             Write-Warning "  Failed to delete: $($_.Exception.Message)"
         }
     }
-    # Remove WCM credential for this tenant so we don't keep stale ClientId/secret
-    try {
-        Import-Module (Join-Path $projectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction SilentlyContinue
-        Remove-GraphAppCredentialFromWCM -TenantId $tenantId -ErrorAction SilentlyContinue
-    } catch {}
 }
 
 Write-Host "`nCreating app: $displayName" -ForegroundColor Yellow
@@ -235,20 +332,48 @@ Write-Host "`nCreating client secret..." -ForegroundColor Yellow
 $cred = Add-MgApplicationPassword -ApplicationId $app.Id
 Write-Host "  Secret created (expires: $($cred.endDateTime))" -ForegroundColor Gray
 
+$script:graphAppCreateClientId = $app.AppId
 if ($SaveToWCM) {
+    if (-not (Get-Module -ListAvailable -Name CredentialManager)) {
+        Write-Host "Installing CredentialManager module (one-time)..." -ForegroundColor Gray
+        try {
+            Install-Module CredentialManager -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        } catch {
+            Write-Warning "Could not install CredentialManager: $($_.Exception.Message). WCM save will use CredWrite/cmdkey fallback."
+        }
+    }
     Write-Host "`nSaving to Windows Credential Manager..." -ForegroundColor Yellow
     try {
         $tenantDisplayName = $null
         try {
             $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
-            if ($org.value -and $org.value[0].displayName) { $tenantDisplayName = $org.value[0].displayName }
+            if ($org.value -and $org.value[0].displayName) {
+                $tenantDisplayName = $org.value[0].displayName
+                $script:graphAppCreateTenantDisplayName = $tenantDisplayName
+            }
         } catch {}
         Import-Module (Join-Path $projectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction Stop
         Save-GraphAppCredentialToWCM -TenantId $tenantId -ClientId $app.AppId -ClientSecret $cred.secretText -TenantDisplayName $tenantDisplayName
-        Write-Host "  Saved. Reports will use these credentials when pulling for this tenant." -ForegroundColor Green
+        if (Get-GraphAppCredentialFromWCM -TenantId $tenantId) {
+            $script:graphAppCreateWcmSaved = $true
+            Write-Host "  Saved and verified in Credential Manager." -ForegroundColor Green
+        }
+        else {
+            throw 'Save completed but credential could not be read back from Credential Manager.'
+        }
     } catch {
-        Write-Warning "Could not save to WCM: $($_.Exception.Message). Install-Module CredentialManager -Scope CurrentUser"
+        $script:graphAppCreateWcmError = $_.Exception.Message
+        Write-Warning "Could not save to WCM: $($script:graphAppCreateWcmError)"
     }
+}
+
+Write-GraphAppCreateResultFile
+
+if ($SaveToWCM -and -not $script:graphAppCreateWcmSaved) {
+    Write-Host "`nERROR: App exists in Entra but was NOT stored in Windows Credential Manager." -ForegroundColor Red
+    Write-Host "The App reg tenant dropdown will not list this tenant until WCM save succeeds." -ForegroundColor Red
+    if ($script:graphAppCreateWcmError) { Write-Host "Detail: $($script:graphAppCreateWcmError)" -ForegroundColor Red }
+    exit 2
 }
 
 Write-Host "`n=== App Created ===" -ForegroundColor Cyan
@@ -257,3 +382,14 @@ Write-Host "ClientId:  $($app.AppId)"
 Write-Host "Secret:    $($cred.secretText)"
 Write-Host "`nSave the secret now - it is shown only once." -ForegroundColor Yellow
 Write-Host ""
+
+}
+catch {
+    $script:graphAppCreateScriptError = $_.Exception.Message
+    Write-GraphAppCreateResultFile
+    Write-Error $_
+    exit 1
+}
+finally {
+    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+}

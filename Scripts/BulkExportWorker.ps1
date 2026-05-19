@@ -234,7 +234,7 @@ try {
             IncludeAuditLogs = if ($null -ne $jsonObj.IncludeAuditLogs) { $jsonObj.IncludeAuditLogs } else { $false }
             IncludeConditionalAccessPolicies = if ($null -ne $jsonObj.IncludeConditionalAccessPolicies) { $jsonObj.IncludeConditionalAccessPolicies } else { $false }
             IncludeAppRegistrations = if ($null -ne $jsonObj.IncludeAppRegistrations) { $jsonObj.IncludeAppRegistrations } else { $false }
-            IncludeSignInLogs = if ($null -ne $jsonObj.IncludeSignInLogs) { $jsonObj.IncludeSignInLogs } else { $false }
+            IncludeSignInLogs = (($jsonObj.IncludeSignInLogs -eq $true) -or ("$($jsonObj.IncludeSignInLogs)" -match '^(?i)true$|^(?i)yes$|^1$'))
             IncludeIntuneDevices = if ($null -ne $jsonObj.IncludeIntuneDevices -and $jsonObj.IncludeIntuneDevices -ne "") { [bool]$jsonObj.IncludeIntuneDevices } else { $false }
             IncludeMfaCoverage = if ($null -ne $jsonObj.IncludeMfaCoverage -and $jsonObj.IncludeMfaCoverage -ne "") { [bool]$jsonObj.IncludeMfaCoverage } else { $false }
             IncludeSharePointActivity = if ($null -ne $jsonObj.IncludeSharePointActivity) { $jsonObj.IncludeSharePointActivity } else { $true }
@@ -1417,3 +1417,4 @@ trap {
     Start-Sleep -Seconds 60
     exit 1
 }
+
