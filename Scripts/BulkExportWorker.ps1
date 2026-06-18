@@ -701,7 +701,7 @@ try {
     
                 try {
                     # Connect-ExchangeOnline may take 15-60s; optional params are added only when supported by the installed module
-                    Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams)
+                    Connect-ExchangeOnlineWithDefaults
                     $exchangeAuthenticated = $true
                     Write-Status "Exchange Online authentication successful!"
                     Write-Host "Exchange Online authentication successful!" -ForegroundColor Green

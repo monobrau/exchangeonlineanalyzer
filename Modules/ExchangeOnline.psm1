@@ -48,6 +48,16 @@ function Get-ConnectExchangeOnlineParams {
     return $params
 }
 
+function Connect-ExchangeOnlineWithDefaults {
+    [CmdletBinding()]
+    param(
+        [hashtable]$AdditionalParams = @{}
+    )
+
+    $connectParams = Get-ConnectExchangeOnlineParams -AdditionalParams $AdditionalParams
+    Connect-ExchangeOnline @connectParams
+}
+
 function Get-ExchangeOnlineSendingRestrictions {
     param(
         [Parameter(Mandatory=$true)]
@@ -73,4 +83,4 @@ function Get-ExchangeOnlineSendingRestrictions {
     }
 }
 
-Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Get-ExchangeOnlineSendingRestrictions 
+Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Connect-ExchangeOnlineWithDefaults,Get-ExchangeOnlineSendingRestrictions 

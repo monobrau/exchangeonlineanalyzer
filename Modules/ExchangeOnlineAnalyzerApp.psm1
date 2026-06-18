@@ -5005,7 +5005,7 @@ $connectButton.add_Click({
         
         # Connect with authentication; -DisableWAM is added only when supported by the installed module (v3.7.2+)
         # Note: This may take 10-30 seconds while waiting for browser authentication
-        Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams)
+        Connect-ExchangeOnlineWithDefaults
         
         # Connection successful - no need for slow verification
         # If Connect-ExchangeOnline completed without error, the connection is established
@@ -6523,7 +6523,7 @@ $securityInvestigationButton.add_Click({
                 try {
                     if ($required.NeedsExchange) {
                         $exoOk = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
-                        if (-not $exoOk) { Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams @{ ErrorAction = 'SilentlyContinue' }) | Out-Null }
+                        if (-not $exoOk) { Connect-ExchangeOnlineWithDefaults -AdditionalParams @{ ErrorAction = 'SilentlyContinue' } | Out-Null }
                     }
                     if ($required.NeedsGraph) {
                         $mgOk = $false
@@ -6996,7 +6996,7 @@ $securityInvestigationButton.add_Click({
             $exoOk = $false
             try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
             if (-not $exoOk) {
-                Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams @{ ErrorAction = 'SilentlyContinue' }) | Out-Null
+                Connect-ExchangeOnlineWithDefaults -AdditionalParams @{ ErrorAction = 'SilentlyContinue' } | Out-Null
             }
             $mgOk = $false
             try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgOk = $true } } catch {}
