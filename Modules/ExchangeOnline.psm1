@@ -25,7 +25,6 @@ function Get-ConnectExchangeOnlineParams {
     )
 
     $params = @{
-        ShowBanner = $false
         ErrorAction = 'Stop'
     }
     foreach ($key in $AdditionalParams.Keys) {
@@ -35,6 +34,9 @@ function Get-ConnectExchangeOnlineParams {
     $exoConnect = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
     if ($exoConnect) {
         $supportedParams = $exoConnect.Parameters.Keys
+        if ($supportedParams -contains 'ShowBanner') {
+            $params['ShowBanner'] = $false
+        }
         if ($supportedParams -contains 'DisableWAM') {
             $params['DisableWAM'] = $true
         }

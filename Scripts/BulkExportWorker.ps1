@@ -186,6 +186,8 @@ try {
         exit 1
     }
     
+    Write-Host "Importing ExchangeOnline module..." -ForegroundColor Gray
+    Import-Module "$ScriptRoot\Modules\ExchangeOnline.psm1" -Force -ErrorAction SilentlyContinue
     Write-Host "Importing GraphOnline module..." -ForegroundColor Gray
     Import-Module "$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Write-Host "Importing BrowserIntegration module..." -ForegroundColor Gray
@@ -698,13 +700,8 @@ try {
                 Write-Status "Waiting for browser popup (typically 15-60 seconds)..."
     
                 try {
-                    # Note: Connect-ExchangeOnline may take 15-60s (browser popup + sign-in)
-                    # -DisableWAM prevents WAM issues; -SkipLoadingCmdletHelp speeds up connection (ExchangeOnlineManagement v3.3+)
-                    $connectParams = @{ ShowBanner = $false; DisableWAM = $true; ErrorAction = 'Stop' }
-                    if ((Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.Keys -contains 'SkipLoadingCmdletHelp') {
-                        $connectParams['SkipLoadingCmdletHelp'] = $true
-                    }
-                    Connect-ExchangeOnline @connectParams
+                    # Connect-ExchangeOnline may take 15-60s; optional params are added only when supported by the installed module
+                    Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams)
                     $exchangeAuthenticated = $true
                     Write-Status "Exchange Online authentication successful!"
                     Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
