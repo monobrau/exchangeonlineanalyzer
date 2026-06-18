@@ -5056,20 +5056,14 @@ $connectButton.add_Click({
             # Ignore cleanup errors - Connect-ExchangeOnline will handle it
         }
         
-        # Set up authentication with better window focus handling
-        $authParams = @{
-            ErrorAction = 'Stop'
-            ShowBanner = $false  # Reduce visual clutter
-        }
-        
         # Update status before connection attempt
         Show-Progress -message "Connecting to Exchange Online (this may take 10-30 seconds)..." -progress 30
         $statusLabel.Text = "Connecting to Exchange Online... Browser window should appear shortly."
         [System.Windows.Forms.Application]::DoEvents()
         
-        # Connect with authentication - Disable WAM to prevent RuntimeBroker NullReferenceException issues with newer module versions
+        # Connect with authentication; -DisableWAM is added only when supported by the installed module (v3.7.2+)
         # Note: This may take 10-30 seconds while waiting for browser authentication
-        Connect-ExchangeOnline @authParams -DisableWAM
+        Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams)
         
         # Connection successful - no need for slow verification
         # If Connect-ExchangeOnline completed without error, the connection is established
@@ -6585,7 +6579,7 @@ $securityInvestigationButton.add_Click({
                 try {
                     if ($required.NeedsExchange) {
                         $exoOk = $false; try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
-                        if (-not $exoOk) { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction SilentlyContinue | Out-Null }
+                        if (-not $exoOk) { Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams @{ ErrorAction = 'SilentlyContinue' }) | Out-Null }
                     }
                     if ($required.NeedsGraph) {
                         $mgOk = $false
@@ -7054,7 +7048,7 @@ $securityInvestigationButton.add_Click({
             $exoOk = $false
             try { Get-OrganizationConfig -ErrorAction Stop | Out-Null; $exoOk = $true } catch {}
             if (-not $exoOk) {
-                Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction SilentlyContinue | Out-Null
+                Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams @{ ErrorAction = 'SilentlyContinue' }) | Out-Null
             }
             $mgOk = $false
             try { $ctx = Get-MgContext -ErrorAction Stop; if ($ctx -and $ctx.Account) { $mgOk = $true } } catch {}
@@ -7535,6 +7529,7 @@ try {
     Write-Status "Importing modules..."
     Write-Host "Importing modules..." -ForegroundColor Cyan
     Import-Module "`$ScriptRoot\Modules\ExportUtils.psm1" -Force -ErrorAction Stop
+    Import-Module "`$ScriptRoot\Modules\ExchangeOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\GraphOnline.psm1" -Force -ErrorAction SilentlyContinue
     Import-Module "`$ScriptRoot\Modules\BrowserIntegration.psm1" -Force -ErrorAction SilentlyContinue
     if (Test-Path "`$ScriptRoot\Scripts\Common\SecurityHelpers.psm1") { Import-Module "`$ScriptRoot\Scripts\Common\SecurityHelpers.psm1" -Force -ErrorAction SilentlyContinue }
@@ -7968,12 +7963,8 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Status "Waiting for browser popup to appear (typically 15-60 seconds)..."
     
     try {
-                    # Connect-ExchangeOnline may take 15-60s; -SkipLoadingCmdletHelp speeds up connection (v3.3+)
-                    `$connectParams = @{ ShowBanner = `$false; DisableWAM = `$true; ErrorAction = 'Stop' }
-                    if ((Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.Keys -contains 'SkipLoadingCmdletHelp') {
-                        `$connectParams['SkipLoadingCmdletHelp'] = `$true
-                    }
-                    Connect-ExchangeOnline @connectParams
+                    # Connect-ExchangeOnline may take 15-60s; optional params are added only when supported by the installed module
+                    Connect-ExchangeOnline @(Get-ConnectExchangeOnlineParams)
                     `$exchangeAuthenticated = `$true
                     Write-Status "Exchange Online authentication successful!"
         Write-Host "Exchange Online authentication successful!" -ForegroundColor Green

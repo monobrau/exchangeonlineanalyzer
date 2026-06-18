@@ -18,6 +18,34 @@ function Install-ExchangeModule {
     }
 }
 
+function Get-ConnectExchangeOnlineParams {
+    [CmdletBinding()]
+    param(
+        [hashtable]$AdditionalParams = @{}
+    )
+
+    $params = @{
+        ShowBanner = $false
+        ErrorAction = 'Stop'
+    }
+    foreach ($key in $AdditionalParams.Keys) {
+        $params[$key] = $AdditionalParams[$key]
+    }
+
+    $exoConnect = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
+    if ($exoConnect) {
+        $supportedParams = $exoConnect.Parameters.Keys
+        if ($supportedParams -contains 'DisableWAM') {
+            $params['DisableWAM'] = $true
+        }
+        if ($supportedParams -contains 'SkipLoadingCmdletHelp') {
+            $params['SkipLoadingCmdletHelp'] = $true
+        }
+    }
+
+    return $params
+}
+
 function Get-ExchangeOnlineSendingRestrictions {
     param(
         [Parameter(Mandatory=$true)]
@@ -43,4 +71,4 @@ function Get-ExchangeOnlineSendingRestrictions {
     }
 }
 
-Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ExchangeOnlineSendingRestrictions 
+Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Get-ExchangeOnlineSendingRestrictions 
