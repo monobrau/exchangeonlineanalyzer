@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EOA Bulk Runner</title>
+  <style>
+    :root { font-family: Segoe UI, system-ui, sans-serif; color: #1a1a1a; background: #f4f6f8; }
+    body { margin: 0; padding: 1.5rem; max-width: 960px; }
+    h1 { margin-top: 0; font-size: 1.4rem; }
+    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    button { margin: 0.25rem 0.35rem 0.25rem 0; padding: 0.45rem 0.85rem; cursor: pointer; border-radius: 6px; border: 1px solid #8c959f; background: #f6f8fa; }
+    button.primary { background: #0969da; color: #fff; border-color: #0969da; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    select, input[type="text"] { padding: 0.35rem; min-width: 220px; }
+    pre { background: #0d1117; color: #c9d1d9; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: 220px; font-size: 0.82rem; }
+    .tenant { border-top: 1px solid #eaeef2; padding-top: 0.75rem; margin-top: 0.75rem; }
+    .muted { color: #57606a; font-size: 0.9rem; }
+    label { display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Bulk Tenant Report Exporter (Web Runner)</h1>
+  <p class="muted">Local Windows runner — Graph/Exchange auth popups open on this PC. See <code>docs/BulkWebRunnerArchitecture.md</code>.</p>
+
+  <div class="card">
+    <h2>Session</h2>
+    <button class="primary" id="btnNewSession">New session (default reports)</button>
+    <span id="sessionInfo" class="muted"></span>
+  </div>
+
+  <div class="card">
+    <h2>Tenants</h2>
+    <button id="btnAddTenant">Add tenant</button>
+    <button id="btnRefresh">Refresh status</button>
+    <div id="tenants"></div>
+  </div>
+
+  <div class="card">
+    <h2>App registrations (WCM)</h2>
+    <button id="btnLoadAppRegs">Load list</button>
+    <pre id="appRegs">Click Load list to populate tenant dropdowns.</pre>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <pre id="log"></pre>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

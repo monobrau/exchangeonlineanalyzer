@@ -116,6 +116,12 @@ function Get-DefaultSettings {
         MemberberryPath = 'C:\git\memberberry'
         MemberberryExceptionsPath = 'C:\git\memberberry\exceptions.json'
         PromptToCreateGraphApp = $false
+        ManageApiUrl = ''
+        ManageCompanyId = ''
+        ManagePublicKey = ''
+        ManagePrivateKey = ''
+        ManageClientId = ''
+        ManagePreferVScanCredentials = $false
     }
 }
 

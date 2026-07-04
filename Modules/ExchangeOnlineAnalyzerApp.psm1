@@ -10,6 +10,7 @@ function Start-ExchangeOnlineAnalyzer {
 # Import Logging module first (contains Safe-ImportModule utility)
 Import-Module "$script:EOA_AppRoot\Modules\Logging.psm1" -Global -ErrorAction Stop
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\ExchangeOnline.psm1"
+Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\ConnectWiseManage.psm1"
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\GraphOnline.psm1"
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\MailboxAnalysis.psm1"
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\TransportRules.psm1"
@@ -2574,15 +2575,133 @@ $btnDeleteGraphApp.add_Click({
     }
 })
 
+# ConnectWise Manage (PSA) — ticket fetch API
+$manageSectionTitle = New-Object System.Windows.Forms.Label
+$manageSectionTitle.Text = "ConnectWise Manage (PSA)"
+$manageSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$manageSectionTitle.Location = New-Object System.Drawing.Point(10,675)
+$manageSectionTitle.AutoSize = $true
+
+$lblManageHelp = New-Object System.Windows.Forms.Label
+$lblManageHelp.Text = "API keys: Manage → System → Members → API Members → API Keys. Client ID header: developer.connectwise.com (UUID, not the public key)."
+$lblManageHelp.Location = New-Object System.Drawing.Point(10,698)
+$lblManageHelp.Size = New-Object System.Drawing.Size(680, 32)
+$lblManageHelp.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+
+$lblManageApiUrl = New-Object System.Windows.Forms.Label
+$lblManageApiUrl.Text = "Manage API URL:"
+$lblManageApiUrl.Location = New-Object System.Drawing.Point(10,735)
+$lblManageApiUrl.AutoSize = $true
+$lblManageApiUrl.Width = 180
+
+$txtManageApiUrl = New-Object System.Windows.Forms.TextBox
+$txtManageApiUrl.Location = New-Object System.Drawing.Point(200,732)
+$txtManageApiUrl.Width = 450
+$txtManageApiUrl.PlaceholderText = 'https://na.myconnectwise.net/v4_6_release'
+
+$lblManageCompanyId = New-Object System.Windows.Forms.Label
+$lblManageCompanyId.Text = "Company ID (auth):"
+$lblManageCompanyId.Location = New-Object System.Drawing.Point(10,765)
+$lblManageCompanyId.AutoSize = $true
+$lblManageCompanyId.Width = 180
+
+$txtManageCompanyId = New-Object System.Windows.Forms.TextBox
+$txtManageCompanyId.Location = New-Object System.Drawing.Point(200,762)
+$txtManageCompanyId.Width = 450
+
+$lblManagePublicKey = New-Object System.Windows.Forms.Label
+$lblManagePublicKey.Text = "Public key:"
+$lblManagePublicKey.Location = New-Object System.Drawing.Point(10,795)
+$lblManagePublicKey.AutoSize = $true
+$lblManagePublicKey.Width = 180
+
+$txtManagePublicKey = New-Object System.Windows.Forms.TextBox
+$txtManagePublicKey.Location = New-Object System.Drawing.Point(200,792)
+$txtManagePublicKey.Width = 450
+
+$lblManagePrivateKey = New-Object System.Windows.Forms.Label
+$lblManagePrivateKey.Text = "Private key:"
+$lblManagePrivateKey.Location = New-Object System.Drawing.Point(10,825)
+$lblManagePrivateKey.AutoSize = $true
+$lblManagePrivateKey.Width = 180
+
+$txtManagePrivateKey = New-Object System.Windows.Forms.TextBox
+$txtManagePrivateKey.Location = New-Object System.Drawing.Point(200,822)
+$txtManagePrivateKey.Width = 450
+$txtManagePrivateKey.UseSystemPasswordChar = $true
+
+$lblManageClientId = New-Object System.Windows.Forms.Label
+$lblManageClientId.Text = "Client ID header:"
+$lblManageClientId.Location = New-Object System.Drawing.Point(10,855)
+$lblManageClientId.AutoSize = $true
+$lblManageClientId.Width = 180
+
+$txtManageClientId = New-Object System.Windows.Forms.TextBox
+$txtManageClientId.Location = New-Object System.Drawing.Point(200,852)
+$txtManageClientId.Width = 450
+
+$chkManagePreferVScan = New-Object System.Windows.Forms.CheckBox
+$chkManagePreferVScan.Text = "Prefer VScanMagic Manage credentials when EOA fields are blank (%LocalAppData%\VScanMagic\ConnectWise-Manage-Credentials.json)"
+$chkManagePreferVScan.Location = New-Object System.Drawing.Point(10,880)
+$chkManagePreferVScan.AutoSize = $true
+$chkManagePreferVScan.Width = 680
+
+$btnTestManageConnection = New-Object System.Windows.Forms.Button
+$btnTestManageConnection.Text = "Test Manage Connection"
+$btnTestManageConnection.Location = New-Object System.Drawing.Point(200,905)
+$btnTestManageConnection.Size = New-Object System.Drawing.Size(180, 28)
+$btnTestManageConnection.add_Click({
+    try {
+        Import-Module (Join-Path $script:EOA_AppRoot "Modules\ConnectWiseManage.psm1") -Force -ErrorAction Stop
+        $probe = [pscustomobject]@{
+            ManageApiUrl = $txtManageApiUrl.Text.Trim()
+            ManageCompanyId = $txtManageCompanyId.Text.Trim()
+            ManagePublicKey = $txtManagePublicKey.Text.Trim()
+            ManagePrivateKey = $txtManagePrivateKey.Text.Trim()
+            ManageClientId = $txtManageClientId.Text.Trim()
+            ManagePreferVScanCredentials = $chkManagePreferVScan.Checked
+        }
+        $result = Test-ConnectWiseManageConnection -Settings $probe
+        $icon = if ($result.Success) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Warning }
+        [System.Windows.Forms.MessageBox]::Show($result.Message, "ConnectWise Manage", [System.Windows.Forms.MessageBoxButtons]::OK, $icon) | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "ConnectWise Manage", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
+})
+
+$btnImportManageFromVScan = New-Object System.Windows.Forms.Button
+$btnImportManageFromVScan.Text = "Import from VScanMagic"
+$btnImportManageFromVScan.Location = New-Object System.Drawing.Point(390,905)
+$btnImportManageFromVScan.Size = New-Object System.Drawing.Size(150, 28)
+$btnImportManageFromVScan.add_Click({
+    try {
+        Import-Module (Join-Path $script:EOA_AppRoot "Modules\ConnectWiseManage.psm1") -Force -ErrorAction Stop
+        $creds = Import-ConnectWiseManageCredentialsFromVScan
+        if (-not $creds) {
+            [System.Windows.Forms.MessageBox]::Show("No VScanMagic Manage credentials found at:`n$([Environment]::GetFolderPath('LocalApplicationData'))\VScanMagic\ConnectWise-Manage-Credentials.json", "Import from VScanMagic", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+        $txtManageApiUrl.Text = $creds.ApiUrl
+        $txtManageCompanyId.Text = $creds.CompanyId
+        $txtManagePublicKey.Text = $creds.PublicKey
+        $txtManagePrivateKey.Text = $creds.PrivateKey
+        $txtManageClientId.Text = $creds.ClientId
+        $lblStatus.Text = "Imported Manage credentials from VScanMagic - click Save Settings to persist."
+        $lblStatus.ForeColor = [System.Drawing.Color]::Blue
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Import from VScanMagic", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
+})
+
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,665)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,945)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 662)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 942)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2622,31 +2741,31 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 790)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 1070)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 790)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 1070)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 830)
+$btnSave.Location = New-Object System.Drawing.Point(200, 1110)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 830)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 1110)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,810)
+$lblStatus.Location = New-Object System.Drawing.Point(10,1090)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
@@ -2658,6 +2777,7 @@ $allControls = @($sTitle,$lblSettingsLocation,$txtSettingsLocation,$btnBrowseSet
     $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,$btnBrowseMemberberryPath,
     $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnBrowseMemberberryExceptionsPath,$btnTestMemberberry,
     $graphAppSectionTitle,$chkPromptToCreateGraphApp,$btnCreateGraphApp,$btnDeleteGraphApp,$btnExportAppCreds,$btnImportAppCreds,
+    $manageSectionTitle,$lblManageHelp,$lblManageApiUrl,$txtManageApiUrl,$lblManageCompanyId,$txtManageCompanyId,$lblManagePublicKey,$txtManagePublicKey,$lblManagePrivateKey,$txtManagePrivateKey,$lblManageClientId,$txtManageClientId,$chkManagePreferVScan,$btnTestManageConnection,$btnImportManageFromVScan,
     $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
@@ -2712,6 +2832,13 @@ $settingsTab.add_Enter({
                 $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
             }
             $chkPromptToCreateGraphApp.Checked = if ($s.PromptToCreateGraphApp) { $true } else { $false }
+
+            $txtManageApiUrl.Text = [string]$s.ManageApiUrl
+            $txtManageCompanyId.Text = [string]$s.ManageCompanyId
+            $txtManagePublicKey.Text = [string]$s.ManagePublicKey
+            $txtManagePrivateKey.Text = [string]$s.ManagePrivateKey
+            $txtManageClientId.Text = [string]$s.ManageClientId
+            $chkManagePreferVScan.Checked = if ($s.ManagePreferVScanCredentials) { $true } else { $false }
             
             # Load client contact overrides into DataGridView
             $dgvContactOverrides.Rows.Clear()
@@ -2811,6 +2938,13 @@ $btnBrowseSettingsLocation.add_Click({
                         $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
                     }
                     $chkPromptToCreateGraphApp.Checked = if ($s.PromptToCreateGraphApp) { $true } else { $false }
+
+                    $txtManageApiUrl.Text = [string]$s.ManageApiUrl
+                    $txtManageCompanyId.Text = [string]$s.ManageCompanyId
+                    $txtManagePublicKey.Text = [string]$s.ManagePublicKey
+                    $txtManagePrivateKey.Text = [string]$s.ManagePrivateKey
+                    $txtManageClientId.Text = [string]$s.ManageClientId
+                    $chkManagePreferVScan.Checked = if ($s.ManagePreferVScanCredentials) { $true } else { $false }
                     
                     # Load client contact overrides
                     $dgvContactOverrides.Rows.Clear()
@@ -2924,6 +3058,12 @@ $btnSave.add_Click({
         $s.MemberberryPath = $memberberryPath
         $s.MemberberryExceptionsPath = $memberberryExceptionsPath
         $s.PromptToCreateGraphApp = $chkPromptToCreateGraphApp.Checked
+        $s.ManageApiUrl = $txtManageApiUrl.Text.Trim()
+        $s.ManageCompanyId = $txtManageCompanyId.Text.Trim()
+        $s.ManagePublicKey = $txtManagePublicKey.Text.Trim()
+        $s.ManagePrivateKey = $txtManagePrivateKey.Text.Trim()
+        $s.ManageClientId = $txtManageClientId.Text.Trim()
+        $s.ManagePreferVScanCredentials = $chkManagePreferVScan.Checked
         $s.ClientContactOverrides = $overridesJson
         
         # Save settings
