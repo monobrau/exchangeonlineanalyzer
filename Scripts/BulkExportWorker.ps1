@@ -48,6 +48,39 @@ function Write-CommandResponse {
     }
 }
 
+
+function Ensure-GraphMgSession {
+    if (-not $graphAuthenticated) { return $false }
+    $mgCtx = Get-MgContext -ErrorAction SilentlyContinue
+    if ($mgCtx) { return $true }
+    $tokenToUse = $script:graphTokenFromWCM
+    if (-not $tokenToUse -and $script:currentTenantId -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+        $tokenToUse = Get-GraphAppTokenFromWCM -TenantId $script:currentTenantId
+        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+    }
+    if (-not $tokenToUse) { return $false }
+    try {
+        $connectJob = Start-Job -ScriptBlock {
+            param($Token)
+            $sec = ConvertTo-SecureString $Token -AsPlainText -Force
+            Connect-MgGraph -AccessToken $sec -NoWelcome -ErrorAction Stop
+        } -ArgumentList $tokenToUse
+        $completed = Wait-Job -Job $connectJob -Timeout 20
+        if ($completed) {
+            Receive-Job -Job $connectJob -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $connectJob -Force -ErrorAction SilentlyContinue
+        } else {
+            Stop-Job -Job $connectJob -Force -ErrorAction SilentlyContinue
+            Remove-Job -Job $connectJob -Force -ErrorAction SilentlyContinue
+            Write-Warning "Connect-MgGraph -AccessToken timed out after 20s for Mg cmdlets"
+            return $false
+        }
+        return $null -ne (Get-MgContext -ErrorAction SilentlyContinue)
+    } catch {
+        Write-Warning "Ensure-GraphMgSession failed: $($_.Exception.Message)"
+        return $false
+    }
+}
 # Write initial error to result file immediately in case of early failure
 Write-Host "Writing initial status to result file..." -ForegroundColor Gray
 try {
@@ -223,37 +256,40 @@ try {
         # Ignore - Exchange module may not be loaded yet
     }
     
-    # Load report selections from JSON
-    $reportSelections = @{}
-    if (Test-Path $ReportSelectionsFile) {
-        $jsonObj = Get-Content $ReportSelectionsFile -Raw | ConvertFrom-Json
-        $reportSelections = @{
-            IncludeMessageTrace = if ($null -ne $jsonObj.IncludeMessageTrace) { $jsonObj.IncludeMessageTrace } else { $false }
-            IncludeInboxRules = if ($null -ne $jsonObj.IncludeInboxRules) { $jsonObj.IncludeInboxRules } else { $false }
-            IncludeTransportRules = if ($null -ne $jsonObj.IncludeTransportRules) { $jsonObj.IncludeTransportRules } else { $false }
-            IncludeMailFlowConnectors = if ($null -ne $jsonObj.IncludeMailFlowConnectors) { $jsonObj.IncludeMailFlowConnectors } else { $false }
-            IncludeMailboxForwarding = if ($null -ne $jsonObj.IncludeMailboxForwarding) { $jsonObj.IncludeMailboxForwarding } else { $false }
-            IncludeAuditLogs = if ($null -ne $jsonObj.IncludeAuditLogs) { $jsonObj.IncludeAuditLogs } else { $false }
-            IncludeConditionalAccessPolicies = if ($null -ne $jsonObj.IncludeConditionalAccessPolicies) { $jsonObj.IncludeConditionalAccessPolicies } else { $false }
-            IncludeAppRegistrations = if ($null -ne $jsonObj.IncludeAppRegistrations) { $jsonObj.IncludeAppRegistrations } else { $false }
-            IncludeSignInLogs = (($jsonObj.IncludeSignInLogs -eq $true) -or ("$($jsonObj.IncludeSignInLogs)" -match '^(?i)true$|^(?i)yes$|^1$'))
-            IncludeIntuneDevices = if ($null -ne $jsonObj.IncludeIntuneDevices -and $jsonObj.IncludeIntuneDevices -ne "") { [bool]$jsonObj.IncludeIntuneDevices } else { $false }
-            IncludeMfaCoverage = if ($null -ne $jsonObj.IncludeMfaCoverage -and $jsonObj.IncludeMfaCoverage -ne "") { [bool]$jsonObj.IncludeMfaCoverage } else { $false }
-            IncludeSharePointActivity = if ($null -ne $jsonObj.IncludeSharePointActivity) { $jsonObj.IncludeSharePointActivity } else { $true }
-            IncludeOneDriveActivity = if ($null -ne $jsonObj.IncludeOneDriveActivity) { $jsonObj.IncludeOneDriveActivity } else { $true }
-            IncludeTeamsActivity = if ($null -ne $jsonObj.IncludeTeamsActivity) { $jsonObj.IncludeTeamsActivity } else { $true }
-            IncludeSharePointSharing = if ($null -ne $jsonObj.IncludeSharePointSharing) { $jsonObj.IncludeSharePointSharing } else { $true }
-            IncludeSecurityAlerts = if ($null -ne $jsonObj.IncludeSecurityAlerts) { $jsonObj.IncludeSecurityAlerts } else { $true }
-            IncludeSecurityIncidents = if ($null -ne $jsonObj.IncludeSecurityIncidents) { $jsonObj.IncludeSecurityIncidents } else { $false }
-            IncludeAnonymousSharePointSharing = if ($null -ne $jsonObj.IncludeAnonymousSharePointSharing) { $jsonObj.IncludeAnonymousSharePointSharing } else { $true }
-            IncludeSharePointFileSharingLinks = if ($null -ne $jsonObj.IncludeSharePointFileSharingLinks) { $jsonObj.IncludeSharePointFileSharingLinks } else { $true }
-            IncludeDLPViolations = if ($null -ne $jsonObj.IncludeDLPViolations) { $jsonObj.IncludeDLPViolations } else { $true }
-            IncludeUnifiedAuditLogs = if ($null -ne $jsonObj.IncludeUnifiedAuditLogs) { $jsonObj.IncludeUnifiedAuditLogs } else { $false }
-            IncludeSharePointOneDriveFileActions = if ($null -ne $jsonObj.IncludeSharePointOneDriveFileActions) { $jsonObj.IncludeSharePointOneDriveFileActions } else { $true }
-            SignInLogsDaysBack = if ($null -ne $jsonObj.SignInLogsDaysBack) { $jsonObj.SignInLogsDaysBack } else { 7 }
-            MessageTraceDaysBack = if ($null -ne $jsonObj.MessageTraceDaysBack) { $jsonObj.MessageTraceDaysBack } else { 10 }
-        }
+function Read-BulkWorkerReportSelectionsFromFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return @{} }
+    $jsonObj = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    return @{
+        IncludeMessageTrace = if ($null -ne $jsonObj.IncludeMessageTrace) { $jsonObj.IncludeMessageTrace } else { $false }
+        IncludeInboxRules = if ($null -ne $jsonObj.IncludeInboxRules) { $jsonObj.IncludeInboxRules } else { $false }
+        IncludeTransportRules = if ($null -ne $jsonObj.IncludeTransportRules) { $jsonObj.IncludeTransportRules } else { $false }
+        IncludeMailFlowConnectors = if ($null -ne $jsonObj.IncludeMailFlowConnectors) { $jsonObj.IncludeMailFlowConnectors } else { $false }
+        IncludeMailboxForwarding = if ($null -ne $jsonObj.IncludeMailboxForwarding) { $jsonObj.IncludeMailboxForwarding } else { $false }
+        IncludeAuditLogs = if ($null -ne $jsonObj.IncludeAuditLogs) { $jsonObj.IncludeAuditLogs } else { $false }
+        IncludeConditionalAccessPolicies = if ($null -ne $jsonObj.IncludeConditionalAccessPolicies) { $jsonObj.IncludeConditionalAccessPolicies } else { $false }
+        IncludeAppRegistrations = if ($null -ne $jsonObj.IncludeAppRegistrations) { $jsonObj.IncludeAppRegistrations } else { $false }
+        IncludeSignInLogs = (($jsonObj.IncludeSignInLogs -eq $true) -or ("$($jsonObj.IncludeSignInLogs)" -match '^(?i)true$|^(?i)yes$|^1$'))
+        IncludeIntuneDevices = if ($null -ne $jsonObj.IncludeIntuneDevices -and $jsonObj.IncludeIntuneDevices -ne "") { [bool]$jsonObj.IncludeIntuneDevices } else { $false }
+        IncludeMfaCoverage = if ($null -ne $jsonObj.IncludeMfaCoverage -and $jsonObj.IncludeMfaCoverage -ne "") { [bool]$jsonObj.IncludeMfaCoverage } else { $false }
+        IncludeSharePointActivity = if ($null -ne $jsonObj.IncludeSharePointActivity) { $jsonObj.IncludeSharePointActivity } else { $false }
+        IncludeOneDriveActivity = if ($null -ne $jsonObj.IncludeOneDriveActivity) { $jsonObj.IncludeOneDriveActivity } else { $false }
+        IncludeTeamsActivity = if ($null -ne $jsonObj.IncludeTeamsActivity) { $jsonObj.IncludeTeamsActivity } else { $false }
+        IncludeSharePointSharing = if ($null -ne $jsonObj.IncludeSharePointSharing) { $jsonObj.IncludeSharePointSharing } else { $false }
+        IncludeSecurityAlerts = if ($null -ne $jsonObj.IncludeSecurityAlerts) { $jsonObj.IncludeSecurityAlerts } else { $false }
+        IncludeSecurityIncidents = if ($null -ne $jsonObj.IncludeSecurityIncidents) { $jsonObj.IncludeSecurityIncidents } else { $false }
+        IncludeAnonymousSharePointSharing = if ($null -ne $jsonObj.IncludeAnonymousSharePointSharing) { $jsonObj.IncludeAnonymousSharePointSharing } else { $false }
+        IncludeSharePointFileSharingLinks = if ($null -ne $jsonObj.IncludeSharePointFileSharingLinks) { $jsonObj.IncludeSharePointFileSharingLinks } else { $false }
+        IncludeDLPViolations = if ($null -ne $jsonObj.IncludeDLPViolations) { $jsonObj.IncludeDLPViolations } else { $false }
+        IncludeUnifiedAuditLogs = if ($null -ne $jsonObj.IncludeUnifiedAuditLogs) { $jsonObj.IncludeUnifiedAuditLogs } else { $false }
+        IncludeSharePointOneDriveFileActions = if ($null -ne $jsonObj.IncludeSharePointOneDriveFileActions) { $jsonObj.IncludeSharePointOneDriveFileActions } else { $false }
+        SignInLogsDaysBack = if ($null -ne $jsonObj.SignInLogsDaysBack) { $jsonObj.SignInLogsDaysBack } else { 7 }
+        MessageTraceDaysBack = if ($null -ne $jsonObj.MessageTraceDaysBack) { $jsonObj.MessageTraceDaysBack } else { 10 }
     }
+}
+
+    # Load report selections from JSON (session defaults; tenant override applied per GENERATE_REPORTS command)
+    $reportSelections = Read-BulkWorkerReportSelectionsFromFile -Path $ReportSelectionsFile
     
     $graphAuthenticated = $false
     $exchangeAuthenticated = $false
@@ -880,6 +916,18 @@ try {
                 Write-Host ""
                 
             } elseif ($command -match "^GENERATE_REPORTS") {
+                # Reload effective tenant selections written by web runner (overrides session defaults)
+                if ($command -match '\|ReportSelectionsFile:([^|]+)') {
+                    $tenantRsFile = $Matches[1].Trim()
+                    if (Test-Path -LiteralPath $tenantRsFile) {
+                        $reportSelections = Read-BulkWorkerReportSelectionsFromFile -Path $tenantRsFile
+                        Write-Host "Using tenant report selections: $tenantRsFile" -ForegroundColor Cyan
+                        Write-Status "Using tenant report selections: $tenantRsFile"
+                    } else {
+                        Write-Warning "Tenant report selections file not found: $tenantRsFile"
+                    }
+                }
+                
                 $required = @{ NeedsGraph = $true; NeedsExchange = $true }
                 if (Get-Command Get-RequiredAuthFromReportSelections -ErrorAction SilentlyContinue) {
                     $required = Get-RequiredAuthFromReportSelections -ReportSelections $reportSelections
@@ -987,6 +1035,11 @@ try {
                         }
                         Write-Host "User filtering enabled with search terms. Validating users..." -ForegroundColor Cyan
                         Write-Status "User filtering enabled with search terms. Validating users..."
+                        if (-not (Ensure-GraphMgSession)) {
+                            Write-Warning "Graph PowerShell session not available for user search. Report will be generated without user filtering."
+                            Write-Status "WARNING: Graph session unavailable for user search - generating without filtering"
+                            $selectedUsersForReport = @()
+                        } else {
                         
                         # Validate search terms using Graph API
                         $allFoundUsers = [System.Collections.ArrayList]::new()
@@ -1060,6 +1113,7 @@ try {
                             Write-Warning "No users found matching the search terms. Report will be generated without user filtering."
                             Write-Status "WARNING: No users found matching search terms - generating report without filtering"
                         }
+                        }
                     } catch {
                         Write-Warning "Could not parse or validate search terms from command: $($_.Exception.Message)"
                         Write-Status "ERROR: Failed to validate search terms - $($_.Exception.Message)"
@@ -1118,21 +1172,36 @@ try {
                 
                 Write-Host "Ticket data being passed: TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), TicketContent length=$($ticketContent.Length)" -ForegroundColor Cyan
                 if (Get-Command Set-LogContext -ErrorAction SilentlyContinue) { Set-LogContext -CompanyName $CompanyName -TicketNumbers $ticketNumbers }
-                # POC: Get Graph token for parallel collection (avoids extra auth prompts in runspaces)
+                # Graph token only needed when selected exports require Graph (parallel runspace collection)
                 $graphToken = $null
-                if ($script:graphTokenFromWCM) {
-                    $graphToken = $script:graphTokenFromWCM
-                    Write-Status "Using app-only token from WCM - parallel collection"
-                } elseif (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
-                    try {
-                        $diag = { param($m) Write-Status $m; if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken: $m" -Level Debug } }
-                        $graphToken = Get-GraphAccessToken -DiagnosticCallback $diag
-                    } catch {
-                        Write-Status "Graph token acquisition failed: $($_.Exception.Message)"
-                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken failed: $($_.Exception.Message)" -Level Warning }
+                if ($required.NeedsGraph) {
+                    if ($script:graphTokenFromWCM) {
+                        $graphToken = $script:graphTokenFromWCM
+                        Write-Status "Using app-only token from WCM - parallel collection"
+                    } elseif (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue) {
+                        try {
+                            $tenantForToken = $null
+                            if ($command -match '\|GRAPH_TENANT:([0-9a-fA-F-]{36})') { $tenantForToken = $Matches[1] }
+                            if ($tenantForToken) {
+                                $graphToken = Get-GraphAppTokenFromWCM -TenantId $tenantForToken
+                                if ($graphToken) { Write-Status "Using app-only token from WCM - parallel collection" }
+                            }
+                        } catch {
+                            Write-Status "WCM Graph token lookup failed: $($_.Exception.Message)"
+                        }
                     }
+                    if (-not $graphToken -and (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue)) {
+                        try {
+                            $graphToken = Get-GraphAccessToken
+                        } catch {
+                            Write-Status "Graph token acquisition failed: $($_.Exception.Message)"
+                            if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken failed: $($_.Exception.Message)" -Level Warning }
+                        }
+                    }
+                    if ($graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
+                } else {
+                    Write-Status "Graph not required for selected exports - Exchange-only collection"
                 }
-                if ($graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
                 try {
                     $messageTraceDays = if ($reportSelections.MessageTraceDaysBack) { $reportSelections.MessageTraceDaysBack } else { $DaysBack }
                     $reportParams = @{

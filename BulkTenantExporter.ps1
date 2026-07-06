@@ -1,10 +1,14 @@
 <#
 .SYNOPSIS
-Bulk Tenant Report Exporter - Standalone Application
+Bulk Tenant Report Exporter - Standalone Application (legacy WinForms)
 
 .DESCRIPTION
 Standalone PowerShell GUI application for exporting security investigation reports for multiple tenants.
 Allows dynamic tenant addition and sequential authentication for bulk report generation.
+
+**Deprecated:** Prefer the web runner at `web-runner/Start-BulkWebRunner.ps1` (http://127.0.0.1:8765/).
+The main app Bulk Tenant Report Exporter button opens the web UI by default; this script remains
+available as a fallback for one release.
 
 .NOTES
 Version: 1.0

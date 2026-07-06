@@ -121,7 +121,16 @@ function Get-DefaultSettings {
         ManagePublicKey = ''
         ManagePrivateKey = ''
         ManageClientId = ''
-        ManagePreferVScanCredentials = $false
+        ManagePreferVScanCredentials = $true
+        LiongardInstance = ''
+        LiongardAccessKey = ''
+        LiongardAccessSecret = ''
+        HuntressApiKey = ''
+        HuntressApiSecret = ''
+        SentinelOneConnectWiseInstanceId = ''
+        SentinelOneConnectWiseApiToken = ''
+        SentinelOneBarracudaInstanceId = ''
+        SentinelOneBarracudaApiToken = ''
     }
 }
 
@@ -1410,6 +1419,245 @@ function Extract-TicketNumbers {
     return $uniqueTickets
 }
 
+function Remove-SocPlaybookBoilerplateFromTicket {
+    <#
+    .SYNOPSIS
+        Strips repeated SOC internal-notes playbook blocks from Manage ticket text.
+    .NOTES
+        ConnectWise internal notes often append the same numbered response playbooks
+        (SentinelOne, Global Admin, MFA, etc.) — sometimes multiple times per ticket.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TicketContent
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        return $TicketContent
+    }
+
+    function Normalize-TicketLineForMatch {
+        param([string]$Line)
+        $t = $Line.Trim()
+        # ConnectWise / paste variants: "1\." or "1." numbered steps; trailing period on titles
+        $t = $t -replace '\\\.', '.'
+        $t = $t -replace '\s+', ' '
+        return $t.Trim().TrimEnd('.')
+    }
+
+    $playbookHeaders = @(
+        'SentinelOne New threat mitigated'
+        'SentinelOne New threat not mitigated'
+        'Global Administrator added/deleted'
+        'Office 365 Transport rule created/modified'
+        'Two Factor authentication disabled'
+        'Application credential created for MFA bypass'
+        'Sharepoint file deletion'
+        'SharePoint file deletion'
+        'Network monitoring degradation'
+        'Successful login from foreign country'
+        'Brute force authentication attempt'
+        'High outbound traffic to Russia'
+    )
+
+    $headerLookup = @{}
+    foreach ($h in $playbookHeaders) {
+        $headerLookup[(Normalize-TicketLineForMatch $h).ToLowerInvariant()] = $true
+    }
+
+    function Test-SocPlaybookHeaderLine {
+        param([string]$Line)
+        $norm = (Normalize-TicketLineForMatch $Line).ToLowerInvariant()
+        return $headerLookup.ContainsKey($norm)
+    }
+
+    function Test-SocPlaybookStepLine {
+        param([string]$Line)
+        $t = $Line.Trim()
+        if ([string]::IsNullOrWhiteSpace($t)) { return $true }
+        # Numbered playbook steps: "1.", "1\.", "1)", optional tab after number
+        return $t -match '^\d+(?:\\\.|\.|\))\s'
+    }
+
+    $lines = $TicketContent -split "`r?`n"
+    $kept = [System.Collections.ArrayList]::new()
+    $skipPlaybook = $false
+
+    foreach ($line in $lines) {
+        if (Test-SocPlaybookHeaderLine -Line $line) {
+            $skipPlaybook = $true
+            continue
+        }
+
+        if ($skipPlaybook) {
+            if (Test-SocPlaybookStepLine -Line $line) {
+                continue
+            }
+            $skipPlaybook = $false
+        }
+
+        [void]$kept.Add($line)
+    }
+
+    $result = ($kept -join "`n") -replace "(`r?`n){3,}", "`n`n"
+    return $result.Trim()
+}
+
+function Remove-TicketLlmNoiseFromTicket {
+    <#
+    .SYNOPSIS
+        Removes ConnectWise / XDR ticket sections that add LLM tokens without investigation value.
+    .NOTES
+        Keeps alert summary, company, impacted users, login/IP/geo/device facts, and analyst notes.
+        Drops config lists, threat-intel tables, raw audit blobs, vendor playbooks, and CW metadata noise.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TicketContent
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) {
+        return $TicketContent
+    }
+
+    function Clear-MarkdownNoise {
+        param([string]$Line)
+        $t = $Line -replace '\*\*', ''
+        $t = $t -replace '^#+\s*', ''
+        $t = $t -replace '^\*\s+\*\s+\*\s*$', ''
+        return $t.TrimEnd()
+    }
+
+    $lines = $TicketContent -split "`r?`n"
+    $kept = [System.Collections.ArrayList]::new()
+    $skipSection = $null   # intel | recommendations | ml | breach-detail
+    $inDiscussion = $false
+
+    foreach ($line in $lines) {
+        $trim = $line.Trim()
+        $trimNorm = $trim -replace '\*\*', ''
+
+        if ($trim -match '^--- Discussion ---') {
+            $inDiscussion = $true
+            continue
+        }
+
+        # Section: IP threat intelligence (repetitive vendor tables)
+        if ($trimNorm -match '^IP Threat Intelligence Checks') {
+            $skipSection = 'intel'
+            continue
+        }
+        if ($skipSection -eq 'intel') {
+            if ([string]::IsNullOrWhiteSpace($trim)) { continue }
+            if ($trimNorm -match '^(Malicious Detections|Proxy Detected|TOR Exit Node|VPN Detected|VirusTotal|Anomali ThreatStream|Barracuda XDR Risk Score|ASN Information|Barracuda\s*$|Non-Malicious|Results Not Found|Likely Benign)' ) { continue }
+            if ($trimNorm -match '^IP Threat Intelligence Checks') { continue }
+            if ($trim -match '^\*\*[A-Z#]' -and $trimNorm -notmatch 'Threat Intelligence') {
+                $skipSection = $null
+            } else {
+                continue
+            }
+        }
+
+        # Section: generic SOC vendor recommendations
+        if ($trimNorm -match '^Barracuda XDR SOC RECOMMENDATIONS') {
+            $skipSection = 'recommendations'
+            continue
+        }
+        if ($skipSection -eq 'recommendations') {
+            if ([string]::IsNullOrWhiteSpace($trim)) { continue }
+            if ($trim -match '^-\s+\*\*' -or $trimNorm -match '^(Evaluate Anomaly|Take Measures|Contact the SOC|Additional Tips|If your environment uses on-prem)') { continue }
+            if ($trimNorm -match '^(Known Email Breach|Impossible Travel|Incident Name|Organization Name|Technician:|Request ID:|Raw Events:)' ) {
+                $skipSection = $null
+            } else {
+                continue
+            }
+        }
+
+        # Section: ML feature / raw audit blobs (duplicate structured fields; huge token cost)
+        if ($trimNorm -match '^ML Feature Output:' -or $trim -match '^Raw Events:\s*' -or $trim -match '^o365=audit=') {
+            $skipSection = 'ml'
+            continue
+        }
+        if ($skipSection -eq 'ml') {
+            if ($trim -match '^o365=audit=' -or ($trim.Length -gt 400 -and $trim -match 'ActorContextId=')) { continue }
+            if ([string]::IsNullOrWhiteSpace($trim)) { continue }
+            if ($trimNorm -match '^(IP Threat Intelligence|Barracuda|Known Email|Technician:|Request ID:|Impacted user|Previous Login|Recent Login|\[20)' ) {
+                $skipSection = $null
+            } else {
+                continue
+            }
+        }
+
+        # Section: breach dump narrative (keep user email summary line only)
+        if ($trimNorm -match '^Known Email Breach Information:') {
+            $skipSection = 'breach-detail'
+            [void]$kept.Add('Known Email Breach Information:')
+            continue
+        }
+        if ($skipSection -eq 'breach-detail') {
+            if ($trimNorm -match '^User Email:') {
+                [void]$kept.Add((Clear-MarkdownNoise $trimNorm))
+                continue
+            }
+            if ($trimNorm -match '^(Database where leak|Breach Description:)' ) { continue }
+            if ([string]::IsNullOrWhiteSpace($trim)) { continue }
+            if ($trim -match '^\[20\d{2}-' -or $trimNorm -match '^(Technician:|Request ID:|Impact:|Request Status:|Source IP|Destination IP|Raw Events:|SentinelOne|Global Administrator|Office 365 Transport|Two Factor|Application credential|Sharepoint|Network monitoring|Successful login|Brute force|High outbound|IP Threat Intelligence|Barracuda XDR SOC|ML Feature|Impossible Travel Summary|Previous Login|Recent Login|Incident Name|Organization Name|MITRE )' ) {
+                $skipSection = $null
+            } else {
+                continue
+            }
+        }
+
+        # Single-line drops
+        if ($trimNorm -match '^(Status|Board|Priority|Technician|Request ID|Request Status|Impact|Source IP and Port|Destination IP and Port):') { continue }
+        if ($trimNorm -match '^TICKET INFORMATION - Ticket #') { continue }
+        if ($trimNorm -match '^(Non-Malicious|Barracuda Non-Malicious|Results Not Found|Likely Benign\d*)$') { continue }
+        if ($trimNorm -match 'Click HERE to respond' ) { continue }
+        if ($trimNorm -match 'Disclaimer: AI is not perfect' ) { continue }
+        if ($trim -match '^(=|-|\* \* \*){3,}$') { continue }
+        if ($trimNorm -match '^(Configuration Name\s+Configuration Type|Drag a pod here|Show All Active|RMITs are Remote|Configurations\s*$|Config List)' ) { continue }
+        if ($trimNorm -match '^Description:\s*$' ) { continue }
+        if ($trimNorm -match '^User Agent\b' ) { continue }
+        if ($trimNorm -match '^Application [0-9a-fA-F-]{36}\s+\((.+)\)\s*$') {
+            [void]$kept.Add("Application: $($Matches[1])")
+            continue
+        }
+        if ($trim -match '^o365=audit=' ) { continue }
+        if ($trim.Length -gt 500 -and $trim -match 'ActorContextId=' ) { continue }
+
+        # Discussion author/timestamp lines — keep note body only
+        if ($inDiscussion -and $trim -match '^\[20\d{2}-.+\]\s+\S') { continue }
+
+        # Drop "Description:" prefix on vendor alert wrappers; keep incident text
+        if ($trimNorm -match '^Description:\s*(.+)$') {
+            [void]$kept.Add((Clear-MarkdownNoise $Matches[1]))
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace($trim)) {
+            if ($kept.Count -gt 0 -and [string]::IsNullOrWhiteSpace([string]$kept[$kept.Count - 1])) { continue }
+            [void]$kept.Add('')
+            continue
+        }
+
+        [void]$kept.Add((Clear-MarkdownNoise $line))
+    }
+
+    $result = ($kept -join "`n") -replace "(`r?`n){3,}", "`n`n"
+    # Keep first sentence of vendor "What is the Threat" boilerplate only
+    $result = $result -replace '(?s)(What is the Threat:\s*\r?\n\r?\n)([^\r\n]*?\.)[^\r\n]*(?=\r?\n\r?\nImpossible Travel Summary)', '$1$2'
+    $result = $result -replace '(?s)(What is the Threat:\s*\r?\n\r?\n)([^\r\n]*?\.)[^\r\n]*(?=\r?\n\r?\n[A-Z])', '$1$2'
+    return $result.Trim()
+}
+
+function Invoke-TicketContentExportPipeline {
+    param([Parameter(Mandatory = $true)][string]$TicketContent)
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) { return $TicketContent }
+    $t = Remove-TicketLlmNoiseFromTicket -TicketContent $TicketContent
+    $t = Remove-SocPlaybookBoilerplateFromTicket -TicketContent $t
+    return $t.Trim()
+}
+
 function Filter-TicketContent {
     param(
         [Parameter(Mandatory=$true)]
@@ -1425,7 +1673,7 @@ function Filter-TicketContent {
         try {
             $cleaned = Invoke-MemberberryCleanTicket -TicketContent $TicketContent
             if ($cleaned -and $cleaned.Trim() -ne "") {
-                return $cleaned
+                return (Invoke-TicketContentExportPipeline -TicketContent $cleaned)
             }
         } catch {
             Write-Warning "Error using memberberry clean-ticket: $($_.Exception.Message). Falling back to local implementation."
@@ -1674,7 +1922,7 @@ function Filter-TicketContent {
     # Remove excessive blank lines (3+ consecutive blank lines become 2)
     $result = ($filteredLines -join "`n") -replace "(`r?`n){3,}", "`n`n"
     
-    return $result.Trim()
+    return (Invoke-TicketContentExportPipeline -TicketContent ($result.Trim()))
 }
 
 function Extract-EmailsFromTicket {
@@ -1882,6 +2130,45 @@ function Get-ExportPresets {
             IncludeSharePointFileSharingLinks = $false
             IncludeDLPViolations = $false
             IncludeSharePointOneDriveFileActions = $false
+            IncludeHuntressSignals = $true
+            IncludeHuntressIncidents = $true
+            IncludeHuntressAgents = $true
+            IncludeS1Threats = $true
+            IncludeS1Agents = $true
+            IncludeS1Activities = $true
+            IncludeLiongardContext = $false
+        }
+        'Endpoint / EDR Threat (Huntress + S1)' = @{
+            IncludeMessageTrace = $false
+            IncludeUnifiedAuditLogs = $true
+            IncludeInboxRules = $false
+            IncludeTransportRules = $false
+            IncludeMailFlowConnectors = $false
+            IncludeMailboxForwarding = $false
+            IncludeAuditLogs = $true
+            IncludeSignInLogs = $true
+            IncludeMfaCoverage = $false
+            IncludeConditionalAccessPolicies = $false
+            IncludeAppRegistrations = $false
+            IncludeSecurityAlerts = $true
+            IncludeSecurityIncidents = $true
+            IncludeIntuneDevices = $true
+            IncludeSharePointActivity = $false
+            IncludeOneDriveActivity = $false
+            IncludeTeamsActivity = $false
+            IncludeSharePointSharing = $false
+            IncludeAnonymousSharePointSharing = $false
+            IncludeSharePointFileSharingLinks = $false
+            IncludeDLPViolations = $false
+            IncludeSharePointOneDriveFileActions = $false
+            IncludeHuntressSignals = $true
+            IncludeHuntressIncidents = $true
+            IncludeHuntressAgents = $true
+            IncludeHuntressEscalations = $true
+            IncludeS1Threats = $true
+            IncludeS1Agents = $true
+            IncludeS1Activities = $true
+            IncludeLiongardContext = $true
         }
         'Mailbox Rule Abuse / Inbox Manipulation' = @{
             IncludeMessageTrace = $true
@@ -2042,6 +2329,143 @@ function Get-CompanyFromTicket {
     $alertTypes = Get-AlertTypeFromTicket -TicketContent $ticketContent
     # Returns: "suspicious_login,inbox_forwarding" or ""
 #>
+function Get-SecurityStackFromTicket {
+    <#
+    .SYNOPSIS
+        Infer which security vendor stack applies from Manage ticket summary and alert body.
+    .DESCRIPTION
+        CW Manage tickets encode the SOC/EDR stack in the summary and alert title (e.g. Barracuda XDR
+        SentinelOne threat vs Huntress foothold vs Impossible Travel). Ticket signals take precedence
+        over Liongard entitlements when recommending integration pulls.
+    #>
+    param(
+        [string]$TicketContent = '',
+        [string]$Summary = ''
+    )
+
+    $text = if (-not [string]::IsNullOrWhiteSpace($Summary)) {
+        "$Summary`n$TicketContent"
+    } else {
+        $TicketContent
+    }
+
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return @{
+            alertTitle       = ''
+            primaryVendor    = 'unknown'
+            edrVendor        = 'none'
+            identitySource   = 'none'
+            useHuntress      = $false
+            useS1ConnectWise = $false
+            useS1Barracuda   = $false
+            useMicrosoftGraph = $true
+            isEndpointAlert  = $false
+            isIdentityAlert  = $false
+            labels           = @()
+        }
+    }
+
+    $alertTitle = ''
+    if (-not [string]::IsNullOrWhiteSpace($Summary)) {
+        $alertTitle = $Summary.Trim()
+    } elseif ($TicketContent -match '(?m)^Summary:\s*(.+)$') {
+        $alertTitle = $Matches[1].Trim()
+    }
+
+    $head = $text
+    if ($head.Length -gt 4000) { $head = $head.Substring(0, 4000) }
+
+    $isBarracuda = $head -match 'Barracuda XDR|Barracuda\s+XDR'
+    $isCwMdr = $head -match 'ConnectWise MDR|ConnectWise\s+MDR'
+    $isHuntress = $head -match 'Huntress|Huntress\s+Signal|Foothold detected|Process Insights|Managed ITDR|Huntress\s+Incident'
+    $isS1Alert = $head -match 'SentinelOne New threat|SentinelOne threat|SentinelOne\s+New\s+threat'
+    $isIdentity = $head -match 'Impossible Travel|Risky sign[\-\s]?in|MFA Disabled|Two Factor authentication|Inbox rule|Global Administrator|managed identity|email security|BEC|Credential Compromise|Successful login from foreign|Brute force authentication'
+    $isEndpoint = $head -match 'SentinelOne|threat mitigated|threat not mitigated|malware|virus|foothold|antivirus|endpoint detection|EDR|Process Insights|Advanced IP Scanner'
+
+    $primaryVendor = 'unknown'
+    if ($isBarracuda) { $primaryVendor = 'barracuda_xdr' }
+    elseif ($isCwMdr) { $primaryVendor = 'connectwise_mdr' }
+    elseif ($isHuntress) { $primaryVendor = 'huntress' }
+    elseif ($isIdentity -and -not $isEndpoint) { $primaryVendor = 'microsoft' }
+
+    $edrVendor = 'none'
+    if ($isBarracuda -and ($isS1Alert -or $isEndpoint)) { $edrVendor = 'barracuda_s1' }
+    elseif (($isCwMdr -or (-not $isBarracuda)) -and ($isS1Alert -or ($isEndpoint -and -not $isHuntress))) { $edrVendor = 'connectwise_s1' }
+    elseif ($isHuntress -and $isEndpoint) { $edrVendor = 'huntress' }
+
+    $useS1Barracuda = ($edrVendor -eq 'barracuda_s1')
+    $useS1ConnectWise = ($edrVendor -eq 'connectwise_s1')
+    $useHuntress = $isHuntress -or (
+        $isIdentity -and -not $isBarracuda -and -not ($isS1Alert -and -not $isHuntress)
+    ) -or (
+        $isEndpoint -and $edrVendor -eq 'huntress'
+    )
+
+    $identitySource = 'none'
+    if ($isIdentity) {
+        if ($isBarracuda) { $identitySource = 'barracuda_xdr' }
+        elseif ($isHuntress) { $identitySource = 'huntress_itdr' }
+        else { $identitySource = 'microsoft' }
+    }
+
+    $labels = [System.Collections.Generic.List[string]]::new()
+    if ($alertTitle) { [void]$labels.Add($alertTitle) }
+    if ($isBarracuda) { [void]$labels.Add('Barracuda XDR') }
+    if ($isCwMdr) { [void]$labels.Add('ConnectWise MDR') }
+    if ($isHuntress) { [void]$labels.Add('Huntress') }
+    if ($useS1ConnectWise) { [void]$labels.Add('ConnectWise S1') }
+    if ($useS1Barracuda) { [void]$labels.Add('Barracuda S1 (SOC-managed)') }
+    if ($isIdentity) { [void]$labels.Add('Identity / M365') }
+    if ($isEndpoint -and $edrVendor -eq 'none' -and -not $isIdentity) { [void]$labels.Add('Endpoint alert') }
+
+    return @{
+        alertTitle        = $alertTitle
+        primaryVendor     = $primaryVendor
+        edrVendor         = $edrVendor
+        identitySource    = $identitySource
+        useHuntress       = [bool]$useHuntress
+        useS1ConnectWise  = [bool]$useS1ConnectWise
+        useS1Barracuda    = [bool]$useS1Barracuda
+        useMicrosoftGraph = $true
+        isEndpointAlert   = [bool]$isEndpoint
+        isIdentityAlert   = [bool]$isIdentity
+        labels            = @($labels | Select-Object -Unique)
+    }
+}
+
+function Get-SocSourceFromTicket {
+    <#
+    .SYNOPSIS
+        Detect SOC / EDR ticket source for console profile routing (ConnectWise vs Barracuda XDR).
+    .OUTPUTS
+        connectwise | barracuda_xdr | unknown
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$TicketContent
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TicketContent)) { return 'unknown' }
+
+    $stack = Get-SecurityStackFromTicket -TicketContent $TicketContent
+    if ($stack.useS1Barracuda) { return 'barracuda_xdr' }
+    if ($stack.useS1ConnectWise) { return 'connectwise' }
+
+    if ($TicketContent -match 'Barracuda XDR|Barracuda\s+XDR\s+SOC|Barracuda XDR Risk Score|Barracuda XDR SOC RECOMMENDATIONS') {
+        return 'barracuda_xdr'
+    }
+    if ($TicketContent -match 'SentinelOne New threat (mitigated|not mitigated)' -and $TicketContent -match 'Barracuda') {
+        return 'barracuda_xdr'
+    }
+    if ($TicketContent -match 'ConnectWise MDR|ConnectWise\s+MDR') {
+        return 'connectwise'
+    }
+    if ($TicketContent -match 'SentinelOne' -and $TicketContent -notmatch 'Barracuda') {
+        return 'connectwise'
+    }
+    return 'unknown'
+}
+
 function Get-AlertTypeFromTicket {
     param(
         [Parameter(Mandatory=$true)]
@@ -2067,7 +2491,7 @@ function Get-AlertTypeFromTicket {
     return ""
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-ExportPresets,Get-RequiredAuthFromReportSelections,Get-CompanyFromTicket,Get-AlertTypeFromTicket
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-ExportPresets,Get-RequiredAuthFromReportSelections,Get-CompanyFromTicket,Get-SecurityStackFromTicket,Get-SocSourceFromTicket,Get-AlertTypeFromTicket
 
 
 

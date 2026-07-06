@@ -48,14 +48,100 @@ function Get-ConnectExchangeOnlineParams {
     return $params
 }
 
+function Clear-ExchangeOnlineConnectionState {
+    [CmdletBinding()]
+    param(
+        [int]$SettleMilliseconds = 750
+    )
+
+    try {
+        if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
+            Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    } catch { }
+
+    try {
+        Get-PSSession -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.ConfigurationName -eq 'Microsoft.Exchange' -or
+                $_.ComputerName -like '*.outlook.office365.com' -or
+                $_.ComputerName -like '*.outlook.com'
+            } |
+            ForEach-Object { Remove-PSSession -Session $_ -ErrorAction SilentlyContinue }
+    } catch { }
+
+    if ($SettleMilliseconds -gt 0) {
+        Start-Sleep -Milliseconds $SettleMilliseconds
+    }
+}
+
+function Import-ExchangeOnlineManagementFirst {
+    [CmdletBinding()]
+    param()
+
+    if (Get-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    foreach ($name in @('AZURE_IDENTITY_DISABLE_BROKER', 'MSAL_DISABLE_BROKER', 'MSAL_EXPERIMENTAL_DISABLE_BROKER')) {
+        Set-Item -Path "Env:$name" -Value '1' -ErrorAction SilentlyContinue
+    }
+    $env:MSAL_FORCE_WAM = '0'
+
+    Import-Module ExchangeOnlineManagement -Force -ErrorAction Stop
+}
+
 function Connect-ExchangeOnlineWithDefaults {
     [CmdletBinding()]
     param(
         [hashtable]$AdditionalParams = @{}
     )
 
+    Import-ExchangeOnlineManagementFirst
+
+    foreach ($name in @('AZURE_IDENTITY_DISABLE_BROKER', 'MSAL_DISABLE_BROKER', 'MSAL_EXPERIMENTAL_DISABLE_BROKER')) {
+        Set-Item -Path "Env:$name" -Value '1' -ErrorAction SilentlyContinue
+    }
+    $env:MSAL_FORCE_WAM = '0'
+
     $connectParams = Get-ConnectExchangeOnlineParams -AdditionalParams $AdditionalParams
-    Connect-ExchangeOnline @connectParams
+    $exoConnect = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
+
+    try {
+        Connect-ExchangeOnline @connectParams
+        return
+    } catch {
+        $msg = $_.Exception.Message
+        if ($msg -match 'Method not found' -and $msg -match 'WithBroker|BrokerExtension|BrokerOptions') {
+            throw (
+                'Exchange Online authentication failed due to an MSAL assembly conflict in this PowerShell process. ' +
+                'Restart the tenant worker, run Exchange Auth before Graph Auth, and prefer PowerShell 7 when available. ' +
+                "Detail: $msg"
+            )
+        }
+        if ($msg -notmatch 'WithBroker|BrokerOptions|BrokerExtension|Broker') {
+            throw
+        }
+    }
+
+    Write-Warning 'Exchange Online broker/WAM connect failed; retrying with -UseRPSSession (legacy auth path).'
+    $retryParams = Get-ConnectExchangeOnlineParams -AdditionalParams $AdditionalParams
+    if ($exoConnect -and ($exoConnect.Parameters.Keys -contains 'UseRPSSession')) {
+        $retryParams['UseRPSSession'] = $true
+    }
+    try {
+        Connect-ExchangeOnline @retryParams
+    } catch {
+        $msg = $_.Exception.Message
+        if ($msg -match 'Method not found' -and $msg -match 'WithBroker|BrokerExtension|BrokerOptions') {
+            throw (
+                'Exchange Online authentication failed due to an MSAL assembly conflict in this PowerShell process. ' +
+                'Restart the tenant worker, run Exchange Auth before Graph Auth, and prefer PowerShell 7 when available. ' +
+                "Detail: $msg"
+            )
+        }
+        throw
+    }
 }
 
 function Get-ExchangeOnlineSendingRestrictions {
@@ -83,4 +169,4 @@ function Get-ExchangeOnlineSendingRestrictions {
     }
 }
 
-Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Connect-ExchangeOnlineWithDefaults,Get-ExchangeOnlineSendingRestrictions 
+Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Clear-ExchangeOnlineConnectionState,Import-ExchangeOnlineManagementFirst,Connect-ExchangeOnlineWithDefaults,Get-ExchangeOnlineSendingRestrictions 

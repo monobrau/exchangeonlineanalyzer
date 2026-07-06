@@ -1,52 +1,292 @@
 <!DOCTYPE html>
+
 <html lang="en">
+
 <head>
+
   <meta charset="UTF-8" />
+
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
   <title>EOA Bulk Runner</title>
+
   <style>
+
     :root { font-family: Segoe UI, system-ui, sans-serif; color: #1a1a1a; background: #f4f6f8; }
-    body { margin: 0; padding: 1.5rem; max-width: 960px; }
+
+    body { margin: 0; padding: 1.5rem; max-width: 1024px; }
+
     h1 { margin-top: 0; font-size: 1.4rem; }
+
+    h2 { font-size: 1.05rem; margin: 0 0 0.65rem; }
+
     .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+
     button { margin: 0.25rem 0.35rem 0.25rem 0; padding: 0.45rem 0.85rem; cursor: pointer; border-radius: 6px; border: 1px solid #8c959f; background: #f6f8fa; }
+
     button.primary { background: #0969da; color: #fff; border-color: #0969da; }
+
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    select, input[type="text"] { padding: 0.35rem; min-width: 220px; }
+
+    select, input[type="text"], input[type="number"], input[type="datetime-local"] { padding: 0.35rem; min-width: 140px; }
+
+    input[type="text"].ticketInput { min-width: 160px; }
+
+    input[type="text"].userSearchInput { min-width: 320px; max-width: 100%; }
+
     pre { background: #0d1117; color: #c9d1d9; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: 220px; font-size: 0.82rem; }
+
     .tenant { border-top: 1px solid #eaeef2; padding-top: 0.75rem; margin-top: 0.75rem; }
+
     .muted { color: #57606a; font-size: 0.9rem; }
-    label { display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 1rem; }
+
+    label { display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 1rem; margin-bottom: 0.35rem; }
+
+    .row { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: center; margin-bottom: 0.35rem; }
+
+    .sectionLabel { font-size: 0.85rem; font-weight: 600; color: #424a53; margin: 0.5rem 0 0.25rem; }
+
+    button.success { background: #1a7f37; color: #fff; border-color: #1a7f37; }
+
+    .outputPath { font-size: 0.85rem; word-break: break-all; margin: 0.35rem 0; }
+
+    .validatedUsersList { font-size: 0.82rem; max-height: 4.5rem; overflow: auto; margin: 0.25rem 0; }
+    details.collapsible summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 0.5rem; }
+    details.collapsible summary::-webkit-details-marker { display: none; }
+    details.collapsible summary::before { content: '▸'; font-size: 0.75rem; color: #57606a; }
+    details.collapsible[open] summary::before { content: '▾'; }
+    details.collapsible .collapsible-body { margin-top: 0.65rem; }
+    details.collapsible:not([open]) .collapsible-body { display: none; }
+    .tenantSummary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.65rem; }
+    .tenantSummaryTitle { flex: 1 1 180px; min-width: 0; }
+    .tenantSummaryActions { display: inline-flex; gap: 0.35rem; margin-left: auto; flex-shrink: 0; }
+    .tenantStatusBadge { font-size: 0.78rem; font-weight: 600; padding: 0.12rem 0.45rem; border-radius: 999px; white-space: nowrap; border: 1px solid #d0d7de; background: #f6f8fa; color: #57606a; }
+    .tenantStatusBadge.status-generating { border-color: #bf8700; background: #fff8c5; color: #7d4e00; }
+    .tenantStatusBadge.status-auth { border-color: #0969da; background: #ddf4ff; color: #0550ae; }
+    .tenantStatusBadge.status-ready { border-color: #1a7f37; background: #dafbe1; color: #116329; }
+    .tenantStatusBadge.status-failed { border-color: #cf222e; background: #ffebe9; color: #a40e26; }
+    button.tenantStatusBtn { font-size: 0.78rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; white-space: nowrap; }
+    button.tenantStatusBtn.success { background: #1a7f37; color: #fff; border-color: #1a7f37; }
+    button.tenantStatusBtn.success:hover { background: #116329; }
+    button.danger { background: #fff; color: #cf222e; border-color: #cf222e; }
+    button.danger:hover { background: #ffebe9; }
+    button.small { padding: 0.25rem 0.55rem; font-size: 0.82rem; }
+    .historyTable { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .historyTable th, .historyTable td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eaeef2; vertical-align: top; }
+    .historyTable tr:hover { background: #f6f8fa; }
+    .historyActions { white-space: nowrap; }
+    .historyActions button { margin-right: 0.25rem; margin-bottom: 0.15rem; }
+    .historySection { margin-top: 1rem; }
+    .historySection:first-of-type { margin-top: 0.5rem; }
+    .historySectionTitle { font-size: 0.95rem; margin: 0 0 0.35rem; }
+    .historySearch { width: 100%; max-width: 28rem; margin: 0.35rem 0 0.5rem; padding: 0.35rem 0.5rem; font: inherit; border: 1px solid #d0d7de; border-radius: 6px; }
+    .historyTable th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .historyTable th.sortable:hover { color: #0969da; }
+    .historyTable th .sortInd { font-size: 0.72rem; color: #57606a; margin-left: 0.15rem; }
+    .historyTable th.sortActive .sortInd { color: #0969da; }
+    .historyClients { line-height: 1.35; }
+    .reportExportGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.25rem 1rem; margin: 0.35rem 0; }
+    .reportExportGrid label { font-size: 0.88rem; font-weight: normal; margin: 0; }
+    .reportExportGroup { margin: 0.5rem 0 0.75rem; }
+    .reportExportGroupTitle { font-size: 0.82rem; font-weight: 600; color: #57606a; margin-bottom: 0.25rem; }
+    .reportExportsHint.customized { color: #9a6700; font-weight: 600; }
+    .logTabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.35rem; }
+    .logTabs button { padding: 0.25rem 0.55rem; font-size: 0.82rem; }
+    .logTabs button.active { background: #0969da; color: #fff; border-color: #0969da; }
+    .logPanel { display: none; }
+    .logPanel.active { display: block; }
+    .logPanel pre { max-height: 320px; overflow: auto; margin: 0; }
+    .wcmActions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }
+    .securityPanel { margin: 0.5rem 0; padding: 0.5rem 0.65rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .securityChips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0; }
+    .securityChip { font-size: 0.75rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid #d0d7de; background: #fff; color: #424a53; }
+    .securityChip.on { border-color: #1a7f37; background: #dafbe1; color: #116329; }
+    .securityChip.warn { border-color: #bf8700; background: #fff8c5; color: #7d4e00; }
+    .securityGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.2rem 0.75rem; margin: 0.35rem 0; }
+    .securityGrid label { font-size: 0.85rem; font-weight: normal; margin: 0; }
+    .securityNotice { font-size: 0.82rem; color: #9a6700; margin: 0.35rem 0; }
+
   </style>
+
 </head>
+
 <body>
+
   <h1>Bulk Tenant Report Exporter (Web Runner)</h1>
-  <p class="muted">Local Windows runner — Graph/Exchange auth popups open on this PC. See <code>docs/BulkWebRunnerArchitecture.md</code>.</p>
+
+  <p class="muted">Local Windows runner — auth popups open on this PC. Run <strong>Exchange Auth</strong> first so auto WCM picks the matching tenant. Use <strong>Fetch from Manage</strong> for ticket text. See <code>docs/BulkWebRunnerArchitecture.md</code>.</p>
+
+
 
   <div class="card">
+
     <h2>Session</h2>
-    <button class="primary" id="btnNewSession">New session (default reports)</button>
+
+    <div class="row">
+
+      <label>Message trace days
+
+        <select id="messageTraceDays">
+
+          <option value="1">1</option>
+
+          <option value="3">3</option>
+
+          <option value="5">5</option>
+
+          <option value="7" selected>7</option>
+
+          <option value="10">10</option>
+
+          <option value="14">14</option>
+
+          <option value="30">30</option>
+
+          <option value="45">45</option>
+
+          <option value="60">60</option>
+
+          <option value="90">90</option>
+
+        </select>
+
+      </label>
+
+      <label>Sign-in logs days
+
+        <select id="signInLogsDays">
+
+          <option value="1">1</option>
+
+          <option value="7" selected>7</option>
+
+          <option value="30">30</option>
+
+        </select>
+
+      </label>
+
+      <label>Default days back
+
+        <input type="number" id="daysBack" min="1" max="90" value="7" style="min-width:4rem" />
+
+      </label>
+
+    </div>
+
+    <button class="primary" id="btnNewSession">New session</button>
+    <button type="button" id="btnOpenSessionTemp" class="small">View session files</button>
+
     <span id="sessionInfo" class="muted"></span>
+
+    <details id="sessionReportExports" class="collapsible" style="margin-top:0.75rem">
+
+      <summary>Report exports (session defaults) <span id="sessionReportExportsSummary" class="muted"></span></summary>
+
+      <div class="collapsible-body">
+
+        <p class="muted" style="margin-top:0">These apply to every tenant unless a client overrides them below.</p>
+
+        <div class="row">
+          <label>Preset
+            <select id="sessionReportPreset">
+              <option value="">Custom (manual selection)</option>
+            </select>
+          </label>
+          <button type="button" id="btnReportSelectAll" class="small">Select all</button>
+          <button type="button" id="btnReportSelectNone" class="small">Deselect all</button>
+        </div>
+
+        <div id="sessionReportExportsBody"></div>
+
+      </div>
+
+    </details>
+
   </div>
 
+
+
   <div class="card">
+
+    <details id="sessionHistoryPanel" class="collapsible">
+
+      <summary>Session history <span id="sessionHistorySummary" class="muted">(loading…)</span></summary>
+
+      <div class="collapsible-body">
+
+        <p class="muted" style="margin-top:0">Past bulk web sessions on this PC (saved when you add tenants, fetch tickets, change settings, or authenticate). <strong>Restore</strong> reopens settings and tenant slots (re-auth and re-fetch tickets as needed). <strong>Archive</strong> moves a session out of the saved list; <strong>Delete</strong> removes it permanently.</p>
+
+        <button type="button" id="btnRefreshHistory" class="small">Refresh history</button>
+
+        <section class="historySection" id="savedHistorySection">
+          <h3 class="historySectionTitle">Saved sessions <span id="savedHistorySummary" class="muted">(loading…)</span></h3>
+          <input type="search" id="savedHistorySearch" class="historySearch" placeholder="Search client, organization, ticket, session…" autocomplete="off" />
+          <div id="sessionHistoryList" class="muted">Loading…</div>
+        </section>
+
+        <section class="historySection" id="archivedHistorySection">
+          <h3 class="historySectionTitle">Archive <span id="sessionArchiveSummary" class="muted">(loading…)</span></h3>
+          <input type="search" id="archivedHistorySearch" class="historySearch" placeholder="Search client, organization, ticket, session…" autocomplete="off" />
+          <div id="sessionArchiveList" class="muted">Loading…</div>
+        </section>
+
+      </div>
+
+    </details>
+
+  </div>
+
+
+
+  <div class="card">
+
     <h2>Tenants</h2>
+
     <button id="btnAddTenant">Add tenant</button>
+
     <button id="btnRefresh">Refresh status</button>
+
     <div id="tenants"></div>
+
   </div>
 
-  <div class="card">
-    <h2>App registrations (WCM)</h2>
-    <button id="btnLoadAppRegs">Load list</button>
-    <pre id="appRegs">Click Load list to populate tenant dropdowns.</pre>
-  </div>
+
 
   <div class="card">
+    <details id="appRegsPanel" class="collapsible">
+      <summary>App registrations (WCM) <span id="appRegsSummary" class="muted">(loading…)</span></summary>
+      <div class="collapsible-body">
+        <div class="wcmActions">
+          <button type="button" id="btnCreateGraphApp">Create Graph App</button>
+          <button type="button" id="btnDeleteGraphApp" class="danger">Delete Graph App</button>
+          <button type="button" id="btnExportWcm">Export creds</button>
+          <button type="button" id="btnImportWcm">Import creds</button>
+          <button type="button" id="btnClearWcm">Clear local WCM</button>
+          <button type="button" id="btnLoadAppRegs" title="Re-fetch display names from Graph for tenants missing WCM labels (slow)">Refresh from Graph</button>
+        </div>
+        <pre id="appRegs">Loading…</pre>
+      </div>
+    </details>
+  </div>
+
+
+
+  <div class="card">
+
     <h2>Log</h2>
-    <pre id="log"></pre>
+
+    <div id="logTabs" class="logTabs"><button type="button" class="active" data-log-tab="activity">Activity</button></div>
+    <div id="logPanelActivity" class="logPanel active"><pre id="log"></pre></div>
+
   </div>
+
+
 
   <script src="/app.js"></script>
+
 </body>
+
 </html>
+
+

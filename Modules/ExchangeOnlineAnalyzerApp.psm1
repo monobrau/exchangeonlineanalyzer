@@ -7170,12 +7170,42 @@ $bulkTenantExporterButton.add_Click({
     $statusLabel.Text = " Opening Bulk Tenant Report Exporter..."
     $mainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     try {
-        $launcher = Join-Path $script:EOA_AppRoot 'BulkTenantExporter.ps1'
-        if (-not (Test-Path -LiteralPath $launcher)) {
-            throw "BulkTenantExporter.ps1 not found: $launcher"
+        $webRunner = Join-Path $script:EOA_AppRoot 'web-runner\Start-BulkWebRunner.ps1'
+        $winFormsLauncher = Join-Path $script:EOA_AppRoot 'BulkTenantExporter.ps1'
+        if (-not (Test-Path -LiteralPath $webRunner)) {
+            throw "Web runner not found: $webRunner"
         }
-        & $launcher -Owner $mainForm
-        $statusLabel.Text = "Bulk tenant exporter closed"
+        $choice = [System.Windows.Forms.MessageBox]::Show(
+            "Open the Bulk Tenant Report Exporter in your browser (recommended)?`n`nChoose No to use the legacy WinForms exporter for this release.",
+            "Bulk Tenant Report Exporter",
+            [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($choice -eq [System.Windows.Forms.DialogResult]::Cancel) {
+            $statusLabel.Text = "Bulk tenant exporter cancelled"
+            return
+        }
+        if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $runnerHealthy = $false
+            try {
+                Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 3 -ErrorAction Stop | Out-Null
+                $runnerHealthy = $true
+            } catch { }
+            if (-not $runnerHealthy) {
+                Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @(
+                    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $webRunner
+                ) -WorkingDirectory $script:EOA_AppRoot | Out-Null
+                Start-Sleep -Seconds 2
+            }
+            Start-Process 'http://127.0.0.1:8765/' | Out-Null
+            $statusLabel.Text = "Bulk web runner opened in browser (http://127.0.0.1:8765/)"
+        } else {
+            if (-not (Test-Path -LiteralPath $winFormsLauncher)) {
+                throw "BulkTenantExporter.ps1 not found: $winFormsLauncher"
+            }
+            & $winFormsLauncher -Owner $mainForm
+            $statusLabel.Text = "Bulk tenant exporter (legacy WinForms) closed"
+        }
     } catch {
         $statusLabel.Text = "ERROR: Error opening bulk tenant exporter: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error opening bulk tenant exporter: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)

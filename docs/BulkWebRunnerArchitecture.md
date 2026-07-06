@@ -126,22 +126,30 @@ Implemented in `web-runner/Start-BulkWebRunner.ps1` + `web-runner/Modules/BulkRu
 | `POST` | `/api/tenants` | Add tenant worker (`Add-Tenant`) |
 | `GET` | `/api/tenants` | List tenants + auth flags |
 | `POST` | `/api/tenants/{n}/command` | Send worker command; returns response or `{ started: true }` |
+| `GET` | `/api/tenants/{n}/worker` | Worker process alive check (`workerAlive`, `processId`) |
+| `POST` | `/api/tenants/{n}/ensure-worker` | Restart worker if dead; used before Generate/auth commands |
 | `GET` | `/api/tenants/{n}/status` | Tail of status file |
 | `GET` | `/api/app-registrations` | WCM tenant list for dropdown |
+| `POST` | `/api/manage/ticket` | Fetch ConnectWise Manage service ticket text (`{ "ticketId": "1873776" }`) |
 | `GET` | `/` | Static web UI |
 
 Poll `/api/tenants/{n}/command` with `{ "command": "GRAPH_AUTH", "waitSeconds": 120 }` for long auth flows — same pattern as WinForms polling after `*_STARTED`.
 
 ## Phased delivery
 
-### Phase A — Localhost web shell (current scaffold)
+### Phase A — Localhost web shell (current)
 
 - [x] Architecture doc
 - [x] `BulkRunnerSession.psm1` — session + IPC without WinForms
 - [x] `Start-BulkWebRunner.ps1` — localhost API + static UI
-- [ ] Port full report-selection UI from `BulkTenantExporter.ps1`
-- [ ] Wire Create Graph App / export-import creds buttons (call existing PS functions)
-- [ ] SSE or WebSocket for live status tail (replace 3s WinForms timer)
+- [x] Wire Generate Reports + ticket # / Manage fetch (`POST /api/manage/ticket`)
+- [x] Full report-selection UI (session + per-tenant overrides, presets via `GET /api/export-presets`)
+- [x] Create Graph App / export-import creds / clear WCM (`/api/wcm/*`)
+- [x] Hidden workers + tabbed log UI with status polling (Activity + Client N)
+- [x] Session history save/restore/archive
+- [x] Post-export analysis (`POST /api/analyze-reports`), Graph logout/reset, ticket email extraction
+- [x] Worker alive check + auto-restart before Generate/auth (safe re-runs with new dates or report selections)
+- [ ] SSE or WebSocket for live status tail (polling is sufficient for now)
 
 ### Phase B — Credential abstraction
 

@@ -812,6 +812,45 @@ function Get-FindingsWithDeduplication {
     return $deduped
 }
 
+function Get-SecurityIntegrationFindings {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FolderPath
+    )
+
+    $findings = [System.Collections.Generic.List[object]]::new()
+    if (-not (Test-Path -LiteralPath $FolderPath)) { return @() }
+
+    $patterns = @(
+        @{ Glob = 'HuntressSignals*.csv'; Label = 'Huntress signals'; Type = 'huntress_signals' }
+        @{ Glob = 'HuntressIncidents*.csv'; Label = 'Huntress incidents'; Type = 'huntress_incidents' }
+        @{ Glob = 'HuntressAgents*.csv'; Label = 'Huntress agents'; Type = 'huntress_agents' }
+        @{ Glob = 'S1Threats*.csv'; Label = 'SentinelOne threats'; Type = 's1_threats' }
+        @{ Glob = 'S1Agents*.csv'; Label = 'SentinelOne agents'; Type = 's1_agents' }
+        @{ Glob = 'LiongardDetections*.csv'; Label = 'Liongard detections'; Type = 'liongard_detections' }
+    )
+
+    foreach ($p in $patterns) {
+        $files = Get-ChildItem -LiteralPath $FolderPath -Filter $p.Glob -File -ErrorAction SilentlyContinue
+        foreach ($f in $files) {
+            try {
+                $rows = @(Import-Csv -LiteralPath $f.FullName -ErrorAction Stop)
+                $count = $rows.Count
+                if ($count -gt 0) {
+                    [void]$findings.Add([PSCustomObject]@{
+                        Type     = $p.Type
+                        Severity = if ($p.Type -match 'threat|incident|detection') { 'Medium' } else { 'Low' }
+                        Detail   = "$($p.Label): $count row(s) in $($f.Name)"
+                        Source   = $f.Name
+                    })
+                }
+            } catch {}
+        }
+    }
+
+    return @($findings)
+}
+
 function Get-ReportFindings {
     param(
         [Parameter(Mandatory=$false)]
@@ -890,6 +929,7 @@ function Get-ReportFindings {
         } else { $missingData += 'SignInLogs' }
         $ualPath = Get-ReportFolderCsvPath -Folder $FolderPath -BaseName 'UnifiedAuditLogs'
         if (-not $ualPath) { $missingData += 'UnifiedAuditLogs' }
+        $allFindings += Get-SecurityIntegrationFindings -FolderPath $FolderPath
     }
 
     $hasUAL = ($ual -and $ual.Count -gt 0) -or ($ualPath -and (Test-Path $ualPath))
@@ -983,6 +1023,6 @@ function Get-BulkTenantAnalysis {
 }
 
 Export-ModuleMember -Function Get-InboxRuleFindings, Get-TransportRuleFindings, Get-AppRegistrationFindings, Get-CAPolicyFindings
-Export-ModuleMember -Function Get-MfaGapFindings, Get-MessageTraceFindings, Get-SignInLogFindings
+Export-ModuleMember -Function Get-MfaGapFindings, Get-MessageTraceFindings, Get-SignInLogFindings, Get-SecurityIntegrationFindings
 Export-ModuleMember -Function Get-ReportRiskScore, Get-ReportTemplateSummary, Get-ReportFindings
 Export-ModuleMember -Function Invoke-ReportFolderAnalysis, Get-BulkTenantAnalysis
