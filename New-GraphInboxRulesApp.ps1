@@ -248,6 +248,7 @@ $graphAppId = '00000003-0000-0000-c000-000000000000'
 # Plus Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All for Entra Secret Rotate (secret rotation + Add ATR)
 # Mail.Read required for Get-MgUserMailFolderMessageRule (inbox rules); MailboxSettings.Read is for auto-reply etc.
 # Organization.Read.All: explicit app-only read for GET /organization (tenant displayName); see Microsoft Graph permissions reference.
+# SecurityAlert.Read.All / SecurityIncident.Read.All: Defender security alerts & incidents collectors (app-only).
 $appRoleIds = @(
     @{ id = '810c84a8-4a9e-49e6-bf7d-12d183f40d01'; name = 'Mail.Read' }
     @{ id = '40f97065-369a-49f4-947c-6a255697ae91'; name = 'MailboxSettings.Read' }
@@ -264,6 +265,8 @@ $appRoleIds = @(
     @{ id = '230c1aed-a721-4c5d-9cb4-a90514e508ef'; name = 'Reports.Read.All' }
     @{ id = '332a536c-c7ef-4017-ab91-336970924f0d'; name = 'Sites.Read.All' }
     @{ id = 'bf394140-e372-4bf9-a898-299cfc7564e5'; name = 'SecurityEvents.Read.All' }
+    @{ id = '472e4a4d-bb4a-4026-98d1-0b0d74cb74a5'; name = 'SecurityAlert.Read.All' }
+    @{ id = '45cc0394-e837-488b-a098-1918f48d186c'; name = 'SecurityIncident.Read.All' }
     @{ id = '38d9df27-64da-44fd-b7c5-a6fbac20248f'; name = 'UserAuthenticationMethod.Read.All' }
 )
 $requiredResourceAccess = @{

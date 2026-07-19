@@ -512,7 +512,7 @@ function Get-AppRegistrations {
                 if ($app.PublisherDomain) {
                     if ($app.PublisherDomain -notlike "*.onmicrosoft.com" -and $app.PublisherDomain -notlike "*.microsoft.com") {
                         # External publisher - might be suspicious
-                        $analysis.SuspiciousIndicators += "External publisher: $($app.PublisherDomain)"
+                        [void]$analysis.SuspiciousIndicators.Add("External publisher: $($app.PublisherDomain)")
                         $analysis.RiskScore += 1
                     }
                 } else {
@@ -522,7 +522,7 @@ function Get-AppRegistrations {
                 
                 # Check if app is disabled or deleted
                 if ($app.DeletedDateTime) {
-                    $analysis.SuspiciousIndicators += "App is deleted"
+                    [void]$analysis.SuspiciousIndicators.Add("App is deleted")
                     $analysis.RiskScore += 1
                 }
                 

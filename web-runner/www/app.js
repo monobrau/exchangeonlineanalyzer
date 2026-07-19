@@ -1703,15 +1703,11 @@ async function pollWorkerLog(clientNumber) {
   const offset = workerLogOffsets.get(key) || 0;
   const data = await api(`/api/tenants/${clientNumber}/status?tailLines=300&sinceOffset=${offset}`);
   const pre = getWorkerLogPanel(clientNumber);
-  const tenantPre = document.querySelector(`#tenant-${clientNumber} .tenantStatus`);
   if (data.offset != null) workerLogOffsets.set(key, data.offset);
   const chunk = data.status || '';
   if (chunk && pre) {
     pre.textContent += (pre.textContent && !pre.textContent.endsWith('\n') ? '\n' : '') + chunk;
     pre.scrollTop = pre.scrollHeight;
-  }
-  if (tenantPre && chunk) {
-    tenantPre.textContent = chunk.split('\n').slice(-8).join('\n');
   }
 }
 
@@ -2052,8 +2048,6 @@ function renderTenants(session) {
 
       ${outputHtml}
 
-      <pre class="tenantStatus muted"></pre>
-
     `;
 
     div.querySelector('.filterUsersCheck').addEventListener('change', (e) => {
@@ -2063,6 +2057,12 @@ function renderTenants(session) {
       div.querySelector('.userSearchInput').disabled = !enabled;
 
       div.querySelector('.validateUsers').disabled = !enabled || div.dataset.graphAuthenticated !== '1';
+
+      if (enabled && div.dataset.graphAuthenticated !== '1') {
+        const msg = `Client ${t.clientNumber}: Filter by users requires Graph Auth. Complete Graph Auth, then Validate users, before Generate — otherwise user-scoped exports (UAL, message trace, etc.) run for the whole tenant.`;
+        log(msg);
+        window.alert(msg);
+      }
 
       if (!enabled) {
 
@@ -2427,6 +2427,8 @@ async function graphAuth(clientNumber, div) {
 
     } finally {
 
+      setTenantButtonsDisabled(div, false);
+
       saveTenantUiState(clientNumber, div);
 
       await refreshSession();
@@ -2495,6 +2497,8 @@ async function exoAuth(clientNumber, div) {
 
     } finally {
 
+      setTenantButtonsDisabled(div, false);
+
       saveTenantUiState(clientNumber, div);
 
       await refreshSession();
@@ -2518,7 +2522,9 @@ async function validateUsers(clientNumber, div) {
     const session = await api('/api/session');
     const tenant = session.tenants?.find(x => Number(x.clientNumber) === Number(clientNumber));
     if (!tenant?.graphAuthenticated) {
-      log(`Client ${clientNumber}: complete Graph Auth before validating users.`);
+      const msg = `Client ${clientNumber}: Graph Auth is required to validate users. Complete Graph Auth first, then Validate users.`;
+      log(msg);
+      window.alert(msg);
       return;
     }
     const terms = parseSearchTerms(div.querySelector('.userSearchInput')?.value);
@@ -2911,6 +2917,24 @@ async function generateReports(clientNumber, div) {
       return;
     }
 
+    const filterOn = Boolean(div.querySelector('.filterUsersCheck')?.checked);
+    if (filterOn) {
+      if (!tenant?.graphAuthenticated) {
+        const msg = `Client ${clientNumber}: Filter by users is enabled but Graph is not authenticated.\n\nComplete Graph Auth, then Validate users, before Generate.\n\nWithout Graph, user filtering cannot be applied and exports such as Unified Audit Logs would pull the whole tenant.`;
+        log(msg.replace(/\n+/g, ' '));
+        window.alert(msg);
+        return;
+      }
+      const validatedUsers = getValidatedUsersForTenant(clientNumber, div);
+      const searchTerms = parseSearchTerms(div.querySelector('.userSearchInput')?.value);
+      if (!validatedUsers.length && !searchTerms.length) {
+        const msg = `Client ${clientNumber}: Filter by users is enabled, but no users are validated and the search box is empty.\n\nEnter a UPN/name, click Validate users, then Generate — otherwise the export would run for all users.`;
+        log(msg.replace(/\n+/g, ' '));
+        window.alert(msg);
+        return;
+      }
+    }
+
     focusClientLogTab(clientNumber);
 
     const logPre = getWorkerLogPanel(clientNumber);
@@ -2998,22 +3022,6 @@ async function generateReports(clientNumber, div) {
             if (!worker?.alive) {
               throw new Error('PowerShell worker stopped during report generation. Restart worker, re-authenticate, and Generate again.');
             }
-
-            try {
-
-              const st = await api(`/api/tenants/${clientNumber}/status`);
-
-              const pre = div.querySelector('.tenantStatus');
-
-              if (pre && st.status) {
-
-                const lines = st.status.trim().split('\n');
-
-                pre.textContent = lines.slice(-8).join('\n');
-
-              }
-
-            } catch { /* ignore status tail errors */ }
 
           }
 

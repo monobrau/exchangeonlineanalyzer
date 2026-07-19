@@ -13,16 +13,20 @@
     .\Start-BulkWebRunner.ps1
     .\Start-BulkWebRunner.ps1 -Port 8765 -NoBrowser
     .\Start-BulkWebRunner.ps1 -ShowWorkers
+    .\Start-BulkWebRunner.ps1 -ListenLan -NoBrowser
 #>
 param(
     [int]$Port = 8765,
     [switch]$NoBrowser,
-    [switch]$ShowWorkers
+    [switch]$ShowWorkers,
+    [switch]$ListenLan
 )
 
 $ErrorActionPreference = 'Stop'
 $script:RunnerRoot = $PSScriptRoot
 $script:ProjectRoot = Split-Path $PSScriptRoot -Parent
+$script:ListenLan = [bool]$ListenLan
+$script:ListenPort = $Port
 Import-Module (Join-Path $script:RunnerRoot 'Modules\BulkRunnerSession.psm1') -Force
 Set-BulkRunnerWorkerVisibility -Hidden:(-not $ShowWorkers)
 $script:BulkSession = $null
@@ -120,6 +124,9 @@ function Handle-ApiRequest {
             version  = '0.4.0'
             projectRoot = $script:ProjectRoot
             hiddenWorkers = (-not $ShowWorkers)
+            listenLan = $script:ListenLan
+            port = $script:ListenPort
+            lanUrls = if ($script:ListenLan -and $script:LanUrls) { @($script:LanUrls) } else { @() }
             features = @{
                 sessionHistory        = $true
                 sessionHistoryActions = $true
@@ -720,17 +727,116 @@ function Open-BulkRunnerFolderInExplorer {
     return $resolved
 }
 
-$prefix = "http://127.0.0.1:$Port/"
-$listener = New-Object System.Net.HttpListener
-$listener.Prefixes.Add($prefix)
-$listener.Start()
+function Test-BulkWebRunnerLanFirewallRule {
+    param([Parameter(Mandatory = $true)][int]$Port)
 
-Write-Host "Bulk Web Runner listening on $prefix" -ForegroundColor Green
+    $ruleName = "EOA Bulk Web Runner (TCP $Port)"
+    try {
+        $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop |
+            Select-Object -First 1
+        return ($null -ne $rule -and $rule.Enabled -eq 'True')
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-BulkWebRunnerLanFirewallRule {
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    if (Test-BulkWebRunnerLanFirewallRule -Port $Port) { return $true }
+
+    $ruleName = "EOA Bulk Web Runner (TCP $Port)"
+    $netshCmd = "netsh advfirewall firewall add rule name=`"$ruleName`" dir=in action=allow protocol=TCP localport=$Port profile=domain,private,public enable=yes"
+    $null = & netsh advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP localport=$Port profile=domain,private,public enable=yes 2>&1
+    if ($LASTEXITCODE -eq 0) { return $true }
+
+    Write-Host "Windows Firewall is blocking inbound TCP $Port from other PCs." -ForegroundColor Yellow
+    Write-Host "Run once in elevated PowerShell, then retry from the remote PC:" -ForegroundColor Yellow
+    Write-Host "  $netshCmd" -ForegroundColor Cyan
+    return $false
+}
+
+function Get-BulkWebRunnerLanAddresses {
+    $addrs = New-Object System.Collections.Generic.List[string]
+    try {
+        Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object {
+                $_.IPAddress -and
+                $_.IPAddress -notlike '127.*' -and
+                $_.IPAddress -notlike '169.254.*' -and
+                $_.InterfaceAlias -notmatch 'vEthernet|Hyper-V|WSL|Docker|Loopback'
+            } |
+            ForEach-Object { if ($addrs -notcontains $_.IPAddress) { [void]$addrs.Add($_.IPAddress) } }
+    } catch {
+        foreach ($addr in [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName())) {
+            if ($addr.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+            $ip = $addr.IPAddressToString
+            if ($ip -like '127.*' -or $ip -like '169.254.*') { continue }
+            if ($addrs -notcontains $ip) { [void]$addrs.Add($ip) }
+        }
+    }
+    return @($addrs)
+}
+
+function Start-BulkWebRunnerHttpListener {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [switch]$ListenLan
+    )
+
+    $listener = New-Object System.Net.HttpListener
+    if ($ListenLan) {
+        $listener.Prefixes.Add("http://+:$Port/")
+    } else {
+        $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+    }
+
+    try {
+        $listener.Start()
+        return $listener
+    } catch {
+        if (-not $ListenLan) { throw }
+
+        $user = "$env:USERDOMAIN\$env:USERNAME"
+        $url = "http://+:$Port/"
+        $netsh = "netsh http add urlacl url=$url user=`"$user`" listen=yes"
+        throw @"
+LAN bind failed ($url). Run this once in an elevated PowerShell, then retry -ListenLan:
+
+  $netsh
+
+Original error: $($_.Exception.Message)
+"@
+    }
+}
+
+$script:LanUrls = @()
+if ($ListenLan) {
+    $script:LanUrls = @(Get-BulkWebRunnerLanAddresses | ForEach-Object { "http://${_}:$Port/" })
+}
+
+$localPrefix = "http://127.0.0.1:$Port/"
+$listener = Start-BulkWebRunnerHttpListener -Port $Port -ListenLan:$ListenLan
+
+Write-Host "Bulk Web Runner listening on $localPrefix" -ForegroundColor Green
+if ($ListenLan) {
+    Write-Host "LAN mode enabled (all interfaces on port $Port)" -ForegroundColor Yellow
+    if ($script:LanUrls.Count -gt 0) {
+        Write-Host "Open from other PCs on your network:" -ForegroundColor Cyan
+        foreach ($lanUrl in $script:LanUrls) {
+            Write-Host "  $lanUrl" -ForegroundColor Cyan
+        }
+    } else {
+        Write-Host "Could not detect LAN IPv4 addresses; use http://<this-pc-ip>:$Port/" -ForegroundColor Yellow
+    }
+    $null = Ensure-BulkWebRunnerLanFirewallRule -Port $Port
+    Write-Host "Auth popups still run on this Windows machine only." -ForegroundColor Gray
+}
 Write-Host "Project root: $script:ProjectRoot" -ForegroundColor Gray
 Write-Host "Press Ctrl+C to stop." -ForegroundColor Gray
 
 if (-not $NoBrowser) {
-    Start-Process $prefix
+    Start-Process $localPrefix
 }
 
 try {

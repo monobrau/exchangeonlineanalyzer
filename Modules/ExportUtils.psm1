@@ -884,8 +884,13 @@ function New-SecurityInvestigationReport {
     $exchangeConnected = $false
     try {
         # Lightweight call; succeeds only when connected to EXO
-        Get-OrganizationConfig -ErrorAction Stop | Out-Null
+        $orgCfg = Get-OrganizationConfig -ErrorAction Stop
         $exchangeConnected = $true
+        # Backfill report company when caller left the default placeholder
+        if (([string]::IsNullOrWhiteSpace($report.Company) -or $report.Company -eq 'Organization') -and $orgCfg) {
+            if ($orgCfg.DisplayName) { $report.Company = [string]$orgCfg.DisplayName }
+            elseif ($orgCfg.Name) { $report.Company = [string]$orgCfg.Name }
+        }
     } catch {
         # Fallback to UI flag if present
         if (Get-Variable -Name currentExchangeConnection -Scope Script -ErrorAction SilentlyContinue) {
@@ -2176,33 +2181,22 @@ If you expected data:
                     $report.FilePaths.IntuneDevicesJson = $json
                     Write-Warning "Failed to export Intune devices to CSV, exported to JSON instead"
                 }
-            } else {
-                # No devices found and no error - create an empty CSV with headers and note
-                try {
-                    $emptyDevice = [PSCustomObject]@{
-                        DeviceId = $null
-                        DeviceName = $null
-                        UserId = $null
-                        UserPrincipalName = $null
-                        ComplianceState = $null
-                        IsCompliant = $null
-                        LastSyncDateTime = $null
-                        LastCheckInTime = $null
-                        EnrolledDateTime = $null
-                        OperatingSystem = $null
-                        OSVersion = $null
-                        ManagementState = $null
-                        IsManaged = $null
-                        DeviceType = $null
-                        Ownership = $null
-                        CompliancePoliciesJSON = $null
-                    }
-                    $emptyDevice | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
-                    $report.FilePaths.IntuneDevicesCsv = $csv
-                    Write-Host "No Intune device records found - created empty IntuneDevices$ticketSuffix.csv" -ForegroundColor Yellow
-                } catch {
-                    Write-Warning "Could not create Intune devices export file: $($_.Exception.Message)"
-                }
+            } elseif ($IncludeIntuneDevices) {
+                $infoFile = Join-Path $report.OutputFolder "IntuneDevices${ticketSuffix}_NoResults.txt"
+                @"
+Intune Device Records Query Completed - No Results Found
+
+IncludeIntuneDevices=true but no device records were exported (and no exception was recorded).
+
+Possible reasons:
+- No Intune-managed devices for the selected users / tenant
+- DeviceManagementManagedDevices.Read.All consented but Graph returned an empty set
+- Sign-in logs had no device IDs to resolve
+
+Query time: $($report.Timestamp)
+"@ | Out-File -FilePath $infoFile -Encoding utf8
+                $report.FilePaths.IntuneDevicesInfo = $infoFile
+                Write-Host "No Intune device records found - see IntuneDevices${ticketSuffix}_NoResults.txt" -ForegroundColor Yellow
             }
 
             # Conditional Access Policies export
@@ -7103,6 +7097,9 @@ function Get-AnonymousSharePointSharing {
     <#
     .SYNOPSIS
         Anonymous / anyone-link SharePoint sharing events from Unified Audit (independent of other reports).
+    .NOTES
+        Only AnonymousLink* operations are included. CompanyLinkCreated / SecureLinkCreated are org or named-recipient
+        sharing and belong in SharePointFileSharingLinks / general UAL — not this export.
     #>
     param(
         [int]$DaysBack = 10,
@@ -7127,7 +7124,8 @@ function Get-AnonymousSharePointSharing {
         # SharePointSharingOperation is the authoritative source for anonymous/anyone links (not Entra directoryAudit).
         $ual = Get-UnifiedAuditLogs -StartDate $win.StartLocal -EndDate $win.EndLocal -SelectedUsers $SelectedUsers -RecordTypes @('SharePointSharingOperation')
         $results = New-Object System.Collections.ArrayList
-        $anonOpPattern = 'AnonymousLink|SharingInvitationCreated|SecureLinkCreated|CompanyLinkCreated|AddedToSecureLink|RemovedFromSecureLink'
+        # Only true anyone/anonymous link ops — do not include CompanyLinkCreated / SecureLinkCreated
+        $anonOpPattern = 'AnonymousLink'
 
         foreach ($row in @($ual)) {
             try {

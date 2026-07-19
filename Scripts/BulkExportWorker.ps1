@@ -753,11 +753,14 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
                     Write-CommandResponse "EXCHANGE_AUTH_SUCCESS"
                 } catch {
-                    Write-Status "ERROR: Exchange Online authentication failed - $($_.Exception.Message)"
-                    Write-Host "ERROR: Exchange Online authentication failed - $($_.Exception.Message)" -ForegroundColor Red
-                    Write-CommandResponse "EXCHANGE_AUTH_FAILED:$($_.Exception.Message)"
+                    $err = $_.Exception.Message
+                    if ($err -match 'AADSTS500014') {
+                        $err += ' — The tenant you signed into does not allow Exchange Online tokens (wrong tenant in the popup, or Office 365 Exchange Online is disabled). Entra admin center sign-in alone does not prove EXO is enabled. Fix: sign in with the customer Global Admin, pick the correct directory if prompted, then in Entra > Enterprise applications > Office 365 Exchange Online > Properties set Enabled for users to sign-in? to Yes.'
+                    }
+                    Write-Status "ERROR: Exchange Online authentication failed - $err"
+                    Write-Host "ERROR: Exchange Online authentication failed - $err" -ForegroundColor Red
+                    Write-CommandResponse "EXCHANGE_AUTH_FAILED:$err"
                 }
-                
                 Write-Host ""
                 Write-Host "Waiting for Generate Reports command from GUI..." -ForegroundColor Green
                 Write-Host ""

@@ -17,6 +17,19 @@ Workers run **hidden** by default (no PowerShell console popups). For troublesho
 .\web-runner\Start-BulkWebRunner.ps1 -ShowWorkers
 ```
 
+**LAN access** (other PCs on your network can open the UI; auth popups still run on this machine):
+
+```powershell
+.\web-runner\Start-BulkWebRunner.ps1 -ListenLan -NoBrowser
+```
+
+First run may require two one-time **elevated** PowerShell steps (the script prints exact commands if needed):
+
+1. URL reservation if bind fails: `netsh http add urlacl url=http://+:8765/ user="DOMAIN\user" listen=yes`
+2. Firewall allow inbound TCP 8765: `netsh advfirewall firewall add rule name="EOA Bulk Web Runner (TCP 8765)" dir=in action=allow protocol=TCP localport=8765 profile=domain,private,public enable=yes`
+
+Use your PC's real LAN IP (e.g. `http://192.168.1.50:8765/`), not Hyper-V/WSL virtual addresses like `172.19.x.x`.
+
 Per-tenant **Show console** restarts a worker with a visible window.
 
 ## Flow
