@@ -500,7 +500,17 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     "Directory.Read.All",
                     "Policy.Read.All",
                     "Application.Read.All",
-                    "Reports.Read.All"
+                    "Reports.Read.All",
+                    "SecurityAlert.Read.All",
+                    "SecurityIncident.Read.All",
+                    "SecurityEvents.Read.All",
+                    "DeviceManagementManagedDevices.Read.All",
+                    "Sites.Read.All",
+                    "UserAuthenticationMethod.Read.All",
+                    "Organization.Read.All",
+                    "IdentityRiskEvent.Read.All",
+                    "IdentityRiskyUser.Read.All",
+                    "Mail.Read"
                 )
 
                 # Try WCM (app-only) first when we have tenant ID(s) to try - skip if INTERACTIVE:1 (use browser instead)
@@ -1021,7 +1031,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 
                 # Check if this is a search terms command (GENERATE_REPORTS_SEARCH:["term1","term2"])
                 # Extract search terms before TICKET_DATA if present
-                if ($command -match "^GENERATE_REPORTS_SEARCH:(.+?)(?:\|TICKET_DATA:|$)") {
+                if ($command -match "^GENERATE_REPORTS_SEARCH:([^|]+)(?:\||$)") {
                     try {
                         $searchTermsJson = $Matches[1]
                         $searchTermsParsed = $searchTermsJson | ConvertFrom-Json -ErrorAction Stop
@@ -1048,13 +1058,17 @@ function Read-BulkWorkerReportSelectionsFromFile {
                             $users = @()
                             try {
                                 # Try server-side filtering first (startsWith) - try multiple case variations
-                                $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $escapedTerm = $searchTerm.Replace("'","''")
                                 $searchTermLower = $searchTerm.ToLower()
                                 $searchTermUpper = $searchTerm.ToUpper()
                                 $searchTermTitle = (Get-Culture).TextInfo.ToTitleCase($searchTermLower)
-                                $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
-                                $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
-                                $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $escapedLower = $searchTermLower.Replace("'","''")
+                                $escapedUpper = $searchTermUpper.Replace("'","''")
+                                $escapedTitle = $searchTermTitle.Replace("'","''")
+                                $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedTerm') or startsWith(UserPrincipalName,'$escapedTerm')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedLower') or startsWith(UserPrincipalName,'$escapedLower')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedUpper') or startsWith(UserPrincipalName,'$escapedUpper')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedTitle') or startsWith(UserPrincipalName,'$escapedTitle')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
                                 $users = @($users1) + @($users2) + @($users3) + @($users4) | Sort-Object UserPrincipalName -Unique
                                 Write-Host "    Found $($users.Count) users with startsWith filter (tried multiple case variations)" -ForegroundColor Gray
                             } catch {
@@ -1065,12 +1079,12 @@ function Read-BulkWorkerReportSelectionsFromFile {
                                 # Try alternative search methods
                                 try {
                                     # Try exact match (case-sensitive first, then variations)
-                                    $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                    $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$escapedTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$escapedLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
                                     $usersAlt1 = $usersAlt1 | Sort-Object UserPrincipalName -Unique
                                     
-                                    $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                    $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$escapedTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$escapedLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
                                     $usersAlt2 = $usersAlt2 | Sort-Object UserPrincipalName -Unique
                                     
                                     # Try case-insensitive search by getting all users and filtering client-side
@@ -1117,8 +1131,8 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     } catch {
                         Write-Warning "Could not parse or validate search terms from command: $($_.Exception.Message)"
                         Write-Status "ERROR: Failed to validate search terms - $($_.Exception.Message)"
-                        # Set to empty array so report continues without filtering
-                        $selectedUsersForReport = @()
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:Could not parse search terms (check GENERATE_REPORTS_SEARCH command). $($_.Exception.Message)"
+                        continue
                     }
                 }
                 # Check if this is a direct users command (GENERATE_REPORTS|SelectedUsers:["user1","user2"])
@@ -1232,6 +1246,10 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         IncludeSharePointSharing = $reportSelections.IncludeSharePointSharing
                         IncludeSecurityAlerts = $reportSelections.IncludeSecurityAlerts
                         IncludeSecurityIncidents = $reportSelections.IncludeSecurityIncidents
+                        IncludeAnonymousSharePointSharing = $reportSelections.IncludeAnonymousSharePointSharing
+                        IncludeSharePointFileSharingLinks = $reportSelections.IncludeSharePointFileSharingLinks
+                        IncludeDLPViolations = $reportSelections.IncludeDLPViolations
+                        IncludeSharePointOneDriveFileActions = $reportSelections.IncludeSharePointOneDriveFileActions
                         IncludeUnifiedAuditLogs = $reportSelections.IncludeUnifiedAuditLogs
                         SignInLogsDaysBack = $reportSelections.SignInLogsDaysBack
                         MessageTraceDaysBack = $messageTraceDays
@@ -1239,10 +1257,13 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         TicketNumbers = $ticketNumbers
                         TicketContent = $ticketContent
                     }
-                    if ($reportStartDate -and $reportEndDate -and $reportStartDate -ne [DateTime]::MinValue -and $reportEndDate -ne [DateTime]::MinValue -and $reportEndDate -ge $reportStartDate) {
-                        $reportParams.StartDate = $reportStartDate
-                        $reportParams.EndDate = $reportEndDate
+                    if ($reportStartDate -eq [DateTime]::MinValue -or $reportEndDate -eq [DateTime]::MinValue) {
+                        $reportEndDate = Get-Date
+                        $db = if ($DaysBack) { [int]$DaysBack } else { 10 }
+                        $reportStartDate = $reportEndDate.AddDays(-$db)
                     }
+                    $reportParams.StartDate = $reportStartDate
+                    $reportParams.EndDate = $reportEndDate
                     $report = New-SecurityInvestigationReport @reportParams
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
@@ -1315,11 +1336,15 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 Write-Host "==========================================" -ForegroundColor Green
                 Write-Host "Client $ClientNumber processing complete!" -ForegroundColor Green
                 Write-Host "==========================================" -ForegroundColor Green
-                Write-Host "This window will remain open. You may close it manually." -ForegroundColor Yellow
+                Write-Host "Worker remains ready. Re-run Graph Auth / EXO Auth before the next generate." -ForegroundColor Yellow
                 Write-Host ""
-                
-                # Keep window open but stop polling
-                break
+
+                # Reset auth flags after disconnect so the next generate requires re-auth, but keep polling.
+                $graphAuthenticated = $false
+                $exchangeAuthenticated = $false
+                $script:graphTokenFromWCM = $null
+                Write-Status "Ready! Waiting for Graph Auth / EXO Auth before next generate..."
+                continue
             } elseif ($command -eq "CANCEL_AUTH") {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "CANCEL AUTHENTICATION COMMAND RECEIVED" -ForegroundColor Yellow

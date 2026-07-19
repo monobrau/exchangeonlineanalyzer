@@ -6534,6 +6534,12 @@ $securityInvestigationButton.add_Click({
             } catch {}
         })
 
+        # Apply default BEC preset now that the change handler is wired.
+        if ($presetComboBox.Items.Count -gt 0) {
+            $presetComboBox.SelectedIndex = -1
+            $presetComboBox.SelectedIndex = 0
+        }
+
         # Select All button click handler
         $selectAllReportsBtn.add_Click({
             $messageTraceCheckBox.Checked = $true
@@ -7945,7 +7951,17 @@ if (Test-Path `$ReportSelectionsFile) {
         "Directory.Read.All",
         "Policy.Read.All",
         "Application.Read.All",
-        "Reports.Read.All"
+        "Reports.Read.All",
+        "SecurityAlert.Read.All",
+        "SecurityIncident.Read.All",
+        "SecurityEvents.Read.All",
+        "DeviceManagementManagedDevices.Read.All",
+        "Sites.Read.All",
+        "UserAuthenticationMethod.Read.All",
+        "Organization.Read.All",
+        "IdentityRiskEvent.Read.All",
+        "IdentityRiskyUser.Read.All",
+        "Mail.Read"
     )
 
                 # Try WCM (app-only) first when we have tenant ID(s) to try - skip if INTERACTIVE:1 (use browser instead)

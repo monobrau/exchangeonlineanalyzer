@@ -6476,6 +6476,12 @@ $securityInvestigationButton.add_Click({
             } catch {}
         })
 
+        # Apply default BEC preset now that the change handler is wired.
+        if ($presetComboBox.Items.Count -gt 0) {
+            $presetComboBox.SelectedIndex = -1
+            $presetComboBox.SelectedIndex = 0
+        }
+
         # Select All button click handler
         $selectAllReportsBtn.add_Click({
             $messageTraceCheckBox.Checked = $true

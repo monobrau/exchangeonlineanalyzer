@@ -2050,198 +2050,288 @@ function Select-UsersInTicketContent {
     return $result
 }
 
+function Get-BecExportPresetSelections {
+    <#
+    .SYNOPSIS
+        Default BEC investigation export set (mailbox takeover + persistence + identity).
+    #>
+    return @{
+        IncludeMessageTrace                   = $true
+        IncludeUnifiedAuditLogs               = $true
+        IncludeInboxRules                     = $true
+        IncludeTransportRules                 = $true
+        IncludeMailFlowConnectors             = $false
+        IncludeMailboxForwarding              = $true
+        IncludeAuditLogs                      = $true
+        IncludeSignInLogs                     = $true
+        IncludeMfaCoverage                    = $true
+        IncludeConditionalAccessPolicies      = $true
+        IncludeAppRegistrations               = $true
+        IncludeSecurityAlerts                 = $true
+        IncludeSecurityIncidents              = $true
+        IncludeIntuneDevices                  = $true
+        IncludeSharePointActivity             = $false
+        IncludeOneDriveActivity               = $false
+        IncludeTeamsActivity                  = $false
+        IncludeSharePointSharing              = $false
+        IncludeAnonymousSharePointSharing     = $false
+        IncludeSharePointFileSharingLinks     = $false
+        IncludeDLPViolations                  = $false
+        IncludeSharePointOneDriveFileActions  = $false
+        IncludeHuntressSignals                = $false
+        IncludeHuntressIncidents              = $false
+        IncludeHuntressAgents                 = $false
+        IncludeS1Threats                      = $false
+        IncludeS1Agents                       = $false
+        IncludeS1Activities                   = $false
+        IncludeLiongardContext                = $false
+    }
+}
+
 function Get-ExportPresets {
     <#
     .SYNOPSIS
-        Returns export selection presets for common security alert types.
+        Returns ordered investigation-scenario export presets.
+    .DESCRIPTION
+        First real preset is BEC (default). Values are Include* hashtables; $null means Custom (no change).
     .OUTPUTS
-        Hashtable: PresetName -> Hashtable of IncludeXyz = $true/$false
+        OrderedDictionary: PresetName -> Hashtable of IncludeXyz = $true/$false (or $null for Custom)
     #>
-    return @{
-        'Custom (manual selection)' = $null  # No change
+    $bec = Get-BecExportPresetSelections
+    return [ordered]@{
+        'BEC / Business Email Compromise' = $bec
         'Impossible Travel / Risky Sign-In' = @{
-            IncludeMessageTrace = $true
-            IncludeUnifiedAuditLogs = $true
-            IncludeInboxRules = $true
-            IncludeTransportRules = $false
-            IncludeMailFlowConnectors = $false
-            IncludeMailboxForwarding = $true
-            IncludeAuditLogs = $true
-            IncludeSignInLogs = $true
-            IncludeMfaCoverage = $true
-            IncludeConditionalAccessPolicies = $true
-            IncludeAppRegistrations = $false
-            IncludeSecurityAlerts = $true
-            IncludeSecurityIncidents = $true
-            IncludeIntuneDevices = $true
-            IncludeSharePointActivity = $false
-            IncludeOneDriveActivity = $false
-            IncludeTeamsActivity = $false
-            IncludeSharePointSharing = $false
-            IncludeAnonymousSharePointSharing = $false
-            IncludeSharePointFileSharingLinks = $false
-            IncludeDLPViolations = $false
-            IncludeSharePointOneDriveFileActions = $false
+            IncludeMessageTrace                   = $true
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $true
+            IncludeTransportRules                 = $false
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $true
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $true
+            IncludeConditionalAccessPolicies      = $true
+            IncludeAppRegistrations               = $false
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $true
+            IncludeSharePointActivity             = $false
+            IncludeOneDriveActivity               = $false
+            IncludeTeamsActivity                  = $false
+            IncludeSharePointSharing              = $false
+            IncludeAnonymousSharePointSharing     = $false
+            IncludeSharePointFileSharingLinks     = $false
+            IncludeDLPViolations                  = $false
+            IncludeSharePointOneDriveFileActions  = $false
         }
-        'MFA Disabled / Registration Fraud' = @{
-            IncludeMessageTrace = $false
-            IncludeUnifiedAuditLogs = $true
-            IncludeInboxRules = $true
-            IncludeTransportRules = $false
-            IncludeMailFlowConnectors = $false
-            IncludeMailboxForwarding = $true
-            IncludeAuditLogs = $true
-            IncludeSignInLogs = $true
-            IncludeMfaCoverage = $true
-            IncludeConditionalAccessPolicies = $true
-            IncludeAppRegistrations = $true
-            IncludeSecurityAlerts = $true
-            IncludeSecurityIncidents = $true
-            IncludeIntuneDevices = $false
-            IncludeSharePointActivity = $false
-            IncludeOneDriveActivity = $false
-            IncludeTeamsActivity = $false
-            IncludeSharePointSharing = $false
-            IncludeAnonymousSharePointSharing = $false
-            IncludeSharePointFileSharingLinks = $false
-            IncludeDLPViolations = $false
-            IncludeSharePointOneDriveFileActions = $false
+        'MFA Bypass / Registration Fraud' = @{
+            IncludeMessageTrace                   = $false
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $true
+            IncludeTransportRules                 = $false
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $true
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $true
+            IncludeConditionalAccessPolicies      = $true
+            IncludeAppRegistrations               = $true
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $true
+            IncludeSharePointActivity             = $false
+            IncludeOneDriveActivity               = $false
+            IncludeTeamsActivity                  = $false
+            IncludeSharePointSharing              = $false
+            IncludeAnonymousSharePointSharing     = $false
+            IncludeSharePointFileSharingLinks     = $false
+            IncludeDLPViolations                  = $false
+            IncludeSharePointOneDriveFileActions  = $false
         }
         'Phishing / Credential Compromise' = @{
-            IncludeMessageTrace = $true
-            IncludeUnifiedAuditLogs = $true
-            IncludeInboxRules = $true
-            IncludeTransportRules = $true
-            IncludeMailFlowConnectors = $true
-            IncludeMailboxForwarding = $true
-            IncludeAuditLogs = $true
-            IncludeSignInLogs = $true
-            IncludeMfaCoverage = $true
-            IncludeConditionalAccessPolicies = $true
-            IncludeAppRegistrations = $false
-            IncludeSecurityAlerts = $true
-            IncludeSecurityIncidents = $true
-            IncludeIntuneDevices = $true
-            IncludeSharePointActivity = $false
-            IncludeOneDriveActivity = $false
-            IncludeTeamsActivity = $false
-            IncludeSharePointSharing = $false
-            IncludeAnonymousSharePointSharing = $false
-            IncludeSharePointFileSharingLinks = $false
-            IncludeDLPViolations = $false
-            IncludeSharePointOneDriveFileActions = $false
-            IncludeHuntressSignals = $true
-            IncludeHuntressIncidents = $true
-            IncludeHuntressAgents = $true
-            IncludeS1Threats = $true
-            IncludeS1Agents = $true
-            IncludeS1Activities = $true
-            IncludeLiongardContext = $false
-        }
-        'Endpoint / EDR Threat (Huntress + S1)' = @{
-            IncludeMessageTrace = $false
-            IncludeUnifiedAuditLogs = $true
-            IncludeInboxRules = $false
-            IncludeTransportRules = $false
-            IncludeMailFlowConnectors = $false
-            IncludeMailboxForwarding = $false
-            IncludeAuditLogs = $true
-            IncludeSignInLogs = $true
-            IncludeMfaCoverage = $false
-            IncludeConditionalAccessPolicies = $false
-            IncludeAppRegistrations = $false
-            IncludeSecurityAlerts = $true
-            IncludeSecurityIncidents = $true
-            IncludeIntuneDevices = $true
-            IncludeSharePointActivity = $false
-            IncludeOneDriveActivity = $false
-            IncludeTeamsActivity = $false
-            IncludeSharePointSharing = $false
-            IncludeAnonymousSharePointSharing = $false
-            IncludeSharePointFileSharingLinks = $false
-            IncludeDLPViolations = $false
-            IncludeSharePointOneDriveFileActions = $false
-            IncludeHuntressSignals = $true
-            IncludeHuntressIncidents = $true
-            IncludeHuntressAgents = $true
-            IncludeHuntressEscalations = $true
-            IncludeS1Threats = $true
-            IncludeS1Agents = $true
-            IncludeS1Activities = $true
-            IncludeLiongardContext = $true
+            IncludeMessageTrace                   = $true
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $true
+            IncludeTransportRules                 = $true
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $true
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $true
+            IncludeConditionalAccessPolicies      = $true
+            IncludeAppRegistrations               = $true
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $true
+            IncludeSharePointActivity             = $false
+            IncludeOneDriveActivity               = $false
+            IncludeTeamsActivity                  = $false
+            IncludeSharePointSharing              = $false
+            IncludeAnonymousSharePointSharing     = $false
+            IncludeSharePointFileSharingLinks     = $false
+            IncludeDLPViolations                  = $false
+            IncludeSharePointOneDriveFileActions  = $false
+            IncludeHuntressSignals                = $true
+            IncludeHuntressIncidents              = $true
+            IncludeHuntressAgents                 = $true
+            IncludeS1Threats                      = $true
+            IncludeS1Agents                       = $true
+            IncludeS1Activities                   = $true
+            IncludeLiongardContext                = $false
         }
         'Mailbox Rule Abuse / Inbox Manipulation' = @{
-            IncludeMessageTrace = $true
-            IncludeUnifiedAuditLogs = $true
-            IncludeInboxRules = $true
-            IncludeTransportRules = $true
-            IncludeMailFlowConnectors = $false
-            IncludeMailboxForwarding = $true
-            IncludeAuditLogs = $true
-            IncludeSignInLogs = $true
-            IncludeMfaCoverage = $false
-            IncludeConditionalAccessPolicies = $false
-            IncludeAppRegistrations = $false
-            IncludeSecurityAlerts = $true
-            IncludeSecurityIncidents = $true
-            IncludeIntuneDevices = $false
-            IncludeSharePointActivity = $false
-            IncludeOneDriveActivity = $false
-            IncludeTeamsActivity = $false
-            IncludeSharePointSharing = $false
-            IncludeAnonymousSharePointSharing = $false
-            IncludeSharePointFileSharingLinks = $false
-            IncludeDLPViolations = $false
-            IncludeSharePointOneDriveFileActions = $false
+            IncludeMessageTrace                   = $true
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $true
+            IncludeTransportRules                 = $true
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $true
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $false
+            IncludeConditionalAccessPolicies      = $false
+            IncludeAppRegistrations               = $false
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $false
+            IncludeSharePointActivity             = $false
+            IncludeOneDriveActivity               = $false
+            IncludeTeamsActivity                  = $false
+            IncludeSharePointSharing              = $false
+            IncludeAnonymousSharePointSharing     = $false
+            IncludeSharePointFileSharingLinks     = $false
+            IncludeDLPViolations                  = $false
+            IncludeSharePointOneDriveFileActions  = $false
+        }
+        'OAuth / Malicious App Consent' = @{
+            IncludeMessageTrace                   = $false
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $false
+            IncludeTransportRules                 = $false
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $false
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $true
+            IncludeConditionalAccessPolicies      = $true
+            IncludeAppRegistrations               = $true
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $false
+            IncludeSharePointActivity             = $true
+            IncludeOneDriveActivity               = $true
+            IncludeTeamsActivity                  = $false
+            IncludeSharePointSharing              = $true
+            IncludeAnonymousSharePointSharing     = $false
+            IncludeSharePointFileSharingLinks     = $true
+            IncludeDLPViolations                  = $false
+            IncludeSharePointOneDriveFileActions  = $true
+        }
+        'Privilege Escalation / Admin Abuse' = @{
+            IncludeMessageTrace                   = $false
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $false
+            IncludeTransportRules                 = $false
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $false
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $true
+            IncludeConditionalAccessPolicies      = $true
+            IncludeAppRegistrations               = $true
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $true
+            IncludeSharePointActivity             = $false
+            IncludeOneDriveActivity               = $false
+            IncludeTeamsActivity                  = $false
+            IncludeSharePointSharing              = $false
+            IncludeAnonymousSharePointSharing     = $false
+            IncludeSharePointFileSharingLinks     = $false
+            IncludeDLPViolations                  = $false
+            IncludeSharePointOneDriveFileActions  = $false
         }
         'Data Exfiltration (SharePoint/OneDrive)' = @{
-            IncludeMessageTrace = $false
-            IncludeUnifiedAuditLogs = $true
-            IncludeInboxRules = $false
-            IncludeTransportRules = $false
-            IncludeMailFlowConnectors = $false
-            IncludeMailboxForwarding = $false
-            IncludeAuditLogs = $true
-            IncludeSignInLogs = $true
-            IncludeMfaCoverage = $false
-            IncludeConditionalAccessPolicies = $false
-            IncludeAppRegistrations = $false
-            IncludeSecurityAlerts = $true
-            IncludeSecurityIncidents = $true
-            IncludeIntuneDevices = $false
-            IncludeSharePointActivity = $true
-            IncludeOneDriveActivity = $true
-            IncludeTeamsActivity = $false
-            IncludeSharePointSharing = $true
-            IncludeAnonymousSharePointSharing = $true
-            IncludeSharePointFileSharingLinks = $true
-            IncludeDLPViolations = $true
-            IncludeSharePointOneDriveFileActions = $true
+            IncludeMessageTrace                   = $false
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $false
+            IncludeTransportRules                 = $false
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $false
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $false
+            IncludeConditionalAccessPolicies      = $false
+            IncludeAppRegistrations               = $true
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $false
+            IncludeSharePointActivity             = $true
+            IncludeOneDriveActivity               = $true
+            IncludeTeamsActivity                  = $true
+            IncludeSharePointSharing              = $true
+            IncludeAnonymousSharePointSharing     = $true
+            IncludeSharePointFileSharingLinks     = $true
+            IncludeDLPViolations                  = $true
+            IncludeSharePointOneDriveFileActions  = $true
         }
-        'Full Investigation (all exports)' = @{
-            IncludeMessageTrace = $true
-            IncludeUnifiedAuditLogs = $true
-            IncludeInboxRules = $true
-            IncludeTransportRules = $true
-            IncludeMailFlowConnectors = $true
-            IncludeMailboxForwarding = $true
-            IncludeAuditLogs = $true
-            IncludeSignInLogs = $true
-            IncludeMfaCoverage = $true
-            IncludeConditionalAccessPolicies = $true
-            IncludeAppRegistrations = $true
-            IncludeSecurityAlerts = $true
-            IncludeSecurityIncidents = $true
-            IncludeIntuneDevices = $true
-            IncludeSharePointActivity = $true
-            IncludeOneDriveActivity = $true
-            IncludeTeamsActivity = $true
-            IncludeSharePointSharing = $true
-            IncludeAnonymousSharePointSharing = $true
-            IncludeSharePointFileSharingLinks = $true
-            IncludeDLPViolations = $true
-            IncludeSharePointOneDriveFileActions = $true
+        'Endpoint / EDR Threat (Huntress + S1)' = @{
+            IncludeMessageTrace                   = $false
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $false
+            IncludeTransportRules                 = $false
+            IncludeMailFlowConnectors             = $false
+            IncludeMailboxForwarding              = $false
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $false
+            IncludeConditionalAccessPolicies      = $false
+            IncludeAppRegistrations               = $false
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $true
+            IncludeSharePointActivity             = $false
+            IncludeOneDriveActivity               = $false
+            IncludeTeamsActivity                  = $false
+            IncludeSharePointSharing              = $false
+            IncludeAnonymousSharePointSharing     = $false
+            IncludeSharePointFileSharingLinks     = $false
+            IncludeDLPViolations                  = $false
+            IncludeSharePointOneDriveFileActions  = $false
+            IncludeHuntressSignals                = $true
+            IncludeHuntressIncidents              = $true
+            IncludeHuntressAgents                 = $true
+            IncludeHuntressEscalations            = $true
+            IncludeS1Threats                      = $true
+            IncludeS1Agents                       = $true
+            IncludeS1Activities                   = $true
+            IncludeLiongardContext                = $true
         }
+        'Full Investigation (all M365 exports)' = @{
+            IncludeMessageTrace                   = $true
+            IncludeUnifiedAuditLogs               = $true
+            IncludeInboxRules                     = $true
+            IncludeTransportRules                 = $true
+            IncludeMailFlowConnectors             = $true
+            IncludeMailboxForwarding              = $true
+            IncludeAuditLogs                      = $true
+            IncludeSignInLogs                     = $true
+            IncludeMfaCoverage                    = $true
+            IncludeConditionalAccessPolicies      = $true
+            IncludeAppRegistrations               = $true
+            IncludeSecurityAlerts                 = $true
+            IncludeSecurityIncidents              = $true
+            IncludeIntuneDevices                  = $true
+            IncludeSharePointActivity             = $true
+            IncludeOneDriveActivity               = $true
+            IncludeTeamsActivity                  = $true
+            IncludeSharePointSharing              = $true
+            IncludeAnonymousSharePointSharing     = $true
+            IncludeSharePointFileSharingLinks     = $true
+            IncludeDLPViolations                  = $true
+            IncludeSharePointOneDriveFileActions  = $true
+        }
+        'Custom (manual selection)' = $null
     }
 }
 
@@ -2261,11 +2351,15 @@ function Get-RequiredAuthFromReportSelections {
     $graphReports = @(
         'IncludeAuditLogs', 'IncludeSignInLogs', 'IncludeMfaCoverage', 'IncludeConditionalAccessPolicies',
         'IncludeAppRegistrations', 'IncludeSecurityAlerts', 'IncludeSecurityIncidents', 'IncludeIntuneDevices',
-        'IncludeSharePointActivity', 'IncludeOneDriveActivity', 'IncludeTeamsActivity', 'IncludeSharePointSharing'
+        'IncludeSharePointActivity', 'IncludeOneDriveActivity', 'IncludeTeamsActivity', 'IncludeSharePointSharing',
+        'IncludeSharePointFileSharingLinks'
     )
     $exchangeOnlyReports = @(
         'IncludeMessageTrace', 'IncludeUnifiedAuditLogs', 'IncludeTransportRules',
-        'IncludeMailFlowConnectors', 'IncludeMailboxForwarding'
+        'IncludeMailFlowConnectors', 'IncludeMailboxForwarding',
+        'IncludeSharePointOneDriveFileActions',
+        'IncludeAnonymousSharePointSharing',
+        'IncludeDLPViolations'
     )
     foreach ($key in $graphReports) {
         if ($ReportSelections[$key] -eq $true) { $needsGraph = $true; break }
@@ -2491,7 +2585,7 @@ function Get-AlertTypeFromTicket {
     return ""
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-ExportPresets,Get-RequiredAuthFromReportSelections,Get-CompanyFromTicket,Get-SecurityStackFromTicket,Get-SocSourceFromTicket,Get-AlertTypeFromTicket
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-BecExportPresetSelections,Get-ExportPresets,Get-RequiredAuthFromReportSelections,Get-CompanyFromTicket,Get-SecurityStackFromTicket,Get-SocSourceFromTicket,Get-AlertTypeFromTicket
 
 
 

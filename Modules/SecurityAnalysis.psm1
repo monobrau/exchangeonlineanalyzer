@@ -280,7 +280,7 @@ function Get-ConditionalAccessPolicies {
                     IsEnabled = $policy.State -eq "enabled"
                     HasSuspiciousConditions = $false
                     HasSuspiciousControls = $false
-                    SuspiciousIndicators = @()
+                    SuspiciousIndicators = [System.Collections.ArrayList]::new()
                     RiskScore = 0
                 }
                 
@@ -340,7 +340,7 @@ function Get-ConditionalAccessPolicies {
                     $requiresCompliantDevice = $policy.GrantControls.BuiltInControls -contains "compliantDevice"
                     $requiresHybridDevice = $policy.GrantControls.BuiltInControls -contains "domainJoinedDevice"
                     if (-not $requiresCompliantDevice -and -not $requiresHybridDevice) {
-                        $analysis.SuspiciousIndicators += "No device compliance requirement"
+                        [void]$analysis.SuspiciousIndicators.Add("No device compliance requirement")
                         $analysis.RiskScore += 1
                     }
                 }
@@ -371,14 +371,11 @@ function Get-ConditionalAccessPolicies {
             
         } catch {
             if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
-                Write-Warning "Insufficient permissions to read Conditional Access policies. Requires 'Policy.Read.All' permission."
-                return @()
+                throw "Permission denied - requires Policy.Read.All to read Conditional Access policies. $($_.Exception.Message)"
             } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*") {
-                Write-Warning "Conditional Access requires Azure AD Premium P1 license."
-                return @()
+                throw "Conditional Access requires Azure AD Premium P1 (or equivalent). $($_.Exception.Message)"
             } else {
-                Write-Warning "Error retrieving CA policies: $($_.Exception.Message)"
-                return @()
+                throw
             }
         }
         
@@ -386,7 +383,7 @@ function Get-ConditionalAccessPolicies {
         
     } catch {
         Write-Error "Failed to get Conditional Access policies: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -588,11 +585,9 @@ function Get-AppRegistrations {
             
         } catch {
             if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
-                Write-Warning "Insufficient permissions to read app registrations. Requires 'Application.Read.All' permission."
-                return @()
+                throw "Permission denied - requires Application.Read.All to read app registrations. $($_.Exception.Message)"
             } else {
-                Write-Warning "Error retrieving app registrations: $($_.Exception.Message)"
-                return @()
+                throw
             }
         }
         
@@ -600,7 +595,7 @@ function Get-AppRegistrations {
         
     } catch {
         Write-Error "Failed to get app registrations: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 

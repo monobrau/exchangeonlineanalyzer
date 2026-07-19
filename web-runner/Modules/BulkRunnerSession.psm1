@@ -6,32 +6,46 @@ function Set-BulkRunnerWorkerVisibility {
 }
 
 function Get-BulkRunnerDefaultReportSelections {
-    return @{
-        IncludeMessageTrace              = $true
-        IncludeInboxRules                = $true
-        IncludeTransportRules            = $true
-        IncludeMailFlowConnectors        = $false
-        IncludeMailboxForwarding         = $false
-        IncludeUnifiedAuditLogs          = $false
-        IncludeAuditLogs                 = $true
-        IncludeSignInLogs                = $true
-        IncludeMfaCoverage               = $false
-        IncludeConditionalAccessPolicies = $false
-        IncludeAppRegistrations          = $false
-        IncludeIntuneDevices             = $false
-        IncludeSharePointActivity        = $false
-        IncludeOneDriveActivity          = $false
-        IncludeTeamsActivity             = $false
-        IncludeSharePointSharing         = $false
-        IncludeSecurityAlerts            = $false
-        IncludeSecurityIncidents         = $false
-        IncludeDLPViolations             = $false
-        IncludeAnonymousSharePointSharing = $false
-        IncludeSharePointFileSharingLinks = $false
-        IncludeSharePointOneDriveFileActions = $false
-        SignInLogsDaysBack               = 7
-        MessageTraceDaysBack             = 7
+    # Align with BEC investigation preset (Settings Get-BecExportPresetSelections).
+    $bec = $null
+    try {
+        $settingsMod = Join-Path $PSScriptRoot '..\..\Modules\Settings.psm1'
+        if (Test-Path -LiteralPath $settingsMod) {
+            Import-Module $settingsMod -Force -ErrorAction SilentlyContinue
+            if (Get-Command Get-BecExportPresetSelections -ErrorAction SilentlyContinue) {
+                $bec = Get-BecExportPresetSelections
+            }
+        }
+    } catch { }
+    if (-not $bec) {
+        $bec = @{
+            IncludeMessageTrace                  = $true
+            IncludeInboxRules                    = $true
+            IncludeTransportRules                = $true
+            IncludeMailFlowConnectors            = $false
+            IncludeMailboxForwarding             = $true
+            IncludeUnifiedAuditLogs              = $true
+            IncludeAuditLogs                     = $true
+            IncludeSignInLogs                    = $true
+            IncludeMfaCoverage                   = $true
+            IncludeConditionalAccessPolicies     = $true
+            IncludeAppRegistrations              = $true
+            IncludeIntuneDevices                 = $true
+            IncludeSharePointActivity            = $false
+            IncludeOneDriveActivity              = $false
+            IncludeTeamsActivity                 = $false
+            IncludeSharePointSharing             = $false
+            IncludeSecurityAlerts                = $true
+            IncludeSecurityIncidents             = $true
+            IncludeDLPViolations                 = $false
+            IncludeAnonymousSharePointSharing    = $false
+            IncludeSharePointFileSharingLinks    = $false
+            IncludeSharePointOneDriveFileActions = $false
+        }
     }
+    $bec['SignInLogsDaysBack'] = 7
+    $bec['MessageTraceDaysBack'] = 7
+    return $bec
 }
 
 function ConvertTo-BulkRunnerReportSelectionsHashtable {

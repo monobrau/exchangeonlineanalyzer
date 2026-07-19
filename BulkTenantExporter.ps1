@@ -245,7 +245,7 @@ $bulkPresetComboBox.Size = New-Object System.Drawing.Size(240, 20)
 $bulkPresetComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $presets = Get-ExportPresets
 foreach ($name in $presets.Keys) { $bulkPresetComboBox.Items.Add($name) | Out-Null }
-$bulkPresetComboBox.SelectedIndex = 0  # Custom
+$bulkPresetComboBox.SelectedIndex = 0  # BEC / Business Email Compromise (first preset)
 
 # Days Back
 $bulkDaysLabel = New-Object System.Windows.Forms.Label
@@ -475,6 +475,12 @@ $bulkPresetComboBox.add_SelectedIndexChanged({
     $bulkDLPViolationsCheckBox.Checked = $preset.IncludeDLPViolations
     $bulkSharePointOneDriveFileActionsCheckBox.Checked = $preset.IncludeSharePointOneDriveFileActions
 })
+
+# Apply default BEC preset now that the change handler is wired (SelectedIndex was set earlier).
+if ($bulkPresetComboBox.Items.Count -gt 0) {
+    $bulkPresetComboBox.SelectedIndex = -1
+    $bulkPresetComboBox.SelectedIndex = 0
+}
 
 # Select All button click handler
 $bulkSelectAllBtn.add_Click({

@@ -459,83 +459,25 @@ const REPORT_EXPORT_GROUPS = [
   },
 ];
 
+/** Fallback if /api/export-presets is unavailable — matches Settings Get-BecExportPresetSelections. */
+const DEFAULT_BEC_PRESET_NAME = 'BEC / Business Email Compromise';
+
 const REPORT_EXPORT_PRESETS = {
-  impossibleTravel: {
+  [DEFAULT_BEC_PRESET_NAME]: {
     IncludeMessageTrace: true,
     IncludeUnifiedAuditLogs: true,
-    IncludeInboxRules: true,
-    IncludeTransportRules: false,
-    IncludeMailFlowConnectors: false,
-    IncludeMailboxForwarding: true,
-    IncludeAuditLogs: true,
-    IncludeSignInLogs: true,
-    IncludeMfaCoverage: true,
-    IncludeConditionalAccessPolicies: true,
-    IncludeAppRegistrations: false,
-    IncludeSecurityAlerts: true,
-    IncludeSecurityIncidents: true,
-    IncludeIntuneDevices: true,
-    IncludeSharePointActivity: false,
-    IncludeOneDriveActivity: false,
-    IncludeTeamsActivity: false,
-    IncludeSharePointSharing: false,
-  },
-  fullForensic: {
-    IncludeMessageTrace: true,
     IncludeInboxRules: true,
     IncludeTransportRules: true,
-    IncludeMailFlowConnectors: true,
+    IncludeMailFlowConnectors: false,
     IncludeMailboxForwarding: true,
-    IncludeUnifiedAuditLogs: true,
     IncludeAuditLogs: true,
     IncludeSignInLogs: true,
     IncludeMfaCoverage: true,
     IncludeConditionalAccessPolicies: true,
     IncludeAppRegistrations: true,
-    IncludeIntuneDevices: true,
     IncludeSecurityAlerts: true,
     IncludeSecurityIncidents: true,
-    IncludeSharePointActivity: true,
-    IncludeOneDriveActivity: true,
-    IncludeTeamsActivity: true,
-    IncludeSharePointSharing: true,
-  },
-  exoOnly: {
-    IncludeMessageTrace: true,
-    IncludeInboxRules: true,
-    IncludeTransportRules: true,
-    IncludeMailFlowConnectors: false,
-    IncludeMailboxForwarding: false,
-    IncludeUnifiedAuditLogs: false,
-    IncludeAuditLogs: false,
-    IncludeSignInLogs: false,
-    IncludeMfaCoverage: false,
-    IncludeConditionalAccessPolicies: false,
-    IncludeAppRegistrations: false,
-    IncludeIntuneDevices: false,
-    IncludeSecurityAlerts: false,
-    IncludeSecurityIncidents: false,
-    IncludeSharePointActivity: false,
-    IncludeOneDriveActivity: false,
-    IncludeTeamsActivity: false,
-    IncludeSharePointSharing: false,
-  },
-};
-
-function defaultReportSelections() {
-  return {
-    IncludeMessageTrace: true,
-    IncludeInboxRules: true,
-    IncludeTransportRules: true,
-    IncludeMailFlowConnectors: false,
-    IncludeMailboxForwarding: false,
-    IncludeUnifiedAuditLogs: false,
-    IncludeAuditLogs: true,
-    IncludeSignInLogs: true,
-    IncludeMfaCoverage: false,
-    IncludeConditionalAccessPolicies: false,
-    IncludeAppRegistrations: false,
-    IncludeIntuneDevices: false,
+    IncludeIntuneDevices: true,
     IncludeSharePointActivity: false,
     IncludeOneDriveActivity: false,
     IncludeTeamsActivity: false,
@@ -544,8 +486,12 @@ function defaultReportSelections() {
     IncludeSharePointFileSharingLinks: false,
     IncludeDLPViolations: false,
     IncludeSharePointOneDriveFileActions: false,
-    IncludeSecurityAlerts: false,
-    IncludeSecurityIncidents: false,
+  },
+};
+
+function defaultReportSelections() {
+  return {
+    ...REPORT_EXPORT_PRESETS[DEFAULT_BEC_PRESET_NAME],
     SignInLogsDaysBack: 7,
     MessageTraceDaysBack: 7,
   };
@@ -696,14 +642,24 @@ function setAllReportSelections(container, enabled) {
   }
 }
 
-async function loadExportPresetsFromServer() {
-  if (!serverFeatures.exportPresets) return;
+async function loadExportPresetsFromServer(options = {}) {
+  const applyDefaultBec = options.applyDefaultBec !== false;
+  if (!serverFeatures.exportPresets) {
+    if (applyDefaultBec) {
+      const body = document.getElementById('sessionReportExportsBody');
+      if (body) {
+        applyReportSelectionsToContainer(body, defaultReportSelections());
+        updateSessionReportExportsSummary(defaultReportSelections());
+      }
+    }
+    return;
+  }
   try {
     const data = await api('/api/export-presets');
     exportPresetsFromServer = data.presets || [];
     const sel = document.getElementById('sessionReportPreset');
     if (!sel) return;
-    const current = sel.value;
+    const previous = sel.value;
     sel.innerHTML = '';
     for (const p of exportPresetsFromServer) {
       const opt = document.createElement('option');
@@ -711,7 +667,19 @@ async function loadExportPresetsFromServer() {
       opt.textContent = p.name;
       sel.appendChild(opt);
     }
-    if (current) sel.value = current;
+    const becName =
+      exportPresetsFromServer.find(p => p.name === DEFAULT_BEC_PRESET_NAME)?.name ||
+      exportPresetsFromServer.find(p => p.selections)?.name ||
+      '';
+    const preferPrevious = previous && [...sel.options].some(o => o.value === previous);
+    const chosen = preferPrevious ? previous : becName;
+    if (chosen) sel.value = chosen;
+    if (applyDefaultBec && chosen && !String(chosen).startsWith('Custom')) {
+      const body = document.getElementById('sessionReportExportsBody');
+      if (body && applyExportPresetByName(chosen, body)) {
+        updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
+      }
+    }
   } catch {
     exportPresetsFromServer = [];
   }
@@ -729,8 +697,14 @@ function initSessionReportExportsPanel() {
   if (!body || body.dataset.initialized === '1') return;
   body.innerHTML = buildReportExportsPanelHtml('session');
   body.dataset.initialized = '1';
+  const markPresetCustom = () => {
+    const sel = document.getElementById('sessionReportPreset');
+    if (!sel) return;
+    const custom = [...sel.options].find(o => String(o.value).startsWith('Custom'));
+    if (custom) sel.value = custom.value;
+  };
   body.addEventListener('change', () => {
-    document.getElementById('sessionReportPreset').value = '';
+    markPresetCustom();
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
@@ -751,20 +725,19 @@ function initSessionReportExportsPanel() {
   });
   document.getElementById('btnReportSelectAll')?.addEventListener('click', () => {
     setAllReportSelections(body, true);
-    document.getElementById('sessionReportPreset').value = '';
+    markPresetCustom();
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
   document.getElementById('btnReportSelectNone')?.addEventListener('click', () => {
     setAllReportSelections(body, false);
-    document.getElementById('sessionReportPreset').value = '';
+    markPresetCustom();
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
   ['messageTraceDays', 'signInLogsDays', 'daysBack'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => scheduleSessionReportSelectionsSync());
   });
-  void loadExportPresetsFromServer();
 }
 
 function wireTenantReportExportsPanel(div, clientNumber) {
@@ -1314,9 +1287,11 @@ function toDateTimeLocalValue(date) {
 
 function defaultDateStartValue() {
 
+  const days = Math.max(1, parseInt(document.getElementById('daysBack')?.value, 10) || 10);
+
   const d = new Date();
 
-  d.setDate(d.getDate() - 10);
+  d.setDate(d.getDate() - days);
 
   return toDateTimeLocalValue(d);
 
@@ -2755,26 +2730,28 @@ function appendTicketAndDateRange(cmd, ticketNumber, ticketContent, dateStart, d
 
   }
 
-  if (dateStart && dateEnd) {
+  let startVal = dateStart;
+  let endVal = dateEnd;
+  if (!startVal || !endVal) {
+    const daysBackEl = document.getElementById('daysBack');
+    const days = Math.max(1, parseInt(daysBackEl?.value, 10) || 10);
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - days);
+    if (!startVal) startVal = toDateTimeLocalValue(start);
+    if (!endVal) endVal = toDateTimeLocalValue(end);
+  }
 
-    const start = new Date(dateStart);
-
-    const end = new Date(dateEnd);
-
-    if (end >= start) {
-
+  {
+    const start = new Date(startVal);
+    const end = new Date(endVal);
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
       const fmt = (d) => {
-
         const pad = (n) => String(n).padStart(2, '0');
-
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-
       };
-
       out += `|DATE_RANGE:${JSON.stringify({ StartDate: fmt(start), EndDate: fmt(end) })}`;
-
     }
-
   }
 
   return out;
@@ -2950,9 +2927,14 @@ async function generateReports(clientNumber, div) {
 
     setTenantButtonsDisabled(div, true);
 
-    const dateStart = div.querySelector('.dateStart')?.value;
+    const dateStartEl = div.querySelector('.dateStart');
+    const dateEndEl = div.querySelector('.dateEnd');
+    if (dateStartEl && !dateStartEl.value) dateStartEl.value = defaultDateStartValue();
+    if (dateEndEl && !dateEndEl.value) dateEndEl.value = defaultDateEndValue();
 
-    const dateEnd = div.querySelector('.dateEnd')?.value;
+    const dateStart = dateStartEl?.value;
+
+    const dateEnd = dateEndEl?.value;
 
     if (dateStart && dateEnd && new Date(dateEnd) < new Date(dateStart)) {
 
@@ -3326,7 +3308,8 @@ document.getElementById('archivedHistorySearch')?.addEventListener('input', (e) 
   log('Loading…');
   try {
     await detectServerFeatures();
-    await loadExportPresetsFromServer();
+    // Populate presets + select/apply BEC before session hydrate (session may override selections).
+    await loadExportPresetsFromServer({ applyDefaultBec: true });
     await ensureSession({ quiet: true });
     log('Session connected.');
     void loadAppRegistrations({ quiet: true }).catch(e => log(`App registrations: ${e.message}`));
