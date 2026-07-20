@@ -2050,6 +2050,70 @@ function Select-UsersInTicketContent {
     return $result
 }
 
+function Get-DefaultUalRecordTypes {
+    <#
+    .SYNOPSIS
+        Standard UAL RecordTypes for investigations. ExchangeItemAggregated is opt-in separately.
+    #>
+    param([switch]$IncludeAggregated)
+    $types = @(
+        'ExchangeItem', 'ExchangeItemGroup',
+        'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation',
+        'OneDrive', 'MicrosoftTeams', 'AzureActiveDirectory',
+        'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
+    )
+    if ($IncludeAggregated) {
+        $types = @('ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated') + @($types | Select-Object -Skip 2)
+    }
+    return [string[]]$types
+}
+
+function Get-UalRecordTypesForExportPreset {
+    <#
+    .SYNOPSIS
+        Preset-scoped Unified Audit Log RecordTypes (keeps all-users pulls tractable).
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$PresetName = ''
+    )
+    $n = [string]$PresetName
+    if ([string]::IsNullOrWhiteSpace($n) -or $n.StartsWith('Custom', [StringComparison]::OrdinalIgnoreCase)) {
+        return [string[]](Get-DefaultUalRecordTypes)
+    }
+    if ($n -match '(?i)Full Investigation') {
+        return [string[]](Get-DefaultUalRecordTypes)
+    }
+    if ($n -match '(?i)Data Exfiltration') {
+        return [string[]]@('SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation', 'OneDrive', 'ExchangeItem', 'ExchangeItemGroup')
+    }
+    if ($n -match '(?i)OAuth|Malicious App') {
+        return [string[]]@('AzureActiveDirectory', 'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation', 'OneDrive', 'ExchangeAdmin')
+    }
+    if ($n -match '(?i)Privilege Escalation|Admin Abuse') {
+        return [string[]]@('AzureActiveDirectory', 'ExchangeAdmin', 'ExchangeItem')
+    }
+    if ($n -match '(?i)Impossible Travel|Risky Sign') {
+        return [string[]]@('ExchangeAdmin', 'AzureActiveDirectory')
+    }
+    if ($n -match '(?i)MFA Bypass|Registration Fraud') {
+        return [string[]]@('AzureActiveDirectory', 'ExchangeAdmin', 'ExchangeItem')
+    }
+    if ($n -match '(?i)Mailbox Rule|Inbox Manipulation') {
+        return [string[]]@('ExchangeItem', 'ExchangeItemGroup', 'ExchangeAdmin')
+    }
+    if ($n -match '(?i)Endpoint|EDR|Huntress') {
+        return [string[]]@('AzureActiveDirectory', 'ExchangeAdmin', 'ExchangeItem')
+    }
+    if ($n -match '(?i)Phishing|Credential') {
+        return [string[]]@('ExchangeItem', 'ExchangeItemGroup', 'ExchangeAdmin', 'AzureActiveDirectory')
+    }
+    if ($n -match '(?i)BEC|Business Email') {
+        return [string[]]@('ExchangeItem', 'ExchangeItemGroup', 'ExchangeAdmin')
+    }
+    return [string[]](Get-DefaultUalRecordTypes)
+}
+
 function Get-BecExportPresetSelections {
     <#
     .SYNOPSIS
@@ -2058,6 +2122,9 @@ function Get-BecExportPresetSelections {
     return @{
         IncludeMessageTrace                   = $true
         IncludeUnifiedAuditLogs               = $true
+        IncludeExchangeItemAggregated         = $false
+        UnifiedAuditLogRecordTypes            = [string[]](Get-UalRecordTypesForExportPreset -PresetName 'BEC / Business Email Compromise')
+        ExportPresetName                      = 'BEC / Business Email Compromise'
         IncludeInboxRules                     = $true
         IncludeTransportRules                 = $true
         IncludeMailFlowConnectors             = $false
@@ -2098,7 +2165,7 @@ function Get-ExportPresets {
         OrderedDictionary: PresetName -> Hashtable of IncludeXyz = $true/$false (or $null for Custom)
     #>
     $bec = Get-BecExportPresetSelections
-    return [ordered]@{
+    $presets = [ordered]@{
         'BEC / Business Email Compromise' = $bec
         'Impossible Travel / Risky Sign-In' = @{
             IncludeMessageTrace                   = $true
@@ -2333,6 +2400,21 @@ function Get-ExportPresets {
         }
         'Custom (manual selection)' = $null
     }
+    foreach ($k in @($presets.Keys)) {
+        $p = $presets[$k]
+        if ($null -ne $p -and $p -is [hashtable]) {
+            if (-not $p.ContainsKey('IncludeExchangeItemAggregated')) {
+                $p['IncludeExchangeItemAggregated'] = $false
+            }
+            if (-not $p.ContainsKey('UnifiedAuditLogRecordTypes')) {
+                $p['UnifiedAuditLogRecordTypes'] = [string[]](Get-UalRecordTypesForExportPreset -PresetName $k)
+            }
+            if (-not $p.ContainsKey('ExportPresetName')) {
+                $p['ExportPresetName'] = [string]$k
+            }
+        }
+    }
+    return $presets
 }
 
 function Get-RequiredAuthFromReportSelections {
@@ -2585,7 +2667,7 @@ function Get-AlertTypeFromTicket {
     return ""
 }
 
-Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-BecExportPresetSelections,Get-ExportPresets,Get-RequiredAuthFromReportSelections,Get-CompanyFromTicket,Get-SecurityStackFromTicket,Get-SocSourceFromTicket,Get-AlertTypeFromTicket
+Export-ModuleMember -Function Get-AppSettings,Save-AppSettings,Get-SettingsPath,Set-SettingsLocation,Get-SettingsLocationConfig,New-AIReadme,Get-MemberberryContent,Extract-TicketNumbers,Filter-TicketContent,Extract-EmailsFromTicket,Select-UsersInTicketContent,Get-DefaultUalRecordTypes,Get-UalRecordTypesForExportPreset,Get-BecExportPresetSelections,Get-ExportPresets,Get-RequiredAuthFromReportSelections,Get-CompanyFromTicket,Get-SecurityStackFromTicket,Get-SocSourceFromTicket,Get-AlertTypeFromTicket
 
 
 

@@ -417,6 +417,7 @@ const REPORT_EXPORT_GROUPS = [
       { key: 'IncludeMailFlowConnectors', label: 'Mail flow connectors' },
       { key: 'IncludeMailboxForwarding', label: 'Mailbox forwarding' },
       { key: 'IncludeUnifiedAuditLogs', label: 'Unified audit logs (EXO)' },
+      { key: 'IncludeExchangeItemAggregated', label: 'UAL: ExchangeItemAggregated (opt-in, high volume)' },
     ],
   },
   {
@@ -466,6 +467,7 @@ const REPORT_EXPORT_PRESETS = {
   [DEFAULT_BEC_PRESET_NAME]: {
     IncludeMessageTrace: true,
     IncludeUnifiedAuditLogs: true,
+    IncludeExchangeItemAggregated: false,
     IncludeInboxRules: true,
     IncludeTransportRules: true,
     IncludeMailFlowConnectors: false,
@@ -526,6 +528,19 @@ function readReportSelectionsFromContainer(container) {
   const si = document.getElementById('signInLogsDays');
   if (mt) rs.MessageTraceDaysBack = parseInt(mt.value, 10) || 7;
   if (si) rs.SignInLogsDaysBack = parseInt(si.value, 10) || 7;
+  if (container.dataset.ualRecordTypes) {
+    try {
+      const parsed = JSON.parse(container.dataset.ualRecordTypes);
+      if (Array.isArray(parsed) && parsed.length) rs.UnifiedAuditLogRecordTypes = parsed;
+    } catch (_) {}
+  }
+  if (container.dataset.exportPresetName) {
+    rs.ExportPresetName = container.dataset.exportPresetName;
+  }
+  if (rs.IncludeExchangeItemAggregated && Array.isArray(rs.UnifiedAuditLogRecordTypes)
+      && !rs.UnifiedAuditLogRecordTypes.includes('ExchangeItemAggregated')) {
+    rs.UnifiedAuditLogRecordTypes = [...rs.UnifiedAuditLogRecordTypes, 'ExchangeItemAggregated'];
+  }
   return rs;
 }
 
@@ -538,6 +553,35 @@ function applyReportSelectionsToContainer(container, selections) {
       if (el) el.checked = Boolean(rs[item.key]);
     }
   }
+  if (Array.isArray(rs.UnifiedAuditLogRecordTypes) && rs.UnifiedAuditLogRecordTypes.length) {
+    container.dataset.ualRecordTypes = JSON.stringify(rs.UnifiedAuditLogRecordTypes);
+  } else {
+    delete container.dataset.ualRecordTypes;
+  }
+  if (rs.ExportPresetName) container.dataset.exportPresetName = rs.ExportPresetName;
+  else delete container.dataset.exportPresetName;
+  updateUalScopeHint(container, rs);
+}
+
+function formatUalScopeHint(selections) {
+  if (!selections?.IncludeUnifiedAuditLogs) return 'UAL: off';
+  const types = selections.UnifiedAuditLogRecordTypes;
+  if (Array.isArray(types) && types.length) {
+    return `UAL RecordTypes (${types.length}): ${types.join(', ')}`;
+  }
+  return 'UAL RecordTypes: default set (no Aggregated)';
+}
+
+function updateUalScopeHint(container, selections) {
+  if (!container) return;
+  let hint = container.querySelector('.ualScopeHint');
+  if (!hint) {
+    hint = document.createElement('p');
+    hint.className = 'ualScopeHint muted';
+    hint.style.cssText = 'margin:0.35rem 0 0;font-size:0.85rem';
+    container.appendChild(hint);
+  }
+  hint.textContent = formatUalScopeHint(selections || readReportSelectionsFromContainer(container));
 }
 
 function countEnabledReportExports(selections) {
@@ -572,8 +616,8 @@ function getRequiredAuthFromReportSelections(selections) {
 
 function getEffectiveReportSelectionsForTenant(t, session) {
   const ui = t?.uiState;
-  const useDefaults = ui?.useSessionReportDefaults !== false;
-  if (!useDefaults && ui?.reportSelections) {
+  const mode = ui?.reportExportMode || (ui?.useSessionReportDefaults === false ? 'custom' : 'session');
+  if (mode !== 'session' && ui?.reportSelections) {
     return { ...defaultReportSelections(), ...ui.reportSelections };
   }
   return { ...defaultReportSelections(), ...(session?.reportSelections || {}) };
@@ -593,15 +637,50 @@ function updateSessionReportExportsSummary(selections) {
   el.textContent = n ? `(${n} enabled)` : '(none enabled)';
 }
 
-function updateTenantReportExportsHint(div, useDefaults) {
+function updateTenantReportExportsHint(div, mode, presetName) {
   const hint = div?.querySelector('.reportExportsHint');
   if (!hint) return;
-  if (useDefaults) {
+  const m = mode || 'session';
+  if (m === 'session') {
     hint.textContent = '(session defaults)';
     hint.classList.remove('customized');
+  } else if (m === 'preset') {
+    hint.textContent = presetName ? `(preset: ${presetName})` : '(tenant preset)';
+    hint.classList.add('customized');
   } else {
     hint.textContent = '(custom for this client)';
     hint.classList.add('customized');
+  }
+}
+
+function getTenantReportExportMode(div) {
+  const sel = div?.querySelector('.tenantReportExportMode');
+  if (sel?.value) return sel.value;
+  // Legacy: checkbox useSessionReportDefaults
+  const legacy = div?.querySelector('.useSessionReportDefaults');
+  if (legacy && !legacy.checked) return 'custom';
+  return 'session';
+}
+
+function populateTenantPresetSelect(selectEl) {
+  if (!selectEl) return;
+  const previous = selectEl.value;
+  selectEl.innerHTML = '';
+  const presets = exportPresetsFromServer.length
+    ? exportPresetsFromServer
+    : Object.keys(REPORT_EXPORT_PRESETS).map((name) => ({ name, selections: REPORT_EXPORT_PRESETS[name] }));
+  for (const p of presets) {
+    if (!p?.name || String(p.name).startsWith('Custom')) continue;
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.name;
+    selectEl.appendChild(opt);
+  }
+  if (previous && [...selectEl.options].some((o) => o.value === previous)) {
+    selectEl.value = previous;
+  } else if (selectEl.options.length) {
+    const bec = [...selectEl.options].find((o) => o.value === DEFAULT_BEC_PRESET_NAME);
+    selectEl.value = bec ? bec.value : selectEl.options[0].value;
   }
 }
 
@@ -680,15 +759,28 @@ async function loadExportPresetsFromServer(options = {}) {
         updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
       }
     }
+    document.querySelectorAll('.tenantReportPreset').forEach((sel) => populateTenantPresetSelect(sel));
   } catch {
     exportPresetsFromServer = [];
   }
 }
 
 function applyExportPresetByName(name, container) {
-  const preset = exportPresetsFromServer.find(p => p.name === name);
+  const preset = exportPresetsFromServer.find(p => p.name === name)
+    || (REPORT_EXPORT_PRESETS[name] ? { name, selections: REPORT_EXPORT_PRESETS[name] } : null);
   if (!preset || !preset.selections) return false;
-  applyReportSelectionsToContainer(container, { ...defaultReportSelections(), ...preset.selections });
+  const merged = {
+    ...defaultReportSelections(),
+    ...preset.selections,
+    ExportPresetName: name,
+  };
+  if (!Array.isArray(merged.UnifiedAuditLogRecordTypes) || !merged.UnifiedAuditLogRecordTypes.length) {
+    // Fallback if server omitted UAL types (older runner)
+    if (name.match(/BEC|Business Email/i)) {
+      merged.UnifiedAuditLogRecordTypes = ['ExchangeItem', 'ExchangeItemGroup', 'ExchangeAdmin'];
+    }
+  }
+  applyReportSelectionsToContainer(container, merged);
   return true;
 }
 
@@ -705,6 +797,10 @@ function initSessionReportExportsPanel() {
   };
   body.addEventListener('change', () => {
     markPresetCustom();
+    delete body.dataset.ualRecordTypes;
+    delete body.dataset.exportPresetName;
+    body.dataset.exportPresetName = 'Custom (manual selection)';
+    updateUalScopeHint(body);
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
@@ -741,24 +837,54 @@ function initSessionReportExportsPanel() {
 }
 
 function wireTenantReportExportsPanel(div, clientNumber) {
-  const useDefaultsCheck = div.querySelector('.useSessionReportDefaults');
+  const modeSel = div.querySelector('.tenantReportExportMode');
+  const presetWrap = div.querySelector('.tenantReportPresetWrap');
+  const presetSel = div.querySelector('.tenantReportPreset');
   const customBody = div.querySelector('.tenantReportExportsCustom');
+  const legacyCheck = div.querySelector('.useSessionReportDefaults');
+
+  populateTenantPresetSelect(presetSel);
+
   const applyVisibility = (skipSave = false) => {
-    const useDefaults = Boolean(useDefaultsCheck?.checked);
-    if (customBody) customBody.style.display = useDefaults ? 'none' : 'block';
-    updateTenantReportExportsHint(div, useDefaults);
+    const mode = getTenantReportExportMode(div);
+    if (legacyCheck) legacyCheck.checked = mode === 'session';
+    if (presetWrap) presetWrap.style.display = mode === 'preset' ? '' : 'none';
+    if (customBody) customBody.style.display = mode === 'custom' ? 'block' : 'none';
+    if (mode === 'preset' && presetSel && customBody) {
+      applyExportPresetByName(presetSel.value, customBody);
+    }
+    updateTenantReportExportsHint(div, mode, presetSel?.value);
     if (!skipSave) saveTenantUiState(clientNumber, div);
   };
-  useDefaultsCheck?.addEventListener('change', () => {
-    if (!useDefaultsCheck.checked && customBody) {
+
+  modeSel?.addEventListener('change', () => {
+    const mode = modeSel.value;
+    if (mode === 'custom' && customBody) {
       const saved = tenantUiState.get(String(clientNumber));
-      if (!saved?.reportSelections) {
-        applyReportSelectionsToContainer(customBody, readReportSelectionsFromContainer(document.getElementById('sessionReportExportsBody')));
+      if (!saved?.reportSelections || saved.reportExportMode === 'session') {
+        applyReportSelectionsToContainer(
+          customBody,
+          readReportSelectionsFromContainer(document.getElementById('sessionReportExportsBody'))
+        );
+      } else if (saved.reportSelections) {
+        applyReportSelectionsToContainer(customBody, saved.reportSelections);
       }
     }
     applyVisibility(false);
   });
-  customBody?.addEventListener('change', () => saveTenantUiState(clientNumber, div));
+  presetSel?.addEventListener('change', () => {
+    if (getTenantReportExportMode(div) === 'preset' && customBody && presetSel.value) {
+      applyExportPresetByName(presetSel.value, customBody);
+      updateTenantReportExportsHint(div, 'preset', presetSel.value);
+      saveTenantUiState(clientNumber, div);
+    }
+  });
+  customBody?.addEventListener('change', () => {
+    delete customBody.dataset.ualRecordTypes;
+    customBody.dataset.exportPresetName = 'Custom (manual selection)';
+    updateUalScopeHint(customBody);
+    saveTenantUiState(clientNumber, div);
+  });
   if (customBody && !customBody.querySelector('.tenantReportSelectAll')) {
     const bar = document.createElement('div');
     bar.className = 'row';
@@ -766,6 +892,9 @@ function wireTenantReportExportsPanel(div, clientNumber) {
     customBody.prepend(bar);
     bar.querySelector('.tenantReportSelectAll')?.addEventListener('click', () => {
       setAllReportSelections(customBody, true);
+      delete customBody.dataset.ualRecordTypes;
+      customBody.dataset.exportPresetName = 'Custom (manual selection)';
+      updateUalScopeHint(customBody);
       saveTenantUiState(clientNumber, div);
     });
     bar.querySelector('.tenantReportSelectNone')?.addEventListener('click', () => {
@@ -1319,9 +1448,17 @@ function saveTenantUiState(clientNumber, div) {
 
   if (!div) return;
 
-  const useSessionReportDefaults = Boolean(div.querySelector('.useSessionReportDefaults')?.checked ?? true);
+  const reportExportMode = getTenantReportExportMode(div);
+  const useSessionReportDefaults = reportExportMode === 'session';
   const customPanel = div.querySelector('.tenantReportExportsCustom');
-  const reportSelections = useSessionReportDefaults ? null : readReportSelectionsFromContainer(customPanel);
+  const presetSel = div.querySelector('.tenantReportPreset');
+  let reportSelections = null;
+  if (reportExportMode === 'preset' && customPanel && presetSel?.value) {
+    applyExportPresetByName(presetSel.value, customPanel);
+    reportSelections = readReportSelectionsFromContainer(customPanel);
+  } else if (reportExportMode === 'custom' && customPanel) {
+    reportSelections = readReportSelectionsFromContainer(customPanel);
+  }
 
   const prior = tenantUiState.get(String(clientNumber)) || {};
 
@@ -1348,6 +1485,10 @@ function saveTenantUiState(clientNumber, div) {
     dateEnd: div.querySelector('.dateEnd')?.value || '',
 
     useSessionReportDefaults,
+
+    reportExportMode,
+
+    exportPresetName: reportExportMode === 'preset' ? (presetSel?.value || '') : (reportSelections?.ExportPresetName || ''),
 
     reportSelections,
 
@@ -1441,15 +1582,29 @@ function restoreTenantUiState(clientNumber, div) {
 
   }
 
+  const modeSel = div.querySelector('.tenantReportExportMode');
+  const presetWrap = div.querySelector('.tenantReportPresetWrap');
+  const presetSel = div.querySelector('.tenantReportPreset');
   const useDefaultsCheck = div.querySelector('.useSessionReportDefaults');
   const customPanel = div.querySelector('.tenantReportExportsCustom');
-  const useDefaults = saved.useSessionReportDefaults !== false;
-  if (useDefaultsCheck) useDefaultsCheck.checked = useDefaults;
+  let mode = saved.reportExportMode;
+  if (!mode) mode = saved.useSessionReportDefaults === false ? 'custom' : 'session';
+  populateTenantPresetSelect(presetSel);
+  if (modeSel) modeSel.value = mode;
+  if (useDefaultsCheck) useDefaultsCheck.checked = mode === 'session';
+  if (presetSel && saved.exportPresetName) {
+    if ([...presetSel.options].some((o) => o.value === saved.exportPresetName)) {
+      presetSel.value = saved.exportPresetName;
+    }
+  }
   if (customPanel && saved.reportSelections) {
     applyReportSelectionsToContainer(customPanel, saved.reportSelections);
+  } else if (mode === 'preset' && customPanel && presetSel?.value) {
+    applyExportPresetByName(presetSel.value, customPanel);
   }
-  updateTenantReportExportsHint(div, useDefaults);
-  if (customPanel) customPanel.style.display = useDefaults ? 'none' : 'block';
+  if (presetWrap) presetWrap.style.display = mode === 'preset' ? '' : 'none';
+  if (customPanel) customPanel.style.display = mode === 'custom' ? 'block' : 'none';
+  updateTenantReportExportsHint(div, mode, presetSel?.value);
 
 }
 
@@ -1963,11 +2118,23 @@ function renderTenants(session) {
 
         <div class="collapsible-body">
 
-          <label><input type="checkbox" class="useSessionReportDefaults" checked /> Use session defaults</label>
+          <div class="row" style="flex-wrap:wrap;gap:0.5rem;align-items:end">
+            <label>Export scope
+              <select class="tenantReportExportMode">
+                <option value="session" selected>Session defaults</option>
+                <option value="preset">Investigation preset</option>
+                <option value="custom">Custom selection</option>
+              </select>
+            </label>
+            <label class="tenantReportPresetWrap" style="display:none">Preset
+              <select class="tenantReportPreset"></select>
+            </label>
+            <input type="checkbox" class="useSessionReportDefaults" checked style="display:none" aria-hidden="true" />
+          </div>
 
           <div class="tenantReportExportsCustom" style="display:none;margin-top:0.5rem">
 
-            <p class="muted" style="margin:0.35rem 0">Override exports for this client only.</p>
+            <p class="muted" style="margin:0.35rem 0">Custom exports for this client only. Changing checkboxes clears preset-scoped UAL types (uses default UAL set).</p>
 
             ${buildReportExportsPanelHtml('tenant')}
 
@@ -3118,6 +3285,8 @@ async function restartWorker(clientNumber, div, options = {}) {
     }
 
     workerLogOffsets.set(String(clientNumber), 0);
+    const logPanel = getWorkerLogPanel(clientNumber);
+    if (logPanel) logPanel.textContent = '';
 
     if (!options.skipRefresh) {
 

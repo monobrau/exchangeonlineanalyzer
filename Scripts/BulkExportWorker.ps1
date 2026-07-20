@@ -31,7 +31,20 @@ function Write-Status {
     param([string]$Message)
     try {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        "[$timestamp] $Message" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+        $line = "[$timestamp] $Message"
+        $mutex = $null
+        try {
+            $mutex = New-Object System.Threading.Mutex($false, 'Global\EOA_StatusFileWrite')
+            [void]$mutex.WaitOne(5000)
+            $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+        } catch {
+            $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+        } finally {
+            if ($mutex) {
+                try { [void]$mutex.ReleaseMutex() } catch {}
+                try { $mutex.Dispose() } catch {}
+            }
+        }
         Write-Host "[Client $ClientNumber] $Message" -ForegroundColor Cyan
     } catch {
         Write-Host "[Client $ClientNumber] $Message" -ForegroundColor Cyan
@@ -282,6 +295,9 @@ function Read-BulkWorkerReportSelectionsFromFile {
         IncludeSharePointFileSharingLinks = if ($null -ne $jsonObj.IncludeSharePointFileSharingLinks) { $jsonObj.IncludeSharePointFileSharingLinks } else { $false }
         IncludeDLPViolations = if ($null -ne $jsonObj.IncludeDLPViolations) { $jsonObj.IncludeDLPViolations } else { $false }
         IncludeUnifiedAuditLogs = if ($null -ne $jsonObj.IncludeUnifiedAuditLogs) { $jsonObj.IncludeUnifiedAuditLogs } else { $false }
+        IncludeExchangeItemAggregated = if ($null -ne $jsonObj.IncludeExchangeItemAggregated) { $jsonObj.IncludeExchangeItemAggregated } else { $false }
+        UnifiedAuditLogRecordTypes = if ($null -ne $jsonObj.UnifiedAuditLogRecordTypes) { @($jsonObj.UnifiedAuditLogRecordTypes | ForEach-Object { [string]$_ }) } else { @() }
+        ExportPresetName = if ($null -ne $jsonObj.ExportPresetName -and [string]$jsonObj.ExportPresetName -ne '') { [string]$jsonObj.ExportPresetName } else { '' }
         IncludeSharePointOneDriveFileActions = if ($null -ne $jsonObj.IncludeSharePointOneDriveFileActions) { $jsonObj.IncludeSharePointOneDriveFileActions } else { $false }
         SignInLogsDaysBack = if ($null -ne $jsonObj.SignInLogsDaysBack) { $jsonObj.SignInLogsDaysBack } else { 7 }
         MessageTraceDaysBack = if ($null -ne $jsonObj.MessageTraceDaysBack) { $jsonObj.MessageTraceDaysBack } else { 10 }
@@ -1159,6 +1175,11 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "GENERATE REPORTS COMMAND RECEIVED" -ForegroundColor Yellow
                 Write-Host "==========================================" -ForegroundColor Yellow
+                # Reset status file so the UI Client log does not replay prior generates.
+                try {
+                    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    "[$timestamp] === Generate reports started (prior status cleared) ===" | Out-File -FilePath $StatusFile -Encoding UTF8 -ErrorAction SilentlyContinue
+                } catch {}
                 Write-Status "Report generation command received"
                 Write-CommandResponse "GENERATE_REPORTS_STARTED"
                 
@@ -1254,6 +1275,8 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         IncludeDLPViolations = $reportSelections.IncludeDLPViolations
                         IncludeSharePointOneDriveFileActions = $reportSelections.IncludeSharePointOneDriveFileActions
                         IncludeUnifiedAuditLogs = $reportSelections.IncludeUnifiedAuditLogs
+                        IncludeExchangeItemAggregated = $reportSelections.IncludeExchangeItemAggregated
+                        UnifiedAuditLogRecordTypes = @(if ($reportSelections.UnifiedAuditLogRecordTypes) { $reportSelections.UnifiedAuditLogRecordTypes } else { @() })
                         SignInLogsDaysBack = $reportSelections.SignInLogsDaysBack
                         MessageTraceDaysBack = $messageTraceDays
                         SelectedUsers = $selectedUsersForReport

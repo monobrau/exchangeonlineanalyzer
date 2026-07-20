@@ -6425,6 +6425,17 @@ $securityInvestigationButton.add_Click({
         $unifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
         $unifiedAuditLogsCheckBox.Checked = $false
 
+        $exchangeItemAggregatedCheckBox = New-Object System.Windows.Forms.CheckBox
+        $exchangeItemAggregatedCheckBox.Text = "UAL ExchangeItemAggregated (opt-in, high volume)"
+        $exchangeItemAggregatedCheckBox.Location = New-Object System.Drawing.Point(30, 560)
+        $exchangeItemAggregatedCheckBox.Size = New-Object System.Drawing.Size(360, 20)
+        $exchangeItemAggregatedCheckBox.Checked = $false
+        $exchangeItemAggregatedCheckBox.Enabled = $false
+        $unifiedAuditLogsCheckBox.add_CheckedChanged({
+            $exchangeItemAggregatedCheckBox.Enabled = $unifiedAuditLogsCheckBox.Checked
+            if (-not $unifiedAuditLogsCheckBox.Checked) { $exchangeItemAggregatedCheckBox.Checked = $false }
+        })
+
         $signInLogsDaysLabel = New-Object System.Windows.Forms.Label
         $signInLogsDaysLabel.Text = "Time Range:"
         $signInLogsDaysLabel.Location = New-Object System.Drawing.Point(220, 217)
@@ -6454,6 +6465,8 @@ $securityInvestigationButton.add_Click({
                 if (-not $preset) { return }
                 $messageTraceCheckBox.Checked = $preset.IncludeMessageTrace
                 $unifiedAuditLogsCheckBox.Checked = $preset.IncludeUnifiedAuditLogs
+                $exchangeItemAggregatedCheckBox.Checked = if ($null -ne $preset.IncludeExchangeItemAggregated) { [bool]$preset.IncludeExchangeItemAggregated } else { $false }
+                $exchangeItemAggregatedCheckBox.Enabled = $unifiedAuditLogsCheckBox.Checked
                 $inboxRulesCheckBox.Checked = $preset.IncludeInboxRules
                 $transportRulesCheckBox.Checked = $preset.IncludeTransportRules
                 $mailFlowCheckBox.Checked = $preset.IncludeMailFlowConnectors
@@ -6505,6 +6518,7 @@ $securityInvestigationButton.add_Click({
             $dlpViolationsCheckBox.Checked = $true
             $intuneDevicesCheckBox.Checked = $true
             $unifiedAuditLogsCheckBox.Checked = $true
+            # Leave ExchangeItemAggregated unchecked (opt-in)
         })
 
         # Deselect All button click handler
@@ -6530,13 +6544,14 @@ $securityInvestigationButton.add_Click({
             $dlpViolationsCheckBox.Checked = $false
             $intuneDevicesCheckBox.Checked = $false
             $unifiedAuditLogsCheckBox.Checked = $false
+            $exchangeItemAggregatedCheckBox.Checked = $false
         })
 
         # Add all controls to scrollable panel - Organized logically
         $reportsScrollPanel.Controls.AddRange(@(
             $selectAllReportsBtn, $deselectAllReportsBtn,
             # Exchange Online / Email Reports
-            $messageTraceCheckBox, $unifiedAuditLogsCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
+            $messageTraceCheckBox, $unifiedAuditLogsCheckBox, $exchangeItemAggregatedCheckBox, $inboxRulesCheckBox, $transportRulesCheckBox,
             $mailFlowCheckBox, $mailboxForwardingCheckBox,
             # Entra ID / Identity & Access Reports
             $auditLogsCheckBox, $signInLogsCheckBox, $mfaCoverageCheckBox, $caPoliciesCheckBox, $appRegistrationsCheckBox,
@@ -6635,6 +6650,7 @@ $securityInvestigationButton.add_Click({
                     IncludeDLPViolations = $dlpViolationsCheckBox.Checked
                     IncludeIntuneDevices = $intuneDevicesCheckBox.Checked
                     IncludeUnifiedAuditLogs = $unifiedAuditLogsCheckBox.Checked
+                    IncludeExchangeItemAggregated = $exchangeItemAggregatedCheckBox.Checked
                     SignInLogsDaysBack = $signInLogsDays
                     MessageTraceDaysBack = $days
                 }
@@ -6804,6 +6820,7 @@ $securityInvestigationButton.add_Click({
                     IncludeSecurityAlerts = $reportSelections.IncludeSecurityAlerts
                     IncludeSecurityIncidents = $reportSelections.IncludeSecurityIncidents
                     IncludeUnifiedAuditLogs = $reportSelections.IncludeUnifiedAuditLogs
+                    IncludeExchangeItemAggregated = ($reportSelections.IncludeExchangeItemAggregated -eq $true)
                     SignInLogsDaysBack = $reportSelections.SignInLogsDaysBack
                     MessageTraceDaysBack = $reportSelections.MessageTraceDaysBack
                     SelectedUsers = $selectedUsers

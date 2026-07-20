@@ -301,6 +301,17 @@ $bulkUnifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 65)
 $bulkUnifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkUnifiedAuditLogsCheckBox.Checked = $false
 
+$bulkExchangeItemAggregatedCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkExchangeItemAggregatedCheckBox.Text = "Incl. Aggregated (opt-in)"
+$bulkExchangeItemAggregatedCheckBox.Location = New-Object System.Drawing.Point(220, 65)
+$bulkExchangeItemAggregatedCheckBox.Size = New-Object System.Drawing.Size(200, 20)
+$bulkExchangeItemAggregatedCheckBox.Checked = $false
+$bulkExchangeItemAggregatedCheckBox.Enabled = $false
+$bulkUnifiedAuditLogsCheckBox.add_CheckedChanged({
+    $bulkExchangeItemAggregatedCheckBox.Enabled = $bulkUnifiedAuditLogsCheckBox.Checked
+    if (-not $bulkUnifiedAuditLogsCheckBox.Checked) { $bulkExchangeItemAggregatedCheckBox.Checked = $false }
+})
+
 $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkInboxRulesCheckBox.Text = "Inbox Rules"
 $bulkInboxRulesCheckBox.Location = New-Object System.Drawing.Point(10, 90)
@@ -454,6 +465,8 @@ $bulkPresetComboBox.add_SelectedIndexChanged({
     if (-not $preset) { return }  # Custom - no change
     $bulkMessageTraceCheckBox.Checked = $preset.IncludeMessageTrace
     $bulkUnifiedAuditLogsCheckBox.Checked = $preset.IncludeUnifiedAuditLogs
+    $bulkExchangeItemAggregatedCheckBox.Checked = if ($null -ne $preset.IncludeExchangeItemAggregated) { [bool]$preset.IncludeExchangeItemAggregated } else { $false }
+    $bulkExchangeItemAggregatedCheckBox.Enabled = $bulkUnifiedAuditLogsCheckBox.Checked
     $bulkInboxRulesCheckBox.Checked = $preset.IncludeInboxRules
     $bulkTransportRulesCheckBox.Checked = $preset.IncludeTransportRules
     $bulkMailFlowCheckBox.Checked = $preset.IncludeMailFlowConnectors
@@ -503,6 +516,7 @@ $bulkSelectAllBtn.add_Click({
     $bulkIntuneDevicesCheckBox.Checked = $true
     $bulkUnifiedAuditLogsCheckBox.Checked = $true
     $bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
+    # Leave Aggregated unchecked (opt-in)
 })
 
 # Deselect All button click handler
@@ -528,6 +542,7 @@ $bulkDeselectAllBtn.add_Click({
     $bulkDLPViolationsCheckBox.Checked = $false
     $bulkIntuneDevicesCheckBox.Checked = $false
     $bulkUnifiedAuditLogsCheckBox.Checked = $false
+    $bulkExchangeItemAggregatedCheckBox.Checked = $false
     $bulkSharePointOneDriveFileActionsCheckBox.Checked = $false
 })
 
@@ -535,7 +550,7 @@ $bulkDeselectAllBtn.add_Click({
 $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkSelectAllBtn, $bulkDeselectAllBtn,
     # Exchange Online / Email Reports
-    $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
+    $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkExchangeItemAggregatedCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
     $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox,
     # Entra ID / Identity & Access Reports
     $bulkAuditLogsCheckBox, $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox, $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
@@ -713,6 +728,7 @@ $bulkStartButton.add_Click({
         IncludeDLPViolations = $bulkDLPViolationsCheckBox.Checked
         IncludeIntuneDevices = $bulkIntuneDevicesCheckBox.Checked
         IncludeUnifiedAuditLogs = $bulkUnifiedAuditLogsCheckBox.Checked
+        IncludeExchangeItemAggregated = $bulkExchangeItemAggregatedCheckBox.Checked
         IncludeSharePointOneDriveFileActions = $bulkSharePointOneDriveFileActionsCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days

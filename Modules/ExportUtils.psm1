@@ -794,6 +794,12 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeUnifiedAuditLogs = $true,
         [Parameter(Mandatory=$false)]
+        [bool]$IncludeExchangeItemAggregated = $false,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeUnifiedAuditLogRawAuditData = $false,
+        [Parameter(Mandatory=$false)]
+        [bool]$ExcludeUalNoiseOperations = $true,
+        [Parameter(Mandatory=$false)]
         [array]$UnifiedAuditLogRecordTypes = $null,
         [Parameter(Mandatory=$false)]
         [scriptblock]$ProgressCallback = $null,
@@ -999,6 +1005,7 @@ function New-SecurityInvestigationReport {
                 IncludeMailboxForwarding = $IncludeMailboxForwarding
                 IncludeMailboxForwardingTenantHunt = $IncludeMailboxForwardingTenantHunt
                 IncludeUnifiedAuditLogs = $IncludeUnifiedAuditLogs
+                IncludeExchangeItemAggregated = $IncludeExchangeItemAggregated
                 UnifiedAuditLogRecordTypes = $UnifiedAuditLogRecordTypes
                 IncludeAuditLogs = $IncludeAuditLogs
                 IncludeSignInLogs = $IncludeSignInLogs
@@ -1075,12 +1082,12 @@ function New-SecurityInvestigationReport {
                     try { & $writeStatus "Exchange runspace: mailbox forwarding done ($($r.MailboxForwarding.Count) mailboxes)" } catch {}
                 }
                 # Graph runspace cannot reuse this cache — only prefetch Exchange-thread UAL consumers.
-                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $Params.StartDate -EndDate $Params.EndDate -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -UseDateRange:($Params.UseDateRange -eq $true) -IncludeUnifiedAuditLogs:($Params.IncludeUnifiedAuditLogs -eq $true) -UnifiedAuditLogRecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:($Params.IncludeSharePointOneDriveFileActions -eq $true) -IncludeAnonymousSharePointSharing:($Params.IncludeAnonymousSharePointSharing -eq $true) -IncludeDLPViolations:($Params.IncludeDLPViolations -eq $true)
+                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $Params.StartDate -EndDate $Params.EndDate -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -UseDateRange:($Params.UseDateRange -eq $true) -IncludeUnifiedAuditLogs:($Params.IncludeUnifiedAuditLogs -eq $true) -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) -UnifiedAuditLogRecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:($Params.IncludeSharePointOneDriveFileActions -eq $true) -IncludeAnonymousSharePointSharing:($Params.IncludeAnonymousSharePointSharing -eq $true) -IncludeDLPViolations:($Params.IncludeDLPViolations -eq $true)
                 if ($Params.IncludeUnifiedAuditLogs) {
                     try {
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting unified audit logs..." -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: collecting unified audit logs... (this may take 10+ minutes)" } catch {}
-                        $r.UnifiedAuditLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-UnifiedAuditLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes }
+                        $r.UnifiedAuditLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-UnifiedAuditLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) } else { Get-UnifiedAuditLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) }
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" } catch {}
                     }
@@ -1248,8 +1255,8 @@ function New-SecurityInvestigationReport {
                 if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
                 if ($IncludeMailboxForwarding) { $exchangeResult.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers -IncludeTenantWideDelegateHunt:$IncludeMailboxForwardingTenantHunt }
                 # Hybrid: Graph collectors run in another runspace — prefetch only Exchange UAL consumers.
-                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations
-                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
+                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations
+                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated } else { Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated } } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
                 if ($IncludeSharePointOneDriveFileActions) {
                     try {
                         $fileActionTypes = @('SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation', 'OneDrive')
@@ -1414,7 +1421,7 @@ function New-SecurityInvestigationReport {
                 Invoke-DoEventsSafe
             }
 
-            Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations -IncludeSharePointActivity:$IncludeSharePointActivity -IncludeOneDriveActivity:$IncludeOneDriveActivity -IncludeTeamsActivity:$IncludeTeamsActivity
+            Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations -IncludeSharePointActivity:$IncludeSharePointActivity -IncludeOneDriveActivity:$IncludeOneDriveActivity -IncludeTeamsActivity:$IncludeTeamsActivity
 
             if ($IncludeUnifiedAuditLogs) {
                 try {
@@ -1424,9 +1431,9 @@ function New-SecurityInvestigationReport {
                     Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
                     $report.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) {
-                        Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes
+                        Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
                     } else {
-                        Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes
+                        Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
                     }
                     if ($null -eq $report.UnifiedAuditLogs) { $report.UnifiedAuditLogs = [System.Collections.ArrayList]::new() }
                     # Do not use @($list).Count — on List[object] PowerShell throws "Argument types do not match".
@@ -2071,9 +2078,8 @@ function New-SecurityInvestigationReport {
                 catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
             }
 
-            # Unified Audit Logs (Email Audit Logs) export
+            # Unified Audit Logs — CSV only, slim columns (AuditData is the bulk of file size)
             $csv = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix.csv"
-            $json = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix.json"
             if ($report.UnifiedAuditLogsError) {
                 # Write error to a text file (${ticketSuffix} required — ${ticketSuffix}_Error is a different variable name in PS)
                 $errorFile = Join-Path $report.OutputFolder "UnifiedAuditLogs${ticketSuffix}_Error.txt"
@@ -2081,15 +2087,24 @@ function New-SecurityInvestigationReport {
                 $report.FilePaths.UnifiedAuditLogsError = $errorFile
                 Write-Host "Unified audit log collection failed - see UnifiedAuditLogs${ticketSuffix}_Error.txt" -ForegroundColor Yellow
             } elseif ($report.UnifiedAuditLogs -and $report.UnifiedAuditLogs.Count -gt 0) {
-                try { 
-                    $report.UnifiedAuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                try {
+                    $ualExport = ConvertTo-SlimUnifiedAuditLogExportRows -Rows $report.UnifiedAuditLogs `
+                        -ExcludeNoise:($ExcludeUalNoiseOperations -eq $true) `
+                        -IncludeRawAuditData:($IncludeUnifiedAuditLogRawAuditData -eq $true)
+                    $ualExport | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.UnifiedAuditLogsCsv = $csv
-                    Write-Host "Exported $($report.UnifiedAuditLogs.Count) unified audit log entries to UnifiedAuditLogs.csv" -ForegroundColor Green
+                    $dropped = ([int]$report.UnifiedAuditLogs.Count) - ([int]$ualExport.Count)
+                    if ($dropped -gt 0) {
+                        Write-Host "Exported $($ualExport.Count) unified audit log entries to UnifiedAuditLogs.csv (omitted $dropped noisy bind/sync ops; slim columns, CSV only)" -ForegroundColor Green
+                    } else {
+                        Write-Host "Exported $($ualExport.Count) unified audit log entries to UnifiedAuditLogs.csv (slim columns, CSV only)" -ForegroundColor Green
+                    }
                 }
-                catch { 
-                    $report.UnifiedAuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
-                    $report.FilePaths.UnifiedAuditLogsJson = $json
-                    Write-Warning "Failed to export unified audit logs to CSV, exported to JSON instead"
+                catch {
+                    Write-Warning "Failed to export unified audit logs to CSV: $($_.Exception.Message)"
+                    $errorFile = Join-Path $report.OutputFolder "UnifiedAuditLogs${ticketSuffix}_Error.txt"
+                    "Error exporting Unified Audit Logs:`n$($_.Exception.Message)" | Out-File -FilePath $errorFile -Encoding utf8
+                    $report.FilePaths.UnifiedAuditLogsError = $errorFile
                 }
             } elseif ($IncludeUnifiedAuditLogs) {
                 # Requested but empty/$null (PS unwraps empty collections) — always leave a marker file
@@ -3785,6 +3800,7 @@ function Invoke-UnifiedAuditLogPrefetchForReport {
         [string]$StatusFile = $null,
         [bool]$UseDateRange = $false,
         [bool]$IncludeUnifiedAuditLogs = $false,
+        [bool]$IncludeExchangeItemAggregated = $false,
         [array]$UnifiedAuditLogRecordTypes = $null,
         [bool]$IncludeSharePointOneDriveFileActions = $false,
         [bool]$IncludeAnonymousSharePointSharing = $false,
@@ -3852,10 +3868,255 @@ function Invoke-UnifiedAuditLogPrefetchForReport {
 
     $rtArg = if ($pullAll) { $null } else { @($types) }
     if ($UseDateRange -and $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue) {
-        $null = Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $rtArg
+        $null = Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $rtArg -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
     } else {
-        $null = Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $rtArg
+        $null = Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $rtArg -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
     }
+}
+
+function Get-UalNoiseOperationSet {
+    # High-volume, low-signal mailbox activity for "is this tenant clean?" style pulls.
+    return [string[]]@(
+        'FolderBind',
+        'MessageBind',
+        'SyncFolderHierarchy',
+        'SyncFolderItems',
+        'SyncConversation'
+    )
+}
+
+function Test-UalRowIsNoiseOperation {
+    param($Row)
+    $noise = Get-UalNoiseOperationSet
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($prop in @('Operations', 'Operation')) {
+        try {
+            $v = $Row.$prop
+            if ($null -eq $v) { continue }
+            if ($v -is [System.Array]) {
+                foreach ($x in $v) { if ($x) { [void]$candidates.Add([string]$x) } }
+            } else {
+                foreach ($part in ([string]$v -split '[;,]')) {
+                    $t = $part.Trim()
+                    if ($t) { [void]$candidates.Add($t) }
+                }
+            }
+        } catch {}
+    }
+    foreach ($c in $candidates) {
+        foreach ($n in $noise) {
+            if ($c -eq $n) { return $true }
+        }
+    }
+    return $false
+}
+
+function ConvertTo-SlimUnifiedAuditLogExportRows {
+    <#
+    .SYNOPSIS
+        Project UAL rows to a compact CSV shape. Omits raw AuditData by default (dominant file-size driver).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Rows,
+        [switch]$ExcludeNoise,
+        [switch]$IncludeRawAuditData
+    )
+    $out = New-Object System.Collections.Generic.List[object]
+    $noiseDropped = 0
+    foreach ($r in @($Rows)) {
+        if ($ExcludeNoise -and (Test-UalRowIsNoiseOperation -Row $r)) {
+            $noiseDropped++
+            continue
+        }
+        $clientIP = $null
+        $objectId = $null
+        $resultStatus = $null
+        $workload = $null
+        $parsedOp = $null
+        $userKey = $null
+        if ($r.AuditData) {
+            try {
+                $ad = if ($r.AuditData -is [string]) {
+                    if ([string]::IsNullOrWhiteSpace([string]$r.AuditData)) { $null } else { $r.AuditData | ConvertFrom-Json -ErrorAction Stop }
+                } else { $r.AuditData }
+                if ($ad) {
+                    $clientIP = $ad.ClientIP
+                    if (-not $clientIP) { $clientIP = $ad.ClientIPAddress }
+                    $objectId = $ad.ObjectId
+                    $resultStatus = $ad.ResultStatus
+                    $workload = $ad.Workload
+                    $parsedOp = $ad.Operation
+                    $userKey = $ad.UserId
+                    if (-not $userKey) { $userKey = $ad.UserKey }
+                }
+            } catch {}
+        }
+        $row = [ordered]@{
+            CreationDate     = $r.CreationDate
+            RecordType       = $r.RecordType
+            UserIds          = $r.UserIds
+            UserId           = $userKey
+            Operations       = $r.Operations
+            Operation        = if ($r.Operation) { $r.Operation } else { $parsedOp }
+            ClientIP         = $clientIP
+            ObjectId         = if ($r.ObjectId) { $r.ObjectId } else { $objectId }
+            ResultStatus     = $resultStatus
+            Workload         = $workload
+            ExternalAccess   = $r.ExternalAccess
+            MailboxOwnerUPN  = $r.MailboxOwnerUPN
+        }
+        if ($IncludeRawAuditData) {
+            $row['AuditData'] = $r.AuditData
+        }
+        [void]$out.Add([pscustomobject]$row)
+    }
+    if ($noiseDropped -gt 0) {
+        Write-Host ("  UAL export: omitted {0} noisy bind/sync operation row(s)" -f $noiseDropped) -ForegroundColor DarkGray
+    }
+    return ,$out
+}
+
+function Write-ExportStatusLine {
+    param([string]$StatusFile, [string]$Message)
+    if ([string]::IsNullOrWhiteSpace($StatusFile) -or [string]::IsNullOrWhiteSpace($Message)) { return }
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+    $mutex = $null
+    try {
+        $mutex = New-Object System.Threading.Mutex($false, 'Global\EOA_StatusFileWrite')
+        [void]$mutex.WaitOne(5000)
+        $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+    } catch {
+        try { $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
+    } finally {
+        if ($mutex) {
+            try { [void]$mutex.ReleaseMutex() } catch {}
+            try { $mutex.Dispose() } catch {}
+        }
+    }
+}
+
+function Get-UalTimeWindows {
+    <#
+    .SYNOPSIS
+        Split a UAL date range into day-aligned windows so each Search-UnifiedAuditLog session stays under the ~50k ReturnLargeSet cap.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][DateTime]$StartDate,
+        [Parameter(Mandatory = $true)][DateTime]$EndDate
+    )
+    # Use ArrayList — do not return List[object] wrapped in @(); that throws "Argument types do not match".
+    $windows = New-Object System.Collections.ArrayList
+    if ($EndDate -le $StartDate) {
+        [void]$windows.Add([pscustomobject]@{ Start = $StartDate; End = $EndDate })
+        return ,$windows
+    }
+    $cursor = $StartDate
+    while ($cursor -lt $EndDate) {
+        $dayEnd = $cursor.Date.AddDays(1)
+        if ($dayEnd -le $cursor) { $dayEnd = $cursor.AddHours(24) }
+        if ($dayEnd -gt $EndDate) { $dayEnd = $EndDate }
+        [void]$windows.Add([pscustomobject]@{ Start = $cursor; End = $dayEnd })
+        $cursor = $dayEnd
+    }
+    return ,$windows
+}
+
+function Add-UnifiedAuditLogSearchWindow {
+    <#
+    .SYNOPSIS
+        Paginate one Search-UnifiedAuditLog window into $Raw.
+        Split only when results look silently truncated (date gap or still full pages at high volume).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][DateTime]$WinStart,
+        [Parameter(Mandatory = $true)][DateTime]$WinEnd,
+        [Parameter(Mandatory = $true)]$Raw,
+        [Parameter(Mandatory = $true)][string]$SessionBase,
+        [Parameter(Mandatory = $false)]$RecordType = $null,
+        [Parameter(Mandatory = $false)][string]$UserIds = $null,
+        [Parameter(Mandatory = $false)][string]$StatusFile = $null,
+        [Parameter(Mandatory = $false)][string]$Label = '',
+        [Parameter(Mandatory = $false)][int]$Depth = 0
+    )
+
+    $pageSize = 5000
+    $minSplitMinutes = 15
+    $temp = New-Object System.Collections.Generic.List[object]
+    $chunkSessionId = "${SessionBase}_w$($WinStart.ToString('yyyyMMddHHmmss'))_d$Depth"
+    $pageCount = 0
+    $lastPageSize = 0
+    $winLabel = "{0:yyyy-MM-dd HH:mm} -> {1:yyyy-MM-dd HH:mm}" -f $WinStart, $WinEnd
+
+    try {
+        do {
+            $searchParams = @{
+                StartDate      = $WinStart
+                EndDate        = $WinEnd
+                ResultSize     = $pageSize
+                SessionId      = $chunkSessionId
+                SessionCommand = 'ReturnLargeSet'
+                ErrorAction    = 'Stop'
+            }
+            if ($RecordType) { $searchParams['RecordType'] = $RecordType }
+            if (-not [string]::IsNullOrWhiteSpace($UserIds)) { $searchParams['UserIds'] = $UserIds }
+
+            $results = Search-UnifiedAuditLog @searchParams
+            if ($results -and $results.Count -gt 0) {
+                foreach ($item in $results) { [void]$temp.Add($item) }
+                $lastPageSize = $results.Count
+                $pageCount += $results.Count
+                Write-Host ("    Page: {0} entries ({1}{2}; window total {3})" -f $results.Count, $Label, $winLabel, $pageCount) -ForegroundColor Gray
+                # Sparse status: first page, every ~25k, and final incomplete page
+                if ($StatusFile -and ($pageCount -eq $lastPageSize -or ($pageCount % 25000) -lt $lastPageSize -or $results.Count -lt $pageSize)) {
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message "Unified audit logs: $pageCount entries$Label ($winLabel)..."
+                }
+            } else {
+                break
+            }
+        } while ($results.Count -eq $pageSize)
+    } catch {
+        Write-Warning "Failed UAL window $winLabel$Label : $($_.Exception.Message)"
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "ERROR: Failed UAL window $winLabel$Label : $($_.Exception.Message)"
+        return 0
+    }
+
+    $spanMinutes = ($WinEnd - $WinStart).TotalMinutes
+    $needsSplit = $false
+    if ($pageCount -gt 0 -and $spanMinutes -gt $minSplitMinutes -and $Depth -lt 8) {
+        $maxCreated = $null
+        foreach ($item in $temp) {
+            try {
+                $cd = [datetime]$item.CreationDate
+                if (-not $maxCreated -or $cd -gt $maxCreated) { $maxCreated = $cd }
+            } catch {}
+        }
+        $gapHours = if ($maxCreated) { ($WinEnd - $maxCreated).TotalHours } else { 999.0 }
+        # Classic silent cutoff: paging ends but newest row is well before WinEnd
+        if ($gapHours -gt 2.0) {
+            $needsSplit = $true
+        } elseif ($lastPageSize -eq $pageSize -and $pageCount -ge 45000) {
+            $needsSplit = $true
+        }
+    }
+
+    if ($needsSplit) {
+        Write-Warning ("UAL likely truncated for {0}{1}; splitting window..." -f $winLabel, $Label)
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "WARNING: UAL likely truncated for $winLabel$Label — splitting window..."
+        $mid = $WinStart.AddTicks([int64](($WinEnd - $WinStart).Ticks / 2))
+        $c1 = Add-UnifiedAuditLogSearchWindow -WinStart $WinStart -WinEnd $mid -Raw $Raw -SessionBase $SessionBase `
+            -RecordType $RecordType -UserIds $UserIds -StatusFile $StatusFile -Label $Label -Depth ($Depth + 1)
+        $c2 = Add-UnifiedAuditLogSearchWindow -WinStart $mid -WinEnd $WinEnd -Raw $Raw -SessionBase $SessionBase `
+            -RecordType $RecordType -UserIds $UserIds -StatusFile $StatusFile -Label $Label -Depth ($Depth + 1)
+        return ($c1 + $c2)
+    }
+
+    if ($lastPageSize -eq $pageSize -and $pageCount -ge 45000) {
+        Write-Warning ("UAL window {0}{1} may be incomplete after max splits." -f $winLabel, $Label)
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "WARNING: UAL window $winLabel$Label may be incomplete (session cap)."
+    }
+
+    foreach ($item in $temp) { [void]$Raw.Add($item) }
+    return $pageCount
 }
 
 function Get-UnifiedAuditLogs {
@@ -3870,7 +4131,9 @@ function Get-UnifiedAuditLogs {
         [Parameter(Mandatory=$false)]
         [string]$StatusFile = $null,
         [Parameter(Mandatory=$false)]
-        [array]$RecordTypes = $null
+        [array]$RecordTypes = $null,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeExchangeItemAggregated = $false
     )
 
     try {
@@ -3913,44 +4176,67 @@ function Get-UnifiedAuditLogs {
         # Use SessionId + SessionCommand ReturnLargeSet for pagination (up to 50,000 results vs 5,000)
         $sessionId = "UnifiedAuditLog_" + (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 
-        # All available RecordTypes (if all are selected, we skip filtering)
-        $allAvailableRecordTypes = @(
-            'ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated',
+        # Default UAL RecordTypes. ExchangeItemAggregated is opt-in (very high volume, low IR signal).
+        $defaultUalRecordTypes = @(
+            'ExchangeItem', 'ExchangeItemGroup',
             'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation',
             'OneDrive', 'MicrosoftTeams', 'AzureActiveDirectory',
             'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
         )
+        $allAvailableRecordTypes = $defaultUalRecordTypes + @('ExchangeItemAggregated')
+        $explicitWantsAggregated = $false
+        if ($RecordTypes -and $RecordTypes.Count -gt 0) {
+            foreach ($rtSel in @($RecordTypes)) {
+                if ([string]$rtSel -eq 'ExchangeItemAggregated') { $explicitWantsAggregated = $true; break }
+            }
+        }
+        $wantAggregated = ($IncludeExchangeItemAggregated -eq $true) -or $explicitWantsAggregated
 
-        # RecordType parameter only accepts a single value, so if multiple RecordTypes provided, query each separately
-        # However, if ALL available types are selected, skip filtering entirely for efficiency
+        # RecordType parameter only accepts a single value, so query each type separately when filtering.
         $recordTypesToQuery = @()
         if ($RecordTypes -and $RecordTypes.Count -gt 0) {
-            # Normalize: remove duplicates and compare unique sets
-            $uniqueSelected = $RecordTypes | Select-Object -Unique
-            $uniqueAvailable = $allAvailableRecordTypes | Select-Object -Unique
-            
-            # Check if all available types are selected (order does not matter)
+            $uniqueSelected = @($RecordTypes | ForEach-Object { [string]$_ } | Select-Object -Unique)
+            $compareSet = if ($wantAggregated) { $allAvailableRecordTypes } else { $defaultUalRecordTypes }
             $allSelected = $true
-            foreach ($availableType in $uniqueAvailable) {
+            foreach ($availableType in $compareSet) {
                 if ($uniqueSelected -notcontains $availableType) {
                     $allSelected = $false
                     break
                 }
             }
-            
-            # If all types are selected, query without RecordType filter for efficiency
-            if ($allSelected -and $uniqueSelected.Count -ge $uniqueAvailable.Count) {
-                # All types selected - query without RecordType filter
+            if ($allSelected) {
                 $recordTypesToQuery = @($null)
-                Write-Host "  All RecordTypes selected - querying all audit log types (no filter)" -ForegroundColor Gray
+                Write-Host "  All standard RecordTypes selected" -ForegroundColor Gray
             } else {
-                # Some types selected - query each separately
                 $recordTypesToQuery = $uniqueSelected
                 Write-Host "  Filtering by RecordTypes ($($uniqueSelected.Count) types): $($uniqueSelected -join ', ')" -ForegroundColor Gray
             }
         } else {
-            # No RecordType filter - query all types
             $recordTypesToQuery = @($null)
+        }
+
+        # Never use an unfiltered Search-UnifiedAuditLog when Aggregated is excluded — that still returns Aggregated rows.
+        if ($recordTypesToQuery.Count -eq 1 -and $null -eq $recordTypesToQuery[0]) {
+            $recordTypesToQuery = if ($wantAggregated) { @($allAvailableRecordTypes) } else { @($defaultUalRecordTypes) }
+            if (-not $wantAggregated) {
+                Write-Host "  Excluding ExchangeItemAggregated (enable IncludeExchangeItemAggregated to opt in)" -ForegroundColor DarkGray
+            }
+        } elseif (-not $wantAggregated) {
+            $recordTypesToQuery = @($recordTypesToQuery | Where-Object { $_ -and [string]$_ -ne 'ExchangeItemAggregated' })
+        } elseif ($wantAggregated) {
+            $hasAgg = $false
+            foreach ($rt in @($recordTypesToQuery)) {
+                if ([string]$rt -eq 'ExchangeItemAggregated') { $hasAgg = $true; break }
+            }
+            if (-not $hasAgg) {
+                $recordTypesToQuery = @($recordTypesToQuery) + @('ExchangeItemAggregated')
+            }
+        }
+
+        $tenantWideExpandTypes = $false
+        if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
+            $tenantWideExpandTypes = $true
+            Write-Host ("  Tenant-wide: {0} concrete RecordTypes (avoids all-types session truncation)" -f @($recordTypesToQuery).Count) -ForegroundColor DarkGray
         }
 
         # If SelectedUsers provided, filter by user
@@ -4006,46 +4292,34 @@ function Get-UnifiedAuditLogs {
                 }
             }
         } else {
-            # No selection - get all unified audit logs with pagination
+            # Tenant-wide (all users): chunk by day so each ReturnLargeSet session stays under ~50k rows.
+            # Busy tenants that still hit the cap on a single day auto-bisect that window.
+            # Do not wrap Get-UalTimeWindows in @() — ArrayList/@() throws "Argument types do not match".
+            $ualWindows = Get-UalTimeWindows -StartDate $startDate -EndDate $endDate
+            $ualWindowCount = if ($null -eq $ualWindows) { 0 } else { $ualWindows.Count }
+            $typeCount = @($recordTypesToQuery).Count
+            $comboCount = $ualWindowCount * $typeCount
+            Write-Host ("  Tenant-wide UAL: {0} day window(s) x {1} RecordType(s) = {2} searches ({3:yyyy-MM-dd HH:mm} to {4:yyyy-MM-dd HH:mm})" -f $ualWindowCount, $typeCount, $comboCount, $startDate, $endDate) -ForegroundColor Cyan
+            if ($tenantWideExpandTypes) {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message "Tenant-wide UAL: $ualWindowCount day(s) x $typeCount RecordTypes ($comboCount searches)..."
+            } else {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message "Tenant-wide UAL using $ualWindowCount day-aligned window(s) ($typeCount RecordType filter(s))..."
+            }
             foreach ($recordType in $recordTypesToQuery) {
-                try {
-                    $recordTypeLabel = if ($recordType) { " (RecordType: $recordType)" } else { " (all RecordTypes)" }
-                    Write-Host "  Querying unified audit logs for all users$recordTypeLabel (paginated, up to 50,000 results)..." -ForegroundColor Gray
-                    $typeSessionId = $sessionId
-                    if ($recordType) {
-                        $typeSessionId = "${sessionId}_$($recordType.Replace(' ','_'))"
-                    }
-                    $pageCount = 0
-                    do {
-                        $searchParams = @{
-                            StartDate = $startDate
-                            EndDate = $endDate
-                            ResultSize = 5000
-                            SessionId = $typeSessionId
-                            SessionCommand = 'ReturnLargeSet'
-                            ErrorAction = 'Stop'
-                        }
-                        if ($recordType) {
-                            $searchParams['RecordType'] = $recordType
-                        }
-                        $results = Search-UnifiedAuditLog @searchParams
-                        if ($results -and $results.Count -gt 0) {
-                            foreach ($item in $results) {
-                                [void]$raw.Add($item)
-                            }
-                            $pageCount += $results.Count
-                            Write-Host "    Page: $($results.Count) entries (total$recordTypeLabel : $pageCount)" -ForegroundColor Gray
-                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected$recordTypeLabel (still running, can take 10-20 min)..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
-                        } else {
-                            break
-                        }
-                    } while ($results.Count -eq 5000)
-                    if ($pageCount -gt 0) {
-                        Write-Host "  Found $pageCount audit log entries$recordTypeLabel" -ForegroundColor Gray
-                    }
-                } catch {
-                    Write-Warning "Failed to get unified audit logs$recordTypeLabel : $($_.Exception.Message)"
-                    if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: Failed to get unified audit logs$recordTypeLabel : $($_.Exception.Message)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                $recordTypeLabel = if ($recordType) { " (RecordType: $recordType)" } else { " (all RecordTypes)" }
+                Write-Host "  Querying unified audit logs for all users$recordTypeLabel (day-chunked, paginated)..." -ForegroundColor Gray
+                $typeSessionId = $sessionId
+                if ($recordType) {
+                    $typeSessionId = "${sessionId}_$($recordType.Replace(' ', '_'))"
+                }
+                $typeTotal = 0
+                foreach ($win in $ualWindows) {
+                    $added = Add-UnifiedAuditLogSearchWindow -WinStart $win.Start -WinEnd $win.End -Raw $raw `
+                        -SessionBase $typeSessionId -RecordType $recordType -StatusFile $StatusFile -Label $recordTypeLabel
+                    if ($null -ne $added) { $typeTotal += [int]$added }
+                }
+                if ($typeTotal -gt 0) {
+                    Write-Host "  Found $typeTotal audit log entries$recordTypeLabel" -ForegroundColor Gray
                 }
             }
         }
@@ -7480,6 +7754,6 @@ function Get-DLPViolations {
 
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,Get-GraphAccessToken,Connect-MgGraphForReportSession,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
-Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs
+Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs,ConvertTo-SlimUnifiedAuditLogExportRows
 Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents,Get-IntuneDeviceComplianceRecords
 Export-ModuleMember -Function Get-AnonymousSharePointSharing,Get-SharePointFileSharingLinks,Get-DLPViolations

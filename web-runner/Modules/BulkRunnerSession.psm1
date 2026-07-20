@@ -25,6 +25,7 @@ function Get-BulkRunnerDefaultReportSelections {
             IncludeMailFlowConnectors            = $false
             IncludeMailboxForwarding             = $true
             IncludeUnifiedAuditLogs              = $true
+            IncludeExchangeItemAggregated        = $false
             IncludeAuditLogs                     = $true
             IncludeSignInLogs                    = $true
             IncludeMfaCoverage                   = $true
@@ -45,6 +46,9 @@ function Get-BulkRunnerDefaultReportSelections {
     }
     $bec['SignInLogsDaysBack'] = 7
     $bec['MessageTraceDaysBack'] = 7
+    if (-not $bec.ContainsKey('IncludeExchangeItemAggregated')) {
+        $bec['IncludeExchangeItemAggregated'] = $false
+    }
     return $bec
 }
 
@@ -72,6 +76,9 @@ function ConvertTo-BulkRunnerReportSelectionsHashtable {
         IncludeSecurityAlerts            = if ($null -ne $JsonObject.IncludeSecurityAlerts) { [bool]$JsonObject.IncludeSecurityAlerts } else { $false }
         IncludeSecurityIncidents         = if ($null -ne $JsonObject.IncludeSecurityIncidents) { [bool]$JsonObject.IncludeSecurityIncidents } else { $false }
         IncludeUnifiedAuditLogs          = if ($null -ne $JsonObject.IncludeUnifiedAuditLogs) { [bool]$JsonObject.IncludeUnifiedAuditLogs } else { $false }
+        IncludeExchangeItemAggregated    = if ($null -ne $JsonObject.IncludeExchangeItemAggregated) { [bool]$JsonObject.IncludeExchangeItemAggregated } else { $false }
+        UnifiedAuditLogRecordTypes       = if ($null -ne $JsonObject.UnifiedAuditLogRecordTypes) { @($JsonObject.UnifiedAuditLogRecordTypes | ForEach-Object { [string]$_ }) } else { @() }
+        ExportPresetName                 = if ($null -ne $JsonObject.ExportPresetName -and "$($JsonObject.ExportPresetName)" -ne '') { [string]$JsonObject.ExportPresetName } else { '' }
         IncludeDLPViolations             = if ($null -ne $JsonObject.IncludeDLPViolations) { [bool]$JsonObject.IncludeDLPViolations } else { $false }
         IncludeAnonymousSharePointSharing = if ($null -ne $JsonObject.IncludeAnonymousSharePointSharing) { [bool]$JsonObject.IncludeAnonymousSharePointSharing } else { $false }
         IncludeSharePointFileSharingLinks = if ($null -ne $JsonObject.IncludeSharePointFileSharingLinks) { [bool]$JsonObject.IncludeSharePointFileSharingLinks } else { $false }
@@ -92,7 +99,16 @@ function Merge-BulkRunnerReportSelections {
 
     $merged = @{}
     foreach ($k in $Base.Keys) { $merged[$k] = $Base[$k] }
-    foreach ($k in $Override.Keys) { $merged[$k] = $Override[$k] }
+    foreach ($k in $Override.Keys) {
+        # Empty UAL type list means "unspecified" — keep base preset scoping.
+        if ($k -eq 'UnifiedAuditLogRecordTypes') {
+            $arr = @($Override[$k])
+            if ($arr.Count -eq 0) { continue }
+            $merged[$k] = @($arr | ForEach-Object { [string]$_ })
+            continue
+        }
+        $merged[$k] = $Override[$k]
+    }
     return $merged
 }
 
@@ -1378,12 +1394,12 @@ function Get-BulkRunnerTenantStatus {
     $raw = [System.IO.File]::ReadAllText($statusFile)
 
     if ($SinceOffset -gt 0 -and $SinceOffset -lt $raw.Length) {
+        # Incremental poll: return only new bytes (do not re-apply TailLines or mid-burst lines are dropped).
         $raw = $raw.Substring([int]$SinceOffset)
-    } elseif ($SinceOffset -ge $raw.Length) {
+    } elseif ($SinceOffset -ge $raw.Length -and $SinceOffset -gt 0) {
         $raw = ''
-    }
-
-    if ($TailLines -gt 0 -and $raw.Length -gt 0) {
+    } elseif ($TailLines -gt 0 -and $raw.Length -gt 0) {
+        # Initial poll (offset 0): show only the latest lines so full history is not dumped into the UI.
         $lines = $raw -split "`r?`n"
         if ($lines.Count -gt $TailLines) {
             $raw = ($lines[-$TailLines..-1] -join "`n")
