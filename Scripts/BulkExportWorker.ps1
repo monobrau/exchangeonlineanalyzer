@@ -639,6 +639,31 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
                     $env:MSAL_DISABLE_BROKER = "1"
                     $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+                    $exoLoaded = $exchangeAuthenticated -or [bool](Get-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue)
+                    if ($exoLoaded -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
+                        Write-Host "Exchange Online is already loaded in this worker. Using a fresh PowerShell window for Graph browser sign-in (avoids MSAL WithLogging clash)..." -ForegroundColor Cyan
+                        Write-Status "Waiting for Graph sign-in in a new PowerShell window..."
+                        $iso = Connect-MgGraphInteractiveIsolated -Scopes $scopes
+                        $graphAuthenticated = $true
+                        $script:graphTokenFromWCM = [string]$iso.token
+                        $script:currentTenantId = [string]$iso.tenantId
+                        if ($iso.displayName) { $tenantDisplayName = [string]$iso.displayName }
+                        if (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue) {
+                            Set-GraphRestBearerToken -Token ([string]$iso.token)
+                        }
+                        Write-Status "Graph authentication successful! Tenant: $($iso.tenantId)"
+                        Write-Host "Graph authentication successful (isolated process)!" -ForegroundColor Green
+                        Write-Host "Tenant ID: $($iso.tenantId)" -ForegroundColor Cyan
+                        Write-Host "Tenant: $tenantDisplayName" -ForegroundColor Cyan
+                        $verifiedDomains = @()
+                        if ($iso.domains) { $verifiedDomains = @($iso.domains | ForEach-Object { [string]$_ }) }
+                        if ($verifiedDomains.Count -gt 0) {
+                            Write-Host "Found $($verifiedDomains.Count) verified domain(s): $($verifiedDomains -join ', ')" -ForegroundColor Cyan
+                            Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)|DOMAINS:$($verifiedDomains -join ',')"
+                        } else {
+                            Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)"
+                        }
+                    } else {
                     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
                     Connect-MgGraph -Scopes $scopes -ContextScope Process -NoWelcome -ErrorAction Stop
                     $mgContext = Get-MgContext -ErrorAction Stop
@@ -692,9 +717,37 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     } else {
                         Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($mgContext.TenantId)"
                     }
+                    }
                 } catch {
-                    Write-Status "ERROR: Graph authentication failed - $($_.Exception.Message)"
-                    Write-Host "ERROR: Graph authentication failed - $($_.Exception.Message)" -ForegroundColor Red
+                    $isoFailMsg = $_.Exception.Message
+                    if ($isoFailMsg -match 'WithLogging|InteractiveBrowserCredential|Method not found' -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
+                        try {
+                            Write-Host "In-process Graph sign-in failed (MSAL clash). Retrying in an isolated PowerShell window..." -ForegroundColor Yellow
+                            Write-Status "Waiting for Graph sign-in in a new PowerShell window..."
+                            $iso = Connect-MgGraphInteractiveIsolated -Scopes $scopes
+                            $graphAuthenticated = $true
+                            $script:graphTokenFromWCM = [string]$iso.token
+                            $script:currentTenantId = [string]$iso.tenantId
+                            if ($iso.displayName) { $tenantDisplayName = [string]$iso.displayName }
+                            if (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue) {
+                                Set-GraphRestBearerToken -Token ([string]$iso.token)
+                            }
+                            Write-Status "Graph authentication successful! Tenant: $($iso.tenantId)"
+                            Write-Host "Graph authentication successful (isolated process)!" -ForegroundColor Green
+                            $verifiedDomains = @()
+                            if ($iso.domains) { $verifiedDomains = @($iso.domains | ForEach-Object { [string]$_ }) }
+                            if ($verifiedDomains.Count -gt 0) {
+                                Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)|DOMAINS:$($verifiedDomains -join ',')"
+                            } else {
+                                Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)"
+                            }
+                        } catch {
+                            $isoFailMsg = $_.Exception.Message
+                        }
+                    }
+                    if (-not $graphAuthenticated) {
+                    Write-Status "ERROR: Graph authentication failed - $isoFailMsg"
+                    Write-Host "ERROR: Graph authentication failed - $isoFailMsg" -ForegroundColor Red
                     # If PromptToCreateGraphApp is on, offer to create app and save to WCM
                     $promptToCreate = $false
                     try {
@@ -732,7 +785,8 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         }
                     }
                     if (-not $graphAuthenticated) {
-                        Write-CommandResponse "GRAPH_AUTH_FAILED:$($_.Exception.Message)"
+                        Write-CommandResponse "GRAPH_AUTH_FAILED:$isoFailMsg"
+                    }
                     }
                 }
                 }

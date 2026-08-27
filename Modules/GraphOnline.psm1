@@ -344,4 +344,135 @@ function Ensure-GraphCmdletsAvailable {
     }
 }
 
-Export-ModuleMember -Function Test-GraphModules,Install-GraphModules,Fix-GraphModuleConflicts,Connect-GraphService,Import-GraphModulesOnDemand,Ensure-GraphCmdletsAvailable 
+function Connect-MgGraphInteractiveIsolated {
+    <#
+    .SYNOPSIS
+        Interactive Connect-MgGraph in a fresh pwsh process (no ExchangeOnlineManagement loaded).
+    .NOTES
+        Use after EXO auth in the same worker. In-process InteractiveBrowserCredential hits
+        MSAL WithLogging(IIdentityLogger, Boolean) when EXO's assemblies loaded first.
+        Returns token/tenant/domains for the existing WCM-style REST path (no Connect-MgGraph -AccessToken).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Scopes,
+        [string]$TenantId
+    )
+
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmssfff'
+    $workDir = Join-Path $env:TEMP "EOA_GraphInteractive_$stamp"
+    New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+    $resultFile = Join-Path $workDir 'result.json'
+    $scopesFile = Join-Path $workDir 'scopes.json'
+    $childScript = Join-Path $workDir 'connect.ps1'
+    @($Scopes) | ConvertTo-Json | Set-Content -LiteralPath $scopesFile -Encoding UTF8
+
+    @'
+param(
+    [Parameter(Mandatory = $true)][string]$ScopesFile,
+    [Parameter(Mandatory = $true)][string]$ResultFile,
+    [string]$TenantId
+)
+$ErrorActionPreference = 'Stop'
+$result = @{ ok = $false; error = $null; token = $null; tenantId = $null; displayName = $null; domains = @() }
+try {
+    $env:AZURE_IDENTITY_DISABLE_BROKER = 'true'
+    $env:MSAL_DISABLE_BROKER = '1'
+    $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = '1'
+    $env:MSAL_FORCE_WAM = '0'
+    $cache = Join-Path $env:TEMP ("EOA_GraphIsoCache_" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    $env:MSAL_CACHE_DIR = $cache
+    $env:IDENTITY_SERVICE_CACHE_DIR = $cache
+
+    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+    $scopes = @(Get-Content -LiteralPath $ScopesFile -Raw | ConvertFrom-Json)
+    Write-Host 'Sign in to Microsoft Graph in the browser/popup that opens...' -ForegroundColor Yellow
+    $params = @{
+        Scopes       = $scopes
+        ContextScope = 'Process'
+        NoWelcome    = $true
+        ErrorAction  = 'Stop'
+    }
+    if ($TenantId) { $params.TenantId = $TenantId }
+    Connect-MgGraph @params
+    $ctx = Get-MgContext -ErrorAction Stop
+    $result.tenantId = [string]$ctx.TenantId
+
+    $token = $null
+    if ($ctx.PSObject.Properties['AccessToken'] -and $ctx.AccessToken) {
+        $token = [string]$ctx.AccessToken
+    }
+    if (-not $token) {
+        try {
+            $resp = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/v1.0/organization' -Method GET -OutputType HttpResponseMessage -ErrorAction Stop
+            if ($resp -and $resp.RequestMessage -and $resp.RequestMessage.Headers -and $resp.RequestMessage.Headers.Authorization) {
+                $token = [string]$resp.RequestMessage.Headers.Authorization.Parameter
+            }
+        } catch { }
+    }
+    if (-not $token) {
+        try {
+            $gs = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance
+            $ac = $gs.AuthContext
+            if ($ac.PSObject.Properties['AccessToken'] -and $ac.AccessToken) {
+                $token = [string]$ac.AccessToken
+            }
+        } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw 'Signed in but could not extract a Graph access token from this SDK version.'
+    }
+    $result.token = $token
+    $headers = @{ Authorization = "Bearer $token"; Accept = 'application/json' }
+    $org = Invoke-RestMethod -Uri 'https://graph.microsoft.com/v1.0/organization' -Headers $headers -ErrorAction Stop
+    if ($org.value -and $org.value[0].displayName) {
+        $result.displayName = [string]$org.value[0].displayName
+    }
+    $dom = Invoke-RestMethod -Uri 'https://graph.microsoft.com/v1.0/domains' -Headers $headers -ErrorAction Stop
+    if ($dom.value) {
+        $result.domains = @($dom.value | Where-Object { $_.isVerified -eq $true } | ForEach-Object { [string]$_.id })
+    }
+    $result.ok = $true
+    Write-Host 'Graph sign-in succeeded. You can close this window.' -ForegroundColor Green
+} catch {
+    $result.error = $_.Exception.Message
+    Write-Host ("Graph sign-in failed: " + $result.error) -ForegroundColor Red
+    Start-Sleep -Seconds 8
+} finally {
+    ($result | ConvertTo-Json -Compress -Depth 4) | Set-Content -LiteralPath $ResultFile -Encoding UTF8
+    try { Disconnect-MgGraph -ErrorAction SilentlyContinue } catch { }
+}
+if (-not $result.ok) { exit 1 }
+'@ | Set-Content -LiteralPath $childScript -Encoding UTF8
+
+    $psExe = $null
+    $pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if ($pwshCmd -and $pwshCmd.Source) { $psExe = $pwshCmd.Source }
+    if (-not $psExe) { $psExe = (Get-Command powershell.exe -ErrorAction Stop).Source }
+
+    $argList = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $childScript,
+        '-ScopesFile', $scopesFile, '-ResultFile', $resultFile
+    )
+    if ($TenantId) { $argList += @('-TenantId', $TenantId) }
+
+    Write-Host 'A new PowerShell window will open for Graph browser sign-in (keeps EXO MSAL out of that process).' -ForegroundColor Cyan
+    $proc = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru -WindowStyle Normal
+    if (-not (Test-Path -LiteralPath $resultFile)) {
+        throw "Isolated Graph sign-in produced no result (exit $($proc.ExitCode))."
+    }
+    $parsed = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    try { Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    if (-not $parsed.ok) {
+        $err = if ($parsed.error) { [string]$parsed.error } else { "exit $($proc.ExitCode)" }
+        throw "Isolated Graph sign-in failed: $err"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$parsed.token)) {
+        throw 'Isolated Graph sign-in returned no access token.'
+    }
+    return $parsed
+}
+
+Export-ModuleMember -Function Test-GraphModules,Install-GraphModules,Fix-GraphModuleConflicts,Connect-GraphService,Import-GraphModulesOnDemand,Ensure-GraphCmdletsAvailable,Connect-MgGraphInteractiveIsolated 
