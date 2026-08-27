@@ -1081,7 +1081,8 @@ function Export-GraphAppCredentialsToFile {
                 $c | Add-Member -NotePropertyName TenantId -NotePropertyValue $normTid -Force
             }
             $dn = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
-            if (-not $dn -and $ResolveMissingDisplayNamesFromGraph) {
+            # Always fill a missing label from Graph so Import on another PC gets names, not raw GUIDs.
+            if (-not $dn) {
                 $dn = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
                 if (-not $dn) {
                     $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
@@ -1116,6 +1117,7 @@ function Export-GraphAppCredentialsToFile {
     $encrypted = $secure | ConvertFrom-SecureString -Key $key
     $header = "EOA-CREDS-1`n"
     [System.IO.File]::WriteAllText($Path, $header + $encrypted, [System.Text.Encoding]::UTF8)
+    return $creds.Count
 }
 
 function Get-GraphAppCredentialEncryptedFileSummary {
