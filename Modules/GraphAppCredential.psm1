@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Store and retrieve Graph app credentials (app-only) in Windows Credential Manager.
 .DESCRIPTION
@@ -786,8 +786,10 @@ function Get-WCMTenantListWithNames {
     )
     $result = [System.Collections.ArrayList]::new()
     $ids = Get-WCMTenantIds -Prefix $Prefix
+    $guidNamePattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
     foreach ($tid in $ids) {
         $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
+        if ($name -and $name -match $guidNamePattern) { $name = $null }
         if (-not $SkipGraphLookup) {
             if ($ForceRefreshFromGraph) {
                 $g = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
@@ -1347,7 +1349,7 @@ function Show-ClearLocalGraphWcmPicker {
 function Invoke-GraphAppCreateWithWcmSave {
     <#
     .SYNOPSIS
-        Runs Start-NewGraphInboxRulesApp.ps1 -SaveToWCM in the same PowerShell host family as the caller (pwsh stays pwsh).
+        Runs Start-NewGraphInboxRulesApp.ps1 (-SaveToWCM, or -UpdateExisting) in the same PowerShell host family as the caller.
     .OUTPUTS
         PSCustomObject with ExitCode, Result, LogPath
     #>
@@ -1356,7 +1358,9 @@ function Invoke-GraphAppCreateWithWcmSave {
         [string]$ProjectRoot,
 
         [Parameter(Mandatory = $false)]
-        [string]$TenantId
+        [string]$TenantId,
+
+        [switch]$UpdateExisting
     )
     $launcherPath = Join-Path $ProjectRoot 'Start-NewGraphInboxRulesApp.ps1'
     if (-not (Test-Path -LiteralPath $launcherPath)) {
@@ -1373,8 +1377,13 @@ function Invoke-GraphAppCreateWithWcmSave {
         }
     }
     $argList = [System.Collections.ArrayList]@(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherPath, '-SaveToWCM'
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherPath
     )
+    if ($UpdateExisting) {
+        [void]$argList.Add('-UpdateExisting')
+    } else {
+        [void]$argList.Add('-SaveToWCM')
+    }
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
         $tid = $TenantId.Trim()
         [void]$argList.Add('-TenantId')

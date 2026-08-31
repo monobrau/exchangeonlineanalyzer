@@ -105,6 +105,37 @@
     .securityGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.2rem 0.75rem; margin: 0.35rem 0; }
     .securityGrid label { font-size: 0.85rem; font-weight: normal; margin: 0; }
     .securityNotice { font-size: 0.82rem; color: #9a6700; margin: 0.35rem 0; }
+    .curatePanel { margin: 0.5rem 0; padding: 0.5rem 0.65rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .curateFacets { max-height: 22rem; overflow: auto; margin-top: 0.5rem; }
+    .curateSource { margin: 0.65rem 0; padding: 0.45rem 0.55rem; border: 1px solid #eaeef2; border-radius: 6px; background: #fff; }
+    .curateSourceTitle { font-size: 0.88rem; font-weight: 600; margin-bottom: 0.25rem; }
+    .curateFacet { margin: 0.4rem 0 0.2rem; }
+    .curateFacetName { font-size: 0.8rem; font-weight: 600; color: #57606a; margin-bottom: 0.15rem; }
+    .curateValues { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.15rem 0.65rem; }
+    .curateValues label { font-size: 0.8rem; font-weight: normal; margin: 0; align-items: flex-start; }
+    .curatePreview { font-size: 0.82rem; margin-top: 0.45rem; white-space: pre-wrap; }
+    .containmentPanel .containmentBody { margin-top: 0.5rem; }
+    .containmentUserList { display: flex; flex-direction: column; gap: 0.15rem; margin: 0.35rem 0; max-height: 8rem; overflow: auto; }
+    .containmentUserList label { font-size: 0.85rem; font-weight: normal; margin: 0; }
+    .containmentConfirm { min-width: 22rem; max-width: 100%; }
+    .containmentStatus { font-size: 0.85rem; margin: 0.35rem 0 0.55rem; white-space: pre-wrap; }
+    .containmentPhase { margin: 0.7rem 0 0; padding: 0.5rem 0.65rem 0.55rem; border: 1px solid #d8dee4; border-radius: 6px; background: #f6f8fa; }
+    .containmentPhaseTitle { font-size: 0.88rem; font-weight: 650; color: #1f2328; margin: 0 0 0.2rem; }
+    .containmentPhaseHint { font-size: 0.78rem; color: #57606a; margin: 0 0 0.4rem; }
+    .containmentRulesWrap, .containmentMailboxWrap, .containmentTransportWrap, .containmentConnectorsWrap,
+    .containmentMfaWrap, .containmentDevicesWrap, .containmentAppsWrap,
+    .containmentOauthWrap, .containmentIntuneWrap, .containmentMobileWrap, .containmentFoldersWrap,
+    .containmentAutoreplyWrap, .containmentOrgfwdWrap, .containmentJunkWrap, .containmentJournalWrap,
+    .containmentHoldWrap, .containmentElsewhereWrap, .containmentRolesWrap, .containmentAppcredsWrap,
+    .containmentFlowsWrap { max-height: 16rem; overflow: auto; margin-top: 0.45rem; }
+    .containmentRulesTable input, .containmentMailboxTable input, .containmentTransportTable input, .containmentConnectorsTable input,
+    .containmentMfaTable input, .containmentDevicesTable input, .containmentAppsTable input,
+    .containmentOauthTable input, .containmentIntuneTable input, .containmentMobileTable input, .containmentFoldersTable input,
+    .containmentOrgfwdTable input, .containmentJunkTable input, .containmentJournalTable input,
+    .containmentElsewhereTable input, .containmentRolesTable input, .containmentAppcredsTable input,
+    .containmentFlowsTable input { margin: 0; }
+    .containmentSubLabel { font-size: 0.82rem; font-weight: 600; color: #424a53; margin: 0.65rem 0 0.25rem; }
+    .containmentPhase .containmentSubLabel:first-of-type { margin-top: 0.15rem; }
 
   </style>
 
@@ -166,11 +197,29 @@
 
       </label>
 
-      <label>Default days back
+      <label id="relAmountWrap">Default timeframe
 
-        <input type="number" id="daysBack" min="1" max="90" value="7" style="min-width:4rem" />
+        <input type="number" id="relAmount" min="1" max="90" value="7" style="min-width:4rem" />
 
       </label>
+
+      <label>Unit
+
+        <select id="relUnit">
+
+          <option value="days" selected>Days</option>
+
+          <option value="weeks">Weeks</option>
+
+          <option value="months">Months</option>
+
+          <option value="max">Max (90 days)</option>
+
+        </select>
+
+      </label>
+
+      <span id="relHint" class="muted"></span>
 
     </div>
 
@@ -259,6 +308,7 @@
       <div class="collapsible-body">
         <div class="wcmActions">
           <button type="button" id="btnCreateGraphApp">Create Graph App</button>
+          <button type="button" id="btnUpdateGraphAppScopes" title="Add missing Graph application permissions to the existing River Run app. Does not rotate the client secret.">Update Graph App scopes</button>
           <button type="button" id="btnDeleteGraphApp" class="danger">Delete Graph App</button>
           <button type="button" id="btnExportWcm">Export creds</button>
           <button type="button" id="btnImportWcm">Import creds</button>

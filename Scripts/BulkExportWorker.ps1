@@ -243,6 +243,9 @@ try {
     Write-Host "Importing GraphAppCredential module (for WCM app-only auth)..." -ForegroundColor Gray
     $graphAppMod = Join-Path $ScriptRoot "Modules\GraphAppCredential.psm1"
     if (Test-Path $graphAppMod) { Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue }
+    Write-Host "Importing Remediation module..." -ForegroundColor Gray
+    $remediationMod = Join-Path $ScriptRoot "Modules\Remediation.psm1"
+    if (Test-Path $remediationMod) { Import-Module $remediationMod -Force -ErrorAction SilentlyContinue }
     Write-Status "Modules imported successfully"
     Write-Host "All modules imported successfully" -ForegroundColor Green
     Write-Host ""
@@ -526,7 +529,19 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     "Organization.Read.All",
                     "IdentityRiskEvent.Read.All",
                     "IdentityRiskyUser.Read.All",
-                    "Mail.Read"
+                    "Mail.Read",
+                    "ExchangeMessageTrace.Read.All",
+                    "User.RevokeSessions.All",
+                    "User.EnableDisableAccount.All",
+                    "UserAuthenticationMethod.ReadWrite.All",
+                    "Application.ReadWrite.All",
+                    "Directory.AccessAsUser.All",
+                    "User-PasswordProfile.ReadWrite.All",
+    "DeviceManagementManagedDevices.PrivilegedOperations.All",
+    "DeviceManagementManagedDevices.ReadWrite.All",
+    "GroupMember.ReadWrite.All",
+    "RoleManagement.ReadWrite.Directory",
+    "DelegatedPermissionGrant.ReadWrite.All"
                 )
 
                 # Try WCM (app-only) first when we have tenant ID(s) to try - skip if INTERACTIVE:1 (use browser instead)
@@ -577,6 +592,9 @@ function Read-BulkWorkerReportSelectionsFromFile {
                             $graphAuthenticated = $true
                             $script:graphTokenFromWCM = $wcmToken
                             $script:currentTenantId = $tid
+                            if (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue) {
+                                Set-GraphRestBearerToken -Token $wcmToken
+                            }
                             Write-Status "Using app-only credentials from Windows Credential Manager"
                             try {
                                 $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
@@ -669,6 +687,14 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     $mgContext = Get-MgContext -ErrorAction Stop
                     $graphAuthenticated = $true
                     $script:currentTenantId = $mgContext.TenantId
+                    if (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
+                        try {
+                            $script:graphTokenFromWCM = Get-GraphAccessToken
+                            if ($script:graphTokenFromWCM -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+                                Set-GraphRestBearerToken -Token $script:graphTokenFromWCM
+                            }
+                        } catch {}
+                    }
                     Write-Status "Graph authentication successful! Tenant: $($mgContext.TenantId)"
                     Write-Host "Graph authentication successful!" -ForegroundColor Green
                     Write-Host "Tenant ID: $($mgContext.TenantId)" -ForegroundColor Cyan
@@ -994,6 +1020,54 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     Write-CommandResponse "VALIDATE_USERS_FAILED:$($_.Exception.Message)"
                 }
                 
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+                
+            } elseif ($command -match "^REMEDIATE_") {
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "REMEDIATION COMMAND RECEIVED" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Remediation command received"
+                Write-CommandResponse "REMEDIATE_STARTED"
+                if (-not (Get-Command Invoke-RemediationWorkerCommand -ErrorAction SilentlyContinue)) {
+                    $remediationMod = Join-Path $ScriptRoot "Modules\Remediation.psm1"
+                    if (Test-Path $remediationMod) { Import-Module $remediationMod -Force -ErrorAction SilentlyContinue }
+                }
+                if (-not (Get-Command Invoke-RemediationWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Write-CommandResponse "REMEDIATE_FAILED:Remediation module is not loaded"
+                    continue
+                }
+                if (-not (Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue) -or -not (Test-GraphRestBearerToken)) {
+                    $tokenToUse = $script:graphTokenFromWCM
+                    if (-not $tokenToUse -and $script:currentTenantId -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAppTokenFromWCM -TenantId $script:currentTenantId } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if (-not $tokenToUse -and (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAccessToken } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if ($tokenToUse -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+                        Set-GraphRestBearerToken -Token $tokenToUse
+                    }
+                }
+                $auditFolder = $null
+                if ($script:lastReportOutputFolder -and (Test-Path -LiteralPath $script:lastReportOutputFolder)) {
+                    $auditFolder = $script:lastReportOutputFolder
+                } elseif ($CommandDir) {
+                    $auditFolder = $CommandDir
+                }
+                try {
+                    $resp = Invoke-RemediationWorkerCommand -Command $command -ClientNumber $ClientNumber -CompanyName $CompanyName -TenantName $CompanyName -AuditFolder $auditFolder -GraphAuthenticated $graphAuthenticated -ExchangeAuthenticated $exchangeAuthenticated
+                    $respText = @($resp | ForEach-Object { [string]$_ } | Where-Object { $_ -match 'REMEDIATE_[A-Z_]+:' } | Select-Object -Last 1)
+                    if (-not $respText) { $respText = [string]$resp }
+                    if ($respText) { Write-Status $respText }
+                    Write-CommandResponse $respText
+                } catch {
+                    Write-Status "ERROR: Remediation failed - $($_.Exception.Message)"
+                    Write-CommandResponse "REMEDIATE_FAILED:$($_.Exception.Message)"
+                }
                 Write-Host ""
                 Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
                 Write-Host ""
@@ -1368,6 +1442,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     Write-Host "`nReport generation successful!" -ForegroundColor Green
                     Write-Host "Reports saved to: $($report.OutputFolder)" -ForegroundColor Green
                     "SUCCESS: $($report.OutputFolder)" | Out-File -FilePath $ResultFile -Encoding UTF8
+                    $script:lastReportOutputFolder = $report.OutputFolder
                     Write-CommandResponse "GENERATE_REPORTS_SUCCESS:$($report.OutputFolder)"
                 } else {
                     Write-Status "Warning: Report generation returned no data"
@@ -1380,50 +1455,13 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 # Update status FIRST so completion is recorded even if disconnect hangs
                 Write-Status "Processing complete!"
                 
-                # Disconnect sessions (attempt but don't block if it hangs)
-                Write-Host "Disconnecting sessions..." -ForegroundColor Cyan
-                try {
-                    Disconnect-MgGraph -ErrorAction SilentlyContinue
-                } catch {}
-                
-                # Attempt Exchange disconnect with timeout (non-blocking)
-                try {
-                    if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
-                        # Use runspace with module import and timeout
-                        $runspace = [runspacefactory]::CreateRunspace()
-                        $runspace.Open()
-                        $ps = [PowerShell]::Create()
-                        $ps.Runspace = $runspace
-                        # Import module and disconnect
-                        $script = "Import-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue; Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue"
-                        $null = $ps.AddScript($script)
-                        $handle = $ps.BeginInvoke()
-                        $waited = $handle.AsyncWaitHandle.WaitOne(5000)  # 5 second timeout
-                        if ($waited) {
-                            try { $ps.EndInvoke($handle) | Out-Null } catch {}
-                        } else {
-                            Write-Host "Exchange disconnect timed out (non-critical, continuing...)" -ForegroundColor Yellow
-                            $ps.Stop()
-                        }
-                        $ps.Dispose()
-                        $runspace.Close()
-                        $runspace.Dispose()
-                    }
-                } catch {
-                    Write-Host "Disconnect completed with warnings (non-critical)" -ForegroundColor Yellow
-                }
                 Write-Host ""
                 Write-Host "==========================================" -ForegroundColor Green
                 Write-Host "Client $ClientNumber processing complete!" -ForegroundColor Green
                 Write-Host "==========================================" -ForegroundColor Green
-                Write-Host "Worker remains ready. Re-run Graph Auth / EXO Auth before the next generate." -ForegroundColor Yellow
+                Write-Host "Graph and Exchange stay connected. Generate again or continue Containment on this tenant." -ForegroundColor Yellow
                 Write-Host ""
-
-                # Reset auth flags after disconnect so the next generate requires re-auth, but keep polling.
-                $graphAuthenticated = $false
-                $exchangeAuthenticated = $false
-                $script:graphTokenFromWCM = $null
-                Write-Status "Ready! Waiting for Graph Auth / EXO Auth before next generate..."
+                Write-Status "Ready! Sessions still authenticated — generate again or run containment."
                 continue
             } elseif ($command -eq "CANCEL_AUTH") {
                 Write-Host "==========================================" -ForegroundColor Yellow
@@ -1509,6 +1547,8 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         Get-ChildItem -Path $env:IDENTITY_SERVICE_CACHE_DIR -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
                     }
                 } catch {}
+                $script:graphTokenFromWCM = $null
+                if (Get-Command Clear-GraphRestBearerToken -ErrorAction SilentlyContinue) { Clear-GraphRestBearerToken }
                 Write-Status "Microsoft Graph disconnected"
                 Write-Host "Graph session ended in this window. Use Graph Auth to sign in again." -ForegroundColor Green
                 Write-CommandResponse "GRAPH_DISCONNECT_SUCCESS"

@@ -13,6 +13,47 @@ const clientBusy = new Set();
 const tenantUiState = new Map();
 
 let currentSessionId = null;
+
+function containmentStorageKey(clientNumber) {
+  return `eoa.containment.${currentSessionId || 'session'}.${clientNumber}`;
+}
+
+function hasContainmentPayload(c) {
+  if (!c || typeof c !== 'object') return false;
+  return Boolean(
+    c.status || c.capabilities || c.restrictedEmail || c.authMethods || c.devices
+    || c.apps || c.rules || c.mailbox || c.transport || c.connectors || c.oauth
+    || c.mobile || c.intune || c.folders || c.autoreply || c.orgfwd || c.junk
+    || c.journal || c.hold || c.elsewhere || c.roles || c.appcreds || c.flows
+    || (Array.isArray(c.actions) && c.actions.length)
+  );
+}
+
+function persistContainmentToSessionStorage(clientNumber, containment) {
+  if (!clientNumber || !hasContainmentPayload(containment)) return;
+  try {
+    sessionStorage.setItem(containmentStorageKey(clientNumber), JSON.stringify(containment));
+  } catch {
+    /* quota or private mode */
+  }
+}
+
+function readContainmentFromSessionStorage(clientNumber) {
+  if (!clientNumber) return null;
+  try {
+    const raw = sessionStorage.getItem(containmentStorageKey(clientNumber));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return hasContainmentPayload(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveContainmentState(clientNumber, existing = {}) {
+  if (hasContainmentPayload(existing.containment)) return existing.containment;
+  return readContainmentFromSessionStorage(clientNumber);
+}
 let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false };
 const uiStateSyncTimers = new Map();
 const sessionReportSyncTimer = { id: null };
@@ -94,6 +135,780 @@ function buildSecurityIntegrationsPanelHtml() {
           <div class="securityPreview muted" style="font-size:0.82rem;margin-top:0.35rem"></div>
         </div>
       </details>`;
+}
+
+function buildCurateLogsPanelHtml(hasFolder) {
+  const disabled = hasFolder ? '' : 'disabled';
+  return `
+      <details class="curateLogs collapsible">
+        <summary>Curate logs <span class="muted">(include/exclude related activity → curated CSV set)</span></summary>
+        <div class="collapsible-body curatePanel">
+          <p class="muted" style="font-size:0.85rem;margin:0 0 0.45rem">
+            Load facets from the report folder, select values to exclude (noise) or include (focus), preview counts, then export a <code>Curated_*</code> folder. Originals are never modified.
+          </p>
+          <div class="row">
+            <label>Mode
+              <select class="curateModeSelect">
+                <option value="exclude" selected>Exclude selected (drop noise)</option>
+                <option value="include">Include selected only (focus)</option>
+              </select>
+            </label>
+            <button type="button" class="loadCurateFacets small" ${disabled}>Load facets</button>
+            <button type="button" class="previewCurate small" ${disabled}>Preview counts</button>
+            <button type="button" class="exportCurate primary small" ${disabled}>Export curated set</button>
+            <button type="button" class="openCuratedFolder success small" disabled>Open curated folder</button>
+          </div>
+          <div class="sectionLabel">Likely tenant WAN / office IPs</div>
+          <p class="muted" style="font-size:0.8rem;margin:0 0 0.35rem">
+            Ranked from successful public SignInLogs IPs (plus UAL/MessageTrace overlap). Verify before excluding — not a firewall source of truth.
+          </p>
+          <div class="curateWanSuggestions muted" style="font-size:0.85rem">Load facets to suggest WAN IPs.</div>
+          <div class="row" style="margin-top:0.35rem">
+            <button type="button" class="selectSuggestedWan small" ${disabled}>Select suggested for exclude</button>
+            <button type="button" class="clearWanSelection small" ${disabled}>Clear WAN selection</button>
+          </div>
+          <label style="display:block;margin-top:0.45rem;font-size:0.85rem">Paste known WAN IPs (one per line or comma-separated)
+            <textarea class="curateWanPaste" rows="2" placeholder="203.0.113.10&#10;198.51.100.20" style="width:100%;max-width:40rem;display:block;margin-top:0.2rem;font:inherit"></textarea>
+          </label>
+          <div class="row">
+            <button type="button" class="applyWanPaste small" ${disabled}>Add pasted IPs to selection</button>
+          </div>
+          <div class="curateStatus muted" style="font-size:0.85rem"></div>
+          <div class="curateFacets"></div>
+          <div class="curatePreview muted"></div>
+        </div>
+      </details>`;
+}
+
+function buildContainmentPanelHtml() {
+  return `
+      <details class="containmentPanel collapsible">
+        <summary>Containment <span class="muted">(BEC playbook — this tenant, validated users)</span></summary>
+        <div class="collapsible-body containmentBody">
+          <p class="muted" style="font-size:0.85rem;margin:0 0 0.45rem">
+            Work top to bottom after <strong>Validate users</strong>. Most list/status buttons run immediately; long tenant-wide or mailbox-wide lists ask first. Writes ask for a confirm popup.
+            Transport rules, connectors, apps, org auto-forward, journaling, and roles are tenant-wide.
+          </p>
+          <div class="containmentGraphHint muted"></div>
+          <button type="button" class="containmentUpdateGraphScopes small" style="display:none" title="Patch the existing River Run Graph app with missing application permissions. Does not rotate the client secret.">Update Graph App scopes</button>
+          <div class="containmentUserList muted">Validate users first.</div>
+          <div class="containmentStatus muted"></div>
+          <div class="row">
+            <button type="button" class="containmentSavePacks small" title="Write per-user zips into the current report folder">Save containment zips</button>
+            <button type="button" class="containmentClearUserPulls small" title="Clear per-user list results so you can pull the next user. Tenant-wide lists and the account-change log stay.">Clear user pulls</button>
+          </div>
+          <p class="muted" style="font-size:0.78rem;margin:0 0 0.45rem">Save writes <code>Containment_&lt;user&gt;.zip</code> (with <code>actions.csv</code>) and <code>Remediation.csv</code> into the current report folder. Clear user pulls removes MFA/mailbox/device rows for the next user; the account-change log, tenant-wide lists, and saved zips stay.</p>
+
+          <section class="containmentPhase">
+            <div class="containmentPhaseTitle">1. Lock the account</div>
+            <p class="containmentPhaseHint">Stop the attacker’s current session, then invalidate the password. Send the user the SSPR link — not a password. Block sign-in if you need the account frozen while you hunt.</p>
+            <div class="row">
+              <button type="button" class="containmentAction containmentSigninStatus small" disabled>Check sign-in status</button>
+              <button type="button" class="containmentAction containmentRevoke small" disabled>Revoke sessions</button>
+              <button type="button" class="containmentAction containmentResetPassword small" disabled>Reset with random password</button>
+              <button type="button" class="containmentAction containmentBlock small" disabled>Block sign-in</button>
+            </div>
+            <p class="muted" style="font-size:0.8rem;margin:0.35rem 0 0.25rem">
+              Direct the user to <a href="https://aka.ms/sspr" target="_blank" rel="noopener">aka.ms/sspr</a> after reset. Assign a password only if you must.
+            </p>
+            <div class="row">
+              <label>Assign password (optional)
+                <input type="password" class="containmentAssignPasswordInput" autocomplete="new-password" placeholder="only if you must set a specific password" />
+              </label>
+              <button type="button" class="containmentAction containmentAssignPasswordBtn small" disabled>Set this password</button>
+            </div>
+            <div class="containmentSubLabel">Preserve evidence</div>
+            <p class="muted" style="font-size:0.78rem;margin:0 0 0.25rem">Turn on litigation hold, 30-day deleted-item retention, and mailbox audit before you delete rules or mail.</p>
+            <div class="row">
+              <button type="button" class="containmentAction containmentHoldStatus small" disabled>Check hold / audit</button>
+              <button type="button" class="containmentAction containmentEnableHold small" disabled>Enable hold + audit</button>
+            </div>
+            <div class="containmentHoldWrap" style="display:none">
+              <table class="historyTable containmentHoldTable">
+                <thead>
+                  <tr>
+                    <th>Mailbox</th>
+                    <th>Litigation hold</th>
+                    <th>Retain deleted</th>
+                    <th>Audit</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="containmentPhase">
+            <div class="containmentPhaseTitle">2. Identity footholds</div>
+            <p class="containmentPhaseHint">List first, then remove attacker MFA methods, OAuth consents, Entra devices, Exchange ActiveSync partnerships, and Intune-managed devices.</p>
+            <div class="containmentSubLabel">MFA methods</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListMfa small" disabled>List MFA methods</button>
+              <button type="button" class="containmentAction containmentRevokeMfa small" disabled>Revoke MFA sessions</button>
+              <button type="button" class="containmentAction containmentDeleteMfa danger small" disabled>Remove selected MFA methods</button>
+              <button type="button" class="containmentAction containmentReregisterMfa danger small" disabled>Wipe MFA + require re-register</button>
+            </div>
+            <div class="containmentMfaWrap" style="display:none">
+              <table class="historyTable containmentMfaTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>User</th>
+                    <th>Type</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Registered devices</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListDevices small" disabled>List registered devices</button>
+              <button type="button" class="containmentAction containmentDeleteDevices danger small" disabled>Remove selected devices</button>
+            </div>
+            <div class="containmentDevicesWrap" style="display:none">
+              <table class="historyTable containmentDevicesTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>User</th>
+                    <th>Device</th>
+                    <th>OS</th>
+                    <th>Trust</th>
+                    <th>Relation</th>
+                    <th>Last sign-in</th>
+                  </tr>
+                </thead>
+                <tbody>                </tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">OAuth consents</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListOauth small" disabled>List OAuth consents</button>
+              <button type="button" class="containmentAction containmentDeleteOauth danger small" disabled>Revoke selected consents</button>
+            </div>
+            <div class="containmentOauthWrap" style="display:none">
+              <table class="historyTable containmentOauthTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>User</th>
+                    <th>App</th>
+                    <th>Scopes</th>
+                    <th>Type</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Exchange ActiveSync</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListMobile small" disabled>List mobile partnerships</button>
+              <button type="button" class="containmentAction containmentDeleteMobile danger small" disabled>Remove selected partnerships</button>
+            </div>
+            <div class="containmentMobileWrap" style="display:none">
+              <table class="historyTable containmentMobileTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>User</th>
+                    <th>Device</th>
+                    <th>Type</th>
+                    <th>First sync</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Intune managed devices</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListIntune small" disabled>List Intune devices</button>
+              <button type="button" class="containmentAction containmentRetireIntune small" disabled>Retire selected</button>
+              <button type="button" class="containmentAction containmentWipeIntune danger small" disabled>Wipe selected</button>
+            </div>
+            <div class="containmentIntuneWrap" style="display:none">
+              <table class="historyTable containmentIntuneTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>User</th>
+                    <th>Device</th>
+                    <th>OS</th>
+                    <th>Compliance</th>
+                    <th>Last sync</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="containmentPhase">
+            <div class="containmentPhaseTitle">3. Mailbox persistence</div>
+            <p class="containmentPhaseHint">Classic BEC: hidden inbox rules, mailbox forwarding (SMTP and/or internal recipient), unexpected delegates, folder ACL, auto-reply, junk allow-lists, and rights this user has on other mailboxes. Check Restricted Users if outbound mail was blocked.</p>
+            <div class="containmentSubLabel">Inbox rules</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListRules small" disabled>List inbox rules</button>
+              <button type="button" class="containmentAction containmentDeleteRules danger small" disabled>Delete selected rules</button>
+            </div>
+            <div class="containmentRulesWrap" style="display:none">
+              <table class="historyTable containmentRulesTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Name</th>
+                    <th>On</th>
+                    <th>Priority</th>
+                    <th>Hidden</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Forwarding and delegation</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentMailboxStatus small" disabled>Check mailbox access</button>
+              <button type="button" class="containmentAction containmentRemoveForward danger small" disabled>Remove selected forwarding</button>
+              <button type="button" class="containmentAction containmentRemoveDelegate danger small" disabled>Remove selected delegates</button>
+              <button type="button" class="containmentAction containmentClearForward small" disabled>Clear all forwarding</button>
+            </div>
+            <div class="containmentMailboxWrap" style="display:none">
+              <table class="historyTable containmentMailboxTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Mailbox</th>
+                    <th>Type</th>
+                    <th>Target</th>
+                    <th>Keep copy</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Add forwarding or a delegate (only if needed after cleanup)</div>
+            <div class="row">
+              <label>Forward to
+                <input type="text" class="containmentForwardTo" placeholder="user@domain.com" />
+              </label>
+              <label><input type="checkbox" class="containmentForwardKeep" checked /> Keep a copy</label>
+              <button type="button" class="containmentAction containmentSetForward small" disabled>Set forwarding</button>
+            </div>
+            <div class="row">
+              <label>Delegate
+                <input type="text" class="containmentDelegateUser" placeholder="delegate@domain.com" />
+              </label>
+              <label>Right
+                <select class="containmentDelegateRight">
+                  <option value="FullAccess">Full Access</option>
+                  <option value="SendAs">Send As</option>
+                  <option value="SendOnBehalf">Send on Behalf</option>
+                </select>
+              </label>
+              <button type="button" class="containmentAction containmentAddDelegate small" disabled>Add delegate</button>
+            </div>
+            <div class="containmentSubLabel">Folder permissions</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListFolders small" disabled title="Walks every folder on the selected mailbox(es). Can take a minute or more.">List folder permissions</button>
+              <button type="button" class="containmentAction containmentDeleteFolders danger small" disabled>Remove selected folder permissions</button>
+            </div>
+            <div class="containmentFoldersWrap" style="display:none">
+              <table class="historyTable containmentFoldersTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Mailbox</th>
+                    <th>Folder</th>
+                    <th>User</th>
+                    <th>Rights</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Automatic replies</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentAutoreplyStatus small" disabled>Check auto-reply</button>
+              <button type="button" class="containmentAction containmentDisableAutoreply small" disabled>Disable auto-reply</button>
+            </div>
+            <div class="containmentAutoreplyWrap" style="display:none">
+              <table class="historyTable containmentAutoreplyTable">
+                <thead>
+                  <tr>
+                    <th>Mailbox</th>
+                    <th>State</th>
+                    <th>External</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Junk trusted senders</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListJunk small" disabled>List trusted senders</button>
+              <button type="button" class="containmentAction containmentDeleteJunk danger small" disabled>Remove selected trusted entries</button>
+            </div>
+            <div class="containmentJunkWrap" style="display:none">
+              <table class="historyTable containmentJunkTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Mailbox</th>
+                    <th>List</th>
+                    <th>Address</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Rights on other mailboxes</div>
+            <p class="muted" style="font-size:0.78rem;margin:0 0 0.25rem">Send As and Send on Behalf are fast. Full Access scans every mailbox and can take several minutes.</p>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListElsewhere small" disabled title="Send As / Send on Behalf are quick. Full Access scans every mailbox and can take several minutes.">List rights elsewhere</button>
+              <button type="button" class="containmentAction containmentDeleteElsewhere danger small" disabled>Remove selected grants</button>
+            </div>
+            <div class="containmentElsewhereWrap" style="display:none">
+              <table class="historyTable containmentElsewhereTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>User</th>
+                    <th>Mailbox</th>
+                    <th>Right</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Restricted from sending</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentRestrictedStatus small" disabled>Check restricted status</button>
+              <button type="button" class="containmentAction containmentUnrestrict small" style="display:none" disabled>Unrestrict</button>
+            </div>
+          </section>
+
+          <section class="containmentPhase">
+            <div class="containmentPhaseTitle">4. Tenant-wide persistence</div>
+            <p class="containmentPhaseHint">Malicious mail-flow rules, connectors, org auto-forward, journaling, app registrations, secrets/owners, directory roles / groups / Exchange RBAC, and Power Automate if the admin module is loaded.</p>
+            <div class="containmentSubLabel">Transport rules</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListTransport small" disabled title="Tenant-wide. Large tenants can take a minute.">List transport rules</button>
+              <button type="button" class="containmentAction containmentDeleteTransport danger small" disabled>Delete selected transport rules</button>
+            </div>
+            <div class="containmentTransportWrap" style="display:none">
+              <table class="historyTable containmentTransportTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Name</th>
+                    <th>On</th>
+                    <th>Priority</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Connectors</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListConnectors small" disabled>List connectors</button>
+              <button type="button" class="containmentAction containmentDeleteConnectors danger small" disabled>Delete selected connectors</button>
+            </div>
+            <div class="containmentConnectorsWrap" style="display:none">
+              <table class="historyTable containmentConnectorsTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Direction</th>
+                    <th>Name</th>
+                    <th>On</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">App registrations and other-tenant apps</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListApps small" disabled title="Walks the whole tenant. Large directories can take a minute or more.">List app registrations</button>
+              <button type="button" class="containmentAction containmentDeleteApps danger small" disabled>Remove selected apps</button>
+            </div>
+            <div class="containmentAppsWrap" style="display:none">
+              <table class="historyTable containmentAppsTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Kind</th>
+                    <th>Name</th>
+                    <th>App ID</th>
+                    <th>Created</th>
+                    <th>Publisher</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">App secrets, certificates, and owners</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListAppcreds small" disabled title="Walks every app registration. Can take several minutes.">List secrets / owners</button>
+              <button type="button" class="containmentAction containmentDeleteAppcreds danger small" disabled>Remove selected secrets / owners</button>
+            </div>
+            <div class="containmentAppcredsWrap" style="display:none">
+              <table class="historyTable containmentAppcredsTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Kind</th>
+                    <th>App</th>
+                    <th>Name</th>
+                    <th>Expires</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Org auto-forward</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListOrgfwd small" disabled>List org auto-forward</button>
+              <button type="button" class="containmentAction containmentDisableOrgfwd danger small" disabled>Disable selected auto-forward</button>
+            </div>
+            <div class="containmentOrgfwdWrap" style="display:none">
+              <table class="historyTable containmentOrgfwdTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Kind</th>
+                    <th>Name</th>
+                    <th>Auto-forward</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Journaling rules</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListJournal small" disabled>List journal rules</button>
+              <button type="button" class="containmentAction containmentDeleteJournal danger small" disabled>Delete selected journal rules</button>
+            </div>
+            <div class="containmentJournalWrap" style="display:none">
+              <table class="historyTable containmentJournalTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Name</th>
+                    <th>Recipient</th>
+                    <th>Journal to</th>
+                    <th>On</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Directory roles, groups, Exchange RBAC</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListRoles small" disabled title="Directory roles, group memberships, and Exchange RBAC. Can take a minute or more.">List roles and groups</button>
+              <button type="button" class="containmentAction containmentDeleteRoles danger small" disabled>Remove selected roles / groups</button>
+            </div>
+            <div class="containmentRolesWrap" style="display:none">
+              <table class="historyTable containmentRolesTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>User</th>
+                    <th>Kind</th>
+                    <th>Name</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="containmentSubLabel">Power Automate</div>
+            <div class="row">
+              <button type="button" class="containmentAction containmentListFlows small" disabled title="Tenant-wide Power Automate list. Can take a minute if the admin module is loaded.">List flows</button>
+              <button type="button" class="containmentAction containmentDeleteFlows danger small" disabled>Delete selected flows</button>
+            </div>
+            <div class="containmentFlowsWrap" style="display:none">
+              <table class="historyTable containmentFlowsTable">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Name</th>
+                    <th>Environment</th>
+                    <th>Enabled</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="containmentPhase">
+            <div class="containmentPhaseTitle">5. Restore access</div>
+            <p class="containmentPhaseHint">After persistence is gone and the user has reset via SSPR. Unrestrict only if Check restricted status found them on Restricted entities.</p>
+            <div class="row">
+              <button type="button" class="containmentAction containmentUnblock small" disabled>Unblock sign-in</button>
+            </div>
+          </section>
+        </div>
+      </details>`;
+}
+
+function upsertCurateRule(rules, mode, source, facet, value) {
+  if (!source || !facet || value == null || value === '') return;
+  let rule = rules.find((r) => r.source === source && r.facet === facet);
+  if (!rule) {
+    rule = { source, facet, op: mode === 'include' ? 'include' : 'exclude', values: [] };
+    rules.push(rule);
+  }
+  if (!rule.values.includes(value)) rule.values.push(value);
+}
+
+function parseWanIpList(text) {
+  if (!text) return [];
+  return [...new Set(
+    String(text)
+      .split(/[\s,;]+/)
+      .map((s) => s.trim())
+      .filter((s) => s && /[:.]/.test(s))
+  )];
+}
+
+function collectCurateRules(div) {
+  const rules = [];
+  const mode = div.querySelector('.curateModeSelect')?.value || 'exclude';
+  div.querySelectorAll('.curateValueCheck:checked').forEach((cb) => {
+    const source = cb.dataset.source;
+    const facet = cb.dataset.facet;
+    let value = cb.dataset.value;
+    if (!source || !facet || value == null) return;
+    try { value = decodeURIComponent(value); } catch { /* keep raw */ }
+    upsertCurateRule(rules, mode, source, facet, value);
+  });
+  div.querySelectorAll('.curateWanCheck:checked').forEach((cb) => {
+    let value = cb.dataset.value;
+    try { value = decodeURIComponent(value); } catch { /* keep raw */ }
+    upsertCurateRule(rules, mode, 'SignInLogs', 'IPAddress', value);
+    upsertCurateRule(rules, mode, 'UnifiedAuditLogs', 'ClientIP', value);
+  });
+  const pasted = parseWanIpList(div.querySelector('.curateWanPaste')?.value || '');
+  const extra = Array.isArray(div._curateExtraWanIps) ? div._curateExtraWanIps : [];
+  [...pasted, ...extra].forEach((ip) => {
+    upsertCurateRule(rules, mode, 'SignInLogs', 'IPAddress', ip);
+    upsertCurateRule(rules, mode, 'UnifiedAuditLogs', 'ClientIP', ip);
+  });
+  return { mode, rules };
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function renderCurateWanSuggestions(div, wan) {
+  const host = div.querySelector('.curateWanSuggestions');
+  if (!host) return;
+  const list = wan?.suggestions || [];
+  if (!list.length) {
+    host.innerHTML = '<span class="muted">No public successful sign-in IPs found to suggest as WAN.</span>';
+    return;
+  }
+  host.innerHTML = `
+    <div class="curateValues">
+      ${list.map((s) => {
+        const enc = encodeURIComponent(String(s.ip));
+        const meta = `${s.successCount} ok / ${s.failureCount} fail · ${s.userCount} user(s)` +
+          (s.countries?.length ? ` · ${escapeHtml(s.countries.slice(0, 2).join(', '))}` : '');
+        const reason = escapeHtml(s.reason || '');
+        const checked = s.suggested ? '' : '';
+        return `<label title="${reason}"><input type="checkbox" class="curateWanCheck" data-value="${enc}" data-suggested="${s.suggested ? '1' : '0'}" ${checked}/> <strong>${escapeHtml(s.ip)}</strong> <span class="muted">(${meta})</span></label>`;
+      }).join('')}
+    </div>
+    <p class="muted" style="font-size:0.78rem;margin:0.35rem 0 0">${escapeHtml(wan.note || '')}</p>`;
+}
+
+function setCurateIpFacetChecks(div, ips, checked) {
+  const want = new Set((ips || []).map(String));
+  div.querySelectorAll('.curateValueCheck').forEach((cb) => {
+    if (cb.dataset.source !== 'SignInLogs' && cb.dataset.source !== 'UnifiedAuditLogs') return;
+    if (cb.dataset.facet !== 'IPAddress' && cb.dataset.facet !== 'ClientIP') return;
+    let value = cb.dataset.value;
+    try { value = decodeURIComponent(value); } catch { /* keep */ }
+    if (want.has(value)) cb.checked = checked;
+  });
+  div.querySelectorAll('.curateWanCheck').forEach((cb) => {
+    let value = cb.dataset.value;
+    try { value = decodeURIComponent(value); } catch { /* keep */ }
+    if (want.has(value)) cb.checked = checked;
+  });
+}
+
+function renderCurateFacets(div, sources) {
+  const host = div.querySelector('.curateFacets');
+  const status = div.querySelector('.curateStatus');
+  if (!host) return;
+  const present = (sources || []).filter((s) => s.present);
+  if (!present.length) {
+    host.innerHTML = '<p class="muted">No curatable CSVs found in this report folder.</p>';
+    if (status) status.textContent = 'No SignInLogs / audit / mail CSVs detected.';
+    return;
+  }
+  if (status) {
+    status.textContent = present.map((s) => `${s.name}: ${s.rowCount} rows`).join(' · ');
+  }
+  host.innerHTML = present.map((src) => {
+    const facets = (src.facets || []).map((f) => {
+      const values = (f.values || []).map((v) => {
+        const label = `${escapeHtml(v.value)} (${v.count})`;
+        const encVal = encodeURIComponent(String(v.value));
+        return `<label><input type="checkbox" class="curateValueCheck" data-source="${src.name}" data-facet="${f.name}" data-value="${encVal}" /> ${label}</label>`;
+      }).join('');
+      if (!values) return '';
+      return `<div class="curateFacet"><div class="curateFacetName">${escapeHtml(f.name)} <span class="muted">via ${escapeHtml(f.column)}</span></div><div class="curateValues">${values}</div></div>`;
+    }).join('');
+    return `<div class="curateSource"><div class="curateSourceTitle">${escapeHtml(src.name)} <span class="muted">(${src.rowCount})</span></div>${facets || '<span class="muted">No facet columns matched.</span>'}</div>`;
+  }).join('');
+}
+
+function formatCuratePreview(files) {
+  if (!files || !files.length) return 'No files to curate.';
+  return files.map((f) => `${f.source}: ${f.beforeCount} → ${f.afterCount} (dropped ${f.dropped})`).join('\n');
+}
+
+async function loadCurateFacets(clientNumber, div) {
+  const folder = resolveTenantOutputFolder({ clientNumber, outputFolder: div.dataset.outputFolder }, div);
+  if (!folder) {
+    log(`Client ${clientNumber}: no report folder yet.`);
+    return;
+  }
+  try {
+    log(`Client ${clientNumber}: loading curation facets + WAN suggestions from ${folder}…`);
+    const data = await api('/api/curate/facets', {
+      method: 'POST',
+      body: JSON.stringify({ path: folder, topValues: 40, wanTop: 12 }),
+    }, 300000);
+    div._curateFacets = data.result;
+    renderCurateFacets(div, data.result?.sources || []);
+    renderCurateWanSuggestions(div, data.result?.wanSuggestions);
+    const wanCount = data.result?.wanSuggestions?.count || 0;
+    log(`Client ${clientNumber}: curation facets loaded (${wanCount} WAN suggestion(s)).`);
+  } catch (e) {
+    log(`Client ${clientNumber}: Load facets failed: ${e.message}`);
+  }
+}
+
+async function previewCurate(clientNumber, div) {
+  const folder = resolveTenantOutputFolder({ clientNumber, outputFolder: div.dataset.outputFolder }, div);
+  if (!folder) {
+    log(`Client ${clientNumber}: no report folder yet.`);
+    return;
+  }
+  const { mode, rules } = collectCurateRules(div);
+  if (!rules.length) {
+    log(`Client ${clientNumber}: select at least one facet value to preview.`);
+    return;
+  }
+  try {
+    log(`Client ${clientNumber}: previewing curation (${mode}, ${rules.length} rule group(s))…`);
+    const data = await api('/api/curate/preview', {
+      method: 'POST',
+      body: JSON.stringify({ path: folder, mode, rules }),
+    }, 300000);
+    const previewEl = div.querySelector('.curatePreview');
+    if (previewEl) previewEl.textContent = formatCuratePreview(data.result?.files || []);
+    log(`Client ${clientNumber}: curation preview ready.`);
+  } catch (e) {
+    log(`Client ${clientNumber}: Curate preview failed: ${e.message}`);
+  }
+}
+
+async function exportCurate(clientNumber, div) {
+  const folder = resolveTenantOutputFolder({ clientNumber, outputFolder: div.dataset.outputFolder }, div);
+  if (!folder) {
+    log(`Client ${clientNumber}: no report folder yet.`);
+    return;
+  }
+  const { mode, rules } = collectCurateRules(div);
+  if (!rules.length) {
+    log(`Client ${clientNumber}: select at least one facet value to export.`);
+    return;
+  }
+  try {
+    log(`Client ${clientNumber}: exporting curated set (${mode})…`);
+    const data = await api('/api/curate/export', {
+      method: 'POST',
+      body: JSON.stringify({ path: folder, mode, rules }),
+    }, 300000);
+    const out = data.result?.outputFolder || '';
+    div.dataset.curatedFolder = out;
+    const openBtn = div.querySelector('.openCuratedFolder');
+    if (openBtn) openBtn.disabled = !out;
+    const previewEl = div.querySelector('.curatePreview');
+    if (previewEl) {
+      previewEl.textContent = `${formatCuratePreview(data.result?.files || [])}\n\nWrote: ${out}`;
+    }
+    log(`Client ${clientNumber}: curated set written to ${out}`);
+  } catch (e) {
+    log(`Client ${clientNumber}: Curate export failed: ${e.message}`);
+  }
+}
+
+function wireCurateLogsPanel(div, clientNumber) {
+  div.querySelector('.loadCurateFacets')?.addEventListener('click', () => loadCurateFacets(clientNumber, div));
+  div.querySelector('.previewCurate')?.addEventListener('click', () => previewCurate(clientNumber, div));
+  div.querySelector('.exportCurate')?.addEventListener('click', () => exportCurate(clientNumber, div));
+  div.querySelector('.openCuratedFolder')?.addEventListener('click', () => {
+    const path = div.dataset.curatedFolder;
+    if (path) openReports(path);
+  });
+  div.querySelector('.curateModeSelect')?.addEventListener('change', () => {
+    const previewEl = div.querySelector('.curatePreview');
+    if (previewEl) previewEl.textContent = 'Mode changed — run Preview counts again.';
+  });
+  div.querySelector('.selectSuggestedWan')?.addEventListener('click', () => {
+    const mode = div.querySelector('.curateModeSelect');
+    if (mode) mode.value = 'exclude';
+    const ips = [];
+    div.querySelectorAll('.curateWanCheck').forEach((cb) => {
+      if (cb.dataset.suggested !== '1') return;
+      cb.checked = true;
+      let value = cb.dataset.value;
+      try { value = decodeURIComponent(value); } catch { /* keep */ }
+      ips.push(value);
+    });
+    setCurateIpFacetChecks(div, ips, true);
+    log(`Client ${clientNumber}: selected ${ips.length} suggested WAN IP(s) for exclude.`);
+  });
+  div.querySelector('.clearWanSelection')?.addEventListener('click', () => {
+    div.querySelectorAll('.curateWanCheck').forEach((cb) => { cb.checked = false; });
+    div._curateExtraWanIps = [];
+    const paste = div.querySelector('.curateWanPaste');
+    if (paste) paste.value = '';
+    log(`Client ${clientNumber}: cleared WAN IP selection.`);
+  });
+  div.querySelector('.applyWanPaste')?.addEventListener('click', () => {
+    const ips = parseWanIpList(div.querySelector('.curateWanPaste')?.value || '');
+    if (!ips.length) {
+      log(`Client ${clientNumber}: no IPs found in paste box.`);
+      return;
+    }
+    div._curateExtraWanIps = ips;
+    setCurateIpFacetChecks(div, ips, true);
+    // Also check any matching WAN suggestion rows
+    div.querySelectorAll('.curateWanCheck').forEach((cb) => {
+      let value = cb.dataset.value;
+      try { value = decodeURIComponent(value); } catch { /* keep */ }
+      if (ips.includes(value)) cb.checked = true;
+    });
+    const mode = div.querySelector('.curateModeSelect');
+    if (mode) mode.value = 'exclude';
+    log(`Client ${clientNumber}: added ${ips.length} pasted WAN IP(s) to curation selection.`);
+  });
 }
 
 function getTenantTicketContent(div) {
@@ -694,7 +1509,7 @@ function scheduleSessionReportSelectionsSync() {
       if (!hasActiveSession(session)) return;
       const body = {
         reportSelections: readReportSelectionsFromContainer(document.getElementById('sessionReportExportsBody')),
-        daysBack: parseInt(document.getElementById('daysBack')?.value, 10) || 7,
+        daysBack: sessionRelativeDays(),
       };
       const updated = await api('/api/session/report-selections', {
         method: 'POST',
@@ -831,9 +1646,23 @@ function initSessionReportExportsPanel() {
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
-  ['messageTraceDays', 'signInLogsDays', 'daysBack'].forEach(id => {
-    document.getElementById(id)?.addEventListener('change', () => scheduleSessionReportSelectionsSync());
+  ['messageTraceDays', 'signInLogsDays', 'relAmount', 'relUnit'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', () => {
+      updateSessionTimeframeUi();
+      scheduleSessionReportSelectionsSync();
+    });
   });
+  updateSessionTimeframeUi();
+}
+
+function wireTenantTimeframePanel(div, clientNumber) {
+  ['.relAmount', '.relUnit'].forEach((sel) => {
+    div.querySelector(sel)?.addEventListener('change', () => {
+      updateTenantTimeframeUi(div);
+      saveTenantUiState(clientNumber, div);
+    });
+  });
+  updateTenantTimeframeUi(div);
 }
 
 function wireTenantReportExportsPanel(div, clientNumber) {
@@ -1416,7 +2245,7 @@ function toDateTimeLocalValue(date) {
 
 function defaultDateStartValue() {
 
-  const days = Math.max(1, parseInt(document.getElementById('daysBack')?.value, 10) || 10);
+  const days = sessionRelativeDays();
 
   const d = new Date();
 
@@ -1430,6 +2259,105 @@ function defaultDateEndValue() {
 
   return toDateTimeLocalValue(new Date());
 
+}
+
+const RELATIVE_MAX_DAYS = 90;
+
+const RELATIVE_UNITS = [
+  ['days', 'Days'],
+  ['weeks', 'Weeks'],
+  ['months', 'Months'],
+  ['max', `Max (${RELATIVE_MAX_DAYS} days)`],
+];
+
+function relativeUnitOptionsHtml(selectedUnit, includeCustom) {
+  const units = includeCustom ? [...RELATIVE_UNITS, ['custom', 'Custom range']] : RELATIVE_UNITS;
+  return units
+    .map(([value, label]) => `<option value="${value}"${value === selectedUnit ? ' selected' : ''}>${label}</option>`)
+    .join('');
+}
+
+function resolveRelativeWindow(amount, unit) {
+  const end = new Date();
+  const start = new Date(end.getTime());
+  const n = Math.max(1, parseInt(amount, 10) || 1);
+  if (unit === 'weeks') start.setDate(start.getDate() - (n * 7));
+  else if (unit === 'months') start.setMonth(start.getMonth() - n);
+  else if (unit === 'max') start.setDate(start.getDate() - RELATIVE_MAX_DAYS);
+  else start.setDate(start.getDate() - n);
+
+  // Message trace and Graph both stop at ~90 days, so a longer window buys nothing.
+  const earliest = new Date(end.getTime());
+  earliest.setDate(earliest.getDate() - RELATIVE_MAX_DAYS);
+  const capped = start < earliest;
+  return { start: capped ? earliest : start, end, capped };
+}
+
+function relativeWindowDays(amount, unit) {
+  const { start, end } = resolveRelativeWindow(amount, unit);
+  return Math.max(1, Math.round((end - start) / 86400000));
+}
+
+function relativeWindowHint(amount, unit) {
+  if (unit === 'custom') return 'Using the start and end dates below.';
+  const { start, end, capped } = resolveRelativeWindow(amount, unit);
+  const d = (x) => `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`;
+  return `${d(start)} → ${d(end)}${capped ? ` (capped at ${RELATIVE_MAX_DAYS} days)` : ''}`;
+}
+
+function sessionRelativeUnit() {
+  return document.getElementById('relUnit')?.value || 'days';
+}
+
+function sessionRelativeAmount() {
+  return Math.max(1, parseInt(document.getElementById('relAmount')?.value, 10) || 7);
+}
+
+function sessionRelativeDays() {
+  return relativeWindowDays(sessionRelativeAmount(), sessionRelativeUnit());
+}
+
+function updateSessionTimeframeUi() {
+  const unit = sessionRelativeUnit();
+  const amountWrap = document.getElementById('relAmountWrap');
+  const hint = document.getElementById('relHint');
+  if (amountWrap) amountWrap.style.display = unit === 'max' ? 'none' : '';
+  if (hint) hint.textContent = relativeWindowHint(sessionRelativeAmount(), unit);
+}
+
+function getTenantRelativeUnit(div) {
+  return div?.querySelector('.relUnit')?.value || 'days';
+}
+
+function getTenantRelativeAmount(div) {
+  return Math.max(1, parseInt(div?.querySelector('.relAmount')?.value, 10) || 7);
+}
+
+function updateTenantTimeframeUi(div) {
+  if (!div) return;
+  const unit = getTenantRelativeUnit(div);
+  const amountWrap = div.querySelector('.relAmountWrap');
+  const customRow = div.querySelector('.customRangeRow');
+  const hint = div.querySelector('.relHint');
+  if (amountWrap) amountWrap.style.display = (unit === 'max' || unit === 'custom') ? 'none' : '';
+  if (customRow) customRow.style.display = unit === 'custom' ? '' : 'none';
+  if (hint) hint.textContent = relativeWindowHint(getTenantRelativeAmount(div), unit);
+}
+
+// Resolved when Generate runs so a relative window always counts back from the click,
+// not from whenever the tenant card was rendered.
+function applyTenantRelativeWindow(div) {
+  if (!div) return;
+  const startEl = div.querySelector('.dateStart');
+  const endEl = div.querySelector('.dateEnd');
+  if (getTenantRelativeUnit(div) === 'custom') {
+    if (startEl && !startEl.value) startEl.value = defaultDateStartValue();
+    if (endEl && !endEl.value) endEl.value = defaultDateEndValue();
+    return;
+  }
+  const { start, end } = resolveRelativeWindow(getTenantRelativeAmount(div), getTenantRelativeUnit(div));
+  if (startEl) startEl.value = toDateTimeLocalValue(start);
+  if (endEl) endEl.value = toDateTimeLocalValue(end);
 }
 
 function parseSearchTerms(text) {
@@ -1462,7 +2390,17 @@ function saveTenantUiState(clientNumber, div) {
 
   const prior = tenantUiState.get(String(clientNumber)) || {};
 
+  let validatedUsers = [];
+  try { validatedUsers = JSON.parse(div.dataset.validatedUsers || '[]'); } catch { validatedUsers = []; }
+  validatedUsers = normalizeUserList(validatedUsers);
+  if (!validatedUsers.length && Array.isArray(prior.validatedUsers) && prior.validatedUsers.length) {
+    validatedUsers = normalizeUserList(prior.validatedUsers);
+  }
+  if (validatedUsers.length) div.dataset.validatedUsers = JSON.stringify(validatedUsers);
+
   tenantUiState.set(String(clientNumber), {
+
+    ...prior,
 
     ticket: (div.querySelector('.ticketInput')?.value || '').trim(),
 
@@ -1478,11 +2416,15 @@ function saveTenantUiState(clientNumber, div) {
 
     userSearch: div.querySelector('.userSearchInput')?.value || '',
 
-    validatedUsers: JSON.parse(div.dataset.validatedUsers || '[]'),
+    validatedUsers,
 
     dateStart: div.querySelector('.dateStart')?.value || '',
 
     dateEnd: div.querySelector('.dateEnd')?.value || '',
+
+    relAmount: getTenantRelativeAmount(div),
+
+    relUnit: getTenantRelativeUnit(div),
 
     useSessionReportDefaults,
 
@@ -1509,9 +2451,15 @@ function saveTenantUiState(clientNumber, div) {
 
 function restoreTenantUiState(clientNumber, div) {
 
-  const saved = tenantUiState.get(String(clientNumber));
+  let saved = tenantUiState.get(String(clientNumber));
 
   if (!saved || !div) return;
+
+  const storedContainment = resolveContainmentState(clientNumber, saved);
+  if (storedContainment && saved.containment !== storedContainment) {
+    saved = { ...saved, containment: storedContainment };
+    tenantUiState.set(String(clientNumber), saved);
+  }
 
   const ticket = div.querySelector('.ticketInput');
 
@@ -1545,13 +2493,22 @@ function restoreTenantUiState(clientNumber, div) {
 
   if (dateEnd && saved.dateEnd) dateEnd.value = saved.dateEnd;
 
+  const relAmount = div.querySelector('.relAmount');
+
+  const relUnit = div.querySelector('.relUnit');
+
+  if (relAmount && saved.relAmount != null) relAmount.value = String(saved.relAmount);
+
+  if (relUnit && saved.relUnit) relUnit.value = saved.relUnit;
+
   restoreSecurityUiState(div, saved);
 
-  if (saved.validatedUsers?.length) {
+  const restoredUsers = normalizeUserList(saved.validatedUsers);
+  if (restoredUsers.length) {
 
-    div.dataset.validatedUsers = JSON.stringify(saved.validatedUsers);
+    div.dataset.validatedUsers = JSON.stringify(restoredUsers);
 
-    updateValidatedUsersDisplay(div, saved.validatedUsers);
+    updateValidatedUsersDisplay(div, restoredUsers);
 
   }
 
@@ -1606,6 +2563,10 @@ function restoreTenantUiState(clientNumber, div) {
   if (customPanel) customPanel.style.display = mode === 'custom' ? 'block' : 'none';
   updateTenantReportExportsHint(div, mode, presetSel?.value);
 
+  refreshContainmentUsers(div);
+  updateContainmentButtons(div);
+  restoreContainmentOutput(div, saved);
+
 }
 
 function updateValidatedUsersDisplay(div, users) {
@@ -1634,6 +2595,1700 @@ function updateValidatedUsersDisplay(div, users) {
 
   }
 
+  refreshContainmentUsers(div);
+
+}
+
+function normalizeUserList(value) {
+  if (value == null || value === '') return [];
+  const raw = Array.isArray(value) ? value : [value];
+  return raw.map((u) => {
+    if (u == null || u === '') return '';
+    if (typeof u === 'string') return u.trim();
+    return String(u.UserPrincipalName || u.userPrincipalName || u || '').trim();
+  }).filter(Boolean);
+}
+
+function refreshContainmentUsers(div) {
+  const list = div?.querySelector('.containmentUserList');
+  if (!list) return;
+  const clientNumber = div.closest('details.tenant')?.dataset?.client;
+  let users = clientNumber
+    ? getValidatedUsersForTenant(clientNumber, div)
+    : normalizeUserList((() => { try { return JSON.parse(div.dataset.validatedUsers || '[]'); } catch { return []; } })());
+  if (!users.length) {
+    list.innerHTML = 'Validate users first. Containment acts only on those UPNs.';
+    list.classList.add('muted');
+    delete div.dataset.restrictedEmailJson;
+    updateContainmentButtons(div);
+    return;
+  }
+  list.classList.remove('muted');
+  list.innerHTML = users.map((u) => {
+    const safe = escapeHtml(String(u));
+    return `<label><input type="checkbox" class="containmentUser" value="${safe}" checked /> ${safe}</label>`;
+  }).join('');
+  updateContainmentButtons(div);
+}
+
+function getSelectedContainmentUsers(div) {
+  return [...(div?.querySelectorAll('.containmentUser:checked') || [])].map((cb) => cb.value).filter(Boolean);
+}
+
+function getRestrictedContainmentHits(div, selectedUsers) {
+  let rows = [];
+  try { rows = JSON.parse(div?.dataset?.restrictedEmailJson || '[]'); } catch { rows = []; }
+  const selected = new Set((selectedUsers || []).map((u) => String(u).toLowerCase()));
+  return rows.filter((r) => r.Restricted && selected.has(String(r.UserPrincipalName || '').toLowerCase()));
+}
+
+function applyContainmentCapabilities(div, caps) {
+  if (!div || !caps) return;
+  if (caps.canRevoke === false) div.dataset.graphCanRevoke = '0';
+  else if (caps.canRevoke === true) div.dataset.graphCanRevoke = '1';
+  if (caps.canBlock === false) div.dataset.graphCanBlock = '0';
+  else if (caps.canBlock === true) div.dataset.graphCanBlock = '1';
+  if (caps.canAuthWrite === false) div.dataset.graphCanAuthWrite = '0';
+  else if (caps.canAuthWrite === true) div.dataset.graphCanAuthWrite = '1';
+  if (caps.canDeviceDelete === false) div.dataset.graphCanDeviceDelete = '0';
+  else if (caps.canDeviceDelete === true) div.dataset.graphCanDeviceDelete = '1';
+  if (caps.canAppWrite === false) div.dataset.graphCanAppWrite = '0';
+  else if (caps.canAppWrite === true) div.dataset.graphCanAppWrite = '1';
+  if (caps.canPasswordReset === false) div.dataset.graphCanPasswordReset = '0';
+  else if (caps.canPasswordReset === true) div.dataset.graphCanPasswordReset = '1';
+  if (caps.canOauthWrite === false) div.dataset.graphCanOauthWrite = '0';
+  else if (caps.canOauthWrite === true) div.dataset.graphCanOauthWrite = '1';
+  if (caps.canIntune === false) div.dataset.graphCanIntune = '0';
+  else if (caps.canIntune === true) div.dataset.graphCanIntune = '1';
+  if (caps.canIntuneWipe === false) div.dataset.graphCanIntuneWipe = '0';
+  else if (caps.canIntuneWipe === true) div.dataset.graphCanIntuneWipe = '1';
+  if (caps.canRoles === false) div.dataset.graphCanRoles = '0';
+  else if (caps.canRoles === true) div.dataset.graphCanRoles = '1';
+  if (caps.canGroupWrite === false) div.dataset.graphCanGroupWrite = '0';
+  else if (caps.canGroupWrite === true) div.dataset.graphCanGroupWrite = '1';
+  if (caps.reason) div.dataset.graphCapabilityReason = caps.reason;
+  rememberContainment(div, { capabilities: caps });
+  const details = div.closest('details.tenant');
+  const clientNumber = details?.dataset?.client;
+  if (clientNumber) {
+    const st = tenantUiState.get(String(clientNumber)) || {};
+    st.graphCapabilities = caps;
+    tenantUiState.set(String(clientNumber), st);
+  }
+  const hint = div.querySelector('.containmentGraphHint');
+  if (hint) {
+    hint.textContent = caps.reason || '';
+    hint.style.display = caps.reason ? 'block' : 'none';
+  }
+  const updateScopesBtn = div.querySelector('.containmentUpdateGraphScopes');
+  if (updateScopesBtn) updateScopesBtn.style.display = caps.reason ? '' : 'none';
+  updateContainmentButtons(div);
+}
+
+function updateContainmentButtons(div) {
+  if (!div) return;
+  const graph = div.dataset.graphAuthenticated === '1';
+  const exo = div.dataset.exchangeAuthenticated === '1';
+  const users = getSelectedContainmentUsers(div);
+  const hasUsers = users.length > 0;
+  const canRevoke = graph && hasUsers && div.dataset.graphCanRevoke !== '0';
+  const canBlock = graph && hasUsers && div.dataset.graphCanBlock !== '0';
+  const set = (sel, on) => {
+    const el = div.querySelector(sel);
+    if (el) el.disabled = !on;
+  };
+  set('.containmentSigninStatus', graph && hasUsers);
+  set('.containmentRevoke', canRevoke);
+  set('.containmentRevokeMfa', canRevoke);
+  set('.containmentBlock', canBlock);
+  set('.containmentUnblock', canBlock);
+  const canPassword = graph && hasUsers && div.dataset.graphCanPasswordReset !== '0';
+  set('.containmentResetPassword', canPassword);
+  set('.containmentAssignPasswordBtn', canPassword);
+  set('.containmentListMfa', graph && hasUsers);
+  const hasSelectedMfa = [...(div.querySelectorAll('.containmentMfaPick:checked') || [])].length > 0;
+  set('.containmentDeleteMfa', graph && hasSelectedMfa && div.dataset.graphCanAuthWrite !== '0');
+  set('.containmentListDevices', graph && hasUsers);
+  const hasSelectedDevices = [...(div.querySelectorAll('.containmentDevicePick:checked') || [])].length > 0;
+  set('.containmentDeleteDevices', graph && hasSelectedDevices && div.dataset.graphCanDeviceDelete !== '0');
+  set('.containmentListApps', graph);
+  const hasSelectedApps = [...(div.querySelectorAll('.containmentAppPick:checked') || [])].length > 0;
+  set('.containmentDeleteApps', graph && hasSelectedApps && div.dataset.graphCanAppWrite !== '0');
+  set('.containmentRestrictedStatus', exo && hasUsers);
+  const restrictedHits = getRestrictedContainmentHits(div, users);
+  const unrestrictBtn = div.querySelector('.containmentUnrestrict');
+  if (unrestrictBtn) {
+    unrestrictBtn.style.display = restrictedHits.length ? '' : 'none';
+    unrestrictBtn.disabled = !(exo && restrictedHits.length);
+  }
+  set('.containmentListRules', exo && hasUsers);
+  const hasSelectedRules = [...(div.querySelectorAll('.containmentRulePick:checked') || [])].length > 0;
+  const rulesMailbox = div.dataset.containmentRulesUser || (users.length === 1 ? users[0] : '');
+  set('.containmentDeleteRules', exo && Boolean(rulesMailbox) && hasSelectedRules);
+  set('.containmentMailboxStatus', exo && hasUsers);
+  set('.containmentSetForward', exo && hasUsers);
+  set('.containmentClearForward', exo && hasUsers);
+  set('.containmentAddDelegate', exo && hasUsers);
+  const hasSelectedForwards = [...(div.querySelectorAll('.containmentForwardPick:checked') || [])].length > 0;
+  set('.containmentRemoveForward', exo && hasSelectedForwards);
+  const hasSelectedDelegates = [...(div.querySelectorAll('.containmentDelegatePick:checked') || [])].length > 0;
+  set('.containmentRemoveDelegate', exo && hasSelectedDelegates);
+  set('.containmentListTransport', exo);
+  set('.containmentListConnectors', exo);
+  const hasSelectedTransport = [...(div.querySelectorAll('.containmentTransportPick:checked') || [])].length > 0;
+  set('.containmentDeleteTransport', exo && hasSelectedTransport);
+  const hasSelectedConnectors = [...(div.querySelectorAll('.containmentConnectorPick:checked') || [])].length > 0;
+  set('.containmentDeleteConnectors', exo && hasSelectedConnectors);
+  set('.containmentReregisterMfa', graph && hasUsers && div.dataset.graphCanAuthWrite !== '0');
+  set('.containmentListOauth', graph && hasUsers);
+  const hasSelectedOauth = [...(div.querySelectorAll('.containmentOauthPick:checked') || [])].length > 0;
+  set('.containmentDeleteOauth', graph && hasSelectedOauth && div.dataset.graphCanOauthWrite !== '0');
+  set('.containmentListMobile', exo && hasUsers);
+  const hasSelectedMobile = [...(div.querySelectorAll('.containmentMobilePick:checked') || [])].length > 0;
+  set('.containmentDeleteMobile', exo && hasSelectedMobile);
+  set('.containmentListIntune', graph && hasUsers && div.dataset.graphCanIntune !== '0');
+  const hasSelectedIntune = [...(div.querySelectorAll('.containmentIntunePick:checked') || [])].length > 0;
+  set('.containmentRetireIntune', graph && hasSelectedIntune && div.dataset.graphCanIntuneWipe !== '0');
+  set('.containmentWipeIntune', graph && hasSelectedIntune && div.dataset.graphCanIntuneWipe !== '0');
+  set('.containmentListFolders', exo && hasUsers);
+  const hasSelectedFolders = [...(div.querySelectorAll('.containmentFolderPick:checked') || [])].length > 0;
+  set('.containmentDeleteFolders', exo && hasSelectedFolders);
+  set('.containmentAutoreplyStatus', exo && hasUsers);
+  set('.containmentDisableAutoreply', exo && hasUsers);
+  set('.containmentListJunk', exo && hasUsers);
+  const hasSelectedJunk = [...(div.querySelectorAll('.containmentJunkPick:checked') || [])].length > 0;
+  set('.containmentDeleteJunk', exo && hasSelectedJunk);
+  set('.containmentListElsewhere', exo && hasUsers);
+  const hasSelectedElsewhere = [...(div.querySelectorAll('.containmentElsewherePick:checked') || [])].length > 0;
+  set('.containmentDeleteElsewhere', exo && hasSelectedElsewhere);
+  set('.containmentHoldStatus', exo && hasUsers);
+  set('.containmentEnableHold', exo && hasUsers);
+  set('.containmentListOrgfwd', exo);
+  const hasSelectedOrgfwd = [...(div.querySelectorAll('.containmentOrgfwdPick:checked') || [])].length > 0;
+  set('.containmentDisableOrgfwd', exo && hasSelectedOrgfwd);
+  set('.containmentListJournal', exo);
+  const hasSelectedJournal = [...(div.querySelectorAll('.containmentJournalPick:checked') || [])].length > 0;
+  set('.containmentDeleteJournal', exo && hasSelectedJournal);
+  set('.containmentListRoles', graph && hasUsers);
+  const hasSelectedRoles = [...(div.querySelectorAll('.containmentRolePick:checked') || [])].length > 0;
+  set('.containmentDeleteRoles', graph && hasSelectedRoles && (div.dataset.graphCanRoles !== '0' || div.dataset.graphCanGroupWrite !== '0'));
+  set('.containmentListAppcreds', graph);
+  const hasSelectedAppcreds = [...(div.querySelectorAll('.containmentAppcredPick:checked') || [])].length > 0;
+  set('.containmentDeleteAppcreds', graph && hasSelectedAppcreds && div.dataset.graphCanAppWrite !== '0');
+  set('.containmentListFlows', true);
+  const hasSelectedFlows = [...(div.querySelectorAll('.containmentFlowPick:checked') || [])].length > 0;
+  set('.containmentDeleteFlows', hasSelectedFlows);
+}
+
+function confirmContainmentPopup(message) {
+  return window.confirm(message);
+}
+
+const CONTAINMENT_SLOW_WARNINGS = {
+  'list-elsewhere': 'List rights elsewhere checks Send As and Send on Behalf quickly, then scans every mailbox for Full Access. That can take several minutes and the worker stays busy until it finishes.\n\nContinue?',
+  'list-apps': 'Listing app registrations walks the whole tenant and can take a minute or more on large directories. The worker stays busy until it finishes.\n\nContinue?',
+  'list-appcreds': 'Listing secrets and owners walks every app registration and can take several minutes. The worker stays busy until it finishes.\n\nContinue?',
+  'list-roles': 'Listing directory roles, group memberships, and Exchange RBAC can take a minute or more. The worker stays busy until it finishes.\n\nContinue?',
+  'list-folders': 'Listing folder permissions walks each folder on the selected mailbox(es) and can take a minute or more.\n\nContinue?',
+  'list-flows': 'Listing Power Automate flows is tenant-wide and can take a minute if the admin module is loaded.\n\nContinue?',
+  'list-transport': 'Listing transport rules is tenant-wide. Large tenants can take a minute.\n\nContinue?',
+};
+
+function confirmSlowContainment(kind) {
+  const msg = CONTAINMENT_SLOW_WARNINGS[kind];
+  if (!msg) return true;
+  return confirmContainmentPopup(msg);
+}
+
+function setContainmentStatus(div, text, opts = {}) {
+  const el = div.querySelector('.containmentStatus');
+  if (el) el.textContent = text || '';
+  if (!opts.skipSave && text && !/[.…]$/.test(text) && !/^Busy —/i.test(text)) {
+    rememberContainment(div, { status: text });
+  }
+}
+
+function rememberContainment(div, patch, immediate = false) {
+  const clientNumber = div?.closest('details.tenant')?.dataset?.client;
+  if (!clientNumber || !patch) return;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  const containment = { ...(prior.containment || {}), ...patch };
+  tenantUiState.set(String(clientNumber), { ...prior, containment });
+  persistContainmentToSessionStorage(clientNumber, containment);
+  scheduleTenantUiStateSync(clientNumber, div, immediate);
+}
+
+function rememberContainmentResult(div, key, data) {
+  if (!div || !key) return;
+  rememberContainment(div, { [key]: data }, true);
+}
+
+function restoreContainmentOutput(div, state) {
+  const c = state?.containment;
+  if (!div || !c || typeof c !== 'object') return;
+  if (c.capabilities) applyContainmentCapabilities(div, c.capabilities);
+  if (c.restrictedEmail) {
+    try { div.dataset.restrictedEmailJson = JSON.stringify(asArray(c.restrictedEmail)); } catch { /* ignore */ }
+  }
+  if (c.authMethods) applyAuthMethodsResult(div, asArray(c.authMethods));
+  if (c.devices) applyDevicesResult(div, asArray(c.devices));
+  if (c.apps) applyAppsResult(div, asArray(c.apps));
+  if (c.connectors) applyConnectorsResult(div, asArray(c.connectors));
+  if (c.oauth) applyOauthResult(div, asArray(c.oauth));
+  if (c.mobile) applyMobileResult(div, asArray(c.mobile));
+  if (c.intune) applyIntuneResult(div, asArray(c.intune));
+  if (c.folders) applyFoldersResult(div, asArray(c.folders));
+  if (c.autoreply) applyAutoreplyResult(div, asArray(c.autoreply));
+  if (c.orgfwd) applyOrgfwdResult(div, asArray(c.orgfwd));
+  if (c.junk) applyJunkResult(div, asArray(c.junk));
+  if (c.journal) applyJournalResult(div, asArray(c.journal));
+  if (c.hold) applyHoldResult(div, asArray(c.hold));
+  if (c.elsewhere) applyElsewhereResult(div, asArray(c.elsewhere));
+  if (c.roles) applyRolesResult(div, asArray(c.roles));
+  if (c.appcreds) applyAppcredsResult(div, asArray(c.appcreds));
+  if (c.flows) applyFlowsResult(div, asArray(c.flows));
+  if (c.transport) applyTransportRulesResult(div, asArray(c.transport));
+  if (c.mailbox) applyMailboxAccessResult(div, asArray(c.mailbox));
+  if (c.rules) renderContainmentRules(div, c.rulesUser || '', asArray(c.rules));
+  if (c.status) setContainmentStatus(div, c.status, { skipSave: true });
+  const hasOutput = hasContainmentPayload(c);
+  const panel = div.querySelector('details.containmentPanel');
+  if (hasOutput && panel) panel.open = true;
+}
+
+const USER_CONTAINMENT_KEYS = [
+  'authMethods', 'devices', 'oauth', 'mobile', 'intune', 'folders', 'autoreply',
+  'junk', 'mailbox', 'rules', 'rulesUser', 'hold', 'elsewhere', 'roles', 'restrictedEmail',
+];
+const TENANT_CONTAINMENT_KEYS = ['transport', 'connectors', 'apps', 'orgfwd', 'journal', 'appcreds', 'flows'];
+
+function rowsForContainmentUser(rows, upn) {
+  const needle = String(upn || '').toLowerCase();
+  return asArray(rows).filter((r) => {
+    if (!r || typeof r !== 'object') return false;
+    const vals = [r.UserPrincipalName, r.userPrincipalName, r.Mailbox, r.User, r.mailbox];
+    return vals.some((v) => String(v || '').toLowerCase() === needle);
+  });
+}
+
+function containmentActionsToCsv(rows) {
+  const header = 'Timestamp,UPN,Action,Result,Detail';
+  const esc = (value) => {
+    const s = String(value ?? '');
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [header, ...asArray(rows).map((r) => [
+    r.Timestamp || r.timestamp || '',
+    r.UPN || r.upn || '',
+    r.Action || r.action || '',
+    r.Result || r.result || '',
+    r.Detail || r.detail || '',
+  ].map(esc).join(','))].join('\n');
+}
+
+function rememberContainmentAction(div, entries) {
+  const rows = asArray(entries).filter((e) => e && (e.action || e.Action));
+  if (!rows.length) return;
+  const clientNumber = div?.closest('details.tenant')?.dataset?.client;
+  if (!clientNumber) return;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  const existing = asArray(prior.containment?.actions);
+  const stamped = rows.map((e) => ({
+    Timestamp: e.Timestamp || e.timestamp || new Date().toISOString(),
+    UPN: String(e.UPN || e.upn || ''),
+    Action: String(e.Action || e.action || ''),
+    Result: String(e.Result || e.result || 'success'),
+    Detail: String(e.Detail || e.detail || '').slice(0, 500),
+  }));
+  rememberContainment(div, { actions: existing.concat(stamped) }, true);
+}
+
+function noteContainmentAction(div, kind, targets, parsed) {
+  const logged = new Set([
+    'revoke', 'block', 'unblock', 'unrestrict', 'reset-password', 'assign-password',
+    'delete-mfa', 'reregister-mfa', 'delete-devices', 'delete-apps', 'delete-oauth',
+    'delete-mobile', 'wipe-intune', 'retire-intune', 'delete-rule', 'set-forward',
+    'remove-forward', 'clear-forward', 'add-delegate', 'remove-delegate',
+    'delete-folders', 'disable-autoreply', 'delete-junk', 'delete-elsewhere',
+    'enable-hold', 'disable-orgfwd', 'delete-journal', 'delete-roles',
+    'delete-appcreds', 'delete-flows', 'delete-transport', 'delete-connectors',
+  ]);
+  if (!logged.has(kind)) return;
+  const action = kind === 'assign-password' ? 'reset-password' : kind;
+  const details = asArray(parsed?.data?.Details);
+  if (details.length) {
+    rememberContainmentAction(div, details.map((line) => {
+      const text = String(line);
+      const split = text.indexOf(':');
+      const upn = split > 0 ? text.slice(0, split).trim() : '';
+      const rest = split > 0 ? text.slice(split + 1).trim() : text;
+      const failed = /\bfail(ed|ure)?\b|\berror\b|\bdenied\b/i.test(rest);
+      const safeDetail = (action === 'reset-password')
+        ? (failed ? rest : (kind === 'assign-password' ? 'mode=assign' : 'mode=random'))
+        : rest;
+      return { upn, action, result: failed ? 'failed' : 'success', detail: safeDetail };
+    }));
+    return;
+  }
+  const users = asArray(targets).map((t) => {
+    if (t == null) return '';
+    if (typeof t === 'string') return t;
+    return t.UserPrincipalName || t.userPrincipalName || t.Mailbox || t.user || '';
+  }).filter(Boolean);
+  const ok = parsed?.prefix && !String(parsed.prefix).includes('FAILED');
+  const result = ok ? 'success' : 'failed';
+  let detail = '';
+  if (kind === 'reset-password' || kind === 'assign-password') {
+    detail = kind === 'assign-password' ? 'mode=assign' : 'mode=random';
+  } else if (parsed?.data?.SuccessCount != null || parsed?.data?.FailCount != null) {
+    detail = `success=${parsed.data.SuccessCount || 0}; failed=${parsed.data.FailCount || 0}`;
+  } else if (parsed?.raw) {
+    detail = String(parsed.raw).slice(0, 240);
+  }
+  rememberContainmentAction(div, (users.length ? users : ['']).map((upn) => ({ upn, action, result, detail })));
+}
+
+function rememberReportFolder(clientNumber, path) {
+  if (!clientNumber || !path) return;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  const folders = Array.isArray(prior.reportFolders) ? prior.reportFolders.filter(Boolean) : [];
+  if (!folders.includes(path)) folders.push(path);
+  tenantUiState.set(String(clientNumber), { ...prior, reportFolders: folders });
+}
+
+function buildContainmentExportPacks(div, clientNumber) {
+  const c = tenantUiState.get(String(clientNumber))?.containment || {};
+  const actions = asArray(c.actions);
+  const users = getSelectedContainmentUsers(div);
+  const allUsers = new Set(users.map((u) => String(u)));
+  USER_CONTAINMENT_KEYS.forEach((key) => {
+    asArray(c[key]).forEach((row) => {
+      const upn = row?.UserPrincipalName || row?.userPrincipalName || row?.Mailbox;
+      if (upn) allUsers.add(String(upn));
+    });
+  });
+  if (c.rulesUser) allUsers.add(String(c.rulesUser));
+  actions.forEach((row) => {
+    if (row?.UPN || row?.upn) allUsers.add(String(row.UPN || row.upn));
+  });
+  const packs = [];
+  for (const upn of allUsers) {
+    if (!upn || upn === '_tenant') continue;
+    const files = {
+      'readme.txt': `Containment pull for ${upn}\nSaved ${new Date().toISOString()}\nIncludes actions.csv (password reset, revoke, block, and other account changes).\n`,
+    };
+    if (c.status) files['status.txt'] = String(c.status);
+    const userFiles = {
+      authMethods: 'mfa.json',
+      devices: 'entra-devices.json',
+      oauth: 'oauth-consents.json',
+      mobile: 'activesync.json',
+      intune: 'intune.json',
+      folders: 'folder-permissions.json',
+      autoreply: 'auto-reply.json',
+      junk: 'junk-trusted.json',
+      mailbox: 'mailbox-access.json',
+      hold: 'hold-audit.json',
+      elsewhere: 'rights-elsewhere.json',
+      roles: 'roles-groups.json',
+      restrictedEmail: 'restricted-users.json',
+    };
+    Object.entries(userFiles).forEach(([key, name]) => {
+      const rows = rowsForContainmentUser(c[key], upn);
+      if (rows.length) files[name] = rows;
+    });
+    if (c.rules && String(c.rulesUser || '').toLowerCase() === upn.toLowerCase()) {
+      files['inbox-rules.json'] = asArray(c.rules);
+    }
+    const userActions = actions.filter((row) => String(row.UPN || row.upn || '').toLowerCase() === upn.toLowerCase());
+    if (userActions.length) files['actions.csv'] = containmentActionsToCsv(userActions);
+    if (Object.keys(files).length > 2 || files['mfa.json'] || files['mailbox-access.json'] || files['inbox-rules.json'] || files['actions.csv']) {
+      packs.push({ user: upn, files });
+    } else if (c.status && String(c.status).toLowerCase().includes(upn.toLowerCase())) {
+      packs.push({ user: upn, files });
+    }
+  }
+  const tenantFiles = {};
+  TENANT_CONTAINMENT_KEYS.forEach((key) => {
+    if (c[key] && asArray(c[key]).length) tenantFiles[`${key}.json`] = c[key];
+  });
+  const tenantActions = actions.filter((row) => !String(row.UPN || row.upn || '').trim());
+  if (tenantActions.length) tenantFiles['actions.csv'] = containmentActionsToCsv(tenantActions);
+  if (Object.keys(tenantFiles).length) {
+    tenantFiles['readme.txt'] = `Tenant-wide containment lists and account-change log\nSaved ${new Date().toISOString()}\n`;
+    packs.push({ user: '_tenant', files: tenantFiles });
+  }
+  return packs;
+}
+
+async function saveContainmentPacks(clientNumber, div) {
+  const packs = buildContainmentExportPacks(div, clientNumber);
+  const actions = asArray(tenantUiState.get(String(clientNumber))?.containment?.actions);
+  if (!packs.length && !actions.length) {
+    log(`Client ${clientNumber}: nothing to save — list containment data or perform an account change first.`);
+    return;
+  }
+  let data;
+  try {
+    data = await api(`/api/tenants/${clientNumber}/containment-pack`, {
+      method: 'POST',
+      body: JSON.stringify({
+        outputFolder: div.dataset.outputFolder || '',
+        companyName: getTenantCompanyName(div, clientNumber),
+        packs,
+        actions,
+      }),
+    });
+  } catch (e) {
+    if (String(e.message || e).includes('Not found')) {
+      throw new Error('Save containment zips needs a web-runner restart (new /api/tenants/.../containment-pack route).');
+    }
+    throw e;
+  }
+  if (data.folder) {
+    div.dataset.outputFolder = data.folder;
+    rememberReportFolder(clientNumber, data.folder);
+    const openBtn = div.querySelector('.openReports');
+    if (openBtn) openBtn.disabled = false;
+    refreshTenantSummaryUI(clientNumber, { outputFolder: data.folder });
+  }
+  const names = (data.files || []).map((f) => String(f).split(/[/\\]/).pop()).join(', ');
+  const audit = data.auditCsv ? `\nAccount changes: ${String(data.auditCsv).split(/[/\\]/).pop()}` : '';
+  setContainmentStatus(div, `Saved ${data.files?.length || 0} zip(s) to ${data.folder}${names ? `\n${names}` : ''}${audit}`);
+  log(`Client ${clientNumber}: saved containment zips to ${data.folder}`);
+}
+
+function clearContainmentUserPulls(div) {
+  const clientNumber = div?.closest('details.tenant')?.dataset?.client;
+  if (!clientNumber) return;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  const next = { ...(prior.containment || {}) };
+  USER_CONTAINMENT_KEYS.forEach((key) => { delete next[key]; });
+  next.status = 'User containment pulls cleared. Account-change log and tenant-wide lists kept. Saved zips were not deleted.';
+  tenantUiState.set(String(clientNumber), { ...prior, containment: next });
+  persistContainmentToSessionStorage(clientNumber, next);
+  scheduleTenantUiStateSync(clientNumber, div, true);
+  delete div.dataset.restrictedEmailJson;
+  delete div.dataset.containmentRulesUser;
+  applyAuthMethodsResult(div, []);
+  applyDevicesResult(div, []);
+  applyOauthResult(div, []);
+  applyMobileResult(div, []);
+  applyIntuneResult(div, []);
+  applyFoldersResult(div, []);
+  applyAutoreplyResult(div, []);
+  applyJunkResult(div, []);
+  applyMailboxAccessResult(div, []);
+  applyHoldResult(div, []);
+  applyElsewhereResult(div, []);
+  applyRolesResult(div, []);
+  renderContainmentRules(div, '', []);
+  const after = tenantUiState.get(String(clientNumber)) || {};
+  const cleaned = { ...(after.containment || {}) };
+  USER_CONTAINMENT_KEYS.forEach((key) => { delete cleaned[key]; });
+  cleaned.status = next.status;
+  tenantUiState.set(String(clientNumber), { ...after, containment: cleaned });
+  persistContainmentToSessionStorage(clientNumber, cleaned);
+  setContainmentStatus(div, next.status, { skipSave: true });
+}
+
+const REMEDIATE_SUCCESS_PREFIXES = [
+  'REMEDIATE_SUCCESS:', 'REMEDIATE_RESTRICTED:', 'REMEDIATE_RULES:', 'REMEDIATE_MAILBOX:',
+  'REMEDIATE_TRANSPORT:', 'REMEDIATE_CONNECTORS:', 'REMEDIATE_AUTHMETHODS:', 'REMEDIATE_DEVICES:',
+  'REMEDIATE_APPS:', 'REMEDIATE_OAUTH:', 'REMEDIATE_MOBILE:', 'REMEDIATE_FOLDERS:',
+  'REMEDIATE_AUTOREPLY:', 'REMEDIATE_ORGFWD:', 'REMEDIATE_JUNK:', 'REMEDIATE_JOURNAL:',
+  'REMEDIATE_HOLD:', 'REMEDIATE_ELSEWHERE:', 'REMEDIATE_ROLES:', 'REMEDIATE_INTUNE:',
+  'REMEDIATE_APPCREDS:', 'REMEDIATE_FLOWS:',
+];
+
+function extractWorkerTokenResponse(value, prefixes) {
+  const text = normalizeResponse(value);
+  if (!text || !prefixes?.length) return text;
+  for (const prefix of prefixes) {
+    const idx = text.indexOf(prefix);
+    if (idx >= 0) return text.slice(idx);
+  }
+  return text;
+}
+
+function parseRemediatePayload(final) {
+  const prefixes = ['REMEDIATE_FAILED:', ...REMEDIATE_SUCCESS_PREFIXES];
+  const text = extractWorkerTokenResponse(final || '', prefixes);
+  for (const prefix of prefixes) {
+    if (text.startsWith(prefix)) {
+      const rest = text.slice(prefix.length);
+      try {
+        return { prefix, data: JSON.parse(rest), raw: rest };
+      } catch {
+        return { prefix, data: null, raw: rest };
+      }
+    }
+  }
+  return { prefix: '', data: null, raw: text };
+}
+
+function renderContainmentRules(div, mailbox, rules) {
+  const rows = asArray(rules);
+  rememberContainment(div, { rules: rows, rulesUser: mailbox || '' }, true);
+  const wrap = div.querySelector('.containmentRulesWrap');
+  const tbody = div.querySelector('.containmentRulesTable tbody');
+  if (!wrap || !tbody) return;
+  div.dataset.containmentRulesUser = mailbox || '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">No inbox rules (including hidden).</td></tr>';
+    wrap.style.display = 'block';
+    updateContainmentButtons(div);
+    return;
+  }
+  tbody.innerHTML = rows.map((rule, idx) => {
+    const identity = escapeHtml(String(rule.Identity || rule.Name || ''));
+    const name = escapeHtml(String(rule.Name || rule.Identity || ''));
+    const details = [
+      rule.Description,
+      rule.RedirectTo ? `Redirect: ${rule.RedirectTo}` : '',
+      rule.ForwardTo ? `Forward: ${rule.ForwardTo}` : '',
+      rule.ForwardAsAttachmentTo ? `Fwd attach: ${rule.ForwardAsAttachmentTo}` : '',
+      rule.DeleteMessage ? 'Deletes messages' : '',
+      rule.From ? `From: ${rule.From}` : '',
+    ].filter(Boolean).join(' · ');
+    return `<tr>
+      <td><input type="checkbox" class="containmentRulePick" data-identity="${identity}" data-idx="${idx}" /></td>
+      <td>${name}</td>
+      <td>${rule.Enabled ? 'yes' : 'no'}</td>
+      <td>${rule.Priority != null ? escapeHtml(String(rule.Priority)) : ''}</td>
+      <td>${rule.Hidden ? 'yes' : 'no'}</td>
+      <td>${escapeHtml(details)}</td>
+    </tr>`;
+  }).join('');
+  wrap.style.display = 'block';
+  tbody.querySelectorAll('.containmentRulePick').forEach((cb) => {
+    cb.addEventListener('change', () => updateContainmentButtons(div));
+  });
+  updateContainmentButtons(div);
+}
+
+function applyMailboxAccessResult(div, users) {
+  rememberContainmentResult(div, 'mailbox', users);
+  const wrap = div.querySelector('.containmentMailboxWrap');
+  const tbody = div.querySelector('.containmentMailboxTable tbody');
+  if (!wrap || !tbody) return;
+  const rows = [];
+  const mailboxList = asArray(users);
+  mailboxList.forEach((mbx) => {
+    const upn = mbx.UserPrincipalName || '';
+    if (mbx.Error) {
+      rows.push({ kind: 'error', mailbox: upn, type: 'Error', target: mbx.Error, keep: '', field: '' });
+      return;
+    }
+    const listed = asArray(mbx.Forwards);
+    if (listed.length) {
+      listed.forEach((f) => {
+        const field = f.Field === 'Recipient' ? 'Recipient' : 'Smtp';
+        rows.push({
+          kind: 'forward',
+          mailbox: upn,
+          type: field === 'Recipient' ? 'Forward recipient' : 'Forward SMTP',
+          target: f.Address || '',
+          keep: mbx.DeliverToMailboxAndForward ? 'yes' : 'no',
+          field,
+        });
+      });
+    } else {
+      const smtp = mbx.ForwardingSmtpAddress || '';
+      const recip = mbx.ForwardingAddress || '';
+      if (smtp) {
+        rows.push({ kind: 'forward', mailbox: upn, type: 'Forward SMTP', target: smtp, keep: mbx.DeliverToMailboxAndForward ? 'yes' : 'no', field: 'Smtp' });
+      }
+      if (recip) {
+        rows.push({ kind: 'forward', mailbox: upn, type: 'Forward recipient', target: recip, keep: mbx.DeliverToMailboxAndForward ? 'yes' : 'no', field: 'Recipient' });
+      }
+      if (!smtp && !recip) {
+        rows.push({ kind: 'none', mailbox: upn, type: 'Forward', target: '(none)', keep: '', field: '' });
+      }
+    }
+    asArray(mbx.Delegates).forEach((d) => {
+      rows.push({
+        kind: 'delegate',
+        mailbox: upn,
+        type: d.Right || '',
+        target: d.User || '',
+        keep: '',
+        field: '',
+      });
+    });
+  });
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No forwarding or delegates.</td></tr>';
+    wrap.style.display = 'block';
+    updateContainmentButtons(div);
+    return;
+  }
+  tbody.innerHTML = rows.map((row) => {
+    let pick = '';
+    if (row.kind === 'delegate') {
+      pick = `<input type="checkbox" class="containmentDelegatePick" data-mailbox="${escapeHtml(row.mailbox)}" data-right="${escapeHtml(row.type)}" data-user="${escapeHtml(row.target)}" />`;
+    } else if (row.kind === 'forward' && row.field) {
+      pick = `<input type="checkbox" class="containmentForwardPick" data-mailbox="${escapeHtml(row.mailbox)}" data-field="${escapeHtml(row.field)}" data-target="${escapeHtml(row.target)}" />`;
+    }
+    return `<tr>
+      <td>${pick}</td>
+      <td>${escapeHtml(row.mailbox)}</td>
+      <td>${escapeHtml(row.type)}</td>
+      <td>${escapeHtml(row.target)}</td>
+      <td>${escapeHtml(row.keep)}</td>
+    </tr>`;
+  }).join('');
+  wrap.style.display = 'block';
+  tbody.querySelectorAll('.containmentForwardPick, .containmentDelegatePick').forEach((cb) => {
+    cb.addEventListener('change', () => updateContainmentButtons(div));
+  });
+  updateContainmentButtons(div);
+}
+
+function renderGenericPickTable(div, wrapSel, tbodySel, pickClass, emptyCols, emptyText, htmlRows) {
+  const wrap = div.querySelector(wrapSel);
+  const tbody = div.querySelector(tbodySel);
+  if (!wrap || !tbody) return;
+  if (!htmlRows.length) {
+    tbody.innerHTML = `<tr><td colspan="${emptyCols}" class="muted">${emptyText}</td></tr>`;
+    wrap.style.display = 'block';
+    updateContainmentButtons(div);
+    return;
+  }
+  tbody.innerHTML = htmlRows.join('');
+  wrap.style.display = 'block';
+  tbody.querySelectorAll(`.${pickClass}`).forEach((cb) => {
+    cb.addEventListener('change', () => updateContainmentButtons(div));
+  });
+  updateContainmentButtons(div);
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value == null || value === '') return [];
+  return [value];
+}
+
+function applyTransportRulesResult(div, rules) {
+  const list = asArray(rules).map((r) => ({ ...r, Description: String(r.Description || '').slice(0, 240) }));
+  rememberContainmentResult(div, 'transport', list);
+  const html = list.map((rule) => {
+    const identity = escapeHtml(String(rule.Identity || rule.Name || ''));
+    return `<tr>
+      <td><input type="checkbox" class="containmentTransportPick" data-identity="${identity}" /></td>
+      <td>${escapeHtml(String(rule.Name || ''))}</td>
+      <td>${escapeHtml(String(rule.State || ''))}</td>
+      <td>${rule.Priority != null ? escapeHtml(String(rule.Priority)) : ''}</td>
+      <td>${escapeHtml(String(rule.Description || ''))}</td>
+    </tr>`;
+  });
+  renderGenericPickTable(div, '.containmentTransportWrap', '.containmentTransportTable tbody', 'containmentTransportPick', 5, 'No transport rules.', html);
+}
+
+function applyAuthMethodsResult(div, methods) {
+  rememberContainmentResult(div, 'authMethods', methods);
+  const list = asArray(methods).filter((m) => m && (m.Id || m.Error || m.Type));
+  const html = list.map((m) => {
+    const canDelete = m.CanDelete !== false && m.Id;
+    const pick = canDelete
+      ? `<input type="checkbox" class="containmentMfaPick" data-user="${escapeHtml(m.UserPrincipalName || '')}" data-id="${escapeHtml(m.Id || '')}" data-odata="${escapeHtml(m.ODataType || '')}" />`
+      : '';
+    return `<tr>
+      <td>${pick}</td>
+      <td>${escapeHtml(m.UserPrincipalName || '')}</td>
+      <td>${escapeHtml(m.Type || '')}</td>
+      <td>${escapeHtml(m.Details || m.Error || '')}</td>
+    </tr>`;
+  });
+  renderGenericPickTable(div, '.containmentMfaWrap', '.containmentMfaTable tbody', 'containmentMfaPick', 4, 'No MFA methods.', html);
+}
+
+function applyDevicesResult(div, devices) {
+  rememberContainmentResult(div, 'devices', devices);
+  const list = asArray(devices).filter((d) => d && (d.Id || d.Error || d.DisplayName));
+  const html = list.filter((d) => d.Id || d.Error).map((d) => {
+    const pick = d.Id
+      ? `<input type="checkbox" class="containmentDevicePick" data-id="${escapeHtml(d.Id || '')}" data-user="${escapeHtml(d.UserPrincipalName || '')}" />`
+      : '';
+    return `<tr>
+      <td>${pick}</td>
+      <td>${escapeHtml(d.UserPrincipalName || '')}</td>
+      <td>${escapeHtml(d.DisplayName || '')}</td>
+      <td>${escapeHtml(d.OperatingSystem || '')}</td>
+      <td>${escapeHtml(d.TrustType || '')}</td>
+      <td>${escapeHtml(d.Relation || '')}</td>
+      <td>${escapeHtml(d.LastSignIn || d.Error || '')}</td>
+    </tr>`;
+  });
+  renderGenericPickTable(div, '.containmentDevicesWrap', '.containmentDevicesTable tbody', 'containmentDevicePick', 7, 'No registered or owned devices.', html);
+}
+
+function applyAppsResult(div, apps) {
+  rememberContainmentResult(div, 'apps', apps);
+  const list = asArray(apps);
+  const html = list.map((a) => {
+    const id = escapeHtml(String(a.Id || ''));
+    const kind = escapeHtml(String(a.Kind || ''));
+    return `<tr>
+      <td><input type="checkbox" class="containmentAppPick" data-id="${id}" data-kind="${kind}" data-name="${escapeHtml(String(a.DisplayName || ''))}" /></td>
+      <td>${kind}</td>
+      <td>${escapeHtml(String(a.DisplayName || ''))}</td>
+      <td>${escapeHtml(String(a.AppId || ''))}</td>
+      <td>${escapeHtml(String(a.Created || ''))}</td>
+      <td>${escapeHtml(String(a.Publisher || ''))}</td>
+    </tr>`;
+  });
+  renderGenericPickTable(div, '.containmentAppsWrap', '.containmentAppsTable tbody', 'containmentAppPick', 6, 'No app registrations or other-tenant enterprise apps.', html);
+}
+
+function applyConnectorsResult(div, connectors) {
+  rememberContainmentResult(div, 'connectors', connectors);
+  const list = asArray(connectors);
+  const html = list.map((c) => {
+    const name = escapeHtml(String(c.Name || ''));
+    const direction = escapeHtml(String(c.Direction || ''));
+    const details = [c.ConnectorType, c.SmartHosts ? `SmartHosts: ${c.SmartHosts}` : '', c.SenderIPAddresses ? `IPs: ${c.SenderIPAddresses}` : '', c.Domains ? `Domains: ${c.Domains}` : ''].filter(Boolean).join(' · ');
+    return `<tr>
+      <td><input type="checkbox" class="containmentConnectorPick" data-name="${name}" data-direction="${direction}" /></td>
+      <td>${direction}</td>
+      <td>${name}</td>
+      <td>${c.Enabled ? 'yes' : 'no'}</td>
+      <td>${escapeHtml(details)}</td>
+    </tr>`;
+  });
+  renderGenericPickTable(div, '.containmentConnectorsWrap', '.containmentConnectorsTable tbody', 'containmentConnectorPick', 5, 'No inbound or outbound connectors.', html);
+}
+
+function applyOauthResult(div, grants) {
+  rememberContainmentResult(div, 'oauth', grants);
+  const html = asArray(grants).filter((g) => g.Id || g.Error).map((g) => `<tr>
+      <td>${g.Id ? `<input type="checkbox" class="containmentOauthPick" data-id="${escapeHtml(String(g.Id))}" data-user="${escapeHtml(String(g.UserPrincipalName || ''))}" data-app="${escapeHtml(String(g.App || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(g.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(g.App || g.Error || ''))}</td>
+      <td>${escapeHtml(String(g.Scope || ''))}</td>
+      <td>${escapeHtml(String(g.ConsentType || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentOauthWrap', '.containmentOauthTable tbody', 'containmentOauthPick', 5, 'No OAuth consents.', html);
+}
+
+function applyMobileResult(div, devices) {
+  rememberContainmentResult(div, 'mobile', devices);
+  const html = asArray(devices).filter((d) => d.Identity || d.Error).map((d) => `<tr>
+      <td>${d.Identity ? `<input type="checkbox" class="containmentMobilePick" data-identity="${escapeHtml(String(d.Identity))}" data-user="${escapeHtml(String(d.UserPrincipalName || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(d.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(d.FriendlyName || d.Error || ''))}</td>
+      <td>${escapeHtml(String(d.DeviceType || ''))}</td>
+      <td>${escapeHtml(String(d.FirstSync || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentMobileWrap', '.containmentMobileTable tbody', 'containmentMobilePick', 5, 'No ActiveSync partnerships.', html);
+}
+
+function applyIntuneResult(div, devices) {
+  rememberContainmentResult(div, 'intune', devices);
+  const html = asArray(devices).filter((d) => d.Id || d.Error).map((d) => `<tr>
+      <td>${d.Id ? `<input type="checkbox" class="containmentIntunePick" data-id="${escapeHtml(String(d.Id))}" data-name="${escapeHtml(String(d.DeviceName || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(d.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(d.DeviceName || d.Error || ''))}</td>
+      <td>${escapeHtml(String(d.Os || ''))}</td>
+      <td>${escapeHtml(String(d.Compliance || ''))}</td>
+      <td>${escapeHtml(String(d.LastSync || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentIntuneWrap', '.containmentIntuneTable tbody', 'containmentIntunePick', 6, 'No Intune-managed devices.', html);
+}
+
+function applyFoldersResult(div, perms) {
+  rememberContainmentResult(div, 'folders', perms);
+  const html = asArray(perms).filter((p) => (p.User && p.User !== '(none)') || p.Error).map((p) => `<tr>
+      <td>${p.User && p.User !== '(none)' ? `<input type="checkbox" class="containmentFolderPick" data-user="${escapeHtml(String(p.UserPrincipalName || ''))}" data-folder="${escapeHtml(String(p.Folder || ''))}" data-trustee="${escapeHtml(String(p.User || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(p.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(p.Folder || ''))}</td>
+      <td>${escapeHtml(String(p.User || p.Error || ''))}</td>
+      <td>${escapeHtml(String(p.AccessRights || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentFoldersWrap', '.containmentFoldersTable tbody', 'containmentFolderPick', 5, 'No folder permissions besides empty Default/Anonymous.', html);
+}
+
+function applyAutoreplyResult(div, users) {
+  rememberContainmentResult(div, 'autoreply', users);
+  const wrap = div.querySelector('.containmentAutoreplyWrap');
+  const tbody = div.querySelector('.containmentAutoreplyTable tbody');
+  if (!wrap || !tbody) return;
+  const list = asArray(users);
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">No auto-reply data.</td></tr>';
+  } else {
+    tbody.innerHTML = list.map((u) => `<tr>
+      <td>${escapeHtml(String(u.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(u.AutoReplyState || u.Error || ''))}</td>
+      <td>${escapeHtml(String(u.ExternalAudience || ''))}</td>
+      <td>${escapeHtml(String((u.InternalMessage || u.ExternalMessage || '').replace(/<[^>]+>/g, ' ').slice(0, 180)))}</td>
+    </tr>`).join('');
+  }
+  wrap.style.display = 'block';
+}
+
+function applyOrgfwdResult(div, policies) {
+  rememberContainmentResult(div, 'orgfwd', policies);
+  const html = asArray(policies).filter((p) => p.Identity || p.Error).map((p) => {
+    const value = p.Kind === 'OutboundSpam' ? (p.AutoForwardingMode || '') : String(p.AutoForward);
+    return `<tr>
+      <td>${p.Identity ? `<input type="checkbox" class="containmentOrgfwdPick" data-kind="${escapeHtml(String(p.Kind || ''))}" data-identity="${escapeHtml(String(p.Identity))}" />` : ''}</td>
+      <td>${escapeHtml(String(p.Kind || ''))}</td>
+      <td>${escapeHtml(String(p.Name || p.Error || ''))}</td>
+      <td>${escapeHtml(value)}</td>
+    </tr>`;
+  });
+  renderGenericPickTable(div, '.containmentOrgfwdWrap', '.containmentOrgfwdTable tbody', 'containmentOrgfwdPick', 4, 'No remote domains or outbound spam policies.', html);
+}
+
+function applyJunkResult(div, entries) {
+  rememberContainmentResult(div, 'junk', entries);
+  const html = asArray(entries).filter((e) => (e.Address && e.Address !== '(none)') || e.Error).map((e) => `<tr>
+      <td>${e.Address && e.Address !== '(none)' ? `<input type="checkbox" class="containmentJunkPick" data-user="${escapeHtml(String(e.UserPrincipalName || ''))}" data-list="${escapeHtml(String(e.List || ''))}" data-address="${escapeHtml(String(e.Address || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(e.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(e.List || ''))}</td>
+      <td>${escapeHtml(String(e.Address || e.Error || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentJunkWrap', '.containmentJunkTable tbody', 'containmentJunkPick', 4, 'No trusted senders or recipients.', html);
+}
+
+function applyJournalResult(div, rules) {
+  rememberContainmentResult(div, 'journal', rules);
+  const html = asArray(rules).filter((r) => r.Identity || r.Error).map((r) => `<tr>
+      <td>${r.Identity ? `<input type="checkbox" class="containmentJournalPick" data-identity="${escapeHtml(String(r.Identity))}" />` : ''}</td>
+      <td>${escapeHtml(String(r.Name || r.Error || ''))}</td>
+      <td>${escapeHtml(String(r.Recipient || ''))}</td>
+      <td>${escapeHtml(String(r.JournalEmailAddress || ''))}</td>
+      <td>${r.Enabled ? 'yes' : 'no'}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentJournalWrap', '.containmentJournalTable tbody', 'containmentJournalPick', 5, 'No journal rules.', html);
+}
+
+function applyHoldResult(div, users) {
+  rememberContainmentResult(div, 'hold', users);
+  const wrap = div.querySelector('.containmentHoldWrap');
+  const tbody = div.querySelector('.containmentHoldTable tbody');
+  if (!wrap || !tbody) return;
+  const list = asArray(users);
+  tbody.innerHTML = list.length
+    ? list.map((u) => `<tr>
+      <td>${escapeHtml(String(u.UserPrincipalName || ''))}</td>
+      <td>${u.Error ? escapeHtml(String(u.Error)) : (u.LitigationHoldEnabled ? 'yes' : 'no')}</td>
+      <td>${escapeHtml(String(u.RetainDeletedItemsFor || ''))}</td>
+      <td>${u.AuditEnabled ? 'yes' : 'no'}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="4" class="muted">No mailbox hold data.</td></tr>';
+  wrap.style.display = 'block';
+}
+
+function applyElsewhereResult(div, grants) {
+  rememberContainmentResult(div, 'elsewhere', grants);
+  const html = asArray(grants).filter((g) => (g.Mailbox && g.Mailbox !== '(none)') || g.Error).map((g) => `<tr>
+      <td>${g.Mailbox && g.Mailbox !== '(none)' && !g.Error ? `<input type="checkbox" class="containmentElsewherePick" data-user="${escapeHtml(String(g.UserPrincipalName || ''))}" data-mailbox="${escapeHtml(String(g.Mailbox || ''))}" data-right="${escapeHtml(String(g.Right || ''))}" data-trustee="${escapeHtml(String(g.Trustee || g.UserPrincipalName || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(g.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(g.Mailbox || g.Error || ''))}</td>
+      <td>${escapeHtml(String(g.Right || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentElsewhereWrap', '.containmentElsewhereTable tbody', 'containmentElsewherePick', 4, 'No Send As, Send on Behalf, or Full Access grants on other mailboxes.', html);
+}
+
+function applyRolesResult(div, roles) {
+  rememberContainmentResult(div, 'roles', roles);
+  const html = asArray(roles).filter((r) => r.Id || r.Error).map((r) => `<tr>
+      <td>${r.Id && r.CanRemove !== false ? `<input type="checkbox" class="containmentRolePick" data-id="${escapeHtml(String(r.Id))}" data-kind="${escapeHtml(String(r.Kind || ''))}" data-user="${escapeHtml(String(r.UserPrincipalName || ''))}" data-name="${escapeHtml(String(r.Name || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(r.UserPrincipalName || ''))}</td>
+      <td>${escapeHtml(String(r.Kind || ''))}</td>
+      <td>${escapeHtml(String(r.Name || r.Error || ''))}</td>
+      <td>${escapeHtml(String(r.Details || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentRolesWrap', '.containmentRolesTable tbody', 'containmentRolePick', 5, 'No directory roles, groups, or Exchange RBAC assignments.', html);
+}
+
+function applyAppcredsResult(div, creds) {
+  rememberContainmentResult(div, 'appcreds', creds);
+  const html = asArray(creds).filter((c) => c.AppId || c.Error).map((c) => `<tr>
+      <td>${c.AppId && c.Kind && c.Kind !== 'Certificate' ? `<input type="checkbox" class="containmentAppcredPick" data-kind="${escapeHtml(String(c.Kind))}" data-appid="${escapeHtml(String(c.AppId))}" data-keyid="${escapeHtml(String(c.KeyId || ''))}" data-ownerid="${escapeHtml(String(c.OwnerId || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(c.Kind || ''))}</td>
+      <td>${escapeHtml(String(c.AppName || ''))}</td>
+      <td>${escapeHtml(String(c.DisplayName || c.Error || ''))}</td>
+      <td>${escapeHtml(String(c.End || ''))}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentAppcredsWrap', '.containmentAppcredsTable tbody', 'containmentAppcredPick', 5, 'No app secrets or owners (certificates are listed but must be removed in Entra).', html);
+}
+
+function applyFlowsResult(div, flows) {
+  rememberContainmentResult(div, 'flows', flows);
+  const html = asArray(flows).filter((f) => f.Id || f.Error).map((f) => `<tr>
+      <td>${f.Id ? `<input type="checkbox" class="containmentFlowPick" data-id="${escapeHtml(String(f.Id))}" data-env="${escapeHtml(String(f.Environment || ''))}" />` : ''}</td>
+      <td>${escapeHtml(String(f.Name || f.Error || ''))}</td>
+      <td>${escapeHtml(String(f.Environment || ''))}</td>
+      <td>${f.Enabled === true ? 'yes' : (f.Enabled === false ? 'no' : '')}</td>
+    </tr>`);
+  renderGenericPickTable(div, '.containmentFlowsWrap', '.containmentFlowsTable tbody', 'containmentFlowPick', 4, 'No flows returned.', html);
+}
+
+async function sendRemediateCommand(clientNumber, div, command, progressLabel, waitSeconds = 180) {
+  if (!await requireLiveWorker(clientNumber, { actionLabel: progressLabel || 'containment' })) {
+    return null;
+  }
+  const initial = await api(`/api/tenants/${clientNumber}/command`, {
+    method: 'POST',
+    body: workerCommandBody(command),
+  });
+  let final = extractWorkerTokenResponse(initial.response, ['REMEDIATE_FAILED:', ...REMEDIATE_SUCCESS_PREFIXES, 'REMEDIATE_STARTED']);
+  if (!final || final === 'REMEDIATE_STARTED') {
+    final = await pollWorkerResponse(
+      clientNumber,
+      'REMEDIATE_STARTED',
+      REMEDIATE_SUCCESS_PREFIXES,
+      'REMEDIATE_FAILED:',
+      waitSeconds,
+      progressLabel || 'containment'
+    );
+  }
+  return final;
+}
+
+function formatContainmentUserStatus(users) {
+  return (users || []).map((u) => {
+    const upn = u.UserPrincipalName || u.userPrincipalName || '';
+    if (u.Error) return `${upn}: ${u.Error}`;
+    if (u.Restricted === true) {
+      return `${upn}: RESTRICTED${u.Reason ? ` (${u.Reason})` : ''}${u.CreatedDateTime ? ` since ${u.CreatedDateTime}` : ''}`;
+    }
+    if (u.Restricted === false) return `${upn}: not restricted from sending (not on Restricted entities)`;
+    if (typeof u.AccountEnabled === 'boolean') {
+      return `${upn}: accountEnabled=${u.AccountEnabled}${u.DisplayName ? ` (${u.DisplayName})` : ''}`;
+    }
+    return JSON.stringify(u);
+  }).join('\n');
+}
+
+async function runContainmentAction(clientNumber, div, kind) {
+  const users = getSelectedContainmentUsers(div);
+  const graph = div.dataset.graphAuthenticated === '1';
+  const exo = div.dataset.exchangeAuthenticated === '1';
+  const usersJson = JSON.stringify(users);
+  const writes = {
+    revoke: { cmd: `REMEDIATE_REVOKE_SESSIONS|USERS:${usersJson}`, action: 'revoke', need: 'graph', label: 'revoking sessions' },
+    block: { cmd: `REMEDIATE_BLOCK|USERS:${usersJson}`, action: 'block', need: 'graph', label: 'blocking sign-in' },
+    unblock: { cmd: `REMEDIATE_UNBLOCK|USERS:${usersJson}`, action: 'unblock', need: 'graph', label: 'unblocking sign-in' },
+    unrestrict: { cmd: `REMEDIATE_UNRESTRICT_EMAIL|USERS:${usersJson}`, action: 'unrestrict', need: 'exo', label: 'unrestricting email' },
+  };
+
+  if (kind === 'signin-status') {
+    if (!graph || !users.length) return;
+    setContainmentStatus(div, 'Checking sign-in status…');
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_SIGNIN_STATUS|USERS:${usersJson}`, 'checking sign-in status');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_SUCCESS:') {
+      setContainmentStatus(div, formatContainmentUserStatus(parsed.data?.Users));
+      log(`Client ${clientNumber}: sign-in status updated.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Sign-in status failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'reset-password' || kind === 'assign-password') {
+    if (!graph || !users.length) return;
+    const assigned = (div.querySelector('.containmentAssignPasswordInput')?.value || '');
+    const mode = kind === 'assign-password' ? 'assign' : 'random';
+    if (mode === 'assign') {
+      if (!assigned.trim()) {
+        log(`Client ${clientNumber}: enter a password to assign, or use Reset with random password.`);
+        return;
+      }
+      if (assigned.length < 8) {
+        log(`Client ${clientNumber}: assigned password must be at least 8 characters.`);
+        return;
+      }
+    }
+    const confirmMsg = mode === 'assign'
+      ? `Set a specific password for:\n${users.join('\n')}\n\nPrefer sending the SSPR link instead of this password. Continue?`
+      : `Reset password for:\n${users.join('\n')}\n\nThis invalidates the current password so an attacker cannot use it. Do not send a password to the user — send the Microsoft password-reset link instead.\n\nContinue?`;
+    if (!confirmContainmentPopup(confirmMsg)) return;
+    const options = mode === 'assign' ? { Mode: 'assign', Password: assigned } : { Mode: 'random' };
+    setContainmentStatus(div, mode === 'assign' ? 'Setting assigned password…' : 'Resetting password (random)…');
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_RESET_PASSWORD|USERS:${usersJson}|OPTIONS:${JSON.stringify(options)}`, 'resetting password');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_SUCCESS:') {
+      const sspr = parsed.data?.SsprUrl || 'https://passwordreset.microsoftonline.com/';
+      const hint = parsed.data?.SsprHint || 'https://aka.ms/sspr';
+      const lines = [
+        ...(Array.isArray(parsed.data?.Details) ? parsed.data.Details : []),
+        '',
+        'Do not send a password. Direct the user to:',
+        sspr,
+        hint,
+      ];
+      setContainmentStatus(div, lines.filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n'));
+      const field = div.querySelector('.containmentAssignPasswordInput');
+      if (field) field.value = '';
+      log(`Client ${clientNumber}: password reset finished. Send SSPR ${sspr}`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Password reset failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, users, parsed);
+    return;
+  }
+
+  if (kind === 'list-mfa') {
+    if (!graph || !users.length) return;
+    setContainmentStatus(div, 'Listing MFA methods…');
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_LIST_AUTH_METHODS|USERS:${usersJson}`, 'listing MFA methods');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_AUTHMETHODS:') {
+      applyAuthMethodsResult(div, parsed.data?.Methods);
+      setContainmentStatus(div, `${asArray(parsed.data?.Methods).length} MFA method row(s).`);
+      log(`Client ${clientNumber}: MFA methods loaded.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'List MFA methods failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'delete-mfa') {
+    const selected = [...div.querySelectorAll('.containmentMfaPick:checked')].map((cb) => ({
+      UserPrincipalName: cb.dataset.user,
+      Id: cb.dataset.id,
+      ODataType: cb.dataset.odata,
+    })).filter((x) => x.UserPrincipalName && x.Id);
+    if (!selected.length) {
+      log(`Client ${clientNumber}: select one or more MFA methods to remove.`);
+      return;
+    }
+    if (!confirmContainmentPopup(`Remove ${selected.length} MFA method(s)?\n\n${selected.map((s) => `${s.UserPrincipalName} ${s.ODataType || s.Id}`).join('\n')}`)) return;
+    setContainmentStatus(div, `Removing ${selected.length} MFA method(s)…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_AUTH_METHODS|ITEMS:${JSON.stringify(selected)}`, 'removing MFA methods');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_AUTHMETHODS:') {
+      applyAuthMethodsResult(div, parsed.data?.Methods);
+      setContainmentStatus(div, `Removed ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
+      log(`Client ${clientNumber}: MFA method delete finished.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Remove MFA methods failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, selected, parsed);
+    return;
+  }
+
+  if (kind === 'list-devices') {
+    if (!graph || !users.length) return;
+    setContainmentStatus(div, 'Listing registered devices…');
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_LIST_DEVICES|USERS:${usersJson}`, 'listing devices');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_DEVICES:') {
+      applyDevicesResult(div, parsed.data?.Devices);
+      setContainmentStatus(div, `${asArray(parsed.data?.Devices).filter((d) => d.Id).length} device(s).`);
+      log(`Client ${clientNumber}: devices loaded.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'List devices failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'delete-devices') {
+    const selected = [...div.querySelectorAll('.containmentDevicePick:checked')].map((cb) => ({
+      Id: cb.dataset.id,
+      UserPrincipalName: cb.dataset.user,
+    })).filter((x) => x.Id);
+    if (!selected.length) {
+      log(`Client ${clientNumber}: select one or more devices to remove.`);
+      return;
+    }
+    if (!confirmContainmentPopup(`Remove ${selected.length} Entra device object(s)?\n\n${selected.map((s) => s.Id).join('\n')}`)) return;
+    setContainmentStatus(div, `Removing ${selected.length} device(s)…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_DEVICES|DEVICES:${JSON.stringify(selected)}`, 'removing devices');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_DEVICES:') {
+      applyDevicesResult(div, parsed.data?.Devices);
+      setContainmentStatus(div, `Removed ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
+      log(`Client ${clientNumber}: device delete finished.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Remove devices failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, selected, parsed);
+    return;
+  }
+
+  if (kind === 'list-apps') {
+    if (!graph) return;
+    if (!confirmSlowContainment(kind)) return;
+    setContainmentStatus(div, 'Listing app registrations…');
+    const final = await sendRemediateCommand(clientNumber, div, 'REMEDIATE_LIST_APPS', 'listing apps');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_APPS:') {
+      applyAppsResult(div, parsed.data?.Apps);
+      setContainmentStatus(div, `${asArray(parsed.data?.Apps).length} app(s).`);
+      log(`Client ${clientNumber}: app registrations loaded.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'List apps failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'delete-apps') {
+    const selected = [...div.querySelectorAll('.containmentAppPick:checked')].map((cb) => ({
+      Id: cb.dataset.id,
+      Kind: cb.dataset.kind,
+      DisplayName: cb.dataset.name,
+    })).filter((x) => x.Id);
+    if (!selected.length) {
+      log(`Client ${clientNumber}: select one or more apps to remove.`);
+      return;
+    }
+    if (!confirmContainmentPopup(`Delete ${selected.length} app(s)? This removes the Entra object.\n\n${selected.map((s) => `${s.Kind}: ${s.DisplayName || s.Id}`).join('\n')}`)) return;
+    setContainmentStatus(div, `Deleting ${selected.length} app(s)…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_APPS|APPS:${JSON.stringify(selected)}`, 'deleting apps');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === 'REMEDIATE_APPS:') {
+      applyAppsResult(div, parsed.data?.Apps);
+      setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
+      log(`Client ${clientNumber}: app delete finished.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Delete apps failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, selected, parsed);
+    return;
+  }
+
+  if (kind === 'restricted-status') {
+    if (!exo || !users.length) return;
+    setContainmentStatus(div, 'Checking Restricted Users list…');
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_RESTRICTED_EMAIL_STATUS|USERS:${usersJson}`, 'checking restricted email');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_RESTRICTED:') {
+      div.dataset.restrictedEmailJson = JSON.stringify(parsed.data?.Users || []);
+      rememberContainmentResult(div, 'restrictedEmail', parsed.data?.Users || []);
+      setContainmentStatus(div, formatContainmentUserStatus(parsed.data?.Users));
+      updateContainmentButtons(div);
+      const hits = getRestrictedContainmentHits(div, users);
+      log(hits.length
+        ? `Client ${clientNumber}: ${hits.length} selected user(s) restricted from sending — Unrestrict is available.`
+        : `Client ${clientNumber}: selected user(s) are not on Restricted entities.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Restricted status check failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'list-rules') {
+    if (!exo || !users.length) return;
+    const mailbox = users[0];
+    setContainmentStatus(div, `Listing inbox rules for ${mailbox}…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_LIST_INBOX_RULES|USER:${mailbox}`, 'listing inbox rules');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_RULES:') {
+      renderContainmentRules(div, parsed.data?.User || mailbox, parsed.data?.Rules || []);
+      setContainmentStatus(div, `${(parsed.data?.Rules || []).length} inbox rule(s) for ${mailbox}.`);
+      log(`Client ${clientNumber}: loaded inbox rules for ${mailbox}.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'List inbox rules failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'delete-rule') {
+    const mailbox = div.dataset.containmentRulesUser || users[0];
+    if (!exo || !mailbox) {
+      log(`Client ${clientNumber}: list inbox rules first, then select rows to delete.`);
+      return;
+    }
+    const selected = [...div.querySelectorAll('.containmentRulePick:checked')].map((cb) => cb.dataset.identity).filter(Boolean);
+    if (!selected.length) {
+      log(`Client ${clientNumber}: select one or more inbox rules to delete.`);
+      return;
+    }
+    if (!confirmContainmentPopup(`Delete ${selected.length} inbox rule(s) for ${mailbox}?\n\n${selected.join('\n')}`)) {
+      return;
+    }
+    const cmd = `REMEDIATE_DELETE_INBOX_RULES|USER:${mailbox}|RULES:${JSON.stringify(selected)}`;
+    setContainmentStatus(div, `Deleting ${selected.length} rule(s)…`);
+    const final = await sendRemediateCommand(clientNumber, div, cmd, 'deleting inbox rules');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_SUCCESS:') {
+      renderContainmentRules(div, parsed.data?.User || mailbox, parsed.data?.Rules || []);
+      setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
+      log(`Client ${clientNumber}: inbox rule delete finished.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Delete inbox rules failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, mailbox, parsed);
+    return;
+  }
+
+  if (kind === 'mailbox-status') {
+    if (!exo || !users.length) return;
+    setContainmentStatus(div, 'Checking mailbox forwarding and delegates…');
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_MAILBOX_STATUS|USERS:${usersJson}`, 'checking mailbox access');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_MAILBOX:') {
+      const mailboxUsers = asArray(parsed.data?.Users);
+      applyMailboxAccessResult(div, mailboxUsers);
+      setContainmentStatus(div, `Mailbox access loaded for ${mailboxUsers.length} user(s).`);
+      log(`Client ${clientNumber}: mailbox access updated.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Mailbox access check failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'set-forward') {
+    if (!exo || !users.length) return;
+    const smtp = (div.querySelector('.containmentForwardTo')?.value || '').trim();
+    if (!smtp) {
+      log(`Client ${clientNumber}: enter a Forward to address.`);
+      return;
+    }
+    const deliver = div.querySelector('.containmentForwardKeep')?.checked ? '1' : '0';
+    const mailbox = users[0];
+    if (!confirmContainmentPopup(`Set forwarding for ${mailbox} to ${smtp} (keep copy: ${deliver === '1' ? 'yes' : 'no'})?`)) return;
+    setContainmentStatus(div, `Setting forwarding for ${mailbox}…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_SET_FORWARDING|USER:${mailbox}|SMTP:${smtp}|DELIVER:${deliver}`, 'setting forwarding');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_MAILBOX:') {
+      applyMailboxAccessResult(div, parsed.data?.Users || []);
+      setContainmentStatus(div, `Forwarding set for ${mailbox}.`);
+      log(`Client ${clientNumber}: forwarding set for ${mailbox}.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Set forwarding failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, mailbox, parsed);
+    return;
+  }
+
+  if (kind === 'remove-forward') {
+    const selected = [...div.querySelectorAll('.containmentForwardPick:checked')].map((cb) => ({
+      UserPrincipalName: cb.dataset.mailbox,
+      Field: cb.dataset.field,
+      Address: cb.dataset.target,
+    })).filter((x) => x.UserPrincipalName && x.Field);
+    if (!selected.length) {
+      log(`Client ${clientNumber}: select one or more forwarding rows to remove.`);
+      return;
+    }
+    const summary = selected.map((s) => `${s.Field} ${s.Address} on ${s.UserPrincipalName}`).join('\n');
+    if (!confirmContainmentPopup(`Remove ${selected.length} forwarding entry(ies)?\n\n${summary}`)) return;
+    setContainmentStatus(div, `Removing ${selected.length} forwarding entry(ies)…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_REMOVE_FORWARDING|ITEMS:${JSON.stringify(selected)}`, 'removing forwarding');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_MAILBOX:') {
+      applyMailboxAccessResult(div, parsed.data?.Users || []);
+      setContainmentStatus(div, Array.isArray(parsed.data?.Details) ? parsed.data.Details.join('\n') : `Removed ${parsed.data?.SuccessCount || 0} forwarding entry(ies).`);
+      log(`Client ${clientNumber}: selected forwarding removed.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Remove forwarding failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, selected, parsed);
+    return;
+  }
+
+  if (kind === 'clear-forward') {
+    if (!exo || !users.length) return;
+    if (!confirmContainmentPopup(`Clear all mailbox forwarding (SMTP and recipient) for:\n${users.join('\n')}\n\nContinue?`)) return;
+    setContainmentStatus(div, 'Clearing forwarding…');
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_CLEAR_FORWARDING|USERS:${usersJson}`, 'clearing forwarding');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_MAILBOX:') {
+      applyMailboxAccessResult(div, parsed.data?.Users || []);
+      setContainmentStatus(div, Array.isArray(parsed.data?.Details) ? parsed.data.Details.join('\n') : 'Forwarding cleared.');
+      log(`Client ${clientNumber}: forwarding cleared.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Clear forwarding failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, users, parsed);
+    return;
+  }
+
+  if (kind === 'add-delegate') {
+    if (!exo || !users.length) return;
+    const delegate = (div.querySelector('.containmentDelegateUser')?.value || '').trim();
+    const right = div.querySelector('.containmentDelegateRight')?.value || 'FullAccess';
+    if (!delegate) {
+      log(`Client ${clientNumber}: enter a delegate UPN.`);
+      return;
+    }
+    const mailbox = users[0];
+    if (!confirmContainmentPopup(`Add ${right} for ${delegate} on ${mailbox}?`)) return;
+    setContainmentStatus(div, `Adding ${right} for ${delegate}…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_ADD_DELEGATION|USER:${mailbox}|DELEGATE:${delegate}|RIGHT:${right}`, 'adding delegate');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_MAILBOX:') {
+      applyMailboxAccessResult(div, parsed.data?.Users || []);
+      setContainmentStatus(div, `Added ${right} for ${delegate} on ${mailbox}.`);
+      log(`Client ${clientNumber}: delegate added.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Add delegate failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, mailbox, parsed);
+    return;
+  }
+
+  if (kind === 'remove-delegate') {
+    const selected = [...div.querySelectorAll('.containmentDelegatePick:checked')].map((cb) => ({
+      mailbox: cb.dataset.mailbox,
+      user: cb.dataset.user,
+      right: cb.dataset.right,
+    })).filter((x) => x.mailbox && x.user && x.right);
+    if (!selected.length) {
+      log(`Client ${clientNumber}: select one or more delegates to remove.`);
+      return;
+    }
+    const summary = selected.map((s) => `${s.right} ${s.user} on ${s.mailbox}`).join('\n');
+    if (!confirmContainmentPopup(`Remove selected delegates?\n\n${summary}`)) return;
+    let lastUsers = [];
+    for (const item of selected) {
+      setContainmentStatus(div, `Removing ${item.right} for ${item.user}…`);
+      const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_REMOVE_DELEGATION|USER:${item.mailbox}|DELEGATE:${item.user}|RIGHT:${item.right}`, 'removing delegate');
+      const parsed = parseRemediatePayload(final || '');
+      if (parsed.prefix === 'REMEDIATE_MAILBOX:') {
+        lastUsers = asArray(parsed.data?.Users);
+      } else {
+        setContainmentStatus(div, parsed.raw || final || 'Remove delegate failed.');
+        log(`Client ${clientNumber}: ${final}`);
+        return;
+      }
+    }
+    if (lastUsers.length) applyMailboxAccessResult(div, lastUsers);
+    setContainmentStatus(div, `Removed ${selected.length} delegate grant(s).`);
+    log(`Client ${clientNumber}: delegates removed.`);
+    noteContainmentAction(div, kind, selected, { prefix: 'REMEDIATE_MAILBOX:', data: { SuccessCount: selected.length, FailCount: 0 } });
+    return;
+  }
+
+  if (kind === 'list-transport') {
+    if (!exo) return;
+    if (!confirmSlowContainment(kind)) return;
+    setContainmentStatus(div, 'Listing transport rules…');
+    const final = await sendRemediateCommand(clientNumber, div, 'REMEDIATE_LIST_TRANSPORT_RULES', 'listing transport rules');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_TRANSPORT:') {
+      const transportRules = asArray(parsed.data?.Rules);
+      applyTransportRulesResult(div, transportRules);
+      setContainmentStatus(div, `${transportRules.length} transport rule(s).`);
+      log(`Client ${clientNumber}: transport rules loaded.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'List transport rules failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'delete-transport') {
+    const ids = [...div.querySelectorAll('.containmentTransportPick:checked')].map((cb) => cb.dataset.identity).filter(Boolean);
+    if (!ids.length) {
+      log(`Client ${clientNumber}: select one or more transport rules to delete.`);
+      return;
+    }
+    if (!confirmContainmentPopup(`Delete ${ids.length} transport rule(s)?\n\n${ids.join('\n')}`)) return;
+    setContainmentStatus(div, `Deleting ${ids.length} transport rule(s)…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_TRANSPORT_RULES|RULES:${JSON.stringify(ids)}`, 'deleting transport rules');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_TRANSPORT:') {
+      applyTransportRulesResult(div, parsed.data?.Rules || []);
+      setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
+      log(`Client ${clientNumber}: transport rule delete finished.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Delete transport rules failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, '', parsed);
+    return;
+  }
+
+  if (kind === 'list-connectors') {
+    if (!exo) return;
+    setContainmentStatus(div, 'Listing connectors…');
+    const final = await sendRemediateCommand(clientNumber, div, 'REMEDIATE_LIST_CONNECTORS', 'listing connectors');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_CONNECTORS:') {
+      const connectors = asArray(parsed.data?.Connectors);
+      applyConnectorsResult(div, connectors);
+      setContainmentStatus(div, `${connectors.length} connector(s).`);
+      log(`Client ${clientNumber}: connectors loaded.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'List connectors failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    return;
+  }
+
+  if (kind === 'delete-connectors') {
+    const items = [...div.querySelectorAll('.containmentConnectorPick:checked')].map((cb) => ({
+      Name: cb.dataset.name,
+      Direction: cb.dataset.direction,
+    })).filter((x) => x.Name);
+    if (!items.length) {
+      log(`Client ${clientNumber}: select one or more connectors to delete.`);
+      return;
+    }
+    if (!confirmContainmentPopup(`Delete ${items.length} connector(s)?\n\n${items.map((i) => `${i.Direction}: ${i.Name}`).join('\n')}`)) return;
+    setContainmentStatus(div, `Deleting ${items.length} connector(s)…`);
+    const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_CONNECTORS|CONNECTORS:${JSON.stringify(items)}`, 'deleting connectors');
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.prefix === 'REMEDIATE_CONNECTORS:') {
+      applyConnectorsResult(div, parsed.data?.Connectors || []);
+      setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
+      log(`Client ${clientNumber}: connector delete finished.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || 'Delete connectors failed.');
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    noteContainmentAction(div, kind, '', parsed);
+    return;
+  }
+
+  const extra = {
+    'list-oauth': { need: 'graph', users: true, cmd: () => `REMEDIATE_LIST_OAUTH_GRANTS|USERS:${usersJson}`, label: 'listing OAuth consents', prefix: 'REMEDIATE_OAUTH:', apply: (d, data) => applyOauthResult(d, data?.Grants), count: (data) => asArray(data?.Grants).filter((g) => g.Id).length },
+    'delete-oauth': { need: 'graph', confirm: true, prefix: 'REMEDIATE_OAUTH:', apply: (d, data) => applyOauthResult(d, data?.Grants), picks: '.containmentOauthPick:checked', map: (cb) => ({ Id: cb.dataset.id, UserPrincipalName: cb.dataset.user }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_OAUTH_GRANTS', label: 'revoking OAuth consents', confirmText: (items) => `Revoke ${items.length} OAuth consent(s)?` },
+    'reregister-mfa': { need: 'graph', users: true, write: true, cmd: () => `REMEDIATE_REREGISTER_MFA|USERS:${usersJson}`, label: 'wiping MFA methods', prefix: 'REMEDIATE_SUCCESS:', confirmText: () => `Delete all removable MFA methods and revoke sessions for:\n${users.join('\n')}\n\nThe user must re-register MFA. Continue?` },
+    'list-mobile': { need: 'exo', users: true, cmd: () => `REMEDIATE_LIST_MOBILE_DEVICES|USERS:${usersJson}`, label: 'listing mobile partnerships', prefix: 'REMEDIATE_MOBILE:', apply: (d, data) => applyMobileResult(d, data?.Devices), count: (data) => asArray(data?.Devices).filter((x) => x.Identity).length },
+    'delete-mobile': { need: 'exo', confirm: true, prefix: 'REMEDIATE_MOBILE:', apply: (d, data) => applyMobileResult(d, data?.Devices), picks: '.containmentMobilePick:checked', map: (cb) => ({ Identity: cb.dataset.identity, UserPrincipalName: cb.dataset.user }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_MOBILE_DEVICES', label: 'removing mobile partnerships', confirmText: (items) => `Remove ${items.length} ActiveSync partnership(s)?` },
+    'list-intune': { need: 'graph', users: true, cmd: () => `REMEDIATE_LIST_INTUNE|USERS:${usersJson}`, label: 'listing Intune devices', prefix: 'REMEDIATE_INTUNE:', apply: (d, data) => applyIntuneResult(d, data?.Devices), count: (data) => asArray(data?.Devices).filter((x) => x.Id).length },
+    'wipe-intune': { need: 'graph', confirm: true, prefix: 'REMEDIATE_INTUNE:', picks: '.containmentIntunePick:checked', map: (cb) => ({ Id: cb.dataset.id }), token: 'DEVICES', cmdName: 'REMEDIATE_WIPE_INTUNE', label: 'wiping Intune devices', confirmText: (items) => `WIPE ${items.length} Intune device(s)? This is destructive.` },
+    'retire-intune': { need: 'graph', confirm: true, prefix: 'REMEDIATE_INTUNE:', picks: '.containmentIntunePick:checked', map: (cb) => ({ Id: cb.dataset.id }), token: 'DEVICES', cmdName: 'REMEDIATE_RETIRE_INTUNE', label: 'retiring Intune devices', confirmText: (items) => `Retire ${items.length} Intune device(s)?` },
+    'list-folders': { need: 'exo', users: true, cmd: () => `REMEDIATE_LIST_FOLDER_PERMS|USERS:${usersJson}`, label: 'listing folder permissions', prefix: 'REMEDIATE_FOLDERS:', apply: (d, data) => applyFoldersResult(d, data?.Permissions), count: (data) => asArray(data?.Permissions).filter((x) => x.User && x.User !== '(none)').length },
+    'delete-folders': { need: 'exo', confirm: true, prefix: 'REMEDIATE_FOLDERS:', apply: (d, data) => applyFoldersResult(d, data?.Permissions), picks: '.containmentFolderPick:checked', map: (cb) => ({ UserPrincipalName: cb.dataset.user, Folder: cb.dataset.folder, User: cb.dataset.trustee }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_FOLDER_PERMS', label: 'removing folder permissions', confirmText: (items) => `Remove ${items.length} folder permission(s)?` },
+    'autoreply-status': { need: 'exo', users: true, cmd: () => `REMEDIATE_GET_AUTOREPLY|USERS:${usersJson}`, label: 'checking auto-reply', prefix: 'REMEDIATE_AUTOREPLY:', apply: (d, data) => applyAutoreplyResult(d, data?.Users) },
+    'disable-autoreply': { need: 'exo', users: true, write: true, cmd: () => `REMEDIATE_DISABLE_AUTOREPLY|USERS:${usersJson}`, label: 'disabling auto-reply', prefix: 'REMEDIATE_AUTOREPLY:', apply: (d, data) => applyAutoreplyResult(d, data?.Users), confirmText: () => `Disable automatic replies for:\n${users.join('\n')}` },
+    'list-junk': { need: 'exo', users: true, cmd: () => `REMEDIATE_LIST_JUNK|USERS:${usersJson}`, label: 'listing trusted senders', prefix: 'REMEDIATE_JUNK:', apply: (d, data) => applyJunkResult(d, data?.Entries), count: (data) => asArray(data?.Entries).filter((x) => x.Address && x.Address !== '(none)').length },
+    'delete-junk': { need: 'exo', confirm: true, prefix: 'REMEDIATE_JUNK:', apply: (d, data) => applyJunkResult(d, data?.Entries), picks: '.containmentJunkPick:checked', map: (cb) => ({ UserPrincipalName: cb.dataset.user, List: cb.dataset.list, Address: cb.dataset.address }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_JUNK', label: 'removing trusted senders', confirmText: (items) => `Remove ${items.length} trusted sender/recipient(s)?` },
+    'list-elsewhere': { need: 'exo', users: true, wait: 300, cmd: () => `REMEDIATE_LIST_ELSEWHERE|USERS:${usersJson}`, label: 'listing rights on other mailboxes', prefix: 'REMEDIATE_ELSEWHERE:', apply: (d, data) => applyElsewhereResult(d, data?.Grants), count: (data) => asArray(data?.Grants).filter((x) => x.Mailbox && x.Mailbox !== '(none)').length },
+    'delete-elsewhere': { need: 'exo', confirm: true, wait: 300, prefix: 'REMEDIATE_ELSEWHERE:', apply: (d, data) => applyElsewhereResult(d, data?.Grants), picks: '.containmentElsewherePick:checked', map: (cb) => ({ UserPrincipalName: cb.dataset.user, Mailbox: cb.dataset.mailbox, Right: cb.dataset.right, Trustee: cb.dataset.trustee }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_ELSEWHERE', label: 'removing grants on other mailboxes', confirmText: (items) => `Remove ${items.length} mailbox grant(s) this user has elsewhere?` },
+    'hold-status': { need: 'exo', users: true, cmd: () => `REMEDIATE_GET_MAILBOX_HOLD|USERS:${usersJson}`, label: 'checking hold / audit', prefix: 'REMEDIATE_HOLD:', apply: (d, data) => applyHoldResult(d, data?.Users) },
+    'enable-hold': { need: 'exo', users: true, write: true, cmd: () => `REMEDIATE_SET_MAILBOX_HOLD|USERS:${usersJson}`, label: 'enabling hold + audit', prefix: 'REMEDIATE_HOLD:', apply: (d, data) => applyHoldResult(d, data?.Users), confirmText: () => `Enable litigation hold, 30-day deleted-item retention, and mailbox audit for:\n${users.join('\n')}` },
+    'list-orgfwd': { need: 'exo', cmd: () => 'REMEDIATE_LIST_ORG_FORWARD', label: 'listing org auto-forward', prefix: 'REMEDIATE_ORGFWD:', apply: (d, data) => applyOrgfwdResult(d, data?.Policies), count: (data) => asArray(data?.Policies).length },
+    'disable-orgfwd': { need: 'exo', confirm: true, prefix: 'REMEDIATE_ORGFWD:', apply: (d, data) => applyOrgfwdResult(d, data?.Policies), picks: '.containmentOrgfwdPick:checked', map: (cb) => ({ Kind: cb.dataset.kind, Identity: cb.dataset.identity }), token: 'ITEMS', cmdName: 'REMEDIATE_SET_ORG_FORWARD', label: 'disabling org auto-forward', confirmText: (items) => `Disable auto-forward on ${items.length} remote domain / outbound spam policy(ies)?` },
+    'list-journal': { need: 'exo', cmd: () => 'REMEDIATE_LIST_JOURNAL', label: 'listing journal rules', prefix: 'REMEDIATE_JOURNAL:', apply: (d, data) => applyJournalResult(d, data?.Rules), count: (data) => asArray(data?.Rules).filter((x) => x.Identity).length },
+    'delete-journal': { need: 'exo', confirm: true, prefix: 'REMEDIATE_JOURNAL:', apply: (d, data) => applyJournalResult(d, data?.Rules), picks: '.containmentJournalPick:checked', map: (cb) => ({ Identity: cb.dataset.identity }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_JOURNAL', label: 'deleting journal rules', confirmText: (items) => `Delete ${items.length} journal rule(s)?` },
+    'list-roles': { need: 'graph', users: true, cmd: () => `REMEDIATE_LIST_ROLES|USERS:${usersJson}`, label: 'listing roles and groups', prefix: 'REMEDIATE_ROLES:', apply: (d, data) => applyRolesResult(d, data?.Roles), count: (data) => asArray(data?.Roles).filter((x) => x.Id).length },
+    'delete-roles': { need: 'graph', confirm: true, prefix: 'REMEDIATE_ROLES:', apply: (d, data) => applyRolesResult(d, data?.Roles), picks: '.containmentRolePick:checked', map: (cb) => ({ Id: cb.dataset.id, Kind: cb.dataset.kind, UserPrincipalName: cb.dataset.user }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_ROLES', label: 'removing roles / groups', confirmText: (items) => `Remove ${items.length} role assignment / group membership(s)?` },
+    'list-appcreds': { need: 'graph', cmd: () => 'REMEDIATE_LIST_APP_CREDS', label: 'listing app secrets / owners', prefix: 'REMEDIATE_APPCREDS:', apply: (d, data) => applyAppcredsResult(d, data?.Credentials), count: (data) => asArray(data?.Credentials).filter((x) => x.AppId).length },
+    'delete-appcreds': { need: 'graph', confirm: true, prefix: 'REMEDIATE_APPCREDS:', apply: (d, data) => applyAppcredsResult(d, data?.Credentials), picks: '.containmentAppcredPick:checked', map: (cb) => ({ Kind: cb.dataset.kind, AppId: cb.dataset.appid, KeyId: cb.dataset.keyid, OwnerId: cb.dataset.ownerid }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_APP_CREDS', label: 'removing secrets / owners', confirmText: (items) => `Remove ${items.length} app secret(s) or owner(s)?` },
+    'list-flows': { cmd: () => 'REMEDIATE_LIST_FLOWS', label: 'listing Power Automate flows', prefix: 'REMEDIATE_FLOWS:', apply: (d, data) => applyFlowsResult(d, data?.Flows), after: (data) => { if (data?.Message) setContainmentStatus(div, data.Message); } },
+    'delete-flows': { confirm: true, prefix: 'REMEDIATE_FLOWS:', apply: (d, data) => applyFlowsResult(d, data?.Flows), picks: '.containmentFlowPick:checked', map: (cb) => ({ Id: cb.dataset.id, Environment: cb.dataset.env }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_FLOWS', label: 'deleting flows', confirmText: (items) => `Delete ${items.length} flow(s)?` },
+  };
+  const extraSpec = extra[kind];
+  if (extraSpec) {
+    if (extraSpec.need === 'graph' && !graph) {
+      log(`Client ${clientNumber}: Graph Auth is required.`);
+      return;
+    }
+    if (extraSpec.need === 'exo' && !exo) {
+      log(`Client ${clientNumber}: Exchange Auth is required.`);
+      return;
+    }
+    if (extraSpec.users && !users.length) {
+      log(`Client ${clientNumber}: select one or more validated users.`);
+      return;
+    }
+    let cmd = extraSpec.cmd ? extraSpec.cmd() : '';
+    let selected = [];
+    if (extraSpec.picks) {
+      selected = [...div.querySelectorAll(extraSpec.picks)].map(extraSpec.map).filter((x) => Object.values(x).some(Boolean));
+      if (!selected.length) {
+        log(`Client ${clientNumber}: select one or more rows first.`);
+        return;
+      }
+      cmd = `${extraSpec.cmdName}|${extraSpec.token}:${JSON.stringify(selected)}`;
+    }
+    if (!confirmSlowContainment(kind)) return;
+    if ((extraSpec.confirm || extraSpec.write) && !confirmContainmentPopup(extraSpec.confirmText(selected))) return;
+    setContainmentStatus(div, `${extraSpec.label}…`);
+    const final = await sendRemediateCommand(clientNumber, div, cmd, extraSpec.label, extraSpec.wait || 180);
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.prefix === extraSpec.prefix) {
+      if (extraSpec.apply) extraSpec.apply(div, parsed.data);
+      if (parsed.data?.SuccessCount != null) setContainmentStatus(div, `Finished. Success ${parsed.data.SuccessCount || 0}; failed ${parsed.data.FailCount || 0}.`);
+      else if (extraSpec.count) setContainmentStatus(div, `${extraSpec.count(parsed.data)} row(s).`);
+      else if (Array.isArray(parsed.data?.Details)) setContainmentStatus(div, parsed.data.Details.join('\n'));
+      else setContainmentStatus(div, 'Done.');
+      if (extraSpec.after) extraSpec.after(parsed.data);
+      log(`Client ${clientNumber}: ${extraSpec.label} finished.`);
+    } else {
+      setContainmentStatus(div, parsed.raw || final || `${extraSpec.label} failed.`);
+      log(`Client ${clientNumber}: ${final}`);
+    }
+    if (extraSpec.confirm || extraSpec.write) {
+      noteContainmentAction(div, kind, selected.length ? selected : users, parsed);
+    }
+    return;
+  }
+
+  const spec = writes[kind];
+  if (!spec) return;
+  if (spec.need === 'graph' && !graph) {
+    log(`Client ${clientNumber}: Graph Auth is required for ${spec.action}.`);
+    return;
+  }
+  if (spec.need === 'exo' && !exo) {
+    log(`Client ${clientNumber}: Exchange Auth is required for ${spec.action}.`);
+    return;
+  }
+  if (!users.length) {
+    log(`Client ${clientNumber}: select one or more validated users.`);
+    return;
+  }
+  if (kind === 'block' || kind === 'unblock') {
+    const statusFinal = await sendRemediateCommand(clientNumber, div, `REMEDIATE_SIGNIN_STATUS|USERS:${usersJson}`, 'checking sign-in status');
+    const statusParsed = parseRemediatePayload(statusFinal || '');
+    if (statusParsed.data?.Capabilities) applyContainmentCapabilities(div, statusParsed.data.Capabilities);
+    if (statusParsed.prefix === 'REMEDIATE_SUCCESS:') {
+      setContainmentStatus(div, formatContainmentUserStatus(statusParsed.data?.Users));
+    }
+  }
+  if (kind === 'unrestrict') {
+    const hits = getRestrictedContainmentHits(div, users);
+    if (!hits.length) {
+      log(`Client ${clientNumber}: Check restricted status first. Unrestrict is only available when a selected user is on Restricted entities.`);
+      return;
+    }
+    spec.cmd = `REMEDIATE_UNRESTRICT_EMAIL|USERS:${JSON.stringify(hits.map((h) => h.UserPrincipalName))}`;
+    setContainmentStatus(div, formatContainmentUserStatus(hits));
+  }
+  const confirmTargets = kind === 'unrestrict'
+    ? getRestrictedContainmentHits(div, users).map((h) => h.UserPrincipalName)
+    : users;
+  if (!confirmContainmentPopup(`${spec.label} for:\n${confirmTargets.join('\n')}\n\nContinue?`)) {
+    return;
+  }
+  setContainmentStatus(div, `${spec.label}…`);
+  const final = await sendRemediateCommand(clientNumber, div, spec.cmd, spec.label);
+  const parsed = parseRemediatePayload(final || '');
+  if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+  noteContainmentAction(div, kind, confirmTargets, parsed);
+  if (parsed.prefix === 'REMEDIATE_SUCCESS:') {
+    const details = parsed.data?.Details;
+    setContainmentStatus(div, Array.isArray(details) ? details.join('\n') : (parsed.raw || 'Done.'));
+    log(`Client ${clientNumber}: ${spec.action} finished.`);
+    if (kind === 'block' || kind === 'unblock') {
+      await runContainmentAction(clientNumber, div, 'signin-status');
+    }
+    if (kind === 'unrestrict') {
+      await runContainmentAction(clientNumber, div, 'restricted-status');
+    }
+  } else {
+    setContainmentStatus(div, parsed.raw || final || `${spec.action} failed.`);
+    log(`Client ${clientNumber}: ${final}`);
+  }
+}
+
+function wireContainmentPanel(div, clientNumber) {
+  const savedCaps = tenantUiState.get(String(clientNumber))?.graphCapabilities;
+  if (savedCaps) applyContainmentCapabilities(div, savedCaps);
+  refreshContainmentUsers(div);
+  updateContainmentButtons(div);
+  div.querySelector('.containmentUserList')?.addEventListener('change', () => updateContainmentButtons(div));
+  const bind = (sel, kind) => {
+    div.querySelector(sel)?.addEventListener('click', () => {
+      withClientLock(clientNumber, async () => {
+        focusClientLogTab(clientNumber);
+        try {
+          await runContainmentAction(clientNumber, div, kind);
+        } catch (e) {
+          log(`Client ${clientNumber}: containment error: ${e.message}`);
+          setContainmentStatus(div, e.message);
+        }
+      });
+    });
+  };
+  bind('.containmentSigninStatus', 'signin-status');
+  bind('.containmentRevoke', 'revoke');
+  bind('.containmentBlock', 'block');
+  bind('.containmentUnblock', 'unblock');
+  bind('.containmentResetPassword', 'reset-password');
+  bind('.containmentAssignPasswordBtn', 'assign-password');
+  bind('.containmentListMfa', 'list-mfa');
+  bind('.containmentRevokeMfa', 'revoke');
+  bind('.containmentDeleteMfa', 'delete-mfa');
+  bind('.containmentListDevices', 'list-devices');
+  bind('.containmentDeleteDevices', 'delete-devices');
+  bind('.containmentListApps', 'list-apps');
+  bind('.containmentDeleteApps', 'delete-apps');
+  bind('.containmentRestrictedStatus', 'restricted-status');
+  bind('.containmentUnrestrict', 'unrestrict');
+  bind('.containmentListRules', 'list-rules');
+  bind('.containmentDeleteRules', 'delete-rule');
+  bind('.containmentMailboxStatus', 'mailbox-status');
+  bind('.containmentSetForward', 'set-forward');
+  bind('.containmentRemoveForward', 'remove-forward');
+  bind('.containmentClearForward', 'clear-forward');
+  bind('.containmentAddDelegate', 'add-delegate');
+  bind('.containmentRemoveDelegate', 'remove-delegate');
+  bind('.containmentListTransport', 'list-transport');
+  bind('.containmentDeleteTransport', 'delete-transport');
+  bind('.containmentListConnectors', 'list-connectors');
+  bind('.containmentDeleteConnectors', 'delete-connectors');
+  bind('.containmentReregisterMfa', 'reregister-mfa');
+  bind('.containmentListOauth', 'list-oauth');
+  bind('.containmentDeleteOauth', 'delete-oauth');
+  bind('.containmentListMobile', 'list-mobile');
+  bind('.containmentDeleteMobile', 'delete-mobile');
+  bind('.containmentListIntune', 'list-intune');
+  bind('.containmentRetireIntune', 'retire-intune');
+  bind('.containmentWipeIntune', 'wipe-intune');
+  bind('.containmentListFolders', 'list-folders');
+  bind('.containmentDeleteFolders', 'delete-folders');
+  bind('.containmentAutoreplyStatus', 'autoreply-status');
+  bind('.containmentDisableAutoreply', 'disable-autoreply');
+  bind('.containmentListJunk', 'list-junk');
+  bind('.containmentDeleteJunk', 'delete-junk');
+  bind('.containmentListElsewhere', 'list-elsewhere');
+  bind('.containmentDeleteElsewhere', 'delete-elsewhere');
+  bind('.containmentHoldStatus', 'hold-status');
+  bind('.containmentEnableHold', 'enable-hold');
+  bind('.containmentListOrgfwd', 'list-orgfwd');
+  bind('.containmentDisableOrgfwd', 'disable-orgfwd');
+  bind('.containmentListJournal', 'list-journal');
+  bind('.containmentDeleteJournal', 'delete-journal');
+  bind('.containmentListRoles', 'list-roles');
+  bind('.containmentDeleteRoles', 'delete-roles');
+  bind('.containmentListAppcreds', 'list-appcreds');
+  bind('.containmentDeleteAppcreds', 'delete-appcreds');
+  bind('.containmentListFlows', 'list-flows');
+  bind('.containmentDeleteFlows', 'delete-flows');
+  div.querySelector('.containmentUpdateGraphScopes')?.addEventListener('click', () => {
+    const tid = div.querySelector('.appRegSelect')?.value || '';
+    runUpdateGraphAppScopes(tid).catch((e) => log(`Update Graph App scopes: ${e.message}`));
+  });
+  div.querySelector('.containmentSavePacks')?.addEventListener('click', () => {
+    saveContainmentPacks(clientNumber, div).catch((e) => {
+      log(`Client ${clientNumber}: save containment zips failed: ${e.message}`);
+      setContainmentStatus(div, e.message);
+    });
+  });
+  div.querySelector('.containmentClearUserPulls')?.addEventListener('click', () => {
+    if (!confirmContainmentPopup('Clear per-user containment lists (MFA, mailbox, devices, rules, etc.) so you can pull the next user?\n\nTenant-wide lists stay. Zips already saved are not deleted.')) return;
+    clearContainmentUserPulls(div);
+    log(`Client ${clientNumber}: cleared per-user containment pulls.`);
+  });
+  restoreContainmentOutput(div, tenantUiState.get(String(clientNumber)));
 }
 
 function normalizeResponse(value) {
@@ -1649,6 +4304,8 @@ async function withClientLock(clientNumber, fn) {
   if (clientBusy.has(key)) {
 
     log(`Client ${clientNumber}: busy — wait for the current operation to finish.`);
+    const body = getTenantBodyEl(clientNumber);
+    if (body) setContainmentStatus(body, 'Busy — wait for the current containment command to finish.', { skipSave: true });
 
     return;
 
@@ -1678,6 +4335,8 @@ function setTenantButtonsDisabled(div, disabled) {
 
   });
 
+  updateContainmentButtons(div);
+
 }
 
 function defaultSessionBody() {
@@ -1700,7 +4359,7 @@ function sessionBodyFromUi() {
 
   const body = defaultSessionBody();
 
-  body.daysBack = parseInt(document.getElementById('daysBack')?.value, 10) || 7;
+  body.daysBack = sessionRelativeDays();
 
   body.reportSelections = readReportSelectionsFromContainer(document.getElementById('sessionReportExportsBody'));
 
@@ -1724,13 +4383,26 @@ function applySessionSettingsToUi(session) {
 
     const si = document.getElementById('signInLogsDays');
 
-    const db = document.getElementById('daysBack');
+    const relAmount = document.getElementById('relAmount');
+
+    const relUnit = document.getElementById('relUnit');
 
     if (mt && rs.MessageTraceDaysBack != null) mt.value = String(rs.MessageTraceDaysBack);
 
     if (si && rs.SignInLogsDaysBack != null) si.value = String(rs.SignInLogsDaysBack);
 
-    if (db && session.daysBack != null) db.value = String(session.daysBack);
+    // The session stores a resolved day count, so restore as days (or Max at the 90-day cap).
+    if (session.daysBack != null) {
+
+      const days = Math.max(1, parseInt(session.daysBack, 10) || 7);
+
+      if (relUnit) relUnit.value = days >= RELATIVE_MAX_DAYS ? 'max' : 'days';
+
+      if (relAmount) relAmount.value = String(Math.min(days, RELATIVE_MAX_DAYS));
+
+    }
+
+    updateSessionTimeframeUi();
 
   }
 
@@ -2040,12 +4712,6 @@ function renderTenants(session) {
 
     const canGenerate = tenantHasRequiredAuth(t, session) && !t.reportInProgress;
 
-    const outputHtml = t.outputFolder
-
-      ? `<div class="outputPath muted">Reports: ${t.outputFolder}</div>`
-
-      : '';
-
     const lastResp = normalizeResponse(t.lastResponse);
 
     const errorHtml = (lastResp.includes('_FAILED') || lastResp.includes('ERROR'))
@@ -2058,8 +4724,8 @@ function renderTenants(session) {
 
     const inProgressExo = lastResp === 'EXCHANGE_AUTH_STARTED';
 
+    const existing = tenantUiState.get(String(t.clientNumber)) || {};
     if (t.uiState && typeof t.uiState === 'object') {
-      const existing = tenantUiState.get(String(t.clientNumber)) || {};
       const merged = { ...existing, ...t.uiState };
       const localValidated = existing.validatedUsers;
       const serverValidated = t.uiState.validatedUsers;
@@ -2067,8 +4733,31 @@ function renderTenants(session) {
           && (!Array.isArray(serverValidated) || !serverValidated.length)) {
         merged.validatedUsers = localValidated;
       }
+      const localContainment = resolveContainmentState(t.clientNumber, existing);
+      const serverContainment = t.uiState.containment;
+      if (hasContainmentPayload(localContainment)) {
+        merged.containment = {
+          ...(serverContainment && typeof serverContainment === 'object' ? serverContainment : {}),
+          ...localContainment,
+        };
+      } else if (hasContainmentPayload(serverContainment)) {
+        merged.containment = serverContainment;
+      }
       tenantUiState.set(String(t.clientNumber), merged);
+    } else {
+      const stored = resolveContainmentState(t.clientNumber, existing);
+      if (stored) {
+        tenantUiState.set(String(t.clientNumber), { ...existing, containment: stored });
+      }
     }
+
+    const uiAfterMerge = tenantUiState.get(String(t.clientNumber)) || existing;
+    const folders = [];
+    if (Array.isArray(uiAfterMerge.reportFolders)) folders.push(...uiAfterMerge.reportFolders.filter(Boolean));
+    if (t.outputFolder && !folders.includes(t.outputFolder)) folders.push(t.outputFolder);
+    const outputHtml = folders.length
+      ? `<div class="outputPath muted">${folders.length > 1 ? `${folders.length} report packs. Latest: ` : 'Reports: '}${escapeHtml(folders[folders.length - 1])}</div>`
+      : '';
 
     const summary = document.createElement('summary');
 
@@ -2105,6 +4794,16 @@ function renderTenants(session) {
       <div class="sectionLabel">Timeframe</div>
 
       <div class="row">
+
+        <label class="relAmountWrap">Last <input type="number" class="relAmount" min="1" max="90" value="${sessionRelativeAmount()}" style="min-width:4rem" /></label>
+
+        <label>Unit <select class="relUnit">${relativeUnitOptionsHtml(sessionRelativeUnit(), true)}</select></label>
+
+        <span class="relHint muted"></span>
+
+      </div>
+
+      <div class="row customRangeRow" style="display:none">
 
         <label>Start <input type="datetime-local" class="dateStart" value="${defaultDateStartValue()}" /></label>
 
@@ -2164,6 +4863,8 @@ function renderTenants(session) {
 
       <div class="validatedUsersList muted" style="display:none"></div>
 
+      ${buildContainmentPanelHtml()}
+
       <div class="row">
 
         <label>Ticket # (optional)
@@ -2185,13 +4886,15 @@ function renderTenants(session) {
 
       ${buildSecurityIntegrationsPanelHtml()}
 
+      ${buildCurateLogsPanelHtml(Boolean(t.outputFolder))}
+
       <div>
 
         <button class="exoAuth">Exchange Auth</button>
 
         <button class="graphAuth">Graph Auth</button>
 
-        <button class="generateReports primary" ${canGenerate ? '' : 'disabled'}>${t.reportInProgress ? 'Generating…' : 'Generate Reports'}</button>
+        <button class="generateReports primary" ${canGenerate ? '' : 'disabled'}>${t.reportInProgress ? 'Generating…' : (t.outputFolder ? 'Generate another report pack' : 'Generate Reports')}</button>
 
         <button class="openReports success" ${t.outputFolder ? '' : 'disabled'}>Open Reports</button>
 
@@ -2249,6 +4952,8 @@ function renderTenants(session) {
 
     div.querySelector('.validateUsers').addEventListener('click', () => validateUsers(t.clientNumber, div));
 
+    wireContainmentPanel(div, t.clientNumber);
+
     div.querySelector('.fetchTicket')?.addEventListener('click', () => fetchManageTicket(t.clientNumber, div));
 
     div.querySelector('.ticketPaste')?.addEventListener('input', () => {
@@ -2277,8 +4982,10 @@ function renderTenants(session) {
     div.querySelector('.analyzeReports')?.addEventListener('click', () => analyzeTenantReports(t.clientNumber, div, t.outputFolder));
 
     restoreTenantUiState(t.clientNumber, div);
+    wireTenantTimeframePanel(div, t.clientNumber);
     wireTenantReportExportsPanel(div, t.clientNumber);
     wireSecurityIntegrationsPanel(div, t.clientNumber);
+    wireCurateLogsPanel(div, t.clientNumber);
     applyTenantSummary(details, t, div);
     details.addEventListener('toggle', () => setTenantCollapsed(t.clientNumber, !details.open));
     const removeBtn = summary.querySelector('.removeTenant');
@@ -2376,36 +5083,27 @@ async function pollWorkerResponse(clientNumber, startedToken, successPrefixes, f
 
     }
 
-    if (startedToken && (resp === startedToken || resp.startsWith(startedToken))) {
+    const extractedFail = failPrefix ? extractWorkerTokenResponse(resp, [failPrefix]) : '';
+    const extractedOk = extractWorkerTokenResponse(resp, successPrefixes);
+    const matchedFail = Boolean(failPrefix && extractedFail.startsWith(failPrefix));
+    const matchedOk = successPrefixes.some((prefix) => extractedOk.startsWith(prefix));
+
+    if (matchedFail) {
+
+      throw new Error(extractedFail);
+
+    }
+
+    if (matchedOk) {
+
+      return extractedOk;
+
+    }
+
+    if (startedToken && (resp === startedToken || resp.startsWith(`${startedToken}`))) {
 
       sawStarted = true;
       continue;
-
-    }
-
-    if (!sawStarted) {
-
-      const isTerminal = (failPrefix && resp.startsWith(failPrefix))
-        || successPrefixes.some((prefix) => resp.startsWith(prefix));
-      if (!isTerminal) {
-        continue;
-      }
-
-    }
-
-    if (failPrefix && resp.startsWith(failPrefix)) {
-
-      throw new Error(resp);
-
-    }
-
-    for (const prefix of successPrefixes) {
-
-      if (resp.startsWith(prefix)) {
-
-        return resp;
-
-      }
 
     }
 
@@ -2750,7 +5448,7 @@ async function validateUsers(clientNumber, div) {
 
         const result = JSON.parse(json);
 
-        const users = Array.isArray(result.Users) ? result.Users : [];
+        const users = normalizeUserList(result.Users);
 
         div.dataset.validatedUsers = JSON.stringify(users);
 
@@ -2906,8 +5604,7 @@ function appendTicketAndDateRange(cmd, ticketNumber, ticketContent, dateStart, d
   let startVal = dateStart;
   let endVal = dateEnd;
   if (!startVal || !endVal) {
-    const daysBackEl = document.getElementById('daysBack');
-    const days = Math.max(1, parseInt(daysBackEl?.value, 10) || 10);
+    const days = sessionRelativeDays();
     const end = new Date();
     const start = new Date();
     start.setDate(start.getDate() - days);
@@ -2936,10 +5633,14 @@ function getValidatedUsersForTenant(clientNumber, div) {
   try {
     fromDataset = JSON.parse(div?.dataset?.validatedUsers || '[]');
   } catch { /* ignore */ }
-  if (Array.isArray(fromDataset) && fromDataset.length) return fromDataset;
+  fromDataset = normalizeUserList(fromDataset);
+  if (fromDataset.length) {
+    if (div) div.dataset.validatedUsers = JSON.stringify(fromDataset);
+    return fromDataset;
+  }
 
-  const fromState = tenantUiState.get(String(clientNumber))?.validatedUsers;
-  if (Array.isArray(fromState) && fromState.length) {
+  const fromState = normalizeUserList(tenantUiState.get(String(clientNumber))?.validatedUsers);
+  if (fromState.length) {
     if (div) div.dataset.validatedUsers = JSON.stringify(fromState);
     return fromState;
   }
@@ -3118,10 +5819,10 @@ async function generateReports(clientNumber, div) {
 
     setTenantButtonsDisabled(div, true);
 
+    applyTenantRelativeWindow(div);
+
     const dateStartEl = div.querySelector('.dateStart');
     const dateEndEl = div.querySelector('.dateEnd');
-    if (dateStartEl && !dateStartEl.value) dateStartEl.value = defaultDateStartValue();
-    if (dateEndEl && !dateEndEl.value) dateEndEl.value = defaultDateEndValue();
 
     const dateStart = dateStartEl?.value;
 
@@ -3199,15 +5900,32 @@ async function generateReports(clientNumber, div) {
       if (final.startsWith('GENERATE_REPORTS_SUCCESS:')) {
 
         const path = final.replace('GENERATE_REPORTS_SUCCESS:', '').trim();
+        const priorFolder = div.dataset.outputFolder || '';
 
-        log(`Client ${clientNumber}: Reports saved to ${path}`);
+        log(`Client ${clientNumber}: Reports saved to ${path}. Graph and EXO stay connected — generate again anytime.`);
+
+        if (priorFolder && path && priorFolder !== path) {
+          try {
+            const copied = await api(`/api/tenants/${clientNumber}/copy-containment-zips`, {
+              method: 'POST',
+              body: JSON.stringify({ from: priorFolder, to: path }),
+            });
+            if (copied.files?.length) log(`Client ${clientNumber}: copied ${copied.files.length} containment zip(s) into the new pack.`);
+          } catch (copyErr) {
+            log(`Client ${clientNumber}: could not copy containment zips: ${copyErr.message}`);
+          }
+        }
 
         div.dataset.outputFolder = path;
+        rememberReportFolder(clientNumber, path);
 
         const analyzeBtn = div.querySelector('.analyzeReports');
         const openBtn = div.querySelector('.openReports');
         if (analyzeBtn) analyzeBtn.disabled = false;
         if (openBtn) openBtn.disabled = false;
+        div.querySelectorAll('.loadCurateFacets, .previewCurate, .exportCurate, .selectSuggestedWan, .clearWanSelection, .applyWanPaste').forEach((btn) => {
+          btn.disabled = false;
+        });
 
         refreshTenantSummaryUI(clientNumber, { outputFolder: path, reportInProgress: false, lastResponse: final });
 
@@ -3230,7 +5948,7 @@ async function generateReports(clientNumber, div) {
 
       if (btn) {
         btn.disabled = false;
-        btn.textContent = 'Generate Reports';
+        btn.textContent = div.dataset.outputFolder ? 'Generate another report pack' : 'Generate Reports';
       }
       setTenantButtonsDisabled(div, false);
       saveTenantUiState(clientNumber, div);
@@ -3392,6 +6110,30 @@ document.getElementById('btnOpenSessionTemp')?.addEventListener('click', () => r
   log('Opened session temp folder.');
 }));
 
+async function runUpdateGraphAppScopes(preferredTenantId) {
+  const tid = String(preferredTenantId || '').trim();
+  const msg = 'Add missing Graph application permissions to the existing River Run Security Investigator app? The client secret and WCM credentials stay the same. Sign in as a tenant admin in the console, then run Graph Auth again on that tenant.';
+  if (!window.confirm(msg)) return;
+  await runAction('Update Graph App scopes (browser sign-in on this PC)…', async () => {
+    const body = tid ? { tenantId: tid } : {};
+    let data;
+    try {
+      data = await api('/api/wcm/update-graph-app-scopes', { method: 'POST', body: JSON.stringify(body) });
+    } catch (e) {
+      if (String(e.message || e).includes('Not found')) {
+        throw new Error('Update Graph App scopes needs a web-runner restart (new /api/wcm/update-graph-app-scopes route).');
+      }
+      throw e;
+    }
+    const r = data.result || {};
+    if (data.exitCode === 0 && r.UpdatedExisting) {
+      log(`Graph app scopes updated for ${r.TenantDisplayName || r.TenantId || tid || 'tenant'} (granted ${r.RolesGranted || 0}, already ${r.RolesAlready || 0}, failed ${r.RolesFailed || 0}). Run Graph Auth again.`);
+    } else {
+      log(`Update Graph App scopes finished (exit ${data.exitCode}). See ${data.logPath || 'temp log'} if needed.`);
+    }
+  });
+}
+
 document.getElementById('btnCreateGraphApp')?.addEventListener('click', () => runAction('Create Graph App (browser sign-in on this PC)…', async () => {
   const data = await api('/api/wcm/create-graph-app', { method: 'POST', body: '{}' });
   if (data.result?.WcmSaved) {
@@ -3401,6 +6143,13 @@ document.getElementById('btnCreateGraphApp')?.addEventListener('click', () => ru
   }
   await loadAppRegistrations({ quiet: true, forceRefreshFromGraph: true });
 }));
+
+document.getElementById('btnUpdateGraphAppScopes')?.addEventListener('click', async () => {
+  const first = document.querySelector('details.tenant .appRegSelect')?.value || '';
+  const typed = window.prompt('Tenant ID to update (blank = choose during sign-in):', first);
+  if (typed === null) return;
+  await runUpdateGraphAppScopes(typed.trim());
+});
 
 document.getElementById('btnDeleteGraphApp')?.addEventListener('click', async () => {
   if (!appRegistrations.length) {

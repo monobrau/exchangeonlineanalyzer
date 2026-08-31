@@ -44,6 +44,13 @@ function Get-CurrentTenantId {
         $org = Get-OrganizationConfig -ErrorAction SilentlyContinue
         if ($org -and $org.ExternalDirectoryOrganizationId) { return $org.ExternalDirectoryOrganizationId }
     } catch {}
+    try {
+        $bearer = Get-GraphRestBearerToken
+        if ($bearer) {
+            $jwt = Get-EoaJwtPayload -Token $bearer
+            if ($jwt -and $jwt.tid) { return [string]$jwt.tid }
+        }
+    } catch {}
     return $null
 }
 
@@ -91,6 +98,10 @@ function Clear-GraphRestBearerToken {
 
 function Test-GraphRestBearerToken {
     return -not [string]::IsNullOrWhiteSpace($script:GraphRestBearerToken)
+}
+
+function Get-GraphRestBearerToken {
+    return $script:GraphRestBearerToken
 }
 
 function Test-GraphSessionAvailable {
@@ -1040,7 +1051,7 @@ function New-SecurityInvestigationReport {
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
-                $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
+                $writeStatus = { param($m) Write-ExportStatusLine -StatusFile $Params.StatusFile -Message $m }
                 # Reuse cached Exchange connection if available (EXO v2 token cache)
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: connecting..." -Level Info -Component ExchangeRS }
                 try { & $writeStatus "Exchange runspace: connecting..." } catch {}
@@ -1144,7 +1155,7 @@ function New-SecurityInvestigationReport {
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
-                $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
+                $writeStatus = { param($m) Write-ExportStatusLine -StatusFile $Params.StatusFile -Message $m }
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: connecting..." -Level Info -Component GraphRS }
                 try { & $writeStatus "Graph runspace: connecting..." } catch {}
                 if ($Params.GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($Params.GraphAccessToken)) {
@@ -1152,13 +1163,13 @@ function New-SecurityInvestigationReport {
                 } elseif ($Params.GraphTenantId -and -not [string]::IsNullOrWhiteSpace($Params.GraphTenantId)) {
                     try {
                         $connected = Connect-MgGraphForReportSession -TenantId $Params.GraphTenantId
-                        if ($connected -and $Params.StatusFile) {
-                            "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Graph runspace: connected via WCM app credentials" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8
+                        if ($connected) {
+                            Write-ExportStatusLine -StatusFile $Params.StatusFile -Message 'Graph runspace: connected via WCM app credentials'
                         } elseif (-not $connected) {
                             Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
                         }
                     } catch {
-                        if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Graph runspace: WCM connect failed ($($_.Exception.Message)), falling back to Connect-MgGraph" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 }
+                        Write-ExportStatusLine -StatusFile $Params.StatusFile -Message "Graph runspace: WCM connect failed ($($_.Exception.Message)), falling back to Connect-MgGraph"
                         Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
                     }
                 } else {
@@ -1248,7 +1259,7 @@ function New-SecurityInvestigationReport {
                 $graphHandle = $graphPs.BeginInvoke()
 
                 # Exchange in main thread (reuses existing session)
-                $writeStatus = { param($m) if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 } }
+                $writeStatus = { param($m) Write-ExportStatusLine -StatusFile $StatusFile -Message $m }
                 if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile } }
                 if ($IncludeInboxRules) { try { & $writeStatus "Exchange (main): collecting inbox rules..." } catch {}; $exchangeResult.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential $true -StatusFile $StatusFile }
                 if ($IncludeTransportRules) { $exchangeResult.TransportRules = Get-ExchangeTransportRules }
@@ -2955,6 +2966,619 @@ Export phase error (if set): $(if ($exportError) { $exportError.Exception.Messag
     return $report
 }
 
+function Get-ExchangeMessageTraceV2CommandInfo {
+    if ($global:EOA_MessageTraceV2Command) { return $global:EOA_MessageTraceV2Command }
+    if (Get-Command Get-ExchangeMessageTraceV2Command -ErrorAction SilentlyContinue) {
+        $cmd = Get-ExchangeMessageTraceV2Command
+        if ($cmd) { return $cmd }
+    }
+    foreach ($mod in @(Get-Module -All -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'tmpEXO_*' })) {
+        if ($mod.ExportedCommands -and $mod.ExportedCommands.ContainsKey('Get-MessageTraceV2')) {
+            return $mod.ExportedCommands['Get-MessageTraceV2']
+        }
+    }
+    return $null
+}
+
+function ConvertTo-EoaMessageTraceRow {
+    param($Row)
+    if (-not $Row) { return $null }
+    $received = $Row.receivedDateTime
+    if (-not $received) { $received = $Row.Received }
+    $sender = $Row.senderAddress
+    if (-not $sender) { $sender = $Row.SenderAddress }
+    $recipient = $Row.recipientAddress
+    if (-not $recipient) { $recipient = $Row.RecipientAddress }
+    $messageId = $Row.messageId
+    if (-not $messageId) { $messageId = $Row.MessageId }
+    $traceId = $Row.id
+    if (-not $traceId) { $traceId = $Row.MessageTraceId }
+    [pscustomobject]@{
+        Received          = $received
+        SenderAddress     = $sender
+        RecipientAddress  = $recipient
+        Subject           = $(if ($Row.subject) { $Row.subject } else { $Row.Subject })
+        Status            = $(if ($Row.status) { $Row.status } else { $Row.Status })
+        ToIP              = $(if ($Row.toIP) { $Row.toIP } else { $Row.ToIP })
+        FromIP            = $(if ($Row.fromIP) { $Row.fromIP } else { $Row.FromIP })
+        Size              = $(if ($null -ne $Row.size) { $Row.size } else { $Row.Size })
+        MessageId         = $messageId
+        MessageTraceId    = $traceId
+    }
+}
+
+function Invoke-GraphMessageTraceQuery {
+    param(
+        [Parameter(Mandatory = $true)][datetime]$StartDate,
+        [Parameter(Mandatory = $true)][datetime]$EndDate,
+        [string]$SenderAddress,
+        [string]$RecipientAddress
+    )
+    $startUtc = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'")
+    $endUtc = $EndDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'")
+    $filters = @(
+        "receivedDateTime ge $startUtc",
+        "receivedDateTime le $endUtc"
+    )
+    if ($SenderAddress) {
+        $filters += "senderAddress eq '$($SenderAddress.Replace("'", "''"))'"
+    }
+    if ($RecipientAddress) {
+        $filters += "recipientAddress eq '$($RecipientAddress.Replace("'", "''"))'"
+    }
+    $filter = $filters -join ' and '
+    $uri = "https://graph.microsoft.com/v1.0/admin/exchange/tracing/messageTraces?`$top=1000&`$filter=$([uri]::EscapeDataString($filter))"
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $next = $uri
+    while ($next) {
+        $resp = Invoke-MgGraphRequestCompat -Method GET -Uri $next
+        foreach ($item in @($resp.value)) {
+            $mapped = ConvertTo-EoaMessageTraceRow $item
+            if ($mapped) { [void]$rows.Add($mapped) }
+        }
+        $next = $resp.'@odata.nextLink'
+    }
+    return $rows
+}
+
+function Get-EoaJwtPayload {
+    param([string]$Token)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return $null }
+    $parts = $Token.Split('.')
+    if ($parts.Count -lt 2) { return $null }
+    $p = $parts[1].Replace('-', '+').Replace('_', '/')
+    switch ($p.Length % 4) {
+        2 { $p += '==' }
+        3 { $p += '=' }
+    }
+    try {
+        return ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Invoke-EoaGraphJson {
+    param(
+        [string]$Method = 'GET',
+        [Parameter(Mandatory = $true)][string]$Uri,
+        $Body
+    )
+    $json = $null
+    if ($null -ne $Body) {
+        $json = if ($Body -is [string]) { $Body } else { ($Body | ConvertTo-Json -Depth 10 -Compress) }
+    }
+    if (Test-GraphRestBearerToken) {
+        if ($json) { return Invoke-GraphRestRequest -Method $Method -Uri $Uri -Body $json }
+        return Invoke-GraphRestRequest -Method $Method -Uri $Uri
+    }
+    $params = @{ Method = $Method; Uri = $Uri; ErrorAction = 'Stop' }
+    if ($json) { $params.Body = $json }
+    return Invoke-MgGraphRequest @params
+}
+
+function Enable-GraphMessageTraceAccess {
+    param([string]$StatusFile = $null)
+    $result = [pscustomobject]@{
+        RetryReady = $false
+        Granted    = $false
+        TdpReady   = $false
+        Detail     = $null
+    }
+    $roleId = '89b20d8a-76e2-4057-867b-9961f800b9a4'
+    $roleName = 'ExchangeMessageTrace.Read.All'
+    $graphAppId = '00000003-0000-0000-c000-000000000000'
+    $tdpAppId = '8bd644d1-64a1-4d4b-ae52-2e0cbf64e373'
+
+    $tenantId = Get-CurrentTenantId
+    if (-not $tenantId) {
+        $result.Detail = 'No tenant id (complete Graph Auth or WCM app-only first).'
+        return $result
+    }
+
+    $graphAppMod = Join-Path $PSScriptRoot 'GraphAppCredential.psm1'
+    if (Test-Path $graphAppMod) {
+        Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
+    }
+    $cred = $null
+    if (Get-Command Get-GraphAppCredentialFromWCM -ErrorAction SilentlyContinue) {
+        $cred = Get-GraphAppCredentialFromWCM -TenantId $tenantId
+    }
+    if (-not $cred -or -not $cred.ClientId) {
+        $result.Detail = 'No WCM Graph app credentials for this tenant. Use Update Graph App scopes, then Graph Auth.'
+        return $result
+    }
+
+    $token = $null
+    if (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue) {
+        $token = Get-GraphAppTokenFromWCM -TenantId $tenantId
+    }
+    if (-not $token) {
+        $result.Detail = 'Could not get a WCM app-only token to grant message-trace permission.'
+        return $result
+    }
+    Set-GraphRestBearerToken -Token $token
+
+    $payload = Get-EoaJwtPayload -Token $token
+    $roles = @()
+    if ($payload -and $payload.roles) { $roles = @($payload.roles) }
+    $hasRole = $roles -contains $roleName
+    $canWriteApps = ($roles -contains 'Application.ReadWrite.All')
+    $canAssignRoles = ($roles -contains 'AppRoleAssignment.ReadWrite.All')
+
+    Write-ExportStatusLine -StatusFile $StatusFile -Message "Graph messageTraces 403: ensuring $roleName and Transport Data Platform SP..."
+
+    try {
+        $tdp = Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$tdpAppId'"
+        if (-not $tdp.value -or @($tdp.value).Count -eq 0) {
+            try {
+                $null = Invoke-EoaGraphJson -Method POST -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals' -Body @{ appId = $tdpAppId }
+                $result.TdpReady = $true
+                Write-ExportStatusLine -StatusFile $StatusFile -Message 'Provisioned Transport Data Platform service principal (Graph message trace). Propagation can take a few hours.'
+            } catch {
+                $result.Detail = "Transport Data Platform SP create failed: $($_.Exception.Message)"
+            }
+        } else {
+            $result.TdpReady = $true
+        }
+    } catch {
+        $result.Detail = "Transport Data Platform SP lookup failed: $($_.Exception.Message)"
+    }
+
+    if (-not $hasRole) {
+        if (-not $canWriteApps -or -not $canAssignRoles) {
+            $result.Detail = "WCM token lacks Application.ReadWrite.All / AppRoleAssignment.ReadWrite.All, so $roleName cannot be granted automatically. Use Update Graph App scopes."
+            return $result
+        }
+        try {
+            $apps = Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=appId eq '$($cred.ClientId)'"
+            $app = @($apps.value) | Select-Object -First 1
+            if (-not $app) { throw "WCM app $($cred.ClientId) was not found in this tenant." }
+
+            $payloadAccess = @()
+            $foundGraph = $false
+            foreach ($r in @($app.requiredResourceAccess)) {
+                $rid = [string]$r.resourceAppId
+                if ($rid -eq $graphAppId) {
+                    $foundGraph = $true
+                    $access = @()
+                    $have = $false
+                    foreach ($a in @($r.resourceAccess)) {
+                        $access += @{ id = [string]$a.id; type = [string]$a.type }
+                        if ([string]$a.id -eq $roleId) { $have = $true }
+                    }
+                    if (-not $have) { $access += @{ id = $roleId; type = 'Role' } }
+                    $payloadAccess += @{ resourceAppId = $graphAppId; resourceAccess = $access }
+                } else {
+                    $payloadAccess += @{
+                        resourceAppId  = $rid
+                        resourceAccess = @($r.resourceAccess | ForEach-Object { @{ id = [string]$_.id; type = [string]$_.type } })
+                    }
+                }
+            }
+            if (-not $foundGraph) {
+                $payloadAccess += @{ resourceAppId = $graphAppId; resourceAccess = @(@{ id = $roleId; type = 'Role' }) }
+            }
+            $null = Invoke-EoaGraphJson -Method PATCH -Uri "https://graph.microsoft.com/v1.0/applications/$($app.id)" -Body @{
+                requiredResourceAccess = @($payloadAccess)
+            }
+
+            $graphSp = @((Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$graphAppId'").value) | Select-Object -First 1
+            $appSp = @((Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$($cred.ClientId)'").value) | Select-Object -First 1
+            if (-not $graphSp -or -not $appSp) { throw 'Could not resolve Graph or River Run service principals for consent.' }
+
+            $already = $false
+            $asnUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments?`$top=999"
+            do {
+                $page = Invoke-EoaGraphJson -Method GET -Uri $asnUri
+                foreach ($a in @($page.value)) {
+                    if ([string]$a.appRoleId -eq $roleId -and [string]$a.resourceId -eq [string]$graphSp.id) { $already = $true }
+                }
+                $asnUri = $page.'@odata.nextLink'
+            } while ($asnUri -and -not $already)
+
+            if (-not $already) {
+                $null = Invoke-EoaGraphJson -Method POST -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments" -Body @{
+                    principalId = $appSp.id
+                    resourceId  = $graphSp.id
+                    appRoleId   = $roleId
+                }
+            }
+            $result.Granted = $true
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Granted $roleName on the WCM Graph app. Requesting a new token..."
+        } catch {
+            $result.Detail = "Could not grant $roleName : $($_.Exception.Message)"
+            return $result
+        }
+    }
+
+    $fresh = Get-GraphAppTokenFromWCM -TenantId $tenantId
+    if ($fresh) {
+        Set-GraphRestBearerToken -Token $fresh
+        $freshPayload = Get-EoaJwtPayload -Token $fresh
+        $freshRoles = @()
+        if ($freshPayload -and $freshPayload.roles) { $freshRoles = @($freshPayload.roles) }
+        if ($freshRoles -contains $roleName) {
+            $result.RetryReady = $true
+            if (-not $result.Detail) { $result.Detail = "Token now includes $roleName." }
+        } else {
+            $result.RetryReady = $true
+            if (-not $result.Detail) { $result.Detail = "New token requested; $roleName may still be propagating." }
+        }
+    } else {
+        if (-not $result.Detail) { $result.Detail = 'Permission grant finished but a new WCM token could not be issued.' }
+    }
+    return $result
+}
+
+function Test-GraphMessageTraceAvailable {
+    param([string]$StatusFile = $null)
+    if ($null -ne $global:EOA_GraphMessageTraceOk) {
+        return [bool]$global:EOA_GraphMessageTraceOk
+    }
+    if (-not (Test-GraphSessionAvailable)) {
+        $tid = Get-CurrentTenantId
+        if ($tid -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+            try {
+                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tid
+                if ($wcmToken) { Set-GraphRestBearerToken -Token $wcmToken }
+            } catch {}
+        }
+    }
+    if (-not (Test-GraphSessionAvailable)) {
+        $global:EOA_GraphMessageTraceOk = $false
+        $global:EOA_GraphMessageTraceError = 'Graph is not connected (no WCM/app-only token and no interactive Graph session).'
+        return $false
+    }
+    $tryQuery = {
+        $end = (Get-Date).ToUniversalTime()
+        $null = Invoke-GraphMessageTraceQuery -StartDate $end.AddMinutes(-30) -EndDate $end
+    }
+    try {
+        & $tryQuery
+        $global:EOA_GraphMessageTraceOk = $true
+        $global:EOA_GraphMessageTraceError = $null
+        return $true
+    } catch {
+        $err = [string]$_.Exception.Message
+        if ($err -match '401|403|Forbidden|Unauthorized|Authorization_RequestDenied') {
+            $fix = Enable-GraphMessageTraceAccess -StatusFile $StatusFile
+            if ($fix.RetryReady) {
+                try {
+                    & $tryQuery
+                    $global:EOA_GraphMessageTraceOk = $true
+                    $global:EOA_GraphMessageTraceError = $null
+                    return $true
+                } catch {
+                    $err2 = [string]$_.Exception.Message
+                    $global:EOA_GraphMessageTraceOk = $false
+                    $global:EOA_GraphMessageTraceError = "$err2 (after grant: $($fix.Detail))"
+                    return $false
+                }
+            }
+            $global:EOA_GraphMessageTraceOk = $false
+            $global:EOA_GraphMessageTraceError = "$err ($($fix.Detail))"
+            return $false
+        }
+        $global:EOA_GraphMessageTraceOk = $false
+        $global:EOA_GraphMessageTraceError = $err
+        return $false
+    }
+}
+
+function Get-GraphMessageTrace {
+    param(
+        [datetime]$StartDate,
+        [datetime]$EndDate,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null
+    )
+    $results = New-Object System.Collections.Generic.List[object]
+    $traceCallCount = 0
+    $script:EOA_GraphMessageTraceWindowErrors = 0
+    $cursor = $StartDate
+    $windowDays = 10
+    $selectedUserList = @()
+    foreach ($user in @($SelectedUsers)) {
+        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { $null }
+        if ($upn) { $selectedUserList += $upn }
+    }
+
+    while ($cursor -lt $EndDate) {
+        $winEnd = $cursor.AddDays($windowDays)
+        if ($winEnd -gt $EndDate) { $winEnd = $EndDate }
+        $dayLabel = '{0:yyyy-MM-dd} to {1:yyyy-MM-dd}' -f $cursor, $winEnd
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace (Graph): $dayLabel..."
+        $calls = @()
+        if ($selectedUserList.Count -gt 0) {
+            foreach ($upn in $selectedUserList) {
+                $calls += @{ Sender = $upn; Recipient = $null }
+                $calls += @{ Sender = $null; Recipient = $upn }
+            }
+        } else {
+            $calls += @{ Sender = $null; Recipient = $null }
+        }
+        foreach ($call in $calls) {
+            try {
+                if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }
+                $traceCallCount++
+                foreach ($item in @(Invoke-GraphMessageTraceQuery -StartDate $cursor -EndDate $winEnd -SenderAddress $call.Sender -RecipientAddress $call.Recipient)) {
+                    if ($item) { [void]$results.Add($item) }
+                }
+            } catch {
+                $script:EOA_GraphMessageTraceWindowErrors++
+                $traceErr = "Message trace (Graph) $dayLabel failed: $($_.Exception.Message)"
+                Write-Warning $traceErr
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
+            }
+        }
+        $cursor = $winEnd
+    }
+
+    if ($selectedUserList.Count -gt 0) {
+        $uniqueResults = @()
+        $seenIds = @{}
+        foreach ($item in $results) {
+            if ($item.MessageId) { $uniqueKey = $item.MessageId }
+            elseif ($item.MessageTraceId) { $uniqueKey = "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.MessageTraceId)" }
+            else { $uniqueKey = "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.Subject)_$($item.Received)" }
+            if ($uniqueKey -and -not $seenIds.ContainsKey($uniqueKey)) {
+                $seenIds[$uniqueKey] = $true
+                $uniqueResults += $item
+            }
+        }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($uniqueResults.Count) entries (Graph, filtered users)"
+        return [System.Collections.ArrayList]$uniqueResults
+    }
+
+    Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($results.Count) entries (Graph)"
+    return [System.Collections.ArrayList]$results
+}
+
+function ConvertTo-EoaMessageTraceRowFromHistorical {
+    param($Row)
+    if (-not $Row) { return $null }
+    $n = @{}
+    foreach ($p in $Row.PSObject.Properties) { $n[$p.Name.ToLowerInvariant()] = $p.Value }
+    $get = {
+        param([string[]]$Names)
+        foreach ($name in $Names) {
+            if ($n.ContainsKey($name) -and $null -ne $n[$name] -and $n[$name] -ne '') { return $n[$name] }
+        }
+        return $null
+    }
+    [pscustomobject]@{
+        Received         = & $get @('origin_timestamp_utc', 'origin_timestamp', 'received', 'datetime', 'date_time')
+        SenderAddress    = & $get @('sender_address', 'senderaddress', 'sender', 'from')
+        RecipientAddress = & $get @('recipient_address', 'recipientaddress', 'recipient', 'to')
+        Subject          = & $get @('message_subject', 'subject')
+        Status           = & $get @('recipient_status', 'status', 'delivery_status')
+        ToIP             = & $get @('to_ip', 'toip')
+        FromIP           = & $get @('from_ip', 'fromip')
+        Size             = & $get @('message_size', 'size')
+        MessageId        = & $get @('message_id', 'messageid')
+        MessageTraceId   = & $get @('network_message_id', 'messagetraceid', 'message_trace_id')
+    }
+}
+
+function Get-HistoricalMessageTraceAddressFilters {
+    param([array]$SelectedUsers = @())
+    $recipients = [System.Collections.Generic.List[string]]::new()
+    $senders = [System.Collections.Generic.List[string]]::new()
+    foreach ($user in @($SelectedUsers)) {
+        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { $null }
+        if ($upn) {
+            [void]$recipients.Add($upn)
+            [void]$senders.Add($upn)
+        }
+    }
+    if ($recipients.Count -gt 0) {
+        return [pscustomobject]@{ Recipients = @($recipients); Senders = @($senders) }
+    }
+    $domains = @()
+    try {
+        $domains = @(Get-AcceptedDomain -ErrorAction Stop | Where-Object { $_.DomainName } | ForEach-Object { [string]$_.DomainName })
+    } catch { }
+    foreach ($d in $domains) {
+        if ($d -and $d -notmatch '\*') {
+            [void]$recipients.Add("*@$d")
+            [void]$senders.Add("*@$d")
+        }
+    }
+    return [pscustomobject]@{ Recipients = @($recipients | Select-Object -First 100); Senders = @($senders | Select-Object -First 100) }
+}
+
+function Wait-HistoricalSearchJob {
+    param(
+        [Parameter(Mandatory = $true)]$Job,
+        [string]$StatusFile = $null,
+        [int]$TimeoutMinutes = 20
+    )
+    $jobId = $Job.JobId
+    if (-not $jobId) { $jobId = $Job.Identity }
+    if (-not $jobId) { throw 'Start-HistoricalSearch did not return a JobId.' }
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    $current = $Job
+    while ((Get-Date) -lt $deadline) {
+        $status = [string]$current.Status
+        if ($status -match 'Done|Completed|Ready') { return $current }
+        if ($status -match 'Failed|Error|Stopped|Cancelled') {
+            throw "Historical search $jobId failed ($status $($current.ErrorDescription))."
+        }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace $jobId status=$status (waiting, up to $TimeoutMinutes min)..."
+        Start-Sleep -Seconds 20
+        $current = Get-HistoricalSearch -JobId $jobId -ErrorAction Stop
+        if ($current -is [array]) { $current = $current | Select-Object -First 1 }
+    }
+    throw "Historical search $jobId still $($current.Status) after $TimeoutMinutes minutes. Download later from EAC (Mail flow > Message trace > pending/completed)."
+}
+
+function Import-HistoricalSearchFileUrl {
+    param(
+        [Parameter(Mandatory = $true)][string]$FileUrl,
+        [string]$StatusFile = $null
+    )
+    $tmp = Join-Path $env:TEMP ("EOA_HistoricalMT_{0}.csv" -f [guid]::NewGuid().ToString('N'))
+    try {
+        Invoke-WebRequest -Uri $FileUrl -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+    } catch {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical report URL requires a signed-in browser download: $FileUrl"
+        throw "Historical search finished but the CSV URL could not be downloaded from PowerShell ($($_.Exception.Message)). Open the FileUrl in a browser signed into the tenant, or download it from EAC."
+    }
+    $rows = Import-Csv -Path $tmp -ErrorAction Stop
+    $mapped = [System.Collections.Generic.List[object]]::new()
+    foreach ($row in @($rows)) {
+        $item = ConvertTo-EoaMessageTraceRowFromHistorical $row
+        if ($item -and ($item.SenderAddress -or $item.RecipientAddress -or $item.MessageId)) {
+            [void]$mapped.Add($item)
+        }
+    }
+    return $mapped
+}
+
+function Get-HistoricalMessageTrace {
+    param(
+        [datetime]$StartDate,
+        [datetime]$EndDate,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null
+    )
+    $filters = Get-HistoricalMessageTraceAddressFilters -SelectedUsers $SelectedUsers
+    if (-not $filters.Recipients -and -not $filters.Senders) {
+        throw 'Start-HistoricalSearch needs a recipient, sender, or accepted domain.'
+    }
+    $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+    $jobs = @()
+    if ($filters.Recipients.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message ("Starting historical message trace (recipients {0})..." -f ($filters.Recipients -join ', '))
+        $jobs += Start-HistoricalSearch -ReportTitle "EOA-MT-R-$stamp" -ReportType MessageTrace -StartDate $StartDate -EndDate $EndDate -RecipientAddress $filters.Recipients -ErrorAction Stop
+    }
+    if ($filters.Senders.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message ("Starting historical message trace (senders {0})..." -f ($filters.Senders -join ', '))
+        $jobs += Start-HistoricalSearch -ReportTitle "EOA-MT-S-$stamp" -ReportType MessageTrace -StartDate $StartDate -EndDate $EndDate -SenderAddress $filters.Senders -ErrorAction Stop
+    }
+    $results = [System.Collections.Generic.List[object]]::new()
+    foreach ($job in @($jobs)) {
+        $done = Wait-HistoricalSearchJob -Job $job -StatusFile $StatusFile
+        $url = [string]$done.FileUrl
+        if (-not $url) {
+            throw "Historical search $($done.JobId) is $($done.Status) but FileUrl is empty. Check EAC Mail flow > Message trace."
+        }
+        foreach ($item in @(Import-HistoricalSearchFileUrl -FileUrl $url -StatusFile $StatusFile)) {
+            if ($item) { [void]$results.Add($item) }
+        }
+    }
+    $unique = @()
+    $seen = @{}
+    foreach ($item in $results) {
+        $key = if ($item.MessageId) { $item.MessageId } else { "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.Received)_$($item.Subject)" }
+        if ($key -and -not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $unique += $item
+        }
+    }
+    Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($unique.Count) entries (Historical Search)"
+    return [System.Collections.ArrayList]$unique
+}
+
+function Test-ExchangeMessageTraceV2Available {
+    # Only trust a real tmpEXO export. A blind Get-MessageTraceV2 probe can bind to a
+    # same-named local function and report success while returning nothing.
+    return ($null -ne (Get-ExchangeMessageTraceV2CommandInfo))
+}
+
+function Test-ExchangeUserMailboxesPresent {
+    # Tenants licensed for Office apps only (or with mail hosted off Exchange Online) have no
+    # user mailboxes, so message trace has nothing to return. Distinguish that from a failure.
+    if ($null -ne $global:EOA_ExchangeHasUserMailboxes) {
+        return [bool]$global:EOA_ExchangeHasUserMailboxes
+    }
+    if (-not (Get-Command Get-Mailbox -ErrorAction SilentlyContinue)) {
+        return $true
+    }
+    try {
+        $probe = @(Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize 1 -ErrorAction Stop)
+        $global:EOA_ExchangeHasUserMailboxes = ($probe.Count -gt 0)
+    } catch {
+        # Cannot tell (permissions, throttling) - assume mailboxes exist so collection still runs.
+        $global:EOA_ExchangeHasUserMailboxes = $true
+    }
+    return [bool]$global:EOA_ExchangeHasUserMailboxes
+}
+
+function Test-EoaMessageTraceThrottled {
+    param([string]$ErrorText)
+    return ($ErrorText -match 'surpassed the permitted limit|please try again later|throttl|too many request|\b429\b')
+}
+
+function Invoke-EoaMessageTraceCall {
+    # Get-MessageTraceV2 enforces a rolling query quota. Without backoff, one throttle
+    # response cascades into every remaining day failing in seconds.
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Call,
+        [int]$MaxRetries = 4,
+        [string]$StatusFile = $null,
+        [string]$Label = ''
+    )
+    $attempt = 0
+    while ($true) {
+        try {
+            return (& $Call)
+        } catch {
+            $errText = [string]$_.Exception.Message
+            if ($attempt -ge $MaxRetries -or -not (Test-EoaMessageTraceThrottled -ErrorText $errText)) { throw }
+            $attempt++
+            $wait = [int][Math]::Min(240, 15 * [Math]::Pow(2, $attempt - 1))
+            $suffix = if ($Label) { " ($Label)" } else { '' }
+            $msg = "Message trace throttled$suffix - waiting ${wait}s, retry $attempt of $MaxRetries..."
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+            Start-Sleep -Seconds $wait
+        }
+    }
+}
+
+function Write-EoaMessageTraceCoverage {
+    param(
+        [int]$EntryCount,
+        [int]$DaysRequested,
+        [System.Collections.Generic.List[string]]$MissingDays,
+        [string]$StopReason = '',
+        [string]$StatusFile = $null
+    )
+    if (-not $MissingDays -or $MissingDays.Count -eq 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $EntryCount entries ($DaysRequested of $DaysRequested days)"
+        return
+    }
+    $sorted = @($MissingDays | Sort-Object)
+    $covered = [Math]::Max(0, $DaysRequested - $sorted.Count)
+    $range = if ($sorted.Count -eq 1) { $sorted[0] } else { "$($sorted[0]) to $($sorted[-1])" }
+    $reason = if ($StopReason) { " $StopReason" } else { '' }
+    $warn = "INCOMPLETE message trace: $EntryCount entries covering $covered of $DaysRequested days. No data for $($sorted.Count) day(s): $range.$reason"
+    Write-Warning $warn
+    Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
+}
+
 function Get-ExchangeMessageTrace {
     param(
         [int]$DaysBack = 10,
@@ -2981,10 +3605,100 @@ function Get-ExchangeMessageTrace {
             Write-Host "Collecting message trace data (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         }
 
+        if (-not (Test-ExchangeUserMailboxesPresent)) {
+            $skipMsg = 'Message trace skipped: this tenant has no Exchange Online user mailboxes, so no mail flows through Exchange Online to trace. Mail is hosted elsewhere - investigate it in that mail platform.'
+            Write-Warning $skipMsg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+            return [System.Collections.ArrayList]@()
+        }
+
+        # V2: up to 90 days lookback, max ~10 days per query (we chunk by day).
+        # Legacy Get-MessageTrace was retired starting 2025-09-01 and now errors on every call.
+        $v2Cmd = Get-ExchangeMessageTraceV2CommandInfo
+        $hasV2 = $null -ne $v2Cmd -or (Test-ExchangeMessageTraceV2Available)
+        $useGraph = $false
+        if (-not $hasV2) {
+            if (Test-GraphMessageTraceAvailable -StatusFile $StatusFile) {
+                $useGraph = $true
+            } elseif (Get-Command Start-HistoricalSearch -ErrorAction SilentlyContinue) {
+                $apiMsg = 'Message trace API: Start-HistoricalSearch (Get-MessageTraceV2 is not in this session; Graph messageTraces is waiting on Transport Data Platform provisioning).'
+                Write-Host $apiMsg -ForegroundColor Cyan
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
+                try {
+                    return (Get-HistoricalMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile)
+                } catch {
+                    $histErr = $_.Exception.Message
+                    Write-Warning $histErr
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $histErr
+                    return [System.Collections.ArrayList]@()
+                }
+            } else {
+                $graphErr = if ($global:EOA_GraphMessageTraceError) { $global:EOA_GraphMessageTraceError } else { 'not attempted' }
+                $skipMsg = "Message trace skipped: Get-MessageTraceV2 is not exported in this Exchange session and legacy Get-MessageTrace is retired. Graph messageTraces failed ($graphErr). Start-HistoricalSearch is not in this session."
+                Write-Warning $skipMsg
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+                return [System.Collections.ArrayList]@()
+            }
+        }
+        if ($useGraph) {
+            $clampEarliest = (Get-Date).ToUniversalTime().AddDays(-90)
+            if ($end -lt $clampEarliest) {
+                $skipMsg = ("Message trace skipped: requested range ends {0:yyyy-MM-dd} outside Graph 90-day lookback (earliest {1:yyyy-MM-dd})." -f $end, $clampEarliest)
+                Write-Warning $skipMsg
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+                return [System.Collections.ArrayList]@()
+            }
+            if ($start -lt $clampEarliest) {
+                $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} (Graph ~90-day retention)." -f $start, $clampEarliest)
+                Write-Host $clampMsg -ForegroundColor Yellow
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $clampMsg
+                $start = $clampEarliest
+            }
+            $apiMsg = 'Message trace API: Graph /admin/exchange/tracing/messageTraces (max lookback ~90 days; 10-day windows).'
+            Write-Host $apiMsg -ForegroundColor Cyan
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
+            $graphRows = Get-GraphMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile
+            if (@($graphRows).Count -gt 0) { return $graphRows }
+            # A clean empty result means the tenant really had no matching mail. Only distrust it
+            # when some windows errored, since a half-provisioned Transport Data Platform answers
+            # HTTP 200 with an empty set on the nodes that are not ready yet.
+            if ($script:EOA_GraphMessageTraceWindowErrors -gt 0 -and (Get-Command Start-HistoricalSearch -ErrorAction SilentlyContinue)) {
+                $fallbackMsg = 'Message trace: Graph returned 0 entries (Transport Data Platform may still be provisioning). Falling back to Start-HistoricalSearch.'
+                Write-Host $fallbackMsg -ForegroundColor Yellow
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $fallbackMsg
+                try {
+                    return (Get-HistoricalMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile)
+                } catch {
+                    $histErr = $_.Exception.Message
+                    Write-Warning $histErr
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $histErr
+                }
+            }
+            return [System.Collections.ArrayList]@()
+        }
+        if (-not $v2Cmd) { $v2Cmd = Get-Command -Name Get-MessageTraceV2 -ErrorAction SilentlyContinue }
+        $maxLookbackDays = 90
+        $apiLabel = 'Get-MessageTraceV2'
+        $apiMsg = "Message trace API: $apiLabel (max lookback ~$maxLookbackDays days; chunked queries)."
+        Write-Host $apiMsg -ForegroundColor Cyan
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
+
+        $earliestAllowed = (Get-Date).ToUniversalTime().AddDays(-$maxLookbackDays)
+        if ($end -lt $earliestAllowed) {
+            $skipMsg = ("Message trace skipped: requested range ends {0:yyyy-MM-dd} outside {1} lookback (earliest {2:yyyy-MM-dd})." -f $end, $apiLabel, $earliestAllowed)
+            Write-Warning $skipMsg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+            return [System.Collections.ArrayList]@()
+        }
+        if ($start -lt $earliestAllowed) {
+            $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} (V2 ~90-day retention)." -f $start, $earliestAllowed)
+            Write-Host $clampMsg -ForegroundColor Yellow
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $clampMsg
+            $start = $earliestAllowed
+        }
+
         $results = New-Object System.Collections.Generic.List[object]
         $traceCallCount = 0
-
-        $hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
 
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             $selectedUserList = @()
@@ -2994,48 +3708,54 @@ function Get-ExchangeMessageTrace {
             }
 
             $daysToIterate = if ($useDateRange) { [Math]::Max(1, [int][Math]::Ceiling(($end - $start).TotalDays)) } else { $DaysBack }
+            $failedCalls = 0
             foreach ($upn in $selectedUserList) {
                 for ($d = 0; $d -lt $daysToIterate; $d++) {
                     $winStart = $start.AddDays($d)
                     $winEnd   = if ($d -eq $daysToIterate - 1) { $end } else { $winStart.AddDays(1) }
+                    $dayLabel = $winStart.ToString('yyyy-MM-dd')
 
                     if ($hasV2) {
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $chunk = Get-MessageTraceV2 -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ResultSize 5000 -ErrorAction Stop
+                            $chunk = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Call { & $v2Cmd -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ResultSize 5000 -ErrorAction Stop }
                             if ($chunk) { foreach ($item in @($chunk)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
-                            $traceErr = "Failed message trace sender ${upn} ($($winStart.ToString('yyyy-MM-dd'))): $($_.Exception.Message)"
+                            $failedCalls++
+                            $traceErr = "Failed message trace sender ${upn} (${dayLabel}): $($_.Exception.Message)"
                             Write-Warning $traceErr
-                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $traceErr" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                         }
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $chunk = Get-MessageTraceV2 -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ResultSize 5000 -ErrorAction Stop
+                            $chunk = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Call { & $v2Cmd -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ResultSize 5000 -ErrorAction Stop }
                             if ($chunk) { foreach ($item in @($chunk)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
-                            $traceErr = "Failed message trace recipient ${upn} ($($winStart.ToString('yyyy-MM-dd'))): $($_.Exception.Message)"
+                            $failedCalls++
+                            $traceErr = "Failed message trace recipient ${upn} (${dayLabel}): $($_.Exception.Message)"
                             Write-Warning $traceErr
-                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $traceErr" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                         }
                     } else {
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ErrorAction Stop
+                            $batch = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Call { Get-MessageTrace -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ErrorAction Stop }
                             if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
-                            $traceErr = "Failed message trace sender ${upn} ($($winStart.ToString('yyyy-MM-dd'))): $($_.Exception.Message)"
+                            $failedCalls++
+                            $traceErr = "Failed message trace sender ${upn} (${dayLabel}): $($_.Exception.Message)"
                             Write-Warning $traceErr
-                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $traceErr" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                         }
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ErrorAction Stop
+                            $batch = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Call { Get-MessageTrace -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ErrorAction Stop }
                             if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
-                            $traceErr = "Failed message trace recipient ${upn} ($($winStart.ToString('yyyy-MM-dd'))): $($_.Exception.Message)"
+                            $failedCalls++
+                            $traceErr = "Failed message trace recipient ${upn} (${dayLabel}): $($_.Exception.Message)"
                             Write-Warning $traceErr
-                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $traceErr" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                         }
                     }
                 }
@@ -3052,12 +3772,18 @@ function Get-ExchangeMessageTrace {
                     $uniqueResults += $item
                 }
             }
-            if ($StatusFile) {
-                "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Message trace collected: $($uniqueResults.Count) entries (filtered users)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8
+            if ($failedCalls -gt 0) {
+                $warn = "INCOMPLETE message trace: $($uniqueResults.Count) entries (filtered users) with $failedCalls failed quer(ies) after retries. Coverage has gaps - re-run later or use a shorter timeframe."
+                Write-Warning $warn
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
+            } else {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($uniqueResults.Count) entries (filtered users)"
             }
             return [System.Collections.ArrayList]$uniqueResults
         } else {
             $daysToIterateAll = if ($useDateRange) { [Math]::Max(1, [int][Math]::Ceiling(($end - $start).TotalDays)) } else { $DaysBack }
+            $missingDays = [System.Collections.Generic.List[string]]::new()
+            $stopReason = ''
             for ($d = 0; $d -lt $daysToIterateAll; $d++) {
                 $winStart = $start.AddDays($d)
                 $winEnd   = if ($d -eq $daysToIterateAll - 1) { $end } else { $winStart.AddDays(1) }
@@ -3066,9 +3792,7 @@ function Get-ExchangeMessageTrace {
                 if ($d -eq 0 -or $d -eq ($daysToIterateAll - 1) -or ($d % 10) -eq 0) {
                     $progressMsg = "Message trace: day $($d + 1) of $daysToIterateAll ($dayLabel)..."
                     Write-Host $progressMsg -ForegroundColor Gray
-                    if ($StatusFile) {
-                        "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $progressMsg" | Out-File -FilePath $StatusFile -Append -Encoding UTF8
-                    }
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $progressMsg
                 }
 
                 try {
@@ -3079,7 +3803,7 @@ function Get-ExchangeMessageTrace {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
                             $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
                             if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                            $chunk = Get-MessageTraceV2 @params
+                            $chunk = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label $dayLabel -Call { & $v2Cmd @params }
                             if ($chunk) {
                                 if ($startRecipient) { $filtered = $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } }
                                 else { $filtered = $chunk }
@@ -3093,27 +3817,40 @@ function Get-ExchangeMessageTrace {
                         } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
                     } else {
                         if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                        $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
+                        $batch = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label $dayLabel -Call { Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop }
                         if ($batch) { [void]$results.AddRange(@($batch)) }
                     }
                 } catch {
-                    $traceErr = "Message trace day $dayLabel failed: $($_.Exception.Message)"
+                    $errText = [string]$_.Exception.Message
+                    $traceErr = "Message trace day $dayLabel failed: $errText"
                     Write-Warning $traceErr
-                    if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $traceErr" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
+                    [void]$missingDays.Add($dayLabel)
+                    if ($errText -match 'CommandNotFound|Get-MessageTrace will start deprecat') {
+                        Write-Warning 'Stopping message trace: Get-MessageTraceV2 is missing or legacy Get-MessageTrace was invoked. Restart the worker and re-run Exchange Auth.'
+                        $stopReason = 'Stopped: Get-MessageTraceV2 unavailable. Restart the worker and re-run Exchange Auth.'
+                        for ($r = $d + 1; $r -lt $daysToIterateAll; $r++) { [void]$missingDays.Add($start.AddDays($r).ToString('yyyy-MM-dd')) }
+                        break
+                    }
+                    if (Test-EoaMessageTraceThrottled -ErrorText $errText) {
+                        # Retries are already exhausted, so the quota is not recovering. Stop
+                        # instead of burning the rest of the window on instant failures.
+                        $stopReason = 'Stopped: query quota exhausted after retries. Re-run this tenant later, or use a shorter timeframe.'
+                        for ($r = $d + 1; $r -lt $daysToIterateAll; $r++) { [void]$missingDays.Add($start.AddDays($r).ToString('yyyy-MM-dd')) }
+                        break
+                    }
                 }
             }
+            Write-EoaMessageTraceCoverage -EntryCount $results.Count -DaysRequested $daysToIterateAll -MissingDays $missingDays -StopReason $stopReason -StatusFile $StatusFile
+            return [System.Collections.ArrayList]$results
         }
 
-        if ($StatusFile) {
-            "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Message trace collected: $($results.Count) entries" | Out-File -FilePath $StatusFile -Append -Encoding UTF8
-        }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($results.Count) entries"
         return [System.Collections.ArrayList]$results
     } catch {
         $msg = "Failed to collect message trace: $($_.Exception.Message)"
         Write-Error $msg
-        if ($StatusFile) {
-            "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $msg" | Out-File -FilePath $StatusFile -Append -Encoding UTF8
-        }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "ERROR: $msg"
         return @()
     }
 }
@@ -3165,9 +3902,9 @@ function Get-ExchangeInboxRules {
             $idx = 0
             foreach ($upn in $upns) {
                 $idx++
-                if ($StatusFile -and ($idx -eq 1 -or $idx % 25 -eq 0 -or $idx -eq $total)) {
+                if ($idx -eq 1 -or $idx % 25 -eq 0 -or $idx -eq $total) {
                     $progressMsg = "Inbox rules: mailbox $idx of $total ($upn)..."
-                    "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $progressMsg" | Out-File -FilePath $StatusFile -Append -Encoding UTF8
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $progressMsg
                     Write-Host $progressMsg -ForegroundColor Gray
                 }
                 try {
@@ -3980,17 +4717,21 @@ function Write-ExportStatusLine {
     param([string]$StatusFile, [string]$Message)
     if ([string]::IsNullOrWhiteSpace($StatusFile) -or [string]::IsNullOrWhiteSpace($Message)) { return }
     $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
-    $mutex = $null
-    try {
-        $mutex = New-Object System.Threading.Mutex($false, 'Global\EOA_StatusFileWrite')
-        [void]$mutex.WaitOne(5000)
-        $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
-    } catch {
-        try { $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
-    } finally {
-        if ($mutex) {
-            try { [void]$mutex.ReleaseMutex() } catch {}
-            try { $mutex.Dispose() } catch {}
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $mutex = $null
+        try {
+            $mutex = New-Object System.Threading.Mutex($false, 'Global\EOA_StatusFileWrite')
+            if (-not $mutex.WaitOne(2000)) { throw 'status file mutex timeout' }
+            $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -ge 5) { return }
+            Start-Sleep -Milliseconds (40 * $attempt)
+        } finally {
+            if ($mutex) {
+                try { [void]$mutex.ReleaseMutex() } catch {}
+                try { $mutex.Dispose() } catch {}
+            }
         }
     }
 }
@@ -7752,6 +8493,7 @@ function Get-DLPViolations {
     }
 }
 
+Export-ModuleMember -Function Set-GraphRestBearerToken,Clear-GraphRestBearerToken,Test-GraphRestBearerToken,Get-GraphRestBearerToken,Invoke-GraphRestRequest,Invoke-GraphRestPaged,Get-MgUserCompat
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,Get-GraphAccessToken,Connect-MgGraphForReportSession,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
 Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs,ConvertTo-SlimUnifiedAuditLogExportRows

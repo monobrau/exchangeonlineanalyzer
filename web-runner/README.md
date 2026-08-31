@@ -11,6 +11,8 @@ cd C:\Git\exchangeonlineanalyzer\exchangeonlineanalyzer
 
 Opens http://127.0.0.1:8765/
 
+If you previously used `-ListenLan`, a `http://+:8765/` URL reservation already exists. Plain start now auto-uses that reservation (avoids HTTP.sys **503 Service Unavailable** from a localhost-only bind). Starting again on the same port stops the existing EOA web runner first (localhost shutdown when it is healthy, then force-stop leftovers).
+
 Workers run **hidden** by default (no PowerShell console popups). For troubleshooting:
 
 ```powershell
@@ -37,9 +39,17 @@ Per-tenant **Show console** restarts a worker with a visible window.
 1. **New session** — temp dir, session timeframe, report selections (same shape as WinForms).
 2. **Add tenant** — launches `Scripts/BulkExportWorker.ps1` (hidden by default).
 3. **Load app registrations** — WCM tenants for Graph auth dropdown.
-4. **App registrations (WCM)** — Create / delete Graph app, export / import `.eoa-creds`, clear local WCM.
-5. Per tenant: Manage ticket fetch or paste → **Graph Auth** → **Exchange Auth** → **Generate Reports**.
-6. **Activity** + **Client N** log tabs poll worker status during auth and generate.
+4. **App registrations (WCM)** — Create / **Update Graph App scopes** / delete Graph app, export / import `.eoa-creds`, clear local WCM.
+5. Per tenant: Manage ticket fetch or paste → **Graph Auth** → **Exchange Auth** → **Generate Reports**. Graph/EXO stay connected so you can **Generate another report pack** on the same tenant (each run is a new timestamped folder).
+6. **Containment** (per tenant card): **Validate users**, then work the BEC playbook top to bottom — lock the account (revoke / password reset / block / hold+audit), identity footholds (MFA, OAuth consents, Entra devices, ActiveSync, Intune), mailbox persistence (inbox rules, forwarding, delegates, folder ACL, auto-reply, junk lists, rights on other mailboxes, Restricted Users), tenant-wide persistence (transport rules, connectors, org auto-forward, journaling, apps, secrets/owners, roles/groups/RBAC), then restore (unblock). **Save containment zips** writes `Containment_<user>.zip` (with `actions.csv` for password reset, revoke, block, and other account changes) plus folder-level `Remediation.csv`. **Clear user pulls** drops per-user list results so you can pull the next user; the account-change log, tenant-wide lists, and saved zips stay. Status and list buttons run immediately; writes use a confirm popup. Actions run in that tenant’s worker — the browser never holds tokens. Passwords are never written to the log.
+7. **Activity** + **Client N** log tabs poll worker status during auth and generate.
+8. After reports exist: **Analyze reports** (findings) and **Curate logs** (include/exclude facet values → `Curated_*` CSV set beside the pack; originals untouched).
+
+### Graph write scopes (containment)
+
+Interactive **Graph Auth** now requests `User.RevokeSessions.All`, `User.EnableDisableAccount.All`, `UserAuthenticationMethod.ReadWrite.All`, `Application.ReadWrite.All`, `User-PasswordProfile.ReadWrite.All`, `DelegatedPermissionGrant.ReadWrite.All`, `RoleManagement.ReadWrite.Directory`, `GroupMember.ReadWrite.All`, `DeviceManagementManagedDevices.ReadWrite.All`, `DeviceManagementManagedDevices.PrivilegedOperations.All`, and `Directory.AccessAsUser.All` (device delete / password reset / consent revoke while signed in as you) in addition to the existing read scopes. Sign in again after a worker restart so consent can include them.
+
+WCM / app-only tokens gain those writes after **Update Graph App scopes** (App registrations, or the button under the Containment permission hint). That patches the existing River Run Security Investigator app and grants missing admin consent; the client secret and WCM entry stay the same. Then run **Graph Auth** again. Use **Create Graph App** only when the app is missing. App-only device delete uses `Device.ReadWrite.All`. App-only password reset uses `User-PasswordProfile.ReadWrite.All` and also needs the **User Administrator** directory role on that app. Until then, Graph containment buttons stay disabled or fail with a missing-permission message. Restricted Users and inbox rules use the Exchange session and do not need those Graph app roles.
 
 Auth popups appear on **this PC**, not in the browser.
 

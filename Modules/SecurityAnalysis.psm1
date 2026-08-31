@@ -21,6 +21,14 @@ $script:requiredScopes = @(
     "Directory.Read.All"
 )
 
+function Test-SecurityAnalysisRestGraph {
+    try {
+        return [bool]((Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue) -and (Test-GraphRestBearerToken))
+    } catch {
+        return $false
+    }
+}
+
 function Test-SecurityAnalysisModules {
     [CmdletBinding()]
     param()
@@ -271,7 +279,11 @@ function Get-ConditionalAccessPolicies {
         $policies = @()
         
         try {
-            $caPolicies = Get-MgIdentityConditionalAccessPolicy -ErrorAction Stop
+            if (Test-SecurityAnalysisRestGraph) {
+                $caPolicies = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies')
+            } else {
+                $caPolicies = Get-MgIdentityConditionalAccessPolicy -ErrorAction Stop
+            }
             Write-Host "Found $($caPolicies.Count) Conditional Access policies" -ForegroundColor Cyan
             
             foreach ($policy in $caPolicies) {
@@ -397,14 +409,22 @@ function Get-AppRegistrations {
         $appRegistrations = @()
         
         try {
-            $apps = Get-MgApplication -All -ErrorAction Stop
+            if (Test-SecurityAnalysisRestGraph) {
+                $apps = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/applications')
+            } else {
+                $apps = Get-MgApplication -All -ErrorAction Stop
+            }
             Write-Host "Found $($apps.Count) app registrations" -ForegroundColor Cyan
             
             # Pre-fetch all service principals to avoid repeated calls (performance optimization)
             Write-Host "Pre-fetching service principals for permission resolution..." -ForegroundColor Cyan
             $allServicePrincipals = @{}
             try {
-                $sps = Get-MgServicePrincipal -All -ErrorAction SilentlyContinue
+                if (Test-SecurityAnalysisRestGraph) {
+                    $sps = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals')
+                } else {
+                    $sps = Get-MgServicePrincipal -All -ErrorAction SilentlyContinue
+                }
                 foreach ($sp in $sps) {
                     $allServicePrincipals[$sp.AppId] = $sp
                 }

@@ -54,6 +54,8 @@ function Clear-ExchangeOnlineConnectionState {
         [int]$SettleMilliseconds = 750
     )
 
+    $global:EOA_MessageTraceV2Command = $null
+    $global:EOA_ExchangeHasUserMailboxes = $null
     try {
         if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
             Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
@@ -88,7 +90,14 @@ function Import-ExchangeOnlineManagementFirst {
     }
     $env:MSAL_FORCE_WAM = '0'
 
-    Import-Module ExchangeOnlineManagement -Force -ErrorAction Stop
+    $latest = Get-Module -ListAvailable -Name ExchangeOnlineManagement |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    if ($latest -and $latest.Version -ge [version]'3.7.0') {
+        Import-Module ExchangeOnlineManagement -RequiredVersion $latest.Version -Force -ErrorAction Stop
+    } else {
+        Import-Module ExchangeOnlineManagement -Force -ErrorAction Stop
+    }
 }
 
 function Connect-ExchangeOnlineWithDefaults {
@@ -109,6 +118,7 @@ function Connect-ExchangeOnlineWithDefaults {
 
     try {
         Connect-ExchangeOnline @connectParams
+        Write-ExchangeMessageTraceV2Availability
         return
     } catch {
         $msg = $_.Exception.Message
@@ -131,6 +141,7 @@ function Connect-ExchangeOnlineWithDefaults {
     }
     try {
         Connect-ExchangeOnline @retryParams
+        Write-ExchangeMessageTraceV2Availability
     } catch {
         $msg = $_.Exception.Message
         if ($msg -match 'Method not found' -and $msg -match 'WithBroker|BrokerExtension|BrokerOptions') {
@@ -142,6 +153,75 @@ function Connect-ExchangeOnlineWithDefaults {
         }
         throw
     }
+}
+
+function Get-TmpExoModules {
+    return @(Get-Module -All -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'tmpEXO_*' })
+}
+
+function Get-ExchangeMessageTraceV2Command {
+    if ($global:EOA_MessageTraceV2Command) { return $global:EOA_MessageTraceV2Command }
+    foreach ($mod in (Get-TmpExoModules)) {
+        if ($mod.ExportedCommands -and $mod.ExportedCommands.ContainsKey('Get-MessageTraceV2') -and $mod.Name -like 'tmpEXO_*') {
+            return $mod.ExportedCommands['Get-MessageTraceV2']
+        }
+    }
+    $cmd = Microsoft.PowerShell.Core\Get-Command -Name Get-MessageTraceV2 -All -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and $cmd.Source -like 'tmpEXO_*') { return $cmd }
+    return $null
+}
+
+function Get-ExchangeMessageTraceV2RoleEntryHint {
+    # A tenant/admin can be missing the new Message Trace cmdlets from RBAC role entries,
+    # which is why the REST session exports only the legacy MessageTrace cmdlets.
+    if (-not (Get-Command Get-ManagementRoleEntry -ErrorAction SilentlyContinue)) { return '' }
+    try {
+        $entries = @(Get-ManagementRoleEntry '*\Get-MessageTraceV2' -ErrorAction Stop)
+        if ($entries.Count -gt 0) {
+            return (" RBAC: Get-MessageTraceV2 exists in {0} role(s) (e.g. {1}) - the cmdlet is assignable but was not exported to this session." -f $entries.Count, (@($entries | Select-Object -First 3 | ForEach-Object { $_.Role }) -join ', '))
+        }
+        return ' RBAC: no management role contains Get-MessageTraceV2 in this tenant, so the REST session cannot export it.'
+    } catch {
+        $msg = [string]$_.Exception.Message
+        if ($msg -match "couldn't be found|not found|does not exist") {
+            return ' RBAC: no management role contains Get-MessageTraceV2 in this tenant, so the REST session cannot export it.'
+        }
+        return " RBAC check failed: $msg"
+    }
+}
+
+function Write-ExchangeMessageTraceV2Availability {
+    $cmd = Get-ExchangeMessageTraceV2Command
+    if ($cmd) {
+        $global:EOA_MessageTraceV2Command = $cmd
+        $msg = 'Message trace: Get-MessageTraceV2 is available in this Exchange session.'
+        Write-Host $msg -ForegroundColor Green
+        if (Get-Command Write-Status -ErrorAction SilentlyContinue) { Write-Status $msg }
+        return
+    }
+    $names = [System.Collections.Generic.List[string]]::new()
+    $modNames = [System.Collections.Generic.List[string]]::new()
+    foreach ($mod in (Get-TmpExoModules)) {
+        [void]$modNames.Add($mod.Name)
+        foreach ($key in @($mod.ExportedCommands.Keys)) {
+            if ($key -like '*MessageTrace*' -or $key -like '*Trace*') { [void]$names.Add($key) }
+        }
+    }
+    $connHint = ''
+    try {
+        $conn = Get-ConnectionInformation -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($conn) {
+            $method = $conn.ConnectionMethod
+            if (-not $method) { $method = $conn.TokenStatus }
+            $connHint = " connection=$method"
+        }
+    } catch { }
+    $listed = if ($names.Count) { ($names | Select-Object -Unique) -join ', ' } else { '(none)' }
+    $mods = if ($modNames.Count) { ($modNames | Select-Object -Unique) -join ', ' } else { '(no tmpEXO module)' }
+    $roleHint = Get-ExchangeMessageTraceV2RoleEntryHint
+    $warn = "Get-MessageTraceV2 not loaded. tmpEXO=$mods MessageTrace cmdlets: $listed.$connHint$roleHint Generate will try Graph messageTraces, then Start-HistoricalSearch."
+    Write-Warning $warn
+    if (Get-Command Write-Status -ErrorAction SilentlyContinue) { Write-Status $warn }
 }
 
 function Get-ExchangeOnlineSendingRestrictions {
@@ -169,4 +249,4 @@ function Get-ExchangeOnlineSendingRestrictions {
     }
 }
 
-Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Clear-ExchangeOnlineConnectionState,Import-ExchangeOnlineManagementFirst,Connect-ExchangeOnlineWithDefaults,Get-ExchangeOnlineSendingRestrictions 
+Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Clear-ExchangeOnlineConnectionState,Import-ExchangeOnlineManagementFirst,Connect-ExchangeOnlineWithDefaults,Get-TmpExoModules,Get-ExchangeMessageTraceV2Command,Get-ExchangeMessageTraceV2RoleEntryHint,Write-ExchangeMessageTraceV2Availability,Get-ExchangeOnlineSendingRestrictions 

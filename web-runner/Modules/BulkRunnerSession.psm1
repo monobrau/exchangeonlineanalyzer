@@ -873,7 +873,7 @@ function Save-BulkRunnerSessionManifest {
     }
 
     $path = Get-BulkRunnerSessionManifestPath -SessionId $Session.SessionId
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $path -Encoding UTF8
+    $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $path -Encoding UTF8
     return $path
 }
 
@@ -1501,4 +1501,253 @@ function Get-BulkRunnerSessionSummary {
     }
 }
 
-Export-ModuleMember -Function Set-BulkRunnerWorkerVisibility, New-BulkRunnerSession, Add-BulkRunnerTenant, Remove-BulkRunnerTenant, Restart-BulkRunnerTenant, Stop-BulkRunnerSessionTenants, Test-BulkRunnerTenantWorkerAlive, Get-BulkRunnerTenantWorkerState, Ensure-BulkRunnerTenantWorker, Send-BulkRunnerCommand, Get-BulkRunnerTenantStatus, Get-BulkRunnerAppRegistrations, Get-BulkRunnerSessionSummary, Get-BulkRunnerDefaultSettings, Get-BulkRunnerDefaultReportSelections, ConvertTo-BulkRunnerReportSelectionsHashtable, Merge-BulkRunnerReportSelections, Set-BulkRunnerSessionReportSelections, Get-BulkRunnerTenantReportSelectionsOverride, Test-BulkRunnerTenantUsesSessionReportDefaults, Get-BulkRunnerEffectiveReportSelections, Write-BulkRunnerTenantReportSelectionsFile, Expand-BulkRunnerGenerateReportsCommand, Sync-BulkRunnerSessionManifest, Sync-BulkRunnerSessionManifestIfMissing, Sync-BulkRunnerTenantResponseFromFile, Sync-BulkRunnerSessionResponsesFromFiles, Set-BulkRunnerTenantUiState, Save-BulkRunnerSessionManifest, Get-BulkRunnerSessionHistory, Archive-BulkRunnerSessionHistory, Unarchive-BulkRunnerSessionHistory, Remove-BulkRunnerSessionHistory, Get-BulkRunnerSessionManifest, New-BulkRunnerSessionFromManifest
+function Get-BulkRunnerSafeFileToken {
+    param([string]$Value)
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+    $safe = ($text.ToCharArray() | ForEach-Object { if ($invalid -contains $_ -or $_ -eq '@' -or $_ -eq '.') { '_' } else { $_ } }) -join ''
+    $safe = ($safe -replace '_+', '_').Trim('_')
+    if ([string]::IsNullOrWhiteSpace($safe)) { $safe = 'unknown' }
+    if ($safe.Length -gt 80) { $safe = $safe.Substring(0, 80) }
+    return $safe
+}
+
+function Resolve-BulkRunnerContainmentExportFolder {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)][int]$ClientNumber,
+        [string]$OutputFolder,
+        [string]$CompanyName
+    )
+    $key = [string]$ClientNumber
+    $tenant = $null
+    if ($Session.Tenants.ContainsKey($key)) { $tenant = $Session.Tenants[$key] }
+
+    foreach ($candidate in @($OutputFolder, $(if ($tenant) { $tenant.OutputFolder }))) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    $root = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
+    $name = if (-not [string]::IsNullOrWhiteSpace($CompanyName)) { $CompanyName }
+    elseif ($tenant -and $tenant.ExoOrganizationName) { [string]$tenant.ExoOrganizationName }
+    elseif ($tenant -and $tenant.GraphTenantName) { [string]$tenant.GraphTenantName }
+    else { 'Tenant' }
+    $safe = Get-BulkRunnerSafeFileToken -Value $name
+    $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $folder = Join-Path (Join-Path $root $safe) $ts
+    $null = New-Item -ItemType Directory -Path $folder -Force
+    if ($tenant) { $tenant.OutputFolder = $folder }
+    return $folder
+}
+
+function ConvertTo-BulkRunnerActionsCsvText {
+    param($Rows)
+    $esc = {
+        param($Value)
+        $s = if ($null -eq $Value) { '' } else { [string]$Value }
+        if ($s -match '[,"\r\n]') { return '"' + ($s -replace '"', '""') + '"' }
+        return $s
+    }
+    $lines = [System.Collections.ArrayList]::new()
+    [void]$lines.Add('Timestamp,UPN,Action,Result,Detail')
+    foreach ($row in @($Rows)) {
+        if (-not $row) { continue }
+        $ts = if ($row.Timestamp) { $row.Timestamp } elseif ($row.timestamp) { $row.timestamp } else { '' }
+        $upn = if ($row.UPN) { $row.UPN } elseif ($row.upn) { $row.upn } else { '' }
+        $action = if ($row.Action) { $row.Action } elseif ($row.action) { $row.action } else { '' }
+        $result = if ($row.Result) { $row.Result } elseif ($row.result) { $row.result } else { '' }
+        $detail = if ($row.Detail) { $row.Detail } elseif ($row.detail) { $row.detail } else { '' }
+        if ($action -match 'password' -and $detail -notmatch '^(mode=|random|assign)') {
+            $detail = if ($detail -match 'assign') { 'mode=assign' } else { 'mode=random' }
+        }
+        [void]$lines.Add(((@(& $esc $ts), (& $esc $upn), (& $esc $action), (& $esc $result), (& $esc $detail)) -join ','))
+    }
+    return ($lines -join "`n")
+}
+
+function Write-BulkRunnerRemediationAuditFile {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)][int]$ClientNumber,
+        [Parameter(Mandatory = $true)][string]$Folder,
+        [string]$CompanyName,
+        $Actions
+    )
+    $tenantLabel = $CompanyName
+    $key = [string]$ClientNumber
+    $tenant = $null
+    if ($Session.Tenants.ContainsKey($key)) { $tenant = $Session.Tenants[$key] }
+    if ([string]::IsNullOrWhiteSpace($tenantLabel) -and $tenant) {
+        $tenantLabel = if ($tenant.ExoOrganizationName) { [string]$tenant.ExoOrganizationName }
+        elseif ($tenant.GraphTenantName) { [string]$tenant.GraphTenantName }
+        else { '' }
+    }
+    $rows = [System.Collections.ArrayList]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $addRow = {
+        param($Timestamp, $Tenant, $Client, $Upn, $Action, $Result, $Detail)
+        if ([string]::IsNullOrWhiteSpace($Action)) { return }
+        if ($Action -match 'password' -and $Detail -notmatch '^(mode=|random|assign)') {
+            $Detail = if ($Detail -match 'assign') { 'mode=assign' } else { 'mode=random' }
+        }
+        $sig = "$Timestamp|$Upn|$Action|$Result|$Detail"
+        if (-not $seen.Add($sig)) { return }
+        [void]$rows.Add([pscustomobject]@{
+            Timestamp    = [string]$Timestamp
+            Tenant       = [string]$Tenant
+            ClientNumber = $Client
+            UPN          = [string]$Upn
+            Action       = [string]$Action
+            Result       = [string]$Result
+            Detail       = [string]$Detail
+        })
+    }
+    $importCsv = {
+        param([string]$Path, [switch]$ThisClientOnly)
+        if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return }
+        try {
+            Import-Csv -LiteralPath $Path | ForEach-Object {
+                $cn = $_.ClientNumber
+                if ($ThisClientOnly -and $null -ne $cn -and "$cn" -ne '' -and "$cn" -ne "$ClientNumber") { return }
+                & $addRow $_.Timestamp $_.Tenant $(if ($cn) { $cn } else { $ClientNumber }) $_.UPN $_.Action $_.Result $_.Detail
+            }
+        } catch { }
+    }
+    $dest = Join-Path $Folder 'Remediation.csv'
+    & $importCsv $dest
+    if ($Session.CommandDir) {
+        & $importCsv (Join-Path $Session.CommandDir 'Remediation.csv') -ThisClientOnly
+    }
+    if ($tenant -and $tenant.OutputFolder -and $tenant.OutputFolder -ne $Folder) {
+        & $importCsv (Join-Path $tenant.OutputFolder 'Remediation.csv')
+    }
+    foreach ($row in @($Actions)) {
+        if (-not $row) { continue }
+        $ts = if ($row.Timestamp) { $row.Timestamp } elseif ($row.timestamp) { $row.timestamp } else { (Get-Date).ToString('o') }
+        $upn = if ($row.UPN) { $row.UPN } elseif ($row.upn) { $row.upn } else { '' }
+        $action = if ($row.Action) { $row.Action } elseif ($row.action) { $row.action } else { '' }
+        $result = if ($row.Result) { $row.Result } elseif ($row.result) { $row.result } else { 'success' }
+        $detail = if ($row.Detail) { $row.Detail } elseif ($row.detail) { $row.detail } else { '' }
+        & $addRow $ts $tenantLabel $ClientNumber $upn $action $result $detail
+    }
+    if ($rows.Count -eq 0) { return $null }
+    $sorted = @($rows | Sort-Object Timestamp, UPN, Action)
+    $sorted | Export-Csv -LiteralPath $dest -NoTypeInformation -Encoding UTF8
+    return $dest
+}
+
+function Export-BulkRunnerContainmentPacks {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)][int]$ClientNumber,
+        [string]$OutputFolder,
+        [string]$CompanyName,
+        $Packs,
+        $Actions
+    )
+    $packList = @($Packs)
+    $actionList = @($Actions)
+    if ($packList.Count -eq 0 -and $actionList.Count -eq 0) {
+        throw 'No containment packs or account-change actions to save.'
+    }
+    $folder = Resolve-BulkRunnerContainmentExportFolder -Session $Session -ClientNumber $ClientNumber -OutputFolder $OutputFolder -CompanyName $CompanyName
+    $auditCsv = Write-BulkRunnerRemediationAuditFile -Session $Session -ClientNumber $ClientNumber -Folder $folder -CompanyName $CompanyName -Actions $actionList
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $written = [System.Collections.ArrayList]::new()
+    foreach ($pack in $packList) {
+        $user = if ($pack.user) { [string]$pack.user } elseif ($pack.User) { [string]$pack.User } else { '_tenant' }
+        $zipName = if ($user -eq '_tenant') { 'Containment__tenant.zip' } else { "Containment_$(Get-BulkRunnerSafeFileToken -Value $user).zip" }
+        $zipPath = Join-Path $folder $zipName
+        $tmp = Join-Path $env:TEMP ("EOA_Containment_" + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $tmp -Force
+        $files = $null
+        if ($pack.files) { $files = $pack.files } elseif ($pack.Files) { $files = $pack.Files }
+        if ($files) {
+            foreach ($prop in @($files.PSObject.Properties)) {
+                $name = [string]$prop.Name
+                if ([string]::IsNullOrWhiteSpace($name)) { continue }
+                $safeName = Split-Path -Leaf $name
+                $dest = Join-Path $tmp $safeName
+                $val = $prop.Value
+                if ($val -is [string]) {
+                    Set-Content -LiteralPath $dest -Value $val -Encoding UTF8
+                } else {
+                    ($val | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $dest -Encoding UTF8
+                }
+            }
+        }
+        $actionsCsvPath = Join-Path $tmp 'actions.csv'
+        if (-not (Test-Path -LiteralPath $actionsCsvPath) -and $actionList.Count -gt 0) {
+            $forUser = if ($user -eq '_tenant') {
+                @($actionList | Where-Object {
+                    $u = if ($_.UPN) { $_.UPN } elseif ($_.upn) { $_.upn } else { '' }
+                    [string]::IsNullOrWhiteSpace($u)
+                })
+            } else {
+                @($actionList | Where-Object {
+                    $u = if ($_.UPN) { $_.UPN } elseif ($_.upn) { $_.upn } else { '' }
+                    $u -and ([string]$u).Equals($user, [StringComparison]::OrdinalIgnoreCase)
+                })
+            }
+            if ($forUser.Count -gt 0) {
+                Set-Content -LiteralPath $actionsCsvPath -Value (ConvertTo-BulkRunnerActionsCsvText -Rows $forUser) -Encoding UTF8
+            }
+        }
+        if (-not (Get-ChildItem -LiteralPath $tmp -Force -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+            continue
+        }
+        if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $zipPath)
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        [void]$written.Add($zipPath)
+    }
+    return [pscustomobject]@{
+        folder   = $folder
+        files    = @($written)
+        auditCsv = $auditCsv
+    }
+}
+
+function Copy-BulkRunnerContainmentZips {
+    param(
+        [Parameter(Mandatory = $true)][string]$FromFolder,
+        [Parameter(Mandatory = $true)][string]$ToFolder
+    )
+    if (-not (Test-Path -LiteralPath $FromFolder)) { return @() }
+    if (-not (Test-Path -LiteralPath $ToFolder)) { $null = New-Item -ItemType Directory -Path $ToFolder -Force }
+    $copied = [System.Collections.ArrayList]::new()
+    Get-ChildItem -LiteralPath $FromFolder -Filter 'Containment_*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $dest = Join-Path $ToFolder $_.Name
+        Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+        [void]$copied.Add($dest)
+    }
+    $audit = Join-Path $FromFolder 'Remediation.csv'
+    if (Test-Path -LiteralPath $audit) {
+        $destAudit = Join-Path $ToFolder 'Remediation.csv'
+        if ($destAudit -ne $audit) {
+            if (Test-Path -LiteralPath $destAudit) {
+                $merged = Join-Path $env:TEMP ("EOA_RemediationMerge_" + [guid]::NewGuid().ToString('N') + '.csv')
+                $rows = [System.Collections.ArrayList]::new()
+                $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+                foreach ($path in @($destAudit, $audit)) {
+                    Import-Csv -LiteralPath $path -ErrorAction SilentlyContinue | ForEach-Object {
+                        $sig = "$($_.Timestamp)|$($_.UPN)|$($_.Action)|$($_.Result)|$($_.Detail)"
+                        if ($seen.Add($sig)) { [void]$rows.Add($_) }
+                    }
+                }
+                @($rows | Sort-Object Timestamp, UPN, Action) | Export-Csv -LiteralPath $merged -NoTypeInformation -Encoding UTF8
+                Copy-Item -LiteralPath $merged -Destination $destAudit -Force
+                Remove-Item -LiteralPath $merged -Force -ErrorAction SilentlyContinue
+            } else {
+                Copy-Item -LiteralPath $audit -Destination $destAudit -Force
+            }
+            [void]$copied.Add($destAudit)
+        }
+    }
+    return @($copied)
+}
+
+Export-ModuleMember -Function Set-BulkRunnerWorkerVisibility, New-BulkRunnerSession, Add-BulkRunnerTenant, Remove-BulkRunnerTenant, Restart-BulkRunnerTenant, Stop-BulkRunnerSessionTenants, Test-BulkRunnerTenantWorkerAlive, Get-BulkRunnerTenantWorkerState, Ensure-BulkRunnerTenantWorker, Send-BulkRunnerCommand, Get-BulkRunnerTenantStatus, Get-BulkRunnerAppRegistrations, Get-BulkRunnerSessionSummary, Get-BulkRunnerDefaultSettings, Get-BulkRunnerDefaultReportSelections, ConvertTo-BulkRunnerReportSelectionsHashtable, Merge-BulkRunnerReportSelections, Set-BulkRunnerSessionReportSelections, Get-BulkRunnerTenantReportSelectionsOverride, Test-BulkRunnerTenantUsesSessionReportDefaults, Get-BulkRunnerEffectiveReportSelections, Write-BulkRunnerTenantReportSelectionsFile, Expand-BulkRunnerGenerateReportsCommand, Sync-BulkRunnerSessionManifest, Sync-BulkRunnerSessionManifestIfMissing, Sync-BulkRunnerTenantResponseFromFile, Sync-BulkRunnerSessionResponsesFromFiles, Set-BulkRunnerTenantUiState, Save-BulkRunnerSessionManifest, Get-BulkRunnerSessionHistory, Archive-BulkRunnerSessionHistory, Unarchive-BulkRunnerSessionHistory, Remove-BulkRunnerSessionHistory, Get-BulkRunnerSessionManifest, New-BulkRunnerSessionFromManifest, Export-BulkRunnerContainmentPacks, Copy-BulkRunnerContainmentZips

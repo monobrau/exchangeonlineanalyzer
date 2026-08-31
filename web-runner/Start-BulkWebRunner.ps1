@@ -9,6 +9,9 @@
 
     Interactive Graph/Exchange auth popups appear on this machine.
 
+    Starting again on the same port stops any existing EOA web runner first
+    (localhost shutdown when healthy, then force-stop leftovers).
+
 .EXAMPLE
     .\Start-BulkWebRunner.ps1
     .\Start-BulkWebRunner.ps1 -Port 8765 -NoBrowser
@@ -30,12 +33,18 @@ $script:ListenPort = $Port
 Import-Module (Join-Path $script:RunnerRoot 'Modules\BulkRunnerSession.psm1') -Force
 Set-BulkRunnerWorkerVisibility -Hidden:(-not $ShowWorkers)
 $script:BulkSession = $null
+$script:ShutdownRequested = $false
 
 function Write-JsonResponse {
-    param([System.Net.HttpListenerResponse]$Response, [object]$Body, [int]$StatusCode = 200)
+    param(
+        [System.Net.HttpListenerResponse]$Response,
+        [object]$Body,
+        [int]$StatusCode = 200,
+        [int]$Depth = 20
+    )
     try {
         if (-not $Response.OutputStream.CanWrite) { return }
-        $json = $Body | ConvertTo-Json -Depth 8 -Compress
+        $json = $Body | ConvertTo-Json -Depth $Depth -Compress
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
         $Response.StatusCode = $StatusCode
         $Response.ContentType = 'application/json; charset=utf-8'
@@ -115,13 +124,24 @@ function Handle-ApiRequest {
         [string]$Method,
         [string]$Path,
         [object]$Body,
-        [Uri]$RequestUrl = $null
+        [Uri]$RequestUrl = $null,
+        [switch]$IsLocal
     )
+
+    if ($Method -eq 'POST' -and $Path -eq '/api/shutdown') {
+        if (-not $IsLocal) { throw 'Shutdown is only allowed from this machine.' }
+        $script:ShutdownRequested = $true
+        if ($script:BulkSession) {
+            try { Stop-BulkRunnerSessionTenants -Session $script:BulkSession } catch { }
+        }
+        return @{ ok = $true; shuttingDown = $true }
+    }
 
     if ($Method -eq 'GET' -and $Path -eq '/api/health') {
         return @{
             ok       = $true
             version  = '0.4.0'
+            pid      = $PID
             projectRoot = $script:ProjectRoot
             hiddenWorkers = (-not $ShowWorkers)
             listenLan = $script:ListenLan
@@ -174,6 +194,46 @@ function Handle-ApiRequest {
             path   = [string]$Body.path
             result = $result
         }
+    }
+
+    if ($Method -eq 'POST' -and $Path -eq '/api/curate/facets') {
+        if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\LogCuration.psm1') -Force -ErrorAction Stop
+        $top = 40
+        if ($Body.topValues) { $top = [int]$Body.topValues }
+        $wanTop = 12
+        if ($Body.wanTop) { $wanTop = [int]$Body.wanTop }
+        $result = Get-LogCurationFacetsWithWan -Path ([string]$Body.path) -TopValues $top -WanTop $wanTop
+        return @{ ok = $true; result = $result }
+    }
+
+    if ($Method -eq 'POST' -and $Path -eq '/api/curate/wan-ips') {
+        if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\LogCuration.psm1') -Force -ErrorAction Stop
+        $wanTop = 12
+        if ($Body.top) { $wanTop = [int]$Body.top }
+        $result = Get-LogCurationWanIpSuggestions -Path ([string]$Body.path) -Top $wanTop
+        return @{ ok = $true; result = $result }
+    }
+
+    if ($Method -eq 'POST' -and $Path -eq '/api/curate/preview') {
+        if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\LogCuration.psm1') -Force -ErrorAction Stop
+        $mode = if ($Body.mode) { [string]$Body.mode } else { 'exclude' }
+        $rules = @()
+        if ($Body.rules) { $rules = @($Body.rules) }
+        $result = Invoke-LogCurationPreview -Path ([string]$Body.path) -Mode $mode -Rules $rules
+        return @{ ok = $true; result = $result }
+    }
+
+    if ($Method -eq 'POST' -and $Path -eq '/api/curate/export') {
+        if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\LogCuration.psm1') -Force -ErrorAction Stop
+        $mode = if ($Body.mode) { [string]$Body.mode } else { 'exclude' }
+        $rules = @()
+        if ($Body.rules) { $rules = @($Body.rules) }
+        $result = Export-LogCurationSet -Path ([string]$Body.path) -Mode $mode -Rules $rules
+        return @{ ok = $true; result = $result }
     }
 
     if ($Method -eq 'POST' -and $Path -eq '/api/ticket/extract-emails') {
@@ -342,6 +402,17 @@ function Handle-ApiRequest {
                 exitCode = $outcome.ExitCode
                 result   = $outcome.Result
                 logPath  = $outcome.LogPath
+            }
+        }
+
+        if ($Method -eq 'POST' -and $Path -eq '/api/wcm/update-graph-app-scopes') {
+            $tid = if ($Body.tenantId) { [string]$Body.tenantId } else { '' }
+            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -UpdateExisting
+            return @{
+                exitCode = $outcome.ExitCode
+                result   = $outcome.Result
+                logPath  = $outcome.LogPath
+                updated  = $true
             }
         }
 
@@ -698,7 +769,94 @@ function Handle-ApiRequest {
         }
     }
 
+    if ($Path -match '^/api/tenants/(\d+)/containment-pack$' -and $Method -eq 'POST') {
+        if (-not $script:BulkSession) { throw 'No session.' }
+        $clientNumber = [int]$Matches[1]
+        if (-not $script:BulkSession.Tenants.ContainsKey([string]$clientNumber)) {
+            throw "Unknown tenant client number: $clientNumber"
+        }
+        $result = Export-BulkRunnerContainmentPacks -Session $script:BulkSession -ClientNumber $clientNumber `
+            -OutputFolder ([string]$Body.outputFolder) -CompanyName ([string]$Body.companyName) `
+            -Packs @($Body.packs) -Actions @($Body.actions)
+        Sync-BulkRunnerSessionManifest -Session $script:BulkSession -Force | Out-Null
+        return @{
+            ok       = $true
+            folder   = $result.folder
+            files    = @($result.files)
+            auditCsv = $result.auditCsv
+        }
+    }
+
+    if ($Path -match '^/api/tenants/(\d+)/copy-containment-zips$' -and $Method -eq 'POST') {
+        if (-not $script:BulkSession) { throw 'No session.' }
+        $from = [string]$Body.from
+        $to = [string]$Body.to
+        if ([string]::IsNullOrWhiteSpace($from) -or [string]::IsNullOrWhiteSpace($to)) { throw 'Missing from or to' }
+        $copied = @(Copy-BulkRunnerContainmentZips -FromFolder $from -ToFolder $to)
+        return @{ ok = $true; files = $copied }
+    }
+
     throw "Not found: $Method $Path"
+}
+
+function Set-BulkRunnerExplorerForeground {
+    # Explorer opens behind the browser because this process is not the foreground app, so
+    # Windows blocks SetForegroundWindow. Tapping ALT gives this process input credit, which
+    # satisfies the foreground-change rules. Best effort only - never fail the open.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$TimeoutMs = 4000
+    )
+
+    try {
+        if (-not ('EoaWin.Focus' -as [type])) {
+            Add-Type -Namespace EoaWin -Name Focus -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+[DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+'@
+        }
+
+        $wanted = ([System.IO.Path]::GetFullPath($Path)).TrimEnd('\')
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+        $hwnd = [IntPtr]::Zero
+
+        while ($hwnd -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) {
+            $shell = $null
+            try {
+                $shell = New-Object -ComObject Shell.Application
+                $windows = $shell.Windows()
+                for ($i = 0; $i -lt $windows.Count; $i++) {
+                    $w = $windows.Item($i)
+                    if (-not $w) { continue }
+                    try {
+                        $wPath = $w.Document.Folder.Self.Path
+                        if ($wPath -and ([System.IO.Path]::GetFullPath($wPath)).TrimEnd('\') -ieq $wanted) {
+                            $hwnd = [IntPtr]$w.HWND
+                            break
+                        }
+                    } catch {}
+                }
+            } catch {} finally {
+                if ($shell) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+            }
+            if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 250 }
+        }
+
+        if ($hwnd -eq [IntPtr]::Zero) { return $false }
+
+        [void][EoaWin.Focus]::ShowWindowAsync($hwnd, 9)  # SW_RESTORE
+        [EoaWin.Focus]::keybd_event(0xA4, 0, 0, [UIntPtr]::Zero)  # LMENU down
+        [EoaWin.Focus]::keybd_event(0xA4, 0, 2, [UIntPtr]::Zero)  # LMENU up
+        if (-not [EoaWin.Focus]::SetForegroundWindow($hwnd)) {
+            [EoaWin.Focus]::SwitchToThisWindow($hwnd, $true)
+        }
+        return ([EoaWin.Focus]::GetForegroundWindow() -eq $hwnd)
+    } catch {
+        return $false
+    }
 }
 
 function Open-BulkRunnerFolderInExplorer {
@@ -724,6 +882,7 @@ function Open-BulkRunnerFolderInExplorer {
     }
 
     Start-Process explorer.exe -ArgumentList "`"$resolved`""
+    [void](Set-BulkRunnerExplorerForeground -Path $resolved)
     return $resolved
 }
 
@@ -778,15 +937,148 @@ function Get-BulkWebRunnerLanAddresses {
     return @($addrs)
 }
 
+function Test-BulkWebRunnerUrlAcl {
+    param([Parameter(Mandatory = $true)][string]$UrlPrefix)
+    try {
+        $out = netsh http show urlacl url=$UrlPrefix 2>$null | Out-String
+        return ($out -match [regex]::Escape($UrlPrefix))
+    } catch {
+        return $false
+    }
+}
+
+function Get-BulkWebRunnerPortHolderPids {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    $pids = New-Object System.Collections.Generic.List[int]
+    try {
+        $lines = netsh http show servicestate view=requestq verbose=yes 2>$null | Out-String
+        # Match "ID: 12345, image: ...pwsh.exe" near a registered URL for this port.
+        $portToken = ":$Port/"
+        $chunks = $lines -split 'Request queue name:'
+        foreach ($chunk in $chunks) {
+            if ($chunk -notmatch [regex]::Escape($portToken) -and $chunk -notmatch [regex]::Escape(":$Port`:")) { continue }
+            foreach ($m in [regex]::Matches($chunk, 'ID:\s*(\d+),\s*image:\s*([^\r\n]+)')) {
+                $procId = [int]$m.Groups[1].Value
+                $image = [string]$m.Groups[2].Value
+                if ($image -match '(?i)pwsh|powershell') {
+                    if (-not $pids.Contains($procId)) { [void]$pids.Add($procId) }
+                }
+            }
+        }
+    } catch { }
+    return @($pids)
+}
+
+function Get-BulkWebRunnerHealth {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    $stale503 = $false
+    foreach ($hostName in @('127.0.0.1', 'localhost')) {
+        try {
+            return Invoke-RestMethod -Uri "http://${hostName}:$Port/api/health" -TimeoutSec 2 -ErrorAction Stop
+        } catch {
+            $msg = [string]$_.Exception.Message
+            $code = 0
+            try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+            if ($msg -match '503' -or $code -eq 503) { $stale503 = $true }
+        }
+    }
+    if ($stale503) { return [pscustomobject]@{ ok = $false; _stale503 = $true } }
+    return $null
+}
+
+function Test-IsOurBulkWebRunnerHealth {
+    param($Health)
+    if (-not $Health) { return $false }
+    if ($Health.ok -and $Health.projectRoot -and [string]$Health.projectRoot -eq [string]$script:ProjectRoot) { return $true }
+    if ($Health.ok -and $Health.features -and $Health.features.wcmManagement) { return $true }
+    return $false
+}
+
+function Get-BulkWebRunnerScriptPids {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    $found = New-Object System.Collections.Generic.List[int]
+    $procs = @()
+    try { $procs += @(Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" -ErrorAction SilentlyContinue) } catch { }
+    try { $procs += @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue) } catch { }
+    foreach ($proc in $procs) {
+        if (-not $proc) { continue }
+        $procId = [int]$proc.ProcessId
+        if ($procId -eq $PID) { continue }
+        $cl = [string]$proc.CommandLine
+        if ($cl -notmatch 'Start-BulkWebRunner\.ps1') { continue }
+        if ($cl -match '(?i)[-\/]Port\s+(\d+)') {
+            if ([int]$Matches[1] -ne $Port) { continue }
+        } elseif ($Port -ne 8765) {
+            continue
+        }
+        if (-not $found.Contains($procId)) { [void]$found.Add($procId) }
+    }
+    return @($found)
+}
+
+function Stop-BulkWebRunnerExisting {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    $health = Get-BulkWebRunnerHealth -Port $Port
+    if ($health -and $health.ok -and -not (Test-IsOurBulkWebRunnerHealth -Health $health)) {
+        throw "Port $Port is already in use by another application (not this web runner)."
+    }
+
+    if (Test-IsOurBulkWebRunnerHealth -Health $health) {
+        Write-Host "Existing web runner on port $Port — requesting shutdown..." -ForegroundColor Yellow
+        try {
+            $null = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/shutdown" -Method POST -TimeoutSec 8 -ErrorAction Stop
+        } catch { }
+        $until = [datetime]::UtcNow.AddSeconds(8)
+        while ([datetime]::UtcNow -lt $until) {
+            Start-Sleep -Milliseconds 400
+            $again = Get-BulkWebRunnerHealth -Port $Port
+            if (-not $again -or -not $again.ok) { break }
+        }
+    }
+
+    $targets = New-Object System.Collections.Generic.List[int]
+    foreach ($procId in @($(if ($health -and $health.pid) { [int]$health.pid } else { 0 })) + @(Get-BulkWebRunnerPortHolderPids -Port $Port) + @(Get-BulkWebRunnerScriptPids -Port $Port)) {
+        if ($procId -le 0 -or $procId -eq $PID) { continue }
+        if (-not $targets.Contains($procId)) { [void]$targets.Add($procId) }
+    }
+    foreach ($procId in $targets) {
+        try {
+            $proc = Get-Process -Id $procId -ErrorAction Stop
+            Write-Host "Stopping existing web-runner process PID $procId ($($proc.ProcessName)) on port $Port..." -ForegroundColor Yellow
+            Stop-Process -Id $procId -Force -ErrorAction Stop
+        } catch { }
+    }
+    if ($targets.Count -gt 0) { Start-Sleep -Seconds 1 }
+
+    $still = Get-BulkWebRunnerHealth -Port $Port
+    if ($still -and $still.ok) {
+        throw "Port $Port is still in use after stopping the previous web runner."
+    }
+    if ($still -and $still._stale503) {
+        Write-Host "Port $Port still returns HTTP 503 from HTTP.sys. Close other Start-BulkWebRunner windows, then retry." -ForegroundColor Yellow
+    }
+}
+
 function Start-BulkWebRunnerHttpListener {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
         [switch]$ListenLan
     )
 
+    $plusPrefix = "http://+:$Port/"
+    # Prefer +:PORT whenever that reservation exists. Localhost-only binds against a +: ACL
+    # often "start" successfully then serve HTTP.sys 503 forever.
+    if (-not $ListenLan -and (Test-BulkWebRunnerUrlAcl -UrlPrefix $plusPrefix)) {
+        Write-Host "Detected URL reservation $plusPrefix — using it (prevents HTTP 503 on localhost-only bind)." -ForegroundColor Yellow
+        $script:ListenLan = $true
+        $ListenLan = $true
+    }
+
+    Stop-BulkWebRunnerExisting -Port $Port
+
     $listener = New-Object System.Net.HttpListener
     if ($ListenLan) {
-        $listener.Prefixes.Add("http://+:$Port/")
+        $listener.Prefixes.Add($plusPrefix)
     } else {
         $listener.Prefixes.Add("http://127.0.0.1:$Port/")
     }
@@ -795,28 +1087,54 @@ function Start-BulkWebRunnerHttpListener {
         $listener.Start()
         return $listener
     } catch {
+        $msg = [string]$_.Exception.Message
+        $accessDenied = $msg -match '(?i)Access is denied|Access denied|5\b'
+
+        if (-not $ListenLan -and $accessDenied) {
+            try { $listener.Close() } catch {}
+            if (Test-BulkWebRunnerUrlAcl -UrlPrefix $plusPrefix) {
+                Write-Host "Localhost bind access denied; falling back to $plusPrefix." -ForegroundColor Yellow
+                $script:ListenLan = $true
+                return (Start-BulkWebRunnerHttpListener -Port $Port -ListenLan)
+            }
+            $user = "$env:USERDOMAIN\$env:USERNAME"
+            throw @"
+Bind failed for http://127.0.0.1:$Port/ (Access denied).
+
+Start with -ListenLan (recommended):
+
+  .\web-runner\Start-BulkWebRunner.ps1 -ListenLan
+
+Or reserve localhost once in elevated PowerShell:
+
+  netsh http add urlacl url=http://127.0.0.1:$Port/ user="$user" listen=yes
+
+Original error: $msg
+"@
+        }
+
         if (-not $ListenLan) { throw }
 
         $user = "$env:USERDOMAIN\$env:USERNAME"
-        $url = "http://+:$Port/"
-        $netsh = "netsh http add urlacl url=$url user=`"$user`" listen=yes"
+        $netsh = "netsh http add urlacl url=$plusPrefix user=`"$user`" listen=yes"
         throw @"
-LAN bind failed ($url). Run this once in an elevated PowerShell, then retry -ListenLan:
+LAN bind failed ($plusPrefix). Run this once in an elevated PowerShell, then retry -ListenLan:
 
   $netsh
 
-Original error: $($_.Exception.Message)
+Original error: $msg
 "@
     }
 }
 
 $script:LanUrls = @()
+$localPrefix = "http://127.0.0.1:$Port/"
+$listener = Start-BulkWebRunnerHttpListener -Port $Port -ListenLan:$ListenLan
+# Listener may auto-enable LAN mode when localhost ACL is missing but http://+:PORT/ is reserved.
+$ListenLan = [bool]$script:ListenLan
 if ($ListenLan) {
     $script:LanUrls = @(Get-BulkWebRunnerLanAddresses | ForEach-Object { "http://${_}:$Port/" })
 }
-
-$localPrefix = "http://127.0.0.1:$Port/"
-$listener = Start-BulkWebRunnerHttpListener -Port $Port -ListenLan:$ListenLan
 
 Write-Host "Bulk Web Runner listening on $localPrefix" -ForegroundColor Green
 if ($ListenLan) {
@@ -849,8 +1167,14 @@ try {
         try {
             if ($path.StartsWith('/api/')) {
                 $body = Read-RequestBody -Request $request
-                $result = Handle-ApiRequest -Method $request.HttpMethod -Path $path -Body $body -RequestUrl $request.Url
-                Write-JsonResponse -Response $response -Body $result
+                $result = Handle-ApiRequest -Method $request.HttpMethod -Path $path -Body $body -RequestUrl $request.Url -IsLocal:$request.IsLocal
+                $jsonDepth = if ($path -like '/api/curate/*') { 12 } else { 8 }
+                Write-JsonResponse -Response $response -Body $result -Depth $jsonDepth
+                if ($script:ShutdownRequested) {
+                    Write-Host "Shutdown requested — stopping listener." -ForegroundColor Yellow
+                    try { $listener.Stop() } catch { }
+                    break
+                }
             } else {
                 $file = Get-StaticFilePath -UrlPath $path
                 if (-not $file) {
