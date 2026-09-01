@@ -160,6 +160,11 @@ function Get-TmpExoModules {
 }
 
 function Get-ExchangeMessageTraceV2Command {
+    # Prefer plain name resolution: it returns the command the session would actually invoke,
+    # i.e. the live tmpEXO module. A cached handle or a Get-Module -All scan can return a
+    # disposed module whose connection context is gone.
+    $live = Microsoft.PowerShell.Core\Get-Command -Name Get-MessageTraceV2 -ErrorAction SilentlyContinue
+    if ($live -and ($live.Source -like 'tmpEXO_*' -or $live.ModuleName -like 'tmpEXO_*')) { return $live }
     if ($global:EOA_MessageTraceV2Command) { return $global:EOA_MessageTraceV2Command }
     foreach ($mod in (Get-TmpExoModules)) {
         if ($mod.ExportedCommands -and $mod.ExportedCommands.ContainsKey('Get-MessageTraceV2') -and $mod.Name -like 'tmpEXO_*') {

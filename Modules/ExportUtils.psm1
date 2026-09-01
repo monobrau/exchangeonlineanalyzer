@@ -2967,6 +2967,15 @@ Export phase error (if set): $(if ($exportError) { $exportError.Exception.Messag
 }
 
 function Get-ExchangeMessageTraceV2CommandInfo {
+    # Resolve by name first, the same way every other EXO cmdlet is called, so we bind to the
+    # live tmpEXO module. Each Connect-ExchangeOnline creates a new tmpEXO module, and both a
+    # cached CommandInfo and Get-Module -All can hand back a disposed one, which then fails with
+    # "You must call Connect-ExchangeOnline before calling any other cmdlet."
+    $live = Microsoft.PowerShell.Core\Get-Command -Name Get-MessageTraceV2 -ErrorAction SilentlyContinue
+    if ($live -and ($live.Source -like 'tmpEXO_*' -or $live.ModuleName -like 'tmpEXO_*')) {
+        $global:EOA_MessageTraceV2Command = $live
+        return $live
+    }
     if ($global:EOA_MessageTraceV2Command) { return $global:EOA_MessageTraceV2Command }
     if (Get-Command Get-ExchangeMessageTraceV2Command -ErrorAction SilentlyContinue) {
         $cmd = Get-ExchangeMessageTraceV2Command
@@ -3531,6 +3540,12 @@ function Test-EoaMessageTraceThrottled {
     return ($ErrorText -match 'surpassed the permitted limit|please try again later|throttl|too many request|\b429\b')
 }
 
+function Test-EoaMessageTraceStaleSession {
+    # Raised when the command handle belongs to a tmpEXO module whose connection is gone.
+    param([string]$ErrorText)
+    return ($ErrorText -match 'must call Connect-ExchangeOnline|GetCurrentConnectionContext|session is not valid|no longer valid')
+}
+
 function Invoke-EoaMessageTraceCall {
     # Get-MessageTraceV2 enforces a rolling query quota. Without backoff, one throttle
     # response cascades into every remaining day failing in seconds.
@@ -3784,6 +3799,7 @@ function Get-ExchangeMessageTrace {
             $daysToIterateAll = if ($useDateRange) { [Math]::Max(1, [int][Math]::Ceiling(($end - $start).TotalDays)) } else { $DaysBack }
             $missingDays = [System.Collections.Generic.List[string]]::new()
             $stopReason = ''
+            $staleRetryUsed = $false
             for ($d = 0; $d -lt $daysToIterateAll; $d++) {
                 $winStart = $start.AddDays($d)
                 $winEnd   = if ($d -eq $daysToIterateAll - 1) { $end } else { $winStart.AddDays(1) }
@@ -3822,10 +3838,30 @@ function Get-ExchangeMessageTrace {
                     }
                 } catch {
                     $errText = [string]$_.Exception.Message
+                    if ((Test-EoaMessageTraceStaleSession -ErrorText $errText) -and -not $staleRetryUsed) {
+                        # The handle points at a disposed tmpEXO module. Drop the cache, re-resolve
+                        # against the live session and give this day one more attempt.
+                        $staleRetryUsed = $true
+                        $global:EOA_MessageTraceV2Command = $null
+                        $fresh = Get-ExchangeMessageTraceV2CommandInfo
+                        if ($fresh) {
+                            $v2Cmd = $fresh
+                            $retryMsg = "Message trace: stale Exchange session handle - re-resolved Get-MessageTraceV2 and retrying $dayLabel."
+                            Write-Warning $retryMsg
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $retryMsg
+                            $d--
+                            continue
+                        }
+                    }
                     $traceErr = "Message trace day $dayLabel failed: $errText"
                     Write-Warning $traceErr
                     Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                     [void]$missingDays.Add($dayLabel)
+                    if (Test-EoaMessageTraceStaleSession -ErrorText $errText) {
+                        $stopReason = 'Stopped: the Exchange Online session is no longer valid. Re-run Exchange Auth for this tenant (or Restart worker) and generate again.'
+                        for ($r = $d + 1; $r -lt $daysToIterateAll; $r++) { [void]$missingDays.Add($start.AddDays($r).ToString('yyyy-MM-dd')) }
+                        break
+                    }
                     if ($errText -match 'CommandNotFound|Get-MessageTrace will start deprecat') {
                         Write-Warning 'Stopping message trace: Get-MessageTraceV2 is missing or legacy Get-MessageTrace was invoked. Restart the worker and re-run Exchange Auth.'
                         $stopReason = 'Stopped: Get-MessageTraceV2 unavailable. Restart the worker and re-run Exchange Auth.'
