@@ -853,6 +853,7 @@ async function exportCurate(clientNumber, div) {
       previewEl.textContent = `${formatCuratePreview(data.result?.files || [])}\n\nWrote: ${out}`;
     }
     log(`Client ${clientNumber}: curated set written to ${out}`);
+    fillInvestigateFolderSelect(div, { clientNumber, outputFolder: div.dataset.outputFolder });
   } catch (e) {
     log(`Client ${clientNumber}: Curate export failed: ${e.message}`);
   }
@@ -4912,6 +4913,10 @@ function renderTenants(session) {
 
         <button class="analyzeReports" ${t.outputFolder ? '' : 'disabled'}>Analyze reports</button>
 
+        <button class="investigateLogs" ${t.outputFolder ? '' : 'disabled'}>Investigate logs</button>
+
+        <select class="investigateFolderSelect" ${t.outputFolder ? '' : 'disabled'} title="Pack to investigate"></select>
+
       </div>
 
       ${errorHtml}
@@ -4980,6 +4985,9 @@ function renderTenants(session) {
     div.querySelectorAll('.extractEmails').forEach(btn => btn.addEventListener('click', () => extractEmailsFromTicket(t.clientNumber, div)));
 
     div.querySelector('.analyzeReports')?.addEventListener('click', () => analyzeTenantReports(t.clientNumber, div, t.outputFolder));
+
+    fillInvestigateFolderSelect(div, t);
+    div.querySelector('.investigateLogs')?.addEventListener('click', () => openInvestigateLogs(t.clientNumber, div));
 
     restoreTenantUiState(t.clientNumber, div);
     wireTenantTimeframePanel(div, t.clientNumber);
@@ -5563,6 +5571,46 @@ async function extractEmailsFromTicket(clientNumber, div) {
   }
 }
 
+function listInvestigateFolders(div, t) {
+  const set = [];
+  const add = (p) => {
+    if (p && !set.includes(p)) set.push(p);
+  };
+  add(t?.outputFolder);
+  add(div?.dataset?.outputFolder);
+  add(div?.dataset?.curatedFolder);
+  const ui = tenantUiState.get(String(t?.clientNumber || ''));
+  (ui?.reportFolders || []).forEach(add);
+  return set;
+}
+
+function fillInvestigateFolderSelect(div, t) {
+  const sel = div?.querySelector('.investigateFolderSelect');
+  if (!sel) return;
+  const folders = listInvestigateFolders(div, t);
+  const current = sel.value;
+  sel.innerHTML = folders.map((p) => {
+    const name = p.replace(/\\/g, '/').split('/').slice(-2).join('/') || p;
+    return `<option value="${p.replace(/"/g, '&quot;')}">${name}</option>`;
+  }).join('');
+  if (current && folders.includes(current)) sel.value = current;
+  else if (t?.outputFolder && folders.includes(t.outputFolder)) sel.value = t.outputFolder;
+  sel.disabled = folders.length === 0;
+  const btn = div.querySelector('.investigateLogs');
+  if (btn) btn.disabled = folders.length === 0;
+}
+
+function openInvestigateLogs(clientNumber, div) {
+  const sel = div.querySelector('.investigateFolderSelect');
+  const path = (sel?.value || div.dataset.outputFolder || '').trim();
+  if (!path) {
+    log(`Client ${clientNumber}: no report folder to investigate.`);
+    return;
+  }
+  const q = new URLSearchParams({ path, client: String(clientNumber) });
+  window.location.href = `investigate.html?${q}`;
+}
+
 async function analyzeTenantReports(clientNumber, div, outputFolder) {
   const folder = outputFolder || div.dataset.outputFolder;
   if (!folder) {
@@ -5926,6 +5974,7 @@ async function generateReports(clientNumber, div) {
         div.querySelectorAll('.loadCurateFacets, .previewCurate, .exportCurate, .selectSuggestedWan, .clearWanSelection, .applyWanPaste').forEach((btn) => {
           btn.disabled = false;
         });
+        fillInvestigateFolderSelect(div, { clientNumber, outputFolder: path });
 
         refreshTenantSummaryUI(clientNumber, { outputFolder: path, reportInProgress: false, lastResponse: final });
 

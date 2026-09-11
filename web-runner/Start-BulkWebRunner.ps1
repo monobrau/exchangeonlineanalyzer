@@ -236,6 +236,64 @@ function Handle-ApiRequest {
         return @{ ok = $true; result = $result }
     }
 
+    if ($Path -like '/api/investigate/*') {
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\LogInvestigate.psm1') -Force -ErrorAction Stop
+        if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
+        $invPath = [string]$Body.path
+        $invFilters = @()
+        if ($Body.filters) { $invFilters = @($Body.filters) }
+
+        if ($Method -eq 'POST' -and $Path -eq '/api/investigate/sources') {
+            $result = Get-InvestigateSources -Path $invPath
+            return @{ ok = $true; result = $result }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/investigate/query') {
+            $source = [string]$Body.source
+            if ([string]::IsNullOrWhiteSpace($source)) { throw 'Missing source' }
+            $limit = 50
+            if ($Body.limit) { $limit = [int]$Body.limit }
+            $offset = 0
+            if ($Body.offset) { $offset = [int]$Body.offset }
+            $sortBy = [string]$Body.sortBy
+            $ascending = $true
+            if ($null -ne $Body.ascending) { $ascending = [bool]$Body.ascending }
+            $columns = [string]$Body.columns
+            $result = Invoke-InvestigateQuery -Path $invPath -Source $source -Filters $invFilters -Columns $columns -SortBy $sortBy -Ascending $ascending -Limit $limit -Offset $offset
+            return @{ ok = $true; result = $result }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/investigate/mail-graph') {
+            $minCount = 1
+            if ($Body.minCount) { $minCount = [int]$Body.minCount }
+            $maxNodes = 80
+            if ($Body.maxNodes) { $maxNodes = [int]$Body.maxNodes }
+            $hideInternal = $false
+            if ($null -ne $Body.hideInternal) { $hideInternal = [bool]$Body.hideInternal }
+            $bucket = 'hour'
+            if ($Body.bucket) { $bucket = [string]$Body.bucket }
+            $graphParams = @{
+                Path      = $invPath
+                Filters   = $invFilters
+                MinCount  = $minCount
+                MaxNodes  = $maxNodes
+                Bucket    = $bucket
+            }
+            if ($hideInternal) { $graphParams.HideInternal = $true }
+            $result = Get-InvestigateMailGraph @graphParams
+            return @{ ok = $true; result = $result }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/investigate/export') {
+            $source = [string]$Body.source
+            if ([string]::IsNullOrWhiteSpace($source)) { throw 'Missing source' }
+            $sortBy = [string]$Body.sortBy
+            $ascending = $true
+            if ($null -ne $Body.ascending) { $ascending = [bool]$Body.ascending }
+            $columns = [string]$Body.columns
+            $result = Export-InvestigateQuery -Path $invPath -Source $source -Filters $invFilters -Columns $columns -SortBy $sortBy -Ascending $ascending
+            return @{ ok = $true; result = $result }
+        }
+        throw "Unknown investigate route: $Path"
+    }
+
     if ($Method -eq 'POST' -and $Path -eq '/api/ticket/extract-emails') {
         if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.ticketContent)) { throw 'Missing ticketContent' }
         Import-Module (Join-Path $script:ProjectRoot 'Modules\Settings.psm1') -Force -ErrorAction Stop
@@ -1168,10 +1226,10 @@ try {
             if ($path.StartsWith('/api/')) {
                 $body = Read-RequestBody -Request $request
                 $result = Handle-ApiRequest -Method $request.HttpMethod -Path $path -Body $body -RequestUrl $request.Url -IsLocal:$request.IsLocal
-                $jsonDepth = if ($path -like '/api/curate/*') { 12 } else { 8 }
+                $jsonDepth = if ($path -like '/api/curate/*' -or $path -like '/api/investigate/*') { 12 } else { 8 }
                 Write-JsonResponse -Response $response -Body $result -Depth $jsonDepth
                 if ($script:ShutdownRequested) {
-                    Write-Host "Shutdown requested — stopping listener." -ForegroundColor Yellow
+                    Write-Host "Shutdown requested - stopping listener." -ForegroundColor Yellow
                     try { $listener.Stop() } catch { }
                     break
                 }
