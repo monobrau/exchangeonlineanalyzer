@@ -242,6 +242,7 @@ function New-RemediationRandomPassword {
 }
 
 function Get-RemediationSsprUrl {
+    # Canonical commercial SSPR page (aka.ms/sspr only redirects here). ?whr= lands the user in the right tenant.
     param([string]$UserPrincipalName)
     $domain = ''
     if ($UserPrincipalName -match '@(.+)$') { $domain = $Matches[1].Trim() }
@@ -1082,7 +1083,7 @@ function Invoke-RemediationWorkerCommand {
                     $r = Invoke-RemediationResetPassword -UserPrincipalName $upn -Password $pw
                     $ok++
                     if (-not $sspr) { $sspr = $r.SsprUrl }
-                    [void]$details.Add("$($r.UserPrincipalName) : password reset ($mode). Do not send a password - send SSPR: $($r.SsprUrl)")
+                    [void]$details.Add("$($r.UserPrincipalName) : password reset ($mode). Do not send a password - send $($r.SsprUrl)")
                     Write-RemediationAuditCsv -Folder $AuditFolder -Tenant $tenantLabel -ClientNumber $ClientNumber -Upn $upn -Action 'reset-password' -Result 'success' -Detail $mode
                 } catch {
                     $fail++
@@ -1098,7 +1099,6 @@ function Invoke-RemediationWorkerCommand {
                 Details      = @($details)
                 Mode         = $mode
                 SsprUrl      = $sspr
-                SsprHint     = 'https://aka.ms/sspr'
                 Capabilities = $caps
             } | ConvertTo-Json -Compress -Depth 6
             if ($fail -gt 0 -and $ok -eq 0) { return "REMEDIATE_FAILED:$payload" }

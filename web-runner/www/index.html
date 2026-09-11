@@ -48,6 +48,8 @@
     .sectionLabel { font-size: 0.85rem; font-weight: 600; color: #424a53; margin: 0.5rem 0 0.25rem; }
 
     button.success { background: #1a7f37; color: #fff; border-color: #1a7f37; }
+    button.dangerFill { background: #cf222e; color: #fff; border-color: #cf222e; }
+    button.dangerFill:hover:not(:disabled) { background: #a40e26; }
 
     .outputPath { font-size: 0.85rem; word-break: break-all; margin: 0.35rem 0; }
 
@@ -119,7 +121,33 @@
     .containmentUserList { display: flex; flex-direction: column; gap: 0.15rem; margin: 0.35rem 0; max-height: 8rem; overflow: auto; }
     .containmentUserList label { font-size: 0.85rem; font-weight: normal; margin: 0; }
     .containmentConfirm { min-width: 22rem; max-width: 100%; }
-    .containmentStatus { font-size: 0.85rem; margin: 0.35rem 0 0.55rem; white-space: pre-wrap; }
+    .containmentStatus {
+      display: none;
+      font-size: 0.98rem;
+      font-weight: 600;
+      margin: 0.55rem 0 0.75rem;
+      padding: 0.7rem 0.85rem;
+      border-radius: 8px;
+      border: 2px solid #d0d7de;
+      background: #fff;
+      color: #1f2328;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+    .containmentStatus.hasStatus { display: block; }
+    .containmentStatus.statusBusy { background: #fff8c5; border-color: #d4a72c; color: #633c01; }
+    .containmentStatus.statusOk { background: #dafbe1; border-color: #1a7f37; color: #0f3d1a; }
+    .containmentStatus.statusWarn { background: #fff1e5; border-color: #bc4c00; color: #762d00; }
+    .containmentStatus.statusBad { background: #ffebe9; border-color: #cf222e; color: #82071e; }
+    .signinChip { display: flex; flex-wrap: wrap; gap: 0.3rem 0.75rem; align-items: baseline; padding: 0.4rem 0; border-bottom: 1px solid rgba(31, 35, 40, 0.1); font-weight: 500; }
+    .signinChip:last-child { border-bottom: 0; padding-bottom: 0; }
+    .signinChip:first-child { padding-top: 0; }
+    .signinChip .chipLabel { font-size: 0.78rem; font-weight: 750; letter-spacing: 0.04em; padding: 0.15rem 0.5rem; border-radius: 999px; color: #fff; }
+    .signinChip.blocked .chipLabel, .signinChip.error .chipLabel { background: #cf222e; }
+    .signinChip.allowed .chipLabel { background: #1a7f37; }
+    .signinChip.restricted .chipLabel { background: #9a6700; }
+    .signinChip.ok .chipLabel { background: #0969da; }
+    .signinChip .chipUpn { font-family: ui-monospace, Consolas, monospace; font-size: 0.92rem; }
     .containmentPhase { margin: 0.7rem 0 0; padding: 0.5rem 0.65rem 0.55rem; border: 1px solid #d8dee4; border-radius: 6px; background: #f6f8fa; }
     .containmentPhaseTitle { font-size: 0.88rem; font-weight: 650; color: #1f2328; margin: 0 0 0.2rem; }
     .containmentPhaseHint { font-size: 0.78rem; color: #57606a; margin: 0 0 0.4rem; }
@@ -226,6 +254,7 @@
 
     <button class="primary" id="btnNewSession">New session</button>
     <button type="button" id="btnOpenSessionTemp" class="small">View session files</button>
+    <button type="button" id="btnInvestigatePacks" class="small" onclick="location.href='investigate.html'">Investigate past reports</button>
 
     <span id="sessionInfo" class="muted"></span>
 
@@ -265,7 +294,7 @@
 
       <div class="collapsible-body">
 
-        <p class="muted" style="margin-top:0">Past bulk web sessions on this PC (saved when you add tenants, fetch tickets, change settings, or authenticate). <strong>Restore</strong> reopens settings and tenant slots (re-auth and re-fetch tickets as needed). <strong>Archive</strong> moves a session out of the saved list; <strong>Delete</strong> removes it permanently.</p>
+        <p class="muted" style="margin-top:0">Past bulk web sessions on this PC (saved when you add tenants, fetch tickets, change settings, or authenticate). <strong>Investigate</strong> opens logs from that session’s report packs without restoring workers. <strong>Restore</strong> reopens settings and tenant slots (re-auth and re-fetch tickets as needed). <strong>Archive</strong> moves a session out of the saved list; <strong>Delete</strong> removes it permanently.</p>
 
         <button type="button" id="btnRefreshHistory" class="small">Refresh history</button>
 

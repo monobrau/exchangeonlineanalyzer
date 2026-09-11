@@ -192,7 +192,21 @@ function buildContainmentPanelHtml() {
           <div class="containmentGraphHint muted"></div>
           <button type="button" class="containmentUpdateGraphScopes small" style="display:none" title="Patch the existing River Run Graph app with missing application permissions. Does not rotate the client secret.">Update Graph App scopes</button>
           <div class="containmentUserList muted">Validate users first.</div>
-          <div class="containmentStatus muted"></div>
+          <div class="containmentStatus" role="status" aria-live="polite"></div>
+
+          <section class="containmentPhase">
+            <div class="containmentPhaseTitle">Quick actions</div>
+            <p class="containmentPhaseHint">First move on a confirmed compromise, for the users selected above. Each step is logged individually, so a partial failure is visible.</p>
+            <div class="row">
+              <button type="button" class="containmentAction containmentQuickLock dangerFill small" disabled title="Blocks sign-in, then revokes all sessions, refresh tokens, and MFA sessions. Registered MFA methods are kept (no re-registration) and the password is not changed.">Block access + revoke sessions</button>
+            </div>
+            <p class="muted" style="font-size:0.78rem;margin:0.35rem 0 0.6rem">Runs <strong>Block sign-in</strong> then <strong>Revoke sessions</strong> — blocking first so a valid password cannot mint a new token in the gap. Revoking covers MFA sessions too, so the user must satisfy MFA again, but their registered methods stay and no re-registration is forced. The password is left alone; reset it below if the attacker knows it.</p>
+            <div class="row">
+              <button type="button" class="containmentAction containmentQuickRestore success small" disabled title="Resets to a random password nobody is told, then unblocks sign-in. The user gets back in only at passwordreset.microsoftonline.com. If the reset fails, sign-in stays blocked.">Reset password + unblock access</button>
+            </div>
+            <p class="muted" style="font-size:0.78rem;margin:0.35rem 0 0">Handback after containment: <strong>Reset with random password</strong>, then <strong>Unblock sign-in</strong>. Nobody is shown the new password — send the user <a href="https://passwordreset.microsoftonline.com/" target="_blank" rel="noopener">passwordreset.microsoftonline.com</a>. If the reset fails, the account stays blocked.</p>
+          </section>
+
           <div class="row">
             <button type="button" class="containmentSavePacks small" title="Write per-user zips into the current report folder">Save containment zips</button>
             <button type="button" class="containmentClearUserPulls small" title="Clear per-user list results so you can pull the next user. Tenant-wide lists and the account-change log stay.">Clear user pulls</button>
@@ -201,7 +215,7 @@ function buildContainmentPanelHtml() {
 
           <section class="containmentPhase">
             <div class="containmentPhaseTitle">1. Lock the account</div>
-            <p class="containmentPhaseHint">Stop the attacker’s current session, then invalidate the password. Send the user the SSPR link — not a password. Block sign-in if you need the account frozen while you hunt.</p>
+            <p class="containmentPhaseHint">Stop the attacker’s current session, then invalidate the password. Send the user <a href="https://passwordreset.microsoftonline.com/" target="_blank" rel="noopener">passwordreset.microsoftonline.com</a> — not a password. Block sign-in if you need the account frozen while you hunt.</p>
             <div class="row">
               <button type="button" class="containmentAction containmentSigninStatus small" disabled>Check sign-in status</button>
               <button type="button" class="containmentAction containmentRevoke small" disabled>Revoke sessions</button>
@@ -209,7 +223,7 @@ function buildContainmentPanelHtml() {
               <button type="button" class="containmentAction containmentBlock small" disabled>Block sign-in</button>
             </div>
             <p class="muted" style="font-size:0.8rem;margin:0.35rem 0 0.25rem">
-              Direct the user to <a href="https://aka.ms/sspr" target="_blank" rel="noopener">aka.ms/sspr</a> after reset. Assign a password only if you must.
+              After reset, send <a href="https://passwordreset.microsoftonline.com/" target="_blank" rel="noopener">passwordreset.microsoftonline.com</a>. Assign a password only if you must.
             </p>
             <div class="row">
               <label>Assign password (optional)
@@ -647,7 +661,7 @@ function buildContainmentPanelHtml() {
 
           <section class="containmentPhase">
             <div class="containmentPhaseTitle">5. Restore access</div>
-            <p class="containmentPhaseHint">After persistence is gone and the user has reset via SSPR. Unrestrict only if Check restricted status found them on Restricted entities.</p>
+            <p class="containmentPhaseHint">After persistence is gone and the user has reset at <a href="https://passwordreset.microsoftonline.com/" target="_blank" rel="noopener">passwordreset.microsoftonline.com</a>. Unrestrict only if Check restricted status found them on Restricted entities.</p>
             <div class="row">
               <button type="button" class="containmentAction containmentUnblock small" disabled>Unblock sign-in</button>
             </div>
@@ -2018,7 +2032,11 @@ function renderHistoryTable(rows, mode, sortState, searchQuery) {
       : (row.updatedAt || row.createdAt);
     const when = formatHistoryWhen(whenSource);
     const sid = escapeHtml(row.sessionId || '');
-    const actions = [`<button type="button" class="small restoreSession" data-session-id="${sid}">Restore</button>`];
+    const actions = [];
+    if (row.hasOutputs) {
+      actions.push(`<button type="button" class="small investigateSession" data-session-id="${sid}">Investigate</button>`);
+    }
+    actions.push(`<button type="button" class="small restoreSession" data-session-id="${sid}">Restore</button>`);
 
     if (serverFeatures.sessionHistoryActions) {
       if (mode === 'saved') {
@@ -2101,6 +2119,12 @@ async function fetchSessionHistoryList(archived, sortBy, sortOrder) {
 
 function wireHistoryTableActions(listEl) {
   if (!listEl) return;
+  listEl.querySelectorAll('.investigateSession').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const sid = btn.dataset.sessionId;
+      if (sid) window.location.href = `investigate.html?session=${encodeURIComponent(sid)}`;
+    });
+  });
   listEl.querySelectorAll('.restoreSession').forEach(btn => {
     btn.addEventListener('click', () => restoreSessionFromHistory(btn.dataset.sessionId));
   });
@@ -2636,6 +2660,22 @@ function getSelectedContainmentUsers(div) {
   return [...(div?.querySelectorAll('.containmentUser:checked') || [])].map((cb) => cb.value).filter(Boolean);
 }
 
+// Commercial SSPR portal — the page that is actually in place. aka.ms/sspr only redirects here.
+const CONTAINMENT_PASSWORD_RESET_URL = 'https://passwordreset.microsoftonline.com/';
+
+function containmentPasswordResetUrl(preferred, users) {
+  const fromServer = String(preferred || '').trim();
+  if (/^https:\/\/passwordreset\.microsoftonline\.(com|us)\/?/i.test(fromServer)) return fromServer;
+  const upn = Array.isArray(users) ? users[0] : users;
+  const domain = String(upn || '').split('@')[1];
+  if (domain) return `${CONTAINMENT_PASSWORD_RESET_URL}?whr=${encodeURIComponent(domain)}`;
+  return CONTAINMENT_PASSWORD_RESET_URL;
+}
+
+function containmentPasswordResetInstruction(url) {
+  return `Do not send a password. Send the user ${url}`;
+}
+
 function getRestrictedContainmentHits(div, selectedUsers) {
   let rows = [];
   try { rows = JSON.parse(div?.dataset?.restrictedEmailJson || '[]'); } catch { rows = []; }
@@ -2698,12 +2738,14 @@ function updateContainmentButtons(div) {
     const el = div.querySelector(sel);
     if (el) el.disabled = !on;
   };
+  set('.containmentQuickLock', canBlock && canRevoke);
   set('.containmentSigninStatus', graph && hasUsers);
   set('.containmentRevoke', canRevoke);
   set('.containmentRevokeMfa', canRevoke);
   set('.containmentBlock', canBlock);
   set('.containmentUnblock', canBlock);
   const canPassword = graph && hasUsers && div.dataset.graphCanPasswordReset !== '0';
+  set('.containmentQuickRestore', canPassword && canBlock);
   set('.containmentResetPassword', canPassword);
   set('.containmentAssignPasswordBtn', canPassword);
   set('.containmentListMfa', graph && hasUsers);
@@ -2801,12 +2843,82 @@ function confirmSlowContainment(kind) {
   return confirmContainmentPopup(msg);
 }
 
+function classifyContainmentStatusTone(text) {
+  const t = String(text || '');
+  if (!t) return '';
+  if (/[.…]$/.test(t) || /^Busy —/i.test(t) || /^(Checking|Listing|Resetting|Setting|Removing|Deleting|Clearing|Adding|Blocking|Unblocking|Revoking|Quick actions:)/i.test(t)) {
+    return 'statusBusy';
+  }
+  const blocked = /SIGN-IN BLOCKED|accountEnabled=False|: RESTRICTED/i.test(t);
+  const allowed = /SIGN-IN ALLOWED|accountEnabled=True|NOT RESTRICTED|not restricted/i.test(t);
+  if (/FAILED|failed\.|Error:/i.test(t) && !blocked && !allowed) return 'statusBad';
+  if (blocked && allowed) return 'statusWarn';
+  if (blocked) return 'statusBad';
+  if (allowed || /Finished\. Success|password reset/i.test(t)) return 'statusOk';
+  if (/FAILED|failed\./i.test(t)) return 'statusBad';
+  return 'statusWarn';
+}
+
+function formatContainmentUserStatus(users) {
+  return (users || []).map((u) => {
+    const upn = u.UserPrincipalName || u.userPrincipalName || '';
+    if (u.Error) return `${upn}: ERROR — ${u.Error}`;
+    if (u.Restricted === true) {
+      return `${upn}: RESTRICTED${u.Reason ? ` (${u.Reason})` : ''}${u.CreatedDateTime ? ` since ${u.CreatedDateTime}` : ''}`;
+    }
+    if (u.Restricted === false) return `${upn}: NOT RESTRICTED (not on Restricted entities)`;
+    if (typeof u.AccountEnabled === 'boolean') {
+      const label = u.AccountEnabled ? 'SIGN-IN ALLOWED' : 'SIGN-IN BLOCKED';
+      return `${upn}: ${label}${u.DisplayName ? ` (${u.DisplayName})` : ''}`;
+    }
+    return JSON.stringify(u);
+  }).join('\n');
+}
+
+function formatContainmentUserStatusHtml(users) {
+  return (users || []).map((u) => {
+    const upn = escapeHtml(String(u.UserPrincipalName || u.userPrincipalName || ''));
+    if (u.Error) {
+      return `<div class="signinChip error"><span class="chipLabel">ERROR</span><span class="chipUpn">${upn}</span><span>${escapeHtml(String(u.Error))}</span></div>`;
+    }
+    if (u.Restricted === true) {
+      const extra = [u.Reason, u.CreatedDateTime].filter(Boolean).map((x) => escapeHtml(String(x))).join(' · ');
+      return `<div class="signinChip restricted"><span class="chipLabel">RESTRICTED</span><span class="chipUpn">${upn}</span>${extra ? `<span>${extra}</span>` : ''}</div>`;
+    }
+    if (u.Restricted === false) {
+      return `<div class="signinChip ok"><span class="chipLabel">NOT RESTRICTED</span><span class="chipUpn">${upn}</span><span>not on Restricted entities</span></div>`;
+    }
+    if (typeof u.AccountEnabled === 'boolean') {
+      const blocked = u.AccountEnabled === false;
+      const name = u.DisplayName ? `<span>${escapeHtml(String(u.DisplayName))}</span>` : '';
+      return `<div class="signinChip ${blocked ? 'blocked' : 'allowed'}"><span class="chipLabel">${blocked ? 'SIGN-IN BLOCKED' : 'SIGN-IN ALLOWED'}</span><span class="chipUpn">${upn}</span>${name}</div>`;
+    }
+    return `<div class="signinChip"><span class="chipUpn">${upn}</span><span>${escapeHtml(JSON.stringify(u))}</span></div>`;
+  }).join('');
+}
+
 function setContainmentStatus(div, text, opts = {}) {
   const el = div.querySelector('.containmentStatus');
-  if (el) el.textContent = text || '';
+  if (el) {
+    el.classList.remove('muted', 'hasStatus', 'statusOk', 'statusWarn', 'statusBad', 'statusBusy');
+    if (opts.html) el.innerHTML = opts.html;
+    else el.textContent = text || '';
+    if (text) {
+      el.classList.add('hasStatus');
+      const tone = opts.tone || classifyContainmentStatusTone(text);
+      if (tone) el.classList.add(tone);
+      if (!opts.skipSave && !opts.skipScroll) {
+        try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
+      }
+    }
+  }
   if (!opts.skipSave && text && !/[.…]$/.test(text) && !/^Busy —/i.test(text)) {
     rememberContainment(div, { status: text });
   }
+}
+
+function setContainmentUserStatus(div, users) {
+  setContainmentStatus(div, formatContainmentUserStatus(users), { html: formatContainmentUserStatusHtml(users) });
 }
 
 function rememberContainment(div, patch, immediate = false) {
@@ -3142,7 +3254,9 @@ function renderContainmentRules(div, mailbox, rules) {
     return;
   }
   tbody.innerHTML = rows.map((rule, idx) => {
-    const identity = escapeHtml(String(rule.Identity || rule.Name || ''));
+    // RuleIdentity first: mailboxes often hold several rules with the same name (".", "..."),
+    // and Remove-InboxRule rejects an ambiguous name with "matches multiple entries".
+    const identity = escapeHtml(String(rule.RuleIdentity || rule.Identity || rule.Name || ''));
     const name = escapeHtml(String(rule.Name || rule.Identity || ''));
     const details = [
       rule.Description,
@@ -3153,7 +3267,7 @@ function renderContainmentRules(div, mailbox, rules) {
       rule.From ? `From: ${rule.From}` : '',
     ].filter(Boolean).join(' · ');
     return `<tr>
-      <td><input type="checkbox" class="containmentRulePick" data-identity="${identity}" data-idx="${idx}" /></td>
+      <td><input type="checkbox" class="containmentRulePick" data-identity="${identity}" data-label="${name}" data-idx="${idx}" /></td>
       <td>${name}</td>
       <td>${rule.Enabled ? 'yes' : 'no'}</td>
       <td>${rule.Priority != null ? escapeHtml(String(rule.Priority)) : ''}</td>
@@ -3550,19 +3664,33 @@ async function sendRemediateCommand(clientNumber, div, command, progressLabel, w
   return final;
 }
 
-function formatContainmentUserStatus(users) {
-  return (users || []).map((u) => {
-    const upn = u.UserPrincipalName || u.userPrincipalName || '';
-    if (u.Error) return `${upn}: ${u.Error}`;
-    if (u.Restricted === true) {
-      return `${upn}: RESTRICTED${u.Reason ? ` (${u.Reason})` : ''}${u.CreatedDateTime ? ` since ${u.CreatedDateTime}` : ''}`;
+async function runContainmentQuickSteps(clientNumber, div, label, steps, options = {}) {
+  const results = [];
+  let halted = false;
+  for (const step of steps) {
+    if (halted) {
+      results.push({ step, ok: false, skipped: true, detail: options.skipReason || '' });
+      continue;
     }
-    if (u.Restricted === false) return `${upn}: not restricted from sending (not on Restricted entities)`;
-    if (typeof u.AccountEnabled === 'boolean') {
-      return `${upn}: accountEnabled=${u.AccountEnabled}${u.DisplayName ? ` (${u.DisplayName})` : ''}`;
-    }
-    return JSON.stringify(u);
-  }).join('\n');
+    setContainmentStatus(div, `${label}: ${step.label}…`);
+    const final = await sendRemediateCommand(clientNumber, div, step.cmd, step.label);
+    const parsed = parseRemediatePayload(final || '');
+    if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    noteContainmentAction(div, step.kind, step.targets || [], parsed);
+    const ok = parsed.prefix === 'REMEDIATE_SUCCESS:';
+    const details = asArray(parsed.data?.Details);
+    results.push({ step, parsed, ok, detail: details.length ? details.join('\n') : (parsed.raw || final || '') });
+    log(`Client ${clientNumber}: ${label} — ${step.label} ${ok ? 'finished' : 'FAILED'}.`);
+    if (!ok && options.stopOnFailure) halted = true;
+  }
+  return results;
+}
+
+function formatContainmentQuickSummary(results) {
+  return results.map((r) => {
+    if (r.skipped) return `SKIPPED — ${r.step.label}${r.detail ? ` (${r.detail})` : ''}`;
+    return `${r.ok ? 'OK' : 'FAILED'} — ${r.step.label}${r.detail ? `:\n${r.detail}` : ''}`;
+  }).join('\n\n');
 }
 
 async function runContainmentAction(clientNumber, div, kind) {
@@ -3577,6 +3705,69 @@ async function runContainmentAction(clientNumber, div, kind) {
     unrestrict: { cmd: `REMEDIATE_UNRESTRICT_EMAIL|USERS:${usersJson}`, action: 'unrestrict', need: 'exo', label: 'unrestricting email' },
   };
 
+  if (kind === 'quick-lock') {
+    if (!graph) {
+      log(`Client ${clientNumber}: Graph Auth is required to block sign-in and revoke sessions.`);
+      return;
+    }
+    if (!users.length) {
+      log(`Client ${clientNumber}: select one or more validated users.`);
+      return;
+    }
+    const confirmMsg = `Block sign-in AND revoke all sessions for:\n${users.join('\n')}\n\n`
+      + 'Sign-in is blocked first, then every session, refresh token, and MFA session is revoked.\n\n'
+      + 'Registered MFA methods are kept (no re-registration) and the password is NOT changed — handle those separately if needed.\n\nContinue?';
+    if (!confirmContainmentPopup(confirmMsg)) return;
+
+    // Block before revoke: revoking first leaves a window where a known password can mint a new token.
+    const results = await runContainmentQuickSteps(clientNumber, div, 'Quick actions', [
+      { kind: 'block', label: 'blocking sign-in', cmd: `REMEDIATE_BLOCK|USERS:${usersJson}`, targets: users },
+      { kind: 'revoke', label: 'revoking sessions', cmd: `REMEDIATE_REVOKE_SESSIONS|USERS:${usersJson}`, targets: users },
+    ]);
+    setContainmentStatus(div, formatContainmentQuickSummary(results));
+    await runContainmentAction(clientNumber, div, 'signin-status');
+    return;
+  }
+
+  if (kind === 'quick-restore') {
+    if (!graph) {
+      log(`Client ${clientNumber}: Graph Auth is required to reset the password and unblock sign-in.`);
+      return;
+    }
+    if (!users.length) {
+      log(`Client ${clientNumber}: select one or more validated users.`);
+      return;
+    }
+    const resetUrl = containmentPasswordResetUrl(null, users);
+    const confirmMsg = `Reset to a random password AND unblock sign-in for:\n${users.join('\n')}\n\n`
+      + `The random password is never shown to anyone. Send the user ${resetUrl} so they can set their own.\n\n`
+      + 'If the reset fails, the account stays blocked.\n\nContinue?';
+    if (!confirmContainmentPopup(confirmMsg)) return;
+
+    // Reset before unblock, and only unblock if the reset worked: restoring access while the
+    // attacker still knows the password undoes the containment.
+    const results = await runContainmentQuickSteps(clientNumber, div, 'Quick actions', [
+      {
+        kind: 'reset-password',
+        label: 'resetting password (random)',
+        cmd: `REMEDIATE_RESET_PASSWORD|USERS:${usersJson}|OPTIONS:${JSON.stringify({ Mode: 'random' })}`,
+        targets: users,
+      },
+      { kind: 'unblock', label: 'unblocking sign-in', cmd: `REMEDIATE_UNBLOCK|USERS:${usersJson}`, targets: users },
+    ], { stopOnFailure: true, skipReason: 'password reset failed, so sign-in stays blocked' });
+
+    const resetOk = Boolean(results[0]?.ok);
+    const lines = [formatContainmentQuickSummary(results)];
+    if (resetOk) {
+      const resetUrl = containmentPasswordResetUrl(results[0]?.parsed?.data?.SsprUrl, users);
+      lines.push(containmentPasswordResetInstruction(resetUrl));
+      log(`Client ${clientNumber}: password reset — send the user ${resetUrl}`);
+    }
+    setContainmentStatus(div, lines.join('\n\n'));
+    await runContainmentAction(clientNumber, div, 'signin-status');
+    return;
+  }
+
   if (kind === 'signin-status') {
     if (!graph || !users.length) return;
     setContainmentStatus(div, 'Checking sign-in status…');
@@ -3584,7 +3775,7 @@ async function runContainmentAction(clientNumber, div, kind) {
     const parsed = parseRemediatePayload(final || '');
     if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
     if (parsed.prefix === 'REMEDIATE_SUCCESS:') {
-      setContainmentStatus(div, formatContainmentUserStatus(parsed.data?.Users));
+      setContainmentUserStatus(div, parsed.data?.Users);
       log(`Client ${clientNumber}: sign-in status updated.`);
     } else {
       setContainmentStatus(div, parsed.raw || final || 'Sign-in status failed.');
@@ -3607,9 +3798,10 @@ async function runContainmentAction(clientNumber, div, kind) {
         return;
       }
     }
+    const resetUrl = containmentPasswordResetUrl(null, users);
     const confirmMsg = mode === 'assign'
-      ? `Set a specific password for:\n${users.join('\n')}\n\nPrefer sending the SSPR link instead of this password. Continue?`
-      : `Reset password for:\n${users.join('\n')}\n\nThis invalidates the current password so an attacker cannot use it. Do not send a password to the user — send the Microsoft password-reset link instead.\n\nContinue?`;
+      ? `Set a specific password for:\n${users.join('\n')}\n\nPrefer sending ${resetUrl} instead of this password. Continue?`
+      : `Reset password for:\n${users.join('\n')}\n\nThis invalidates the current password so an attacker cannot use it. Do not send a password — send ${resetUrl}.\n\nContinue?`;
     if (!confirmContainmentPopup(confirmMsg)) return;
     const options = mode === 'assign' ? { Mode: 'assign', Password: assigned } : { Mode: 'random' };
     setContainmentStatus(div, mode === 'assign' ? 'Setting assigned password…' : 'Resetting password (random)…');
@@ -3617,19 +3809,16 @@ async function runContainmentAction(clientNumber, div, kind) {
     const parsed = parseRemediatePayload(final || '');
     if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
     if (parsed.prefix === 'REMEDIATE_SUCCESS:') {
-      const sspr = parsed.data?.SsprUrl || 'https://passwordreset.microsoftonline.com/';
-      const hint = parsed.data?.SsprHint || 'https://aka.ms/sspr';
+      const resetUrl = containmentPasswordResetUrl(parsed.data?.SsprUrl, users);
       const lines = [
         ...(Array.isArray(parsed.data?.Details) ? parsed.data.Details : []),
         '',
-        'Do not send a password. Direct the user to:',
-        sspr,
-        hint,
+        containmentPasswordResetInstruction(resetUrl),
       ];
       setContainmentStatus(div, lines.filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n'));
       const field = div.querySelector('.containmentAssignPasswordInput');
       if (field) field.value = '';
-      log(`Client ${clientNumber}: password reset finished. Send SSPR ${sspr}`);
+      log(`Client ${clientNumber}: password reset finished. Send the user ${resetUrl}`);
     } else {
       setContainmentStatus(div, parsed.raw || final || 'Password reset failed.');
       log(`Client ${clientNumber}: ${final}`);
@@ -3778,7 +3967,7 @@ async function runContainmentAction(clientNumber, div, kind) {
     if (parsed.prefix === 'REMEDIATE_RESTRICTED:') {
       div.dataset.restrictedEmailJson = JSON.stringify(parsed.data?.Users || []);
       rememberContainmentResult(div, 'restrictedEmail', parsed.data?.Users || []);
-      setContainmentStatus(div, formatContainmentUserStatus(parsed.data?.Users));
+      setContainmentUserStatus(div, parsed.data?.Users);
       updateContainmentButtons(div);
       const hits = getRestrictedContainmentHits(div, users);
       log(hits.length
@@ -3814,12 +4003,14 @@ async function runContainmentAction(clientNumber, div, kind) {
       log(`Client ${clientNumber}: list inbox rules first, then select rows to delete.`);
       return;
     }
-    const selected = [...div.querySelectorAll('.containmentRulePick:checked')].map((cb) => cb.dataset.identity).filter(Boolean);
+    const picked = [...div.querySelectorAll('.containmentRulePick:checked')];
+    const selected = picked.map((cb) => cb.dataset.identity).filter(Boolean);
     if (!selected.length) {
       log(`Client ${clientNumber}: select one or more inbox rules to delete.`);
       return;
     }
-    if (!confirmContainmentPopup(`Delete ${selected.length} inbox rule(s) for ${mailbox}?\n\n${selected.join('\n')}`)) {
+    const labels = picked.map((cb) => cb.dataset.label || cb.dataset.identity).filter(Boolean);
+    if (!confirmContainmentPopup(`Delete ${selected.length} inbox rule(s) for ${mailbox}?\n\n${labels.join('\n')}`)) {
       return;
     }
     const cmd = `REMEDIATE_DELETE_INBOX_RULES|USER:${mailbox}|RULES:${JSON.stringify(selected)}`;
@@ -4161,7 +4352,7 @@ async function runContainmentAction(clientNumber, div, kind) {
     const statusParsed = parseRemediatePayload(statusFinal || '');
     if (statusParsed.data?.Capabilities) applyContainmentCapabilities(div, statusParsed.data.Capabilities);
     if (statusParsed.prefix === 'REMEDIATE_SUCCESS:') {
-      setContainmentStatus(div, formatContainmentUserStatus(statusParsed.data?.Users));
+      setContainmentUserStatus(div, statusParsed.data?.Users);
     }
   }
   if (kind === 'unrestrict') {
@@ -4171,7 +4362,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       return;
     }
     spec.cmd = `REMEDIATE_UNRESTRICT_EMAIL|USERS:${JSON.stringify(hits.map((h) => h.UserPrincipalName))}`;
-    setContainmentStatus(div, formatContainmentUserStatus(hits));
+    setContainmentUserStatus(div, hits);
   }
   const confirmTargets = kind === 'unrestrict'
     ? getRestrictedContainmentHits(div, users).map((h) => h.UserPrincipalName)
@@ -4219,6 +4410,8 @@ function wireContainmentPanel(div, clientNumber) {
       });
     });
   };
+  bind('.containmentQuickLock', 'quick-lock');
+  bind('.containmentQuickRestore', 'quick-restore');
   bind('.containmentSigninStatus', 'signin-status');
   bind('.containmentRevoke', 'revoke');
   bind('.containmentBlock', 'block');
@@ -4330,7 +4523,7 @@ function setTenantButtonsDisabled(div, disabled) {
 
   if (!div) return;
 
-  div.querySelectorAll('button.graphAuth, button.exoAuth, button.generateReports, button.validateUsers').forEach(btn => {
+  div.querySelectorAll('button.graphAuth, button.exoAuth, button.generateReports, button.validateUsers, button.collectHistorical').forEach(btn => {
 
     btn.disabled = disabled;
 
@@ -4897,6 +5090,8 @@ function renderTenants(session) {
 
         <button class="generateReports primary" ${canGenerate ? '' : 'disabled'}>${t.reportInProgress ? 'Generating…' : (t.outputFolder ? 'Generate another report pack' : 'Generate Reports')}</button>
 
+        <button class="collectHistorical" title="Download completed 90-day historical message trace searches queued by earlier runs">Collect historical trace</button>
+
         <button class="openReports success" ${t.outputFolder ? '' : 'disabled'}>Open Reports</button>
 
         <button class="restartWorker">Restart worker</button>
@@ -4956,6 +5151,8 @@ function renderTenants(session) {
     div.querySelector('.exoAuth').addEventListener('click', () => exoAuth(t.clientNumber, div));
 
     div.querySelector('.validateUsers').addEventListener('click', () => validateUsers(t.clientNumber, div));
+
+    div.querySelector('.collectHistorical').addEventListener('click', () => collectHistoricalTrace(t.clientNumber, div));
 
     wireContainmentPanel(div, t.clientNumber);
 
@@ -5497,6 +5694,83 @@ async function validateUsers(clientNumber, div) {
 
 }
 
+async function collectHistoricalTrace(clientNumber, div) {
+
+  await withClientLock(clientNumber, async () => {
+
+    if (!await requireLiveWorker(clientNumber, { actionLabel: 'collect historical trace' })) {
+      return;
+    }
+
+    const session = await api('/api/session');
+    const tenant = session.tenants?.find(x => Number(x.clientNumber) === Number(clientNumber));
+    if (!tenant?.exchangeAuthenticated) {
+      const msg = `Client ${clientNumber}: Exchange Auth is required to collect historical message trace reports.`;
+      log(msg);
+      window.alert(msg);
+      return;
+    }
+
+    const btn = div.querySelector('.collectHistorical');
+    if (btn) btn.disabled = true;
+
+    try {
+
+      log(`Client ${clientNumber}: checking for completed historical message trace reports…`);
+
+      const initial = await api(`/api/tenants/${clientNumber}/command`, {
+        method: 'POST',
+        body: workerCommandBody('COLLECT_HISTORICAL_TRACE'),
+      });
+
+      let final = normalizeResponse(initial.response);
+
+      if (!final || final === 'COLLECT_HISTORICAL_TRACE_STARTED') {
+        final = await pollWorkerResponse(
+          clientNumber,
+          'COLLECT_HISTORICAL_TRACE_STARTED',
+          ['COLLECT_HISTORICAL_TRACE_SUCCESS:'],
+          'COLLECT_HISTORICAL_TRACE_FAILED:',
+          600,
+          'collecting historical message trace'
+        );
+      }
+
+      if (final.startsWith('COLLECT_HISTORICAL_TRACE_SUCCESS:')) {
+
+        const result = JSON.parse(final.replace('COLLECT_HISTORICAL_TRACE_SUCCESS:', ''));
+
+        if (result.RowCount > 0) {
+          log(`Client ${clientNumber}: collected ${result.RowCount} historical message trace row(s) -> ${result.CsvPath}`);
+          if (result.PendingJobs > 0) {
+            log(`Client ${clientNumber}: ${result.PendingJobs} historical search(es) still running - collect again later for the rest.`);
+          }
+        } else if (result.PendingJobs > 0) {
+          log(`Client ${clientNumber}: ${result.PendingJobs} historical search(es) still running on Microsoft's queue. These take hours - try again later.`);
+        } else {
+          log(`Client ${clientNumber}: no historical searches queued. Generate with a window longer than the live API covers to request them.`);
+        }
+
+      } else {
+
+        log(`Client ${clientNumber}: ${final}`);
+
+      }
+
+    } catch (e) {
+
+      log(`Client ${clientNumber}: Collect historical trace failed: ${e.message}`);
+
+    } finally {
+
+      if (btn) btn.disabled = false;
+
+    }
+
+  });
+
+}
+
 async function tailStatus(clientNumber, div) {
   focusClientLogTab(clientNumber);
   await pollWorkerLog(clientNumber);
@@ -5969,12 +6243,16 @@ async function generateReports(clientNumber, div) {
 
         const analyzeBtn = div.querySelector('.analyzeReports');
         const openBtn = div.querySelector('.openReports');
+        const investigateBtn = div.querySelector('.investigateLogs');
+        const investigateSel = div.querySelector('.investigateFolderSelect');
         if (analyzeBtn) analyzeBtn.disabled = false;
         if (openBtn) openBtn.disabled = false;
+        if (investigateBtn) investigateBtn.disabled = false;
+        if (investigateSel) investigateSel.disabled = false;
+        fillInvestigateFolderSelect(div, { clientNumber, outputFolder: path });
         div.querySelectorAll('.loadCurateFacets, .previewCurate, .exportCurate, .selectSuggestedWan, .clearWanSelection, .applyWanPaste').forEach((btn) => {
           btn.disabled = false;
         });
-        fillInvestigateFolderSelect(div, { clientNumber, outputFolder: path });
 
         refreshTenantSummaryUI(clientNumber, { outputFolder: path, reportInProgress: false, lastResponse: final });
 
@@ -6159,9 +6437,14 @@ document.getElementById('btnOpenSessionTemp')?.addEventListener('click', () => r
   log('Opened session temp folder.');
 }));
 
+document.getElementById('btnInvestigatePacks')?.addEventListener('click', () => {
+  window.location.href = 'investigate.html';
+});
+
 async function runUpdateGraphAppScopes(preferredTenantId) {
   const tid = String(preferredTenantId || '').trim();
-  const msg = 'Add missing Graph application permissions to the existing River Run Security Investigator app? The client secret and WCM credentials stay the same. Sign in as a tenant admin in the console, then run Graph Auth again on that tenant.';
+  const target = tid ? appRegTenantLabel(tid) : 'a tenant you choose during sign-in';
+  const msg = `Add missing Graph application permissions to the existing River Run Security Investigator app for ${target}? The client secret and WCM credentials stay the same. Sign in as a tenant admin in the console, then run Graph Auth again on that tenant.`;
   if (!window.confirm(msg)) return;
   await runAction('Update Graph App scopes (browser sign-in on this PC)…', async () => {
     const body = tid ? { tenantId: tid } : {};
@@ -6193,11 +6476,41 @@ document.getElementById('btnCreateGraphApp')?.addEventListener('click', () => ru
   await loadAppRegistrations({ quiet: true, forceRefreshFromGraph: true });
 }));
 
+function appRegTenantLabel(tenantId) {
+  if (!tenantId) return '(none selected)';
+  const match = appRegistrations.find(a => (a.tenantId || '').toLowerCase() === String(tenantId).toLowerCase());
+  return match?.displayText || tenantId;
+}
+
 document.getElementById('btnUpdateGraphAppScopes')?.addEventListener('click', async () => {
-  const first = document.querySelector('details.tenant .appRegSelect')?.value || '';
-  const typed = window.prompt('Tenant ID to update (blank = choose during sign-in):', first);
+  // Prefill from the tenant the user is actually looking at. Defaulting to the first card
+  // in the page silently offers an unrelated client's tenant, and the raw GUID in the prompt
+  // gives no hint that it is the wrong one.
+  const selected = Array.from(document.querySelectorAll('details.tenant'))
+    .map(card => ({
+      open: card.open,
+      client: card.dataset.client || '?',
+      tenantId: card.querySelector('.appRegSelect')?.value || '',
+    }))
+    .filter(entry => entry.tenantId);
+
+  const openEntries = selected.filter(entry => entry.open);
+  const candidates = openEntries.length ? openEntries : selected;
+  const distinct = Array.from(new Set(candidates.map(entry => entry.tenantId)));
+  const prefill = distinct.length === 1 ? distinct[0] : '';
+
+  const listing = selected.length
+    ? `\n\nApp reg tenant per client:\n${selected.map(e => `  Client ${e.client}${e.open ? ' (open)' : ''}: ${appRegTenantLabel(e.tenantId)}`).join('\n')}`
+    : '';
+  const chosen = prefill
+    ? `\n\nDefault below: ${appRegTenantLabel(prefill)}`
+    : '\n\nNo single tenant is in focus, so no default is filled in.';
+
+  const typed = window.prompt(`Tenant ID to update (blank = choose during sign-in).${listing}${chosen}`, prefill);
   if (typed === null) return;
-  await runUpdateGraphAppScopes(typed.trim());
+  const tid = typed.trim();
+  if (tid) log(`Update Graph App scopes target: ${appRegTenantLabel(tid)}`);
+  await runUpdateGraphAppScopes(tid);
 });
 
 document.getElementById('btnDeleteGraphApp')?.addEventListener('click', async () => {

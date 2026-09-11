@@ -1750,4 +1750,103 @@ function Copy-BulkRunnerContainmentZips {
     return @($copied)
 }
 
-Export-ModuleMember -Function Set-BulkRunnerWorkerVisibility, New-BulkRunnerSession, Add-BulkRunnerTenant, Remove-BulkRunnerTenant, Restart-BulkRunnerTenant, Stop-BulkRunnerSessionTenants, Test-BulkRunnerTenantWorkerAlive, Get-BulkRunnerTenantWorkerState, Ensure-BulkRunnerTenantWorker, Send-BulkRunnerCommand, Get-BulkRunnerTenantStatus, Get-BulkRunnerAppRegistrations, Get-BulkRunnerSessionSummary, Get-BulkRunnerDefaultSettings, Get-BulkRunnerDefaultReportSelections, ConvertTo-BulkRunnerReportSelectionsHashtable, Merge-BulkRunnerReportSelections, Set-BulkRunnerSessionReportSelections, Get-BulkRunnerTenantReportSelectionsOverride, Test-BulkRunnerTenantUsesSessionReportDefaults, Get-BulkRunnerEffectiveReportSelections, Write-BulkRunnerTenantReportSelectionsFile, Expand-BulkRunnerGenerateReportsCommand, Sync-BulkRunnerSessionManifest, Sync-BulkRunnerSessionManifestIfMissing, Sync-BulkRunnerTenantResponseFromFile, Sync-BulkRunnerSessionResponsesFromFiles, Set-BulkRunnerTenantUiState, Save-BulkRunnerSessionManifest, Get-BulkRunnerSessionHistory, Archive-BulkRunnerSessionHistory, Unarchive-BulkRunnerSessionHistory, Remove-BulkRunnerSessionHistory, Get-BulkRunnerSessionManifest, New-BulkRunnerSessionFromManifest, Export-BulkRunnerContainmentPacks, Copy-BulkRunnerContainmentZips
+function Get-BulkRunnerUiStateFolderPaths {
+    param($UiState)
+    $out = [System.Collections.Generic.List[string]]::new()
+    if (-not $UiState) { return @() }
+    $get = {
+        param($Name)
+        if ($UiState -is [hashtable] -or $UiState -is [System.Collections.IDictionary]) {
+            if ($UiState.ContainsKey($Name)) { return $UiState[$Name] }
+            return $null
+        }
+        $p = $UiState.PSObject.Properties[$Name]
+        if ($p) { return $p.Value }
+        return $null
+    }
+    foreach ($name in @('priorOutputFolder', 'curatedFolder')) {
+        $v = [string](& $get $name)
+        if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$out.Add($v.Trim()) }
+    }
+    foreach ($p in @(& $get 'reportFolders')) {
+        if ($p) { [void]$out.Add(([string]$p).Trim()) }
+    }
+    return @($out)
+}
+
+function Add-BulkRunnerFolderHint {
+    param(
+        $List,
+        [string]$Path,
+        [string]$SessionId,
+        $ClientNumber,
+        [string]$Organization,
+        [string]$Ticket
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    [void]$List.Add([pscustomobject]@{
+            path         = $Path.Trim()
+            sessionId    = $SessionId
+            clientNumber = $ClientNumber
+            organization = $Organization
+            ticket       = $Ticket
+        })
+}
+
+function Get-BulkRunnerKnownReportFolderHints {
+    [CmdletBinding()]
+    param($Session)
+
+    $list = [System.Collections.Generic.List[object]]::new()
+
+    if ($Session -and $Session.Tenants) {
+        foreach ($key in @($Session.Tenants.Keys)) {
+            $t = $Session.Tenants[$key]
+            if (-not $t) { continue }
+            $ui = $null
+            $ck = [string]$t.ClientNumber
+            if ($Session.TenantUiStates -and $Session.TenantUiStates.ContainsKey($ck)) {
+                $ui = $Session.TenantUiStates[$ck]
+            }
+            $org = [string]$t.ExoOrganizationName
+            if ([string]::IsNullOrWhiteSpace($org)) { $org = [string]$t.GraphTenantName }
+            $ticket = ''
+            if ($ui) {
+                if ($ui -is [hashtable] -or $ui -is [System.Collections.IDictionary]) {
+                    if ($ui.ContainsKey('ticket')) { $ticket = [string]$ui['ticket'] }
+                } elseif ($ui.PSObject.Properties['ticket']) {
+                    $ticket = [string]$ui.ticket
+                }
+            }
+            Add-BulkRunnerFolderHint -List $list -Path ([string]$t.OutputFolder) -SessionId ([string]$Session.SessionId) -ClientNumber $t.ClientNumber -Organization $org -Ticket $ticket
+            foreach ($p in @(Get-BulkRunnerUiStateFolderPaths -UiState $ui)) {
+                Add-BulkRunnerFolderHint -List $list -Path $p -SessionId ([string]$Session.SessionId) -ClientNumber $t.ClientNumber -Organization $org -Ticket $ticket
+            }
+        }
+    }
+
+    foreach ($archived in @($false, $true)) {
+        $dir = if ($archived) { Get-BulkRunnerArchiveDirectory } else { Get-BulkRunnerHistoryDirectory }
+        $files = Get-ChildItem -LiteralPath $dir -Filter 'EOA_BulkWeb_*.json' -File -ErrorAction SilentlyContinue
+        foreach ($f in @($files)) {
+            try { $m = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { continue }
+            $sid = [string]$m.sessionId
+            foreach ($t in @($m.tenants)) {
+                $org = [string]$t.exoOrganizationName
+                if ([string]::IsNullOrWhiteSpace($org)) { $org = [string]$t.graphTenantName }
+                $ticket = ''
+                if ($t.uiState -and $t.uiState.ticket) { $ticket = [string]$t.uiState.ticket }
+                $cn = $null
+                if ($t.clientNumber) { $cn = [int]$t.clientNumber }
+                Add-BulkRunnerFolderHint -List $list -Path ([string]$t.outputFolder) -SessionId $sid -ClientNumber $cn -Organization $org -Ticket $ticket
+                foreach ($p in @(Get-BulkRunnerUiStateFolderPaths -UiState $t.uiState)) {
+                    Add-BulkRunnerFolderHint -List $list -Path $p -SessionId $sid -ClientNumber $cn -Organization $org -Ticket $ticket
+                }
+            }
+        }
+    }
+
+    return @($list)
+}
+
+Export-ModuleMember -Function Set-BulkRunnerWorkerVisibility, New-BulkRunnerSession, Add-BulkRunnerTenant, Remove-BulkRunnerTenant, Restart-BulkRunnerTenant, Stop-BulkRunnerSessionTenants, Test-BulkRunnerTenantWorkerAlive, Get-BulkRunnerTenantWorkerState, Ensure-BulkRunnerTenantWorker, Send-BulkRunnerCommand, Get-BulkRunnerTenantStatus, Get-BulkRunnerAppRegistrations, Get-BulkRunnerSessionSummary, Get-BulkRunnerDefaultSettings, Get-BulkRunnerDefaultReportSelections, ConvertTo-BulkRunnerReportSelectionsHashtable, Merge-BulkRunnerReportSelections, Set-BulkRunnerSessionReportSelections, Get-BulkRunnerTenantReportSelectionsOverride, Test-BulkRunnerTenantUsesSessionReportDefaults, Get-BulkRunnerEffectiveReportSelections, Write-BulkRunnerTenantReportSelectionsFile, Expand-BulkRunnerGenerateReportsCommand, Sync-BulkRunnerSessionManifest, Sync-BulkRunnerSessionManifestIfMissing, Sync-BulkRunnerTenantResponseFromFile, Sync-BulkRunnerSessionResponsesFromFiles, Set-BulkRunnerTenantUiState, Save-BulkRunnerSessionManifest, Get-BulkRunnerSessionHistory, Archive-BulkRunnerSessionHistory, Unarchive-BulkRunnerSessionHistory, Remove-BulkRunnerSessionHistory, Get-BulkRunnerSessionManifest, New-BulkRunnerSessionFromManifest, Export-BulkRunnerContainmentPacks, Copy-BulkRunnerContainmentZips, Get-BulkRunnerKnownReportFolderHints

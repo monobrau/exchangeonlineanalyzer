@@ -183,7 +183,22 @@ function Get-ExchangeMessageTraceV2RoleEntryHint {
     try {
         $entries = @(Get-ManagementRoleEntry '*\Get-MessageTraceV2' -ErrorAction Stop)
         if ($entries.Count -gt 0) {
-            return (" RBAC: Get-MessageTraceV2 exists in {0} role(s) (e.g. {1}) - the cmdlet is assignable but was not exported to this session." -f $entries.Count, (@($entries | Select-Object -First 3 | ForEach-Object { $_.Role }) -join ', '))
+            $roles = @($entries | ForEach-Object { [string]$_.Role } | Where-Object { $_ } | Sort-Object -Unique)
+            # Global Admin only maps to Organization Management, so naming the role groups that
+            # actually hold these roles is what tells the analyst which role to assign.
+            $holders = [System.Collections.Generic.List[string]]::new()
+            if (Get-Command Get-ManagementRoleAssignment -ErrorAction SilentlyContinue) {
+                foreach ($r in $roles) {
+                    try {
+                        foreach ($a in @(Get-ManagementRoleAssignment -Role $r -ErrorAction Stop)) {
+                            $name = [string]$a.RoleAssigneeName
+                            if ($name -and -not $holders.Contains($name)) { [void]$holders.Add($name) }
+                        }
+                    } catch { }
+                }
+            }
+            $who = if ($holders.Count -gt 0) { " Held by: $((@($holders | Sort-Object) -join ', '))." } else { ' Could not read role assignments.' }
+            return (" RBAC: Get-MessageTraceV2 is assignable but was not exported to this session. Roles carrying it: $($roles -join ', ').$who Assign one of those to the account used for Exchange Auth, then reconnect (a live session never gains cmdlets).")
         }
         return ' RBAC: no management role contains Get-MessageTraceV2 in this tenant, so the REST session cannot export it.'
     } catch {
@@ -224,7 +239,13 @@ function Write-ExchangeMessageTraceV2Availability {
     $listed = if ($names.Count) { ($names | Select-Object -Unique) -join ', ' } else { '(none)' }
     $mods = if ($modNames.Count) { ($modNames | Select-Object -Unique) -join ', ' } else { '(no tmpEXO module)' }
     $roleHint = Get-ExchangeMessageTraceV2RoleEntryHint
-    $warn = "Get-MessageTraceV2 not loaded. tmpEXO=$mods MessageTrace cmdlets: $listed.$connHint$roleHint Generate will try Graph messageTraces, then Start-HistoricalSearch."
+    $legacyHint = if ($names -contains 'Get-MessageTrace') { 'legacy Get-MessageTrace (last 10 days)' } else { 'no legacy fallback - Get-MessageTrace is missing too' }
+    $hasHistorical = $false
+    foreach ($mod in (Get-TmpExoModules)) {
+        if ($mod.ExportedCommands.ContainsKey('Start-HistoricalSearch')) { $hasHistorical = $true; break }
+    }
+    $histHint = if ($hasHistorical) { ' Days older than that are queued as historical searches (they run for hours - use Collect historical trace later).' } else { '' }
+    $warn = "Get-MessageTraceV2 not loaded. tmpEXO=$mods MessageTrace cmdlets: $listed.$connHint$roleHint Generate will try Graph messageTraces, then $legacyHint.$histHint"
     Write-Warning $warn
     if (Get-Command Write-Status -ErrorAction SilentlyContinue) { Write-Status $warn }
 }

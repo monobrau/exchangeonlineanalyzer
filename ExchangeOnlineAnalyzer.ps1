@@ -8244,6 +8244,46 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
+            } elseif (`$command -eq "COLLECT_HISTORICAL_TRACE") {
+                if (-not `$exchangeAuthenticated) {
+                    Write-Host "ERROR: Exchange authentication must be completed first!" -ForegroundColor Red
+                    Write-CommandResponse "COLLECT_HISTORICAL_TRACE_FAILED:Exchange authentication not completed"
+                    continue
+                }
+
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "COLLECT HISTORICAL TRACE COMMAND RECEIVED" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Collecting completed historical message trace reports..."
+                Write-CommandResponse "COLLECT_HISTORICAL_TRACE_STARTED"
+
+                try {
+                    `$histResult = Export-EoaHistoricalMessageTraceCsv -StatusFile `$StatusFile
+                    if (`$histResult.RowCount -gt 0) {
+                        Write-Status "Historical message trace: collected `$(`$histResult.RowCount) row(s). `$(`$histResult.PendingJobs) job(s) still running."
+                    } elseif (`$histResult.PendingJobs -gt 0) {
+                        Write-Status "Historical message trace: `$(`$histResult.PendingJobs) job(s) still running on Microsoft's queue - nothing ready yet."
+                    } else {
+                        Write-Status "Historical message trace: no queued reports found. Run Generate with a window longer than the live API reaches to request them."
+                    }
+                    `$responseJson = @{
+                        Success = `$true
+                        RowCount = `$histResult.RowCount
+                        PendingJobs = `$histResult.PendingJobs
+                        TotalJobs = `$histResult.TotalJobs
+                        CsvPath = `$histResult.CsvPath
+                    } | ConvertTo-Json -Compress
+                    Write-CommandResponse "COLLECT_HISTORICAL_TRACE_SUCCESS:`$responseJson"
+                } catch {
+                    Write-Host "ERROR: Historical trace collection failed - `$(`$_.Exception.Message)" -ForegroundColor Red
+                    Write-Status "ERROR: Historical trace collection failed - `$(`$_.Exception.Message)"
+                    Write-CommandResponse "COLLECT_HISTORICAL_TRACE_FAILED:`$(`$_.Exception.Message)"
+                }
+
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+
             } elseif (`$command -match "^GENERATE_REPORTS") {
                 if (-not `$graphAuthenticated -or -not `$exchangeAuthenticated) {
                     Write-Host "ERROR: Both Graph and Exchange authentication must be completed first!" -ForegroundColor Red

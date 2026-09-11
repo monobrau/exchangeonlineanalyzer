@@ -159,6 +159,8 @@ function Handle-ApiRequest {
                 liongardIntegration   = $true
                 huntressIntegration   = $true
                 sentinelOneIntegration = $true
+                investigatePacks      = $true
+                investigateAccessGraph = $true
             }
         }
     }
@@ -236,6 +238,22 @@ function Handle-ApiRequest {
         return @{ ok = $true; result = $result }
     }
 
+    if ($Method -eq 'GET' -and $Path -eq '/api/investigate/packs') {
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\LogInvestigate.psm1') -Force -ErrorAction Stop
+        $query = ''
+        $sessionId = ''
+        $limit = 80
+        if ($RequestUrl -and -not [string]::IsNullOrWhiteSpace($RequestUrl.Query)) {
+            $qs = $RequestUrl.Query
+            if ($qs -match '[?&]q=([^&]*)') { $query = [System.Net.WebUtility]::UrlDecode($Matches[1]) }
+            if ($qs -match '[?&]session=([^&]*)') { $sessionId = [System.Net.WebUtility]::UrlDecode($Matches[1]) }
+            if ($qs -match '[?&]limit=(\d+)') { $limit = [int]$Matches[1] }
+        }
+        $hints = @(Get-BulkRunnerKnownReportFolderHints -Session $script:BulkSession)
+        $result = Get-InvestigatePacks -Hints $hints -Query $query -SessionId $sessionId -Limit $limit
+        return @{ ok = $true; result = $result }
+    }
+
     if ($Path -like '/api/investigate/*') {
         Import-Module (Join-Path $script:ProjectRoot 'Modules\LogInvestigate.psm1') -Force -ErrorAction Stop
         if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
@@ -279,6 +297,22 @@ function Handle-ApiRequest {
             }
             if ($hideInternal) { $graphParams.HideInternal = $true }
             $result = Get-InvestigateMailGraph @graphParams
+            return @{ ok = $true; result = $result }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/investigate/access-graph') {
+            $minCount = 1
+            if ($Body.minCount) { $minCount = [int]$Body.minCount }
+            $maxNodes = 80
+            if ($Body.maxNodes) { $maxNodes = [int]$Body.maxNodes }
+            $includeSignIn = $true
+            if ($null -ne $Body.includeSignIn) { $includeSignIn = [bool]$Body.includeSignIn }
+            $includeUal = $true
+            if ($null -ne $Body.includeUal) { $includeUal = [bool]$Body.includeUal }
+            $hidePrivateIp = $true
+            if ($null -ne $Body.hidePrivateIp) { $hidePrivateIp = [bool]$Body.hidePrivateIp }
+            $bucket = 'hour'
+            if ($Body.bucket) { $bucket = [string]$Body.bucket }
+            $result = Get-InvestigateAccessGraph -Path $invPath -Filters $invFilters -MinCount $minCount -MaxNodes $maxNodes -IncludeSignIn $includeSignIn -IncludeUal $includeUal -HidePrivateIp $hidePrivateIp -Bucket $bucket
             return @{ ok = $true; result = $result }
         }
         if ($Method -eq 'POST' -and $Path -eq '/api/investigate/export') {

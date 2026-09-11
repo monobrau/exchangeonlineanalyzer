@@ -14,14 +14,15 @@ $script:InvestigateSources = @(
         Name        = 'SignInLogs'
         TimeCols    = @('CreatedDateTime', 'createdDateTime', 'TimeGenerated')
         AddressCols = @('UserPrincipalName', 'UPN', 'User')
-        IpCols      = @('IPAddress', 'IpAddress', 'IP')
+        IpCols      = @('IPAddress', 'IpAddress', 'IP address', 'IP')
+        GeoCols     = @('CountryOrRegion', 'Country', 'Location')
         Preset      = @('CreatedDateTime', 'UserPrincipalName', 'IPAddress', 'AppDisplayName', 'Status', 'CountryOrRegion', 'ClientAppUsed')
     }
     @{
         Name        = 'UnifiedAuditLogs'
         TimeCols    = @('CreationDate', 'CreationTime', 'CreationDateTime')
         AddressCols = @('UserIds', 'UserId', 'UserPrincipalName', 'UserKey')
-        IpCols      = @('ClientIP', 'ClientIp', 'IPAddress')
+        IpCols      = @('ClientIP', 'ClientIp', 'ClientIPAddress', 'IPAddress')
         Preset      = @('CreationDate', 'UserIds', 'Operations', 'RecordType', 'ClientIP', 'ResultStatus')
         EnrichUal   = $true
     }
@@ -123,7 +124,10 @@ function Add-InvestigateUalFields {
     if (-not $op -and $audit) { $op = [string]$audit.Operation }
     $ip = [string]$Row.ClientIP
     if (-not $ip) { $ip = [string]$Row.ClientIp }
+    if (-not $ip) { $ip = [string]$Row.ClientIPAddress }
     if (-not $ip -and $audit) { $ip = [string]$audit.ClientIP }
+    if (-not $ip -and $audit) { $ip = [string]$audit.ClientIPAddress }
+    if (-not $ip -and $audit) { $ip = [string]$audit.ActorIpAddress }
     $mbx = ''
     if ($audit) { $mbx = [string]$audit.MailboxOwnerUPN }
     $user = [string]$Row.UserIds
@@ -259,6 +263,14 @@ function Get-InvestigateCell {
         if ($Row.PSObject.Properties['_ClientIP']) { [void]$parts.Add([string]$Row._ClientIP) }
         return ($parts -join ' ')
     }
+    if ($Column -eq '_geo') {
+        $parts = [System.Collections.Generic.List[string]]::new()
+        foreach ($c in @($ColMap.GeoActual)) {
+            $v = [string]$Row.$c
+            if ($v) { [void]$parts.Add($v) }
+        }
+        return ($parts -join ' ')
+    }
     if ($Column -eq '_time') {
         $c = $ColMap.TimeActual
         if ($c) { return [string]$Row.$c }
@@ -287,11 +299,18 @@ function New-InvestigateColMap {
         if ($hit -and $ips -notcontains $hit) { $ips += $hit }
         $resolved[$c] = $hit
     }
+    $geo = @()
+    foreach ($c in @($Def.GeoCols | Where-Object { $_ })) {
+        $hit = Resolve-InvestigateColumn -SampleRow $SampleRow -Candidates @($c)
+        if ($hit -and $geo -notcontains $hit) { $geo += $hit }
+        $resolved[$c] = $hit
+    }
     if ($time) { $resolved['_time'] = $time }
     return @{
         TimeActual    = $time
         AddressActual = $addr
         IpActual      = $ips
+        GeoActual     = $geo
         Resolved      = $resolved
     }
 }
@@ -645,6 +664,368 @@ function Get-InvestigateMailGraph {
     }
 }
 
+function Get-InvestigateNormalizedIp {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    $ip = $Value.Trim().Trim('"')
+    if ($ip -match '(?i)^(?:clientip|ipaddress|ip)\s*=\s*(.+)$') { $ip = $Matches[1].Trim() }
+    if ($ip -match '^\[([^\]]+)\](?::\d+)?$') { $ip = $Matches[1] }
+    elseif ($ip -match '^(\d{1,3}(?:\.\d{1,3}){3}):\d+$') { $ip = $Matches[1] }
+    elseif ($ip -match '(?i)^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$') { $ip = $Matches[1] }
+    return $ip
+}
+
+function Get-InvestigateCountryCode {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    $t = $Value.Trim().Trim('"')
+    if ($t -match '^\s*\{') {
+        try {
+            $j = $t | ConvertFrom-Json -ErrorAction Stop
+            foreach ($n in @('countryOrRegion', 'CountryOrRegion', 'country', 'Country')) {
+                if ($j.PSObject.Properties[$n] -and $j.$n) { return ([string]$j.$n).Trim() }
+            }
+        } catch { }
+    }
+    if ($t -match '(?i)countryorregion["\s:=]+([A-Za-z]{2,3})\b') { return $Matches[1].ToUpperInvariant() }
+    $parts = @($t -split '\s*,\s*' | Where-Object { $_ })
+    if ($parts.Count -ge 2 -and $parts[-1] -match '^[A-Za-z]{2,3}$') { return $parts[-1].ToUpperInvariant() }
+    return $t
+}
+
+function Test-InvestigatePublicIpAddress {
+    param([string]$Ip)
+    $ip = Get-InvestigateNormalizedIp -Value $Ip
+    if (-not $ip) { return $false }
+    $parsed = $null
+    if (-not [System.Net.IPAddress]::TryParse($ip, [ref]$parsed)) { return $false }
+    if ($parsed.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+        $s = $parsed.ToString()
+        if ($s.StartsWith('fe80', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ($s.StartsWith('fc', [System.StringComparison]::OrdinalIgnoreCase) -or $s.StartsWith('fd', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        return $true
+    }
+    $b = $parsed.GetAddressBytes()
+    if ($b[0] -eq 10 -or $b[0] -eq 127 -or $b[0] -eq 0) { return $false }
+    if ($b[0] -eq 169 -and $b[1] -eq 254) { return $false }
+    if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) { return $false }
+    if ($b[0] -eq 192 -and $b[1] -eq 168) { return $false }
+    if ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) { return $false }
+    return $true
+}
+
+function Test-InvestigateFailedStatus {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    return ($Value -match '(?i)fail|interrupt|denied|block')
+}
+
+function Test-InvestigateAccessUser {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if ($Value -match '(?i)^(NT AUTHORITY\\|S-1-|SHAREPOINT\\)') { return $false }
+    return $true
+}
+
+function Get-InvestigateAccessRowBits {
+    param($Row, $ColMap, $Kind)
+    $user = ''
+    foreach ($c in @($ColMap.AddressActual)) {
+        $v = [string]$Row.$c
+        if (Test-InvestigateAccessUser -Value $v) { $user = $v.Trim().ToLowerInvariant(); break }
+    }
+    if (-not $user -and $Row.PSObject.Properties['_User']) {
+        $v = [string]$Row._User
+        if (Test-InvestigateAccessUser -Value $v) { $user = $v.Trim().ToLowerInvariant() }
+    }
+    $ip = ''
+    foreach ($c in @($ColMap.IpActual)) {
+        $v = Get-InvestigateNormalizedIp -Value ([string]$Row.$c)
+        if ($v) { $ip = $v; break }
+    }
+    if (-not $ip -and $Row.PSObject.Properties['_ClientIP']) {
+        $ip = Get-InvestigateNormalizedIp -Value ([string]$Row._ClientIP)
+    }
+    $country = ''
+    foreach ($c in @($ColMap.GeoActual)) {
+        $v = Get-InvestigateCountryCode -Value ([string]$Row.$c)
+        if ($v -and $v -ne 'Unknown') { $country = $v; break }
+        if ($v) { $country = $v }
+    }
+    $failed = $false
+    if ($Kind -eq 'signin') {
+        $failed = Test-InvestigateFailedStatus -Value (Get-InvestigateCell -Row $Row -Column 'Status' -ColMap $ColMap)
+        if (-not $failed) { $failed = Test-InvestigateFailedStatus -Value (Get-InvestigateCell -Row $Row -Column 'ResultStatus' -ColMap $ColMap) }
+    } else {
+        $failed = Test-InvestigateFailedStatus -Value (Get-InvestigateCell -Row $Row -Column 'ResultStatus' -ColMap $ColMap)
+        if (-not $failed) { $failed = Test-InvestigateFailedStatus -Value (Get-InvestigateCell -Row $Row -Column '_Operation' -ColMap $ColMap) }
+    }
+    $dt = $null
+    if ($ColMap.TimeActual) { $dt = ConvertTo-InvestigateDateTime $Row.($ColMap.TimeActual) }
+    return @{
+        User    = $user
+        Ip      = $ip
+        Country = $country
+        Failed  = $failed
+        Time    = $dt
+    }
+}
+
+function Add-InvestigateAccessEvent {
+    param($Agg, $Bits, [string]$Source)
+    if (-not $Bits.User -or -not $Bits.Ip) { return }
+    if ($Agg.hidePrivateIp -and -not (Test-InvestigatePublicIpAddress -Ip $Bits.Ip)) { return }
+    $country = $Bits.Country
+    if (-not $country -and $Agg.ipCountry.ContainsKey($Bits.Ip)) { $country = $Agg.ipCountry[$Bits.Ip] }
+    if ($Bits.Country) { $Agg.ipCountry[$Bits.Ip] = $Bits.Country }
+    if (-not $country) { $country = 'Unknown' }
+    foreach ($gf in @($Agg.geoFilters)) {
+        if (-not (Test-InvestigateCompare -Left $country -Op $gf.op -Right $gf.value)) { return }
+    }
+    $Agg.matched++
+    if ($Source -eq 'signin') { $Agg.signInMatched++ } else { $Agg.ualMatched++ }
+
+    if ($Bits.Time) {
+        $key = if ($Agg.bucket -eq 'day') { $Bits.Time.ToString('yyyy-MM-dd') } else { $Bits.Time.ToString('yyyy-MM-ddTHH:00') }
+        if (-not $Agg.buckets.ContainsKey($key)) { $Agg.buckets[$key] = 0; $Agg.bucketFails[$key] = 0 }
+        $Agg.buckets[$key]++
+        if ($Bits.Failed) { $Agg.bucketFails[$key]++ }
+    }
+
+    if (-not $Agg.userCounts.ContainsKey($Bits.User)) { $Agg.userCounts[$Bits.User] = 0; $Agg.userFails[$Bits.User] = 0 }
+    $Agg.userCounts[$Bits.User]++
+    if ($Bits.Failed) { $Agg.userFails[$Bits.User]++ }
+
+    if (-not $Agg.ipCounts.ContainsKey($Bits.Ip)) { $Agg.ipCounts[$Bits.Ip] = 0; $Agg.ipFails[$Bits.Ip] = 0; $Agg.ipSources[$Bits.Ip] = @{} }
+    $Agg.ipCounts[$Bits.Ip]++
+    if ($Bits.Failed) { $Agg.ipFails[$Bits.Ip]++ }
+    $Agg.ipSources[$Bits.Ip][$Source] = $true
+
+    $ek = "$($Bits.User)|$($Bits.Ip)"
+    if (-not $Agg.edgeCounts.ContainsKey($ek)) { $Agg.edgeCounts[$ek] = 0; $Agg.edgeFails[$ek] = 0 }
+    $Agg.edgeCounts[$ek]++
+    if ($Bits.Failed) { $Agg.edgeFails[$ek]++ }
+
+    if (-not $Agg.countryCounts.ContainsKey($country)) {
+        $Agg.countryCounts[$country] = 0
+        $Agg.countryFails[$country] = 0
+        $Agg.countryUsers[$country] = @{}
+        $Agg.countryIps[$country] = @{}
+    }
+    $Agg.countryCounts[$country]++
+    if ($Bits.Failed) { $Agg.countryFails[$country]++ }
+    $Agg.countryUsers[$country][$Bits.User] = $true
+    $Agg.countryIps[$country][$Bits.Ip] = $true
+}
+
+function Get-InvestigateAccessGraph {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        $Filters,
+        [int]$MinCount = 1,
+        [int]$MaxNodes = 80,
+        [bool]$IncludeSignIn = $true,
+        [bool]$IncludeUal = $true,
+        [bool]$HidePrivateIp = $true,
+        [ValidateSet('hour', 'day')]
+        [string]$Bucket = 'hour'
+    )
+
+    if ($MinCount -lt 1) { $MinCount = 1 }
+    if ($MaxNodes -lt 5) { $MaxNodes = 5 }
+    if ($MaxNodes -gt 200) { $MaxNodes = 200 }
+
+    $filterList = ConvertTo-InvestigateFilterList -Filters $Filters
+    $geoFilters = @($filterList | Where-Object { $_.column -eq '_geo' })
+    $baseFilters = @($filterList | Where-Object { $_.column -ne '_geo' })
+
+    $ipCountry = @{}
+    $edgeCounts = @{}
+    $edgeFails = @{}
+    $userCounts = @{}
+    $userFails = @{}
+    $ipCounts = @{}
+    $ipFails = @{}
+    $ipSources = @{}
+    $countryCounts = @{}
+    $countryFails = @{}
+    $countryUsers = @{}
+    $countryIps = @{}
+    $buckets = @{}
+    $bucketFails = @{}
+    $agg = @{
+        ipCountry     = $ipCountry
+        edgeCounts    = $edgeCounts
+        edgeFails     = $edgeFails
+        userCounts    = $userCounts
+        userFails     = $userFails
+        ipCounts      = $ipCounts
+        ipFails       = $ipFails
+        ipSources     = $ipSources
+        countryCounts = $countryCounts
+        countryFails  = $countryFails
+        countryUsers  = $countryUsers
+        countryIps    = $countryIps
+        buckets       = $buckets
+        bucketFails   = $bucketFails
+        geoFilters    = $geoFilters
+        hidePrivateIp = [bool]$HidePrivateIp
+        bucket        = $Bucket
+        matched       = 0
+        signInMatched = 0
+        ualMatched    = 0
+    }
+
+    if ($IncludeSignIn) {
+        try {
+            $ctx = Get-InvestigateOpenContext -Path $Path -Source 'SignInLogs'
+            foreach ($row in $ctx.Rows) {
+                if (-not (Test-InvestigateRow -Row $row -Filters $baseFilters -ColMap $ctx.Map)) { continue }
+                $bits = Get-InvestigateAccessRowBits -Row $row -ColMap $ctx.Map -Kind 'signin'
+                Add-InvestigateAccessEvent -Agg $agg -Bits $bits -Source 'signin'
+            }
+        } catch {
+            if ($_.Exception.Message -notmatch 'No SignInLogs CSV') { throw }
+        }
+    }
+    if ($IncludeUal) {
+        try {
+            $ctx = Get-InvestigateOpenContext -Path $Path -Source 'UnifiedAuditLogs'
+            foreach ($row in $ctx.Rows) {
+                if (-not (Test-InvestigateRow -Row $row -Filters $baseFilters -ColMap $ctx.Map)) { continue }
+                $bits = Get-InvestigateAccessRowBits -Row $row -ColMap $ctx.Map -Kind 'ual'
+                Add-InvestigateAccessEvent -Agg $agg -Bits $bits -Source 'ual'
+            }
+        } catch {
+            if ($_.Exception.Message -notmatch 'No UnifiedAuditLogs CSV') { throw }
+        }
+    }
+
+    $matched = [int]$agg.matched
+    $signInMatched = [int]$agg.signInMatched
+    $ualMatched = [int]$agg.ualMatched
+
+    $edges = @(
+        $edgeCounts.GetEnumerator() |
+            Where-Object { $_.Value -ge $MinCount } |
+            ForEach-Object {
+                $parts = $_.Key -split '\|', 2
+                $ip = $parts[1]
+                $country = if ($ipCountry.ContainsKey($ip)) { $ipCountry[$ip] } else { 'Unknown' }
+                [ordered]@{
+                    from      = $parts[0]
+                    to        = $ip
+                    count     = [int]$_.Value
+                    failCount = [int]$edgeFails[$_.Key]
+                    country   = $country
+                }
+            }
+    )
+
+    $keepScore = @{}
+    foreach ($e in $edges) {
+        if (-not $keepScore.ContainsKey("u:$($e.from)")) { $keepScore["u:$($e.from)"] = 0 }
+        if (-not $keepScore.ContainsKey("i:$($e.to)")) { $keepScore["i:$($e.to)"] = 0 }
+        $keepScore["u:$($e.from)"] += $e.count
+        $keepScore["i:$($e.to)"] += $e.count
+    }
+    $topIds = @(
+        $keepScore.GetEnumerator() |
+            Sort-Object { -$_.Value }, Name |
+            Select-Object -First $MaxNodes |
+            ForEach-Object { $_.Key }
+    )
+    $topSet = @{}
+    foreach ($id in $topIds) { $topSet[$id] = $true }
+
+    $edgesOut = @($edges | Where-Object { $topSet.ContainsKey("u:$($_.from)") -and $topSet.ContainsKey("i:$($_.to)") })
+    $nodesOut = @(
+        foreach ($id in $topIds) {
+            if ($id.StartsWith('u:')) {
+                $name = $id.Substring(2)
+                [ordered]@{
+                    id        = $id
+                    label     = $name
+                    kind      = 'user'
+                    count     = [int]$userCounts[$name]
+                    failCount = [int]$userFails[$name]
+                    country   = ''
+                }
+            } else {
+                $ip = $id.Substring(2)
+                $country = if ($ipCountry.ContainsKey($ip)) { $ipCountry[$ip] } else { 'Unknown' }
+                $src = @()
+                if ($ipSources.ContainsKey($ip)) { $src = @($ipSources[$ip].Keys) }
+                [ordered]@{
+                    id        = $id
+                    label     = $ip
+                    kind      = 'ip'
+                    count     = [int]$ipCounts[$ip]
+                    failCount = [int]$ipFails[$ip]
+                    country   = $country
+                    sources   = $src
+                }
+            }
+        }
+    )
+
+    $sortedKeys = @($buckets.Keys | Sort-Object)
+    if ($sortedKeys.Count -ge 2) {
+        $first = ConvertTo-InvestigateDateTime $sortedKeys[0]
+        $last = ConvertTo-InvestigateDateTime $sortedKeys[-1]
+        if ($first -and $last) {
+            $step = if ($Bucket -eq 'day') { [timespan]::FromDays(1) } else { [timespan]::FromHours(1) }
+            $spanSteps = if ($Bucket -eq 'day') { [int][math]::Floor(($last - $first).TotalDays) } else { [int][math]::Floor(($last - $first).TotalHours) }
+            $maxSteps = if ($Bucket -eq 'day') { 90 } else { 72 }
+            if ($spanSteps -ge 1 -and $spanSteps -le $maxSteps) {
+                $cur = $first
+                while ($cur -le $last) {
+                    $k = if ($Bucket -eq 'day') { $cur.ToString('yyyy-MM-dd') } else { $cur.ToString('yyyy-MM-ddTHH:00') }
+                    if (-not $buckets.ContainsKey($k)) { $buckets[$k] = 0; $bucketFails[$k] = 0 }
+                    $cur = $cur.Add($step)
+                }
+            }
+        }
+    }
+    $timeline = @(
+        $buckets.GetEnumerator() |
+            Sort-Object Name |
+            ForEach-Object { [ordered]@{ t = $_.Key; count = [int]$_.Value; failCount = [int]$bucketFails[$_.Key] } }
+    )
+    $countries = @(
+        $countryCounts.GetEnumerator() |
+            Sort-Object { -$_.Value }, Name |
+            ForEach-Object {
+                $c = $_.Key
+                [ordered]@{
+                    country   = $c
+                    count     = [int]$_.Value
+                    failCount = [int]$countryFails[$c]
+                    users     = @($countryUsers[$c].Keys).Count
+                    ips       = @($countryIps[$c].Keys).Count
+                }
+            }
+    )
+
+    return [ordered]@{
+        path          = $Path
+        matched       = $matched
+        signInMatched = $signInMatched
+        ualMatched    = $ualMatched
+        minCount      = $MinCount
+        maxNodes      = $MaxNodes
+        includeSignIn = [bool]$IncludeSignIn
+        includeUal    = [bool]$IncludeUal
+        hidePrivateIp = [bool]$HidePrivateIp
+        bucket        = $Bucket
+        nodes         = $nodesOut
+        edges         = $edgesOut
+        countries     = $countries
+        timeline      = $timeline
+    }
+}
+
 function Export-InvestigateQuery {
     [CmdletBinding()]
     param(
@@ -688,4 +1069,202 @@ function Export-InvestigateQuery {
     }
 }
 
-Export-ModuleMember -Function Get-InvestigateSources, Invoke-InvestigateQuery, Get-InvestigateMailGraph, Export-InvestigateQuery, Get-InvestigateCsvPath
+function Get-InvestigateNormalizedPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $t = $Path.Trim().TrimEnd('\', '/')
+    try { return [System.IO.Path]::GetFullPath($t) } catch { return $t }
+}
+
+function Get-InvestigatePackRoots {
+    @(
+        Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
+    )
+}
+
+function Get-InvestigatePackSourceNames {
+    param([Parameter(Mandatory)][string]$Folder)
+    $names = @(Get-ChildItem -LiteralPath $Folder -Filter '*.csv' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $found = [System.Collections.Generic.List[string]]::new()
+    foreach ($def in $script:InvestigateSources) {
+        $hit = $names | Where-Object { $_ -like "$($def.Name)*.csv" -and $_ -notmatch '_curated' } | Select-Object -First 1
+        if ($hit) { [void]$found.Add($def.Name) }
+    }
+    return @($found)
+}
+
+function Get-InvestigatePackInfo {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [switch]$AllowMissing
+    )
+    $full = Get-InvestigateNormalizedPath -Path $Path
+    if (-not $full) { return $null }
+    $leaf = Split-Path $full -Leaf
+    $parent = Split-Path $full -Parent
+    $company = if ($parent) { Split-Path $parent -Leaf } else { '' }
+    $exists = Test-Path -LiteralPath $full -PathType Container
+    $curated = ($leaf -like 'Curated_*')
+    if (-not $exists) {
+        if (-not $AllowMissing) { return $null }
+        return [ordered]@{
+            path      = $full
+            exists    = $false
+            name      = $leaf
+            company   = $company
+            sources   = @()
+            curated   = $curated
+            writtenAt = $null
+        }
+    }
+    $sources = @(Get-InvestigatePackSourceNames -Folder $full)
+    if ($sources.Count -lt 1) {
+        if (-not $AllowMissing) { return $null }
+        return [ordered]@{
+            path      = $full
+            exists    = $true
+            name      = $leaf
+            company   = $company
+            sources   = @()
+            curated   = $curated
+            writtenAt = $null
+        }
+    }
+    $item = Get-Item -LiteralPath $full
+    return [ordered]@{
+        path      = $full
+        exists    = $true
+        name      = $leaf
+        company   = $company
+        sources   = $sources
+        curated   = $curated
+        writtenAt = $item.LastWriteTimeUtc.ToString('o')
+    }
+}
+
+function Add-InvestigatePackCandidate {
+    param(
+        $Map,
+        [string]$Path,
+        $Hint,
+        [switch]$AllowMissing
+    )
+    $full = Get-InvestigateNormalizedPath -Path $Path
+    if (-not $full) { return }
+    $key = $full.ToLowerInvariant()
+    $info = Get-InvestigatePackInfo -Path $full -AllowMissing:$AllowMissing
+    if (-not $info) { return }
+    if (-not $Map.ContainsKey($key)) {
+        $Map[$key] = [ordered]@{
+            path         = [string]$info.path
+            exists       = [bool]$info.exists
+            name         = [string]$info.name
+            company      = [string]$info.company
+            sources      = @($info.sources)
+            curated      = [bool]$info.curated
+            writtenAt    = $info.writtenAt
+            sessionId    = $null
+            clientNumber = $null
+            organization = $null
+            ticket       = $null
+            origin       = 'disk'
+        }
+    }
+    $row = $Map[$key]
+    if ($info.exists -and @($info.sources).Count -gt 0) {
+        $row.exists = $true
+        $row.sources = @($info.sources)
+        $row.writtenAt = $info.writtenAt
+        $row.curated = [bool]$info.curated
+    }
+    if ($Hint) {
+        $sid = Get-InvestigateProp -Object $Hint -Name 'sessionId'
+        $cn = Get-InvestigateProp -Object $Hint -Name 'clientNumber'
+        $org = Get-InvestigateProp -Object $Hint -Name 'organization'
+        $ticket = Get-InvestigateProp -Object $Hint -Name 'ticket'
+        if ($sid) { $row.sessionId = [string]$sid }
+        if ($null -ne $cn -and "$cn" -ne '') { $row.clientNumber = [int]$cn }
+        if ($org) { $row.organization = [string]$org }
+        if ($ticket) { $row.ticket = [string]$ticket }
+        $row.origin = 'history'
+    }
+}
+
+function Get-InvestigatePacks {
+    [CmdletBinding()]
+    param(
+        [object[]]$Hints,
+        [string[]]$ExtraRoots,
+        [string]$Query,
+        [string]$SessionId,
+        [int]$Limit = 80
+    )
+    if ($Limit -lt 1) { $Limit = 80 }
+    if ($Limit -gt 200) { $Limit = 200 }
+
+    $map = @{}
+    foreach ($h in @($Hints)) {
+        $p = [string](Get-InvestigateProp -Object $h -Name 'path')
+        if ($p) { Add-InvestigatePackCandidate -Map $map -Path $p -Hint $h -AllowMissing }
+    }
+
+    $roots = [System.Collections.Generic.List[string]]::new()
+    foreach ($r in @(@($ExtraRoots) + (Get-InvestigatePackRoots))) {
+        $n = Get-InvestigateNormalizedPath -Path $r
+        if ($n -and (Test-Path -LiteralPath $n -PathType Container) -and -not ($roots.Contains($n))) {
+            [void]$roots.Add($n)
+        }
+    }
+
+    $walked = 0
+    foreach ($root in $roots) {
+        $perRoot = 0
+        $companies = @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)
+        foreach ($company in $companies) {
+            if ($walked -gt 500 -or $perRoot -gt 200) { break }
+            Add-InvestigatePackCandidate -Map $map -Path $company.FullName
+            $packs = @(Get-ChildItem -LiteralPath $company.FullName -Directory -ErrorAction SilentlyContinue)
+            foreach ($pack in $packs) {
+                $walked++
+                $perRoot++
+                if ($walked -gt 500 -or $perRoot -gt 200) { break }
+                Add-InvestigatePackCandidate -Map $map -Path $pack.FullName
+                Get-ChildItem -LiteralPath $pack.FullName -Directory -Filter 'Curated_*' -ErrorAction SilentlyContinue |
+                    ForEach-Object { Add-InvestigatePackCandidate -Map $map -Path $_.FullName }
+            }
+        }
+    }
+
+    $rows = @($map.Values)
+    if ($SessionId) {
+        $sid = $SessionId.Trim()
+        $rows = @($rows | Where-Object { [string]$_.sessionId -eq $sid })
+    }
+    $q = if ($Query) { $Query.Trim().ToLowerInvariant() } else { '' }
+    if ($q) {
+        $rows = @($rows | Where-Object {
+                $hay = @(
+                    $_.path, $_.name, $_.company, $_.organization, $_.ticket, $_.sessionId, ($_.sources -join ' ')
+                ) -join ' '
+                $hay.ToLowerInvariant().Contains($q)
+            })
+    }
+
+    $sorted = @($rows | Sort-Object {
+            if ($_.writtenAt) {
+                try { [datetime]$_.writtenAt } catch { [datetime]::MinValue }
+            } else { [datetime]::MinValue }
+        } -Descending)
+    $existing = @($sorted | Where-Object { $_.exists -and @($_.sources).Count -gt 0 })
+    $missing = @($sorted | Where-Object { -not $_.exists })
+    $combined = @($existing + $missing)
+    if ($combined.Count -gt $Limit) { $combined = @($combined | Select-Object -First $Limit) }
+
+    return [ordered]@{
+        packs = @($combined)
+        roots = @($roots)
+        count = $combined.Count
+    }
+}
+
+Export-ModuleMember -Function Get-InvestigateSources, Invoke-InvestigateQuery, Get-InvestigateMailGraph, Get-InvestigateAccessGraph, Export-InvestigateQuery, Get-InvestigateCsvPath, Get-InvestigatePacks, Get-InvestigatePackRoots

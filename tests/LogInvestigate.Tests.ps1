@@ -2,10 +2,10 @@
 #Requires -Modules Pester
 
 $modulePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Modules\LogInvestigate.psm1'
+Import-Module $modulePath -Force
 
 Describe 'LogInvestigate' {
     BeforeAll {
-        Import-Module $modulePath -Force
         $script:Folder = Join-Path $TestDrive 'ContosoPack'
         New-Item -ItemType Directory -Path $script:Folder | Out-Null
 
@@ -33,8 +33,8 @@ Describe 'LogInvestigate' {
 
     It 'inventories MessageTrace, SignInLogs, and UnifiedAuditLogs' {
         $src = Get-InvestigateSources -Path $script:Folder
-        ($src.sources | Where-Object { $_.present }).Count | Should Be 3
-        ($src.sources | Where-Object { $_.name -eq 'MessageTrace' }).rowCount | Should Be 3
+        ($src.sources | Where-Object { $_.present }).Count | Should -Be 3
+        ($src.sources | Where-Object { $_.name -eq 'MessageTrace' }).rowCount | Should -Be 3
     }
 
     It 'resolves ticket-suffixed MessageTrace CSV names' {
@@ -42,42 +42,102 @@ Describe 'LogInvestigate' {
         New-Item -ItemType Directory -Path $alt | Out-Null
         Copy-Item (Join-Path $script:Folder 'MessageTrace.csv') (Join-Path $alt 'MessageTrace_12345.csv')
         $p = Get-InvestigateCsvPath -Folder $alt -BaseName 'MessageTrace'
-        $p | Should Match 'MessageTrace_12345.csv$'
+        $p | Should -Match 'MessageTrace_12345.csv$'
     }
 
     It 'filters message trace by address and paginates' {
         $q = Invoke-InvestigateQuery -Path $script:Folder -Source 'MessageTrace' -Filters @(
             @{ column = '_address'; op = 'icontains'; value = 'mallory' }
         ) -Limit 50 -Offset 0
-        $q.total | Should Be 1
-        $q.rows[0].RecipientAddress | Should Be 'mallory@fabrikam.com'
+        $q.total | Should -Be 1
+        $q.rows[0].RecipientAddress | Should -Be 'mallory@fabrikam.com'
     }
 
     It 'builds a mail graph and can hide internal edges' {
         $all = Get-InvestigateMailGraph -Path $script:Folder -MinCount 1 -MaxNodes 80
-        $all.matched | Should Be 3
-        $all.edges.Count | Should Be 3
+        $all.matched | Should -Be 3
+        $all.edges.Count | Should -Be 3
 
         $ext = Get-InvestigateMailGraph -Path $script:Folder -MinCount 1 -MaxNodes 80 -HideInternal
         $pairs = @($ext.edges | ForEach-Object { "$($_.from)|$($_.to)" })
-        ($pairs -contains 'alice@contoso.com|bob@contoso.com') | Should Be $false
-        ($pairs -contains 'alice@contoso.com|mallory@fabrikam.com') | Should Be $true
+        ($pairs -contains 'alice@contoso.com|bob@contoso.com') | Should -Be $false
+        ($pairs -contains 'alice@contoso.com|mallory@fabrikam.com') | Should -Be $true
     }
 
     It 'exposes UAL AuditData fields and filters by operation' {
         $q = Invoke-InvestigateQuery -Path $script:Folder -Source 'UnifiedAuditLogs' -Filters @(
             @{ column = '_Operation'; op = 'icontains'; value = 'MailItemsAccessed' }
         )
-        $q.total | Should Be 1
-        $q.rows[0]._MailboxOwnerUPN | Should Be 'alice@contoso.com'
+        $q.total | Should -Be 1
+        $q.rows[0]._MailboxOwnerUPN | Should -Be 'alice@contoso.com'
     }
 
     It 'exports a filtered CSV beside the pack' {
         $ex = Export-InvestigateQuery -Path $script:Folder -Source 'SignInLogs' -Filters @(
             @{ column = '_address'; op = 'icontains'; value = 'alice' }
         )
-        (Test-Path -LiteralPath $ex.file) | Should Be $true
-        $ex.rowCount | Should Be 1
-        $ex.file | Should Match 'Investigate_SignInLogs_'
+        (Test-Path -LiteralPath $ex.file) | Should -Be $true
+        $ex.rowCount | Should -Be 1
+        $ex.file | Should -Match 'Investigate_SignInLogs_'
+    }
+
+    It 'builds a login graph from sign-in and UAL IPs' {
+        $g = Get-InvestigateAccessGraph -Path $script:Folder -MinCount 1 -MaxNodes 80
+        $g.signInMatched | Should -Be 2
+        $g.ualMatched | Should -Be 2
+        $pairs = @($g.edges | ForEach-Object { "$($_.from)|$($_.to)" })
+        ($pairs -contains 'alice@contoso.com|203.0.113.10') | Should -Be $true
+        ($pairs -contains 'eve@fabrikam.com|198.51.100.8') | Should -Be $true
+        ($pairs -contains 'bob@contoso.com|203.0.113.20') | Should -Be $true
+        $de = @($g.countries | Where-Object { $_.country -eq 'DE' })
+        $de.Count | Should -Be 1
+        $de[0].failCount | Should -Be 1
+        $eve = @($g.nodes | Where-Object { $_.id -eq 'i:198.51.100.8' })
+        $eve[0].failCount | Should -Be 1
+        $eve[0].country | Should -Be 'DE'
+    }
+
+    It 'can omit UAL and skip private IPs on the login graph' {
+        $noUal = Get-InvestigateAccessGraph -Path $script:Folder -IncludeUal:$false
+        $ips = @($noUal.nodes | Where-Object { $_.kind -eq 'ip' } | ForEach-Object { $_.label })
+        ($ips -contains '203.0.113.20') | Should -Be $false
+        ($ips -contains '203.0.113.10') | Should -Be $true
+    }
+
+    It 'parses country from Location city/state/US strings' {
+        $alt = Join-Path $TestDrive 'GeoPack'
+        New-Item -ItemType Directory -Path $alt | Out-Null
+        @(
+            'CreatedDateTime,UserPrincipalName,IPAddress,Location,Status'
+            '2026-01-15T10:05:00Z,alice@contoso.com,203.0.113.10,"Austin, TX, US",Success'
+        ) | Set-Content -LiteralPath (Join-Path $alt 'SignInLogs.csv') -Encoding UTF8
+        $g = Get-InvestigateAccessGraph -Path $alt -IncludeUal:$false
+        $us = @($g.countries | Where-Object { $_.country -eq 'US' })
+        $us.Count | Should -Be 1
+    }
+
+    It 'lists timestamped packs and curated folders under an extra root' {
+        $root = Join-Path $TestDrive 'SecurityInvestigation'
+        $pack = Join-Path $root 'Fabrikam\20260115_100000'
+        New-Item -ItemType Directory -Path $pack | Out-Null
+        Copy-Item (Join-Path $script:Folder 'MessageTrace.csv') (Join-Path $pack 'MessageTrace.csv')
+        $curated = Join-Path $pack 'Curated_20260115_110000'
+        New-Item -ItemType Directory -Path $curated | Out-Null
+        Copy-Item (Join-Path $script:Folder 'SignInLogs.csv') (Join-Path $curated 'SignInLogs.csv')
+        $listed = Get-InvestigatePacks -ExtraRoots $root -Query '20260115_100000'
+        (@($listed.packs | Where-Object { $_.name -eq '20260115_100000' })).Count | Should -Be 1
+        (@($listed.packs | Where-Object { $_.curated -eq $true })).Count | Should -Be 1
+    }
+
+    It 'attaches session hints to known pack paths' {
+        $listed = Get-InvestigatePacks -Hints @(@{
+                path         = $script:Folder
+                sessionId    = 'EOA_BulkWeb_hint'
+                clientNumber = 1
+                ticket       = '99'
+            }) -SessionId 'EOA_BulkWeb_hint'
+        $hit = @($listed.packs | Where-Object { $_.ticket -eq '99' }) | Select-Object -First 1
+        $hit.sessionId | Should -Be 'EOA_BulkWeb_hint'
+        (@($hit.sources) -contains 'MessageTrace') | Should -Be $true
     }
 }

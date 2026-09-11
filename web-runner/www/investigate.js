@@ -8,10 +8,12 @@ const tableBody = document.querySelector('#dataTable tbody');
 const tableMeta = document.getElementById('tableMeta');
 const rowDetail = document.getElementById('rowDetail');
 const graphMeta = document.getElementById('graphMeta');
+const accessMeta = document.getElementById('accessMeta');
 
 const state = {
   path: params.get('path') || '',
   client: params.get('client') || '',
+  sessionId: params.get('session') || '',
   demo: params.get('demo') === '1',
   source: 'MessageTrace',
   offset: 0,
@@ -22,7 +24,9 @@ const state = {
   columns: [],
   rows: [],
   sources: [],
+  packs: [],
   network: null,
+  accessNetwork: null,
 };
 
 const DEMO = {
@@ -143,9 +147,11 @@ function matchDemoRow(row, filters) {
       ? `${row.SenderAddress || ''} ${row.RecipientAddress || ''} ${row.UserPrincipalName || ''} ${row.UserIds || ''}`
       : (f.column === '_ip'
         ? `${row.FromIP || ''} ${row.IPAddress || ''} ${row.ClientIP || ''}`
-        : (f.column === '_time'
-          ? (row.Received || row.CreatedDateTime || row.CreationDate || '')
-          : String(row[f.column] ?? '')));
+        : (f.column === '_geo'
+          ? `${row.CountryOrRegion || ''}`
+          : (f.column === '_time'
+            ? (row.Received || row.CreatedDateTime || row.CreationDate || '')
+            : String(row[f.column] ?? ''))));
     const val = String(f.value ?? '');
     if (f.op === 'icontains') return col.toLowerCase().includes(val.toLowerCase());
     if (f.op === 'gte') return col >= val;
@@ -202,14 +208,137 @@ function buildDemoMailGraph(filters, opts = {}) {
   return { matched: rows.length, nodes, edges, timeline };
 }
 
+function isPrivateDemoIp(ip) {
+  const p = String(ip || '');
+  return p.startsWith('10.') || p.startsWith('192.168.') || p.startsWith('127.') || /^172\.(1[6-9]|2\d|3[0-1])\./.test(p);
+}
+
+function buildDemoAccessGraph(filters, opts = {}) {
+  const includeSignIn = opts.includeSignIn !== false;
+  const includeUal = opts.includeUal !== false;
+  const hidePrivate = opts.hidePrivateIp !== false;
+  const minCount = Math.max(1, Number(opts.minCount) || 1);
+  const ipCountry = {};
+  const events = [];
+  if (includeSignIn) {
+    DEMO.tables.SignInLogs.rows.filter((row) => matchDemoRow(row, filters.filter((f) => f.column !== '_geo'))).forEach((row) => {
+      const ip = String(row.IPAddress || '');
+      if (row.CountryOrRegion) ipCountry[ip] = row.CountryOrRegion;
+      events.push({
+        user: String(row.UserPrincipalName || '').toLowerCase(),
+        ip,
+        country: row.CountryOrRegion || '',
+        failed: /fail/i.test(String(row.Status || '')),
+        t: row.CreatedDateTime,
+        source: 'signin',
+      });
+    });
+  }
+  if (includeUal) {
+    DEMO.tables.UnifiedAuditLogs.rows.filter((row) => matchDemoRow(row, filters.filter((f) => f.column !== '_geo'))).forEach((row) => {
+      events.push({
+        user: String(row.UserIds || '').toLowerCase(),
+        ip: String(row.ClientIP || ''),
+        country: '',
+        failed: /fail/i.test(String(row.ResultStatus || '')),
+        t: row.CreationDate,
+        source: 'ual',
+      });
+    });
+  }
+  const geoFilters = filters.filter((f) => f.column === '_geo');
+  const edgeCounts = {};
+  const edgeFails = {};
+  const userCounts = {};
+  const userFails = {};
+  const ipCounts = {};
+  const ipFails = {};
+  const ipSources = {};
+  const countryCounts = {};
+  const countryFails = {};
+  const buckets = {};
+  const bucketFails = {};
+  let signInMatched = 0;
+  let ualMatched = 0;
+  events.forEach((ev) => {
+    if (!ev.user || !ev.ip) return;
+    if (hidePrivate && isPrivateDemoIp(ev.ip)) return;
+    let country = ev.country || ipCountry[ev.ip] || 'Unknown';
+    if (ev.country) ipCountry[ev.ip] = ev.country;
+    if (geoFilters.some((f) => !String(country).toLowerCase().includes(String(f.value || '').toLowerCase()))) return;
+    if (ev.source === 'signin') signInMatched += 1;
+    else ualMatched += 1;
+    const hk = demoHourKey(ev.t);
+    if (hk) {
+      buckets[hk] = (buckets[hk] || 0) + 1;
+      if (ev.failed) bucketFails[hk] = (bucketFails[hk] || 0) + 1;
+    }
+    userCounts[ev.user] = (userCounts[ev.user] || 0) + 1;
+    if (ev.failed) userFails[ev.user] = (userFails[ev.user] || 0) + 1;
+    ipCounts[ev.ip] = (ipCounts[ev.ip] || 0) + 1;
+    if (ev.failed) ipFails[ev.ip] = (ipFails[ev.ip] || 0) + 1;
+    ipSources[ev.ip] = ipSources[ev.ip] || {};
+    ipSources[ev.ip][ev.source] = true;
+    const ek = `${ev.user}|${ev.ip}`;
+    edgeCounts[ek] = (edgeCounts[ek] || 0) + 1;
+    if (ev.failed) edgeFails[ek] = (edgeFails[ek] || 0) + 1;
+    countryCounts[country] = (countryCounts[country] || 0) + 1;
+    if (ev.failed) countryFails[country] = (countryFails[country] || 0) + 1;
+  });
+  const edges = Object.entries(edgeCounts)
+    .filter(([, count]) => count >= minCount)
+    .map(([key, count]) => {
+      const [from, to] = key.split('|');
+      return { from, to, count, failCount: edgeFails[key] || 0, country: ipCountry[to] || 'Unknown' };
+    });
+  const nodes = [
+    ...Object.keys(userCounts).map((id) => ({
+      id: `u:${id}`, label: id, kind: 'user', count: userCounts[id], failCount: userFails[id] || 0, country: '',
+    })),
+    ...Object.keys(ipCounts).map((id) => ({
+      id: `i:${id}`, label: id, kind: 'ip', count: ipCounts[id], failCount: ipFails[id] || 0, country: ipCountry[id] || 'Unknown',
+      sources: Object.keys(ipSources[id] || {}),
+    })),
+  ];
+  const countries = Object.entries(countryCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([country, count]) => ({ country, count, failCount: countryFails[country] || 0, users: 0, ips: 0 }));
+  const timeline = Object.entries(buckets)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([t, count]) => ({ t, count, failCount: bucketFails[t] || 0 }));
+  return { matched: signInMatched + ualMatched, signInMatched, ualMatched, nodes, edges, countries, timeline };
+}
+
 function demoApi(path, options) {
+  const route = String(path || '').split('?')[0];
   let body = {};
   try { body = options.body ? JSON.parse(options.body) : {}; } catch { body = {}; }
   const filters = Array.isArray(body.filters) ? body.filters : [];
-  if (path === '/api/investigate/sources') {
+  if (route === '/api/investigate/packs') {
+    return {
+      ok: true,
+      result: {
+        packs: [{
+          path: DEMO.path,
+          name: 'Client1_Ticket1839334',
+          company: 'Contoso',
+          sources: ['MessageTrace', 'SignInLogs', 'UnifiedAuditLogs'],
+          exists: true,
+          curated: false,
+          writtenAt: '2026-01-16T08:40:00Z',
+          organization: 'Contoso',
+          ticket: '1839334',
+          origin: 'demo',
+        }],
+        roots: [],
+        count: 1,
+      },
+    };
+  }
+  if (route === '/api/investigate/sources') {
     return { ok: true, result: { path: DEMO.path, sources: DEMO.sources } };
   }
-  if (path === '/api/investigate/mail-graph') {
+  if (route === '/api/investigate/mail-graph') {
     return {
       ok: true,
       result: {
@@ -218,7 +347,16 @@ function demoApi(path, options) {
       },
     };
   }
-  if (path === '/api/investigate/query') {
+  if (route === '/api/investigate/access-graph') {
+    return {
+      ok: true,
+      result: {
+        path: DEMO.path,
+        ...buildDemoAccessGraph(filters, body),
+      },
+    };
+  }
+  if (route === '/api/investigate/query') {
     const table = DEMO.tables[body.source] || { columns: [], rows: [] };
     let rows = table.rows.filter((row) => matchDemoRow(row, filters));
     if (body.sortBy) {
@@ -241,10 +379,10 @@ function demoApi(path, options) {
       },
     };
   }
-  if (path === '/api/investigate/export') {
+  if (route === '/api/investigate/export') {
     return { ok: true, result: { file: '(demo mode — export skipped)', rowCount: 0 } };
   }
-  throw new Error(`Demo has no handler for ${path}`);
+  throw new Error(`Demo has no handler for ${route}`);
 }
 
 async function api(path, options = {}, timeoutMs = 180000) {
@@ -280,7 +418,7 @@ function setStatus(msg) {
 function toLocalInput(isoOrKey) {
   if (!isoOrKey) return '';
   const raw = String(isoOrKey);
-  const d = new Date(raw.includes('T') && raw.length === 16 ? `${raw}:00` : raw);
+  const d = new Date(raw.includes('T') && raw.length === 16 ? `${raw}:00Z` : raw);
   if (Number.isNaN(d.getTime())) return '';
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -294,7 +432,7 @@ function fromLocalInput(value, endOfBucket) {
   return d.toISOString();
 }
 
-function currentFilters() {
+function currentFilters(mode = 'table') {
   const filters = [];
   const start = document.getElementById('timeStart').value;
   const end = document.getElementById('timeEnd').value;
@@ -305,22 +443,37 @@ function currentFilters() {
   if (end) filters.push({ column: '_time', op: 'lte', value: fromLocalInput(end, true) });
   if (address) filters.push({ column: '_address', op: 'icontains', value: address });
   if (ip) filters.push({ column: '_ip', op: 'icontains', value: ip });
+  const geo = document.getElementById('geoQ').value.trim();
+  if (geo) filters.push({ column: '_geo', op: 'icontains', value: geo });
   if (status) {
-    const col = state.source === 'MessageTrace' ? 'Status'
-      : (state.source === 'SignInLogs' ? 'Status' : 'Operations');
-    filters.push({ column: col, op: 'icontains', value: status });
-    if (state.source === 'UnifiedAuditLogs') {
-      filters[filters.length - 1] = { column: '_Operation', op: 'icontains', value: status };
+    if (mode === 'mail') {
+      filters.push({ column: 'Status', op: 'icontains', value: status });
+    } else if (mode === 'access') {
+      if (state.source === 'SignInLogs') {
+        filters.push({ column: 'Status', op: 'icontains', value: status });
+      } else if (state.source === 'UnifiedAuditLogs') {
+        filters.push({ column: '_Operation', op: 'icontains', value: status });
+      }
+    } else {
+      const col = state.source === 'MessageTrace' ? 'Status'
+        : (state.source === 'SignInLogs' ? 'Status' : 'Operations');
+      filters.push({ column: col, op: 'icontains', value: status });
+      if (state.source === 'UnifiedAuditLogs') {
+        filters[filters.length - 1] = { column: '_Operation', op: 'icontains', value: status };
+      }
     }
   }
   return filters;
 }
 
 function payload(extra = {}) {
+  const mode = extra.filterMode || 'table';
+  const rest = { ...extra };
+  delete rest.filterMode;
   return JSON.stringify({
     path: state.path,
-    filters: currentFilters(),
-    ...extra,
+    filters: currentFilters(mode),
+    ...rest,
   });
 }
 
@@ -447,7 +600,7 @@ function renderNetwork(graph) {
     document.getElementById('addressQ').value = ev.nodes[0];
     state.offset = 0;
     setTimeout(() => {
-      Promise.all([loadGraph(), loadTable()]).catch((e) => setStatus(e.message));
+      refreshVisualsAndTable().catch((e) => setStatus(e.message));
     }, 0);
   });
 }
@@ -490,9 +643,11 @@ function formatTick(t) {
   return `${d.getUTCDate()} ${mon} ${hh}:00`;
 }
 
-function renderTimeline(graph) {
-  const host = document.getElementById('timeline');
-  const bucket = document.getElementById('bucket')?.value || 'hour';
+function renderTimeline(graph, hostId = 'timeline', unit = 'message') {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const bucketEl = hostId === 'accessTimeline' ? document.getElementById('accessBucket') : document.getElementById('bucket');
+  const bucket = bucketEl?.value || 'hour';
   const series = fillTimelineGaps(graph.timeline || [], bucket);
   const max = Math.max(1, ...series.map((x) => Number(x.count) || 0));
   host.replaceChildren();
@@ -503,7 +658,9 @@ function renderTimeline(graph) {
     bar.type = 'button';
     bar.className = 'timelineBar' + (p.count ? '' : ' zero');
     bar.style.height = `${Math.max(4, Math.round((p.count / max) * 120))}px`;
-    bar.title = `${formatTick(p.t)}: ${p.count} message${p.count === 1 ? '' : 's'}`;
+    const fail = Number(p.failCount) || 0;
+    const failBit = fail ? `, ${fail} failed` : '';
+    bar.title = `${formatTick(p.t)}: ${p.count} ${unit}${p.count === 1 ? '' : 's'}${failBit}`;
     bar.disabled = !p.count;
     bar.addEventListener('click', () => {
       const start = toLocalInput(p.t);
@@ -513,7 +670,7 @@ function renderTimeline(graph) {
       else d.setHours(d.getHours() + 1);
       document.getElementById('timeEnd').value = toLocalInput(d.toISOString());
       state.offset = 0;
-      loadTable().catch((e) => setStatus(e.message));
+      refreshVisualsAndTable().catch((e) => setStatus(e.message));
     });
     const lbl = document.createElement('div');
     lbl.className = 'timelineLbl';
@@ -521,6 +678,163 @@ function renderTimeline(graph) {
     col.append(bar, lbl);
     host.append(col);
   });
+}
+
+function geoColor(country) {
+  const palette = ['#0969da', '#1a7f37', '#9a6700', '#8250df', '#0550ae', '#6639ba'];
+  const s = String(country || 'Unknown');
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length];
+}
+
+function renderCountries(graph) {
+  const host = document.getElementById('countryBars');
+  if (!host) return;
+  const rows = graph.countries || [];
+  const max = Math.max(1, ...rows.map((c) => Number(c.count) || 0));
+  host.replaceChildren();
+  rows.forEach((c) => {
+    const ok = Math.max(0, (Number(c.count) || 0) - (Number(c.failCount) || 0));
+    const fail = Number(c.failCount) || 0;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'countryRow';
+    btn.title = `${c.country}: ${c.count} events (${fail} failed)`;
+    const code = document.createElement('span');
+    code.className = 'countryCode';
+    code.textContent = c.country;
+    const track = document.createElement('span');
+    track.className = 'countryTrack';
+    if (ok) {
+      const okEl = document.createElement('span');
+      okEl.className = 'countryOk';
+      okEl.style.width = `${(ok / max) * 100}%`;
+      track.append(okEl);
+    }
+    if (fail) {
+      const failEl = document.createElement('span');
+      failEl.className = 'countryFail';
+      failEl.style.width = `${(fail / max) * 100}%`;
+      track.append(failEl);
+    }
+    const meta = document.createElement('span');
+    meta.className = 'countryMeta';
+    meta.textContent = fail ? `${c.count} (${fail} fail)` : String(c.count);
+    btn.append(code, track, meta);
+    btn.addEventListener('click', () => {
+      document.getElementById('geoQ').value = c.country === 'Unknown' ? '' : c.country;
+      state.offset = 0;
+      if (present('SignInLogs')) {
+        state.source = 'SignInLogs';
+        document.querySelectorAll('.tabBtn').forEach((b) => b.classList.toggle('active', b.dataset.source === 'SignInLogs'));
+      }
+      refreshVisualsAndTable().catch((e) => setStatus(e.message));
+    });
+    host.append(btn);
+  });
+}
+
+function renderAccessNetwork(graph) {
+  const host = document.getElementById('accessNetwork');
+  const nodes = (graph.nodes || []).map((n) => {
+    const fail = Number(n.failCount) || 0;
+    const isUser = n.kind === 'user';
+    const country = n.country || '';
+    const title = isUser
+      ? `${n.label}\n${n.count} events${fail ? `\n${fail} failed` : ''}`
+      : `${n.label}\n${country || 'Unknown'}\n${n.count} events${fail ? `\n${fail} failed` : ''}`;
+    return {
+      id: n.id,
+      label: isUser ? n.label : `${n.label}${country && country !== 'Unknown' ? `\n${country}` : ''}`,
+      value: Math.max(1, n.count || 1),
+      title,
+      group: isUser ? 'user' : (fail ? 'ipFail' : 'ip'),
+      color: isUser ? undefined : { background: geoColor(country), border: fail ? '#cf222e' : geoColor(country) },
+    };
+  });
+  const edges = (graph.edges || []).map((e, i) => ({
+    id: `a${i}`,
+    from: `u:${e.from}`,
+    to: `i:${e.to}`,
+    value: e.count,
+    title: `${e.from} → ${e.to} (${e.count}${e.failCount ? `, ${e.failCount} failed` : ''})`,
+    color: { color: e.failCount ? '#cf222e' : '#8c959f' },
+  }));
+  accessMeta.textContent = `${graph.matched || 0} access events · ${graph.signInMatched || 0} sign-in · ${graph.ualMatched || 0} UAL · ${nodes.length} nodes · ${(graph.countries || []).length} countries`;
+  if (!graph.matched && document.getElementById('hidePrivateIp')?.checked) {
+    accessMeta.textContent += ' — 0 public IPs. Uncheck Hide private IPs if this pack only has RFC1918 addresses.';
+  }
+
+  if (typeof vis === 'undefined' || !vis.Network) {
+    host.innerHTML = `<pre style="padding:0.5rem;white-space:pre-wrap">${escapeHtml(
+      edges.slice(0, 40).map((e) => `${e.from} -> ${e.to} (${e.value})`).join('\n') || 'No edges (or vis-network CDN blocked).'
+    )}</pre>`;
+    return;
+  }
+  const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+  const options = {
+    nodes: { scaling: { min: 8, max: 36 }, font: { size: 12 } },
+    groups: {
+      user: { shape: 'box', color: { background: '#ddf4ff', border: '#0969da' } },
+      ip: { shape: 'dot' },
+      ipFail: { shape: 'dot' },
+    },
+    edges: { smooth: { type: 'continuous' } },
+    physics: { enabled: true, stabilization: { iterations: 40, fit: true } },
+    interaction: { hover: true, tooltipDelay: 80 },
+  };
+  if (state.accessNetwork) {
+    try { state.accessNetwork.destroy(); } catch { /* already gone */ }
+    state.accessNetwork = null;
+    host.innerHTML = '';
+  }
+  state.accessNetwork = new vis.Network(host, data, options);
+  state.accessNetwork.once('stabilized', () => {
+    try { state.accessNetwork.setOptions({ physics: false }); } catch { /* ignore */ }
+  });
+  state.accessNetwork.on('click', (ev) => {
+    if (!ev.nodes.length) return;
+    const id = String(ev.nodes[0]);
+    if (id.startsWith('u:')) document.getElementById('addressQ').value = id.slice(2);
+    else if (id.startsWith('i:')) document.getElementById('ipQ').value = id.slice(2);
+    state.offset = 0;
+    setTimeout(() => {
+      refreshVisualsAndTable().catch((e) => setStatus(e.message));
+    }, 0);
+  });
+}
+
+async function loadAccessGraph() {
+  if (!state.path || (!present('SignInLogs') && !present('UnifiedAuditLogs'))) {
+    accessMeta.textContent = 'No Sign-in or UAL CSV in this folder.';
+    return;
+  }
+  accessMeta.textContent = 'Building login graph…';
+  try {
+    const data = await api('/api/investigate/access-graph', {
+      method: 'POST',
+      body: payload({
+        filterMode: 'access',
+        minCount: parseInt(document.getElementById('accessMinCount').value, 10) || 1,
+        maxNodes: parseInt(document.getElementById('accessMaxNodes').value, 10) || 80,
+        includeSignIn: document.getElementById('includeSignIn').checked,
+        includeUal: document.getElementById('includeUal').checked,
+        hidePrivateIp: document.getElementById('hidePrivateIp').checked,
+        bucket: document.getElementById('accessBucket').value,
+      }),
+    });
+    const graph = data.result || {};
+    renderCountries(graph);
+    renderAccessNetwork(graph);
+    renderTimeline(graph, 'accessTimeline', 'event');
+  } catch (e) {
+    const msg = String(e.message || e);
+    accessMeta.textContent = /not found|unknown investigate/i.test(msg)
+      ? 'Restart the web runner to enable login activity (the UI loaded, but this process is still on the old API).'
+      : msg;
+    throw e;
+  }
 }
 
 async function loadGraph() {
@@ -532,6 +846,7 @@ async function loadGraph() {
   const data = await api('/api/investigate/mail-graph', {
     method: 'POST',
     body: payload({
+      filterMode: 'mail',
       minCount: parseInt(document.getElementById('minCount').value, 10) || 1,
       maxNodes: parseInt(document.getElementById('maxNodes').value, 10) || 80,
       hideInternal: document.getElementById('hideInternal').checked,
@@ -543,28 +858,115 @@ async function loadGraph() {
   renderTimeline(graph);
 }
 
+async function refreshVisualsAndTable() {
+  const results = await Promise.allSettled([loadGraph(), loadAccessGraph(), loadTable()]);
+  const failed = results.find((r) => r.status === 'rejected');
+  if (failed) {
+    const msg = failed.reason?.message || String(failed.reason || '');
+    if (!/not found|unknown investigate/i.test(msg)) setStatus(msg);
+  }
+}
+
 async function refreshAll() {
   if (!state.path) {
-    setStatus('Set a report folder to begin.');
+    setStatus('Choose a report pack, or paste a folder path.');
     return;
   }
   try {
     await loadSources();
-    await Promise.all([loadGraph(), loadTable()]);
+    await refreshVisualsAndTable();
   } catch (e) {
     setStatus(e.message);
   }
 }
 
-document.getElementById('reloadBtn').addEventListener('click', () => {
-  state.path = folderInput.value.trim();
+function applyFolderPath(path, extra = {}) {
+  state.path = String(path || '').trim();
+  folderInput.value = state.path;
   folderPathEl.textContent = state.path;
   const q = new URLSearchParams();
   if (state.path) q.set('path', state.path);
   if (state.client) q.set('client', state.client);
+  if (state.sessionId) q.set('session', state.sessionId);
+  if (state.demo) q.set('demo', '1');
   history.replaceState(null, '', `investigate.html?${q}`);
   state.offset = 0;
-  refreshAll();
+  if (!extra.skipRefresh) refreshAll();
+}
+
+function formatPackLabel(p) {
+  const bits = [];
+  if (p.company) bits.push(p.company);
+  bits.push(p.name || p.path);
+  if (p.ticket) bits.push(`#${p.ticket}`);
+  if (p.organization && p.organization !== p.company) bits.push(p.organization);
+  if (p.curated) bits.push('curated');
+  if (p.sources?.length) {
+    bits.push(p.sources.map((s) => (s === 'MessageTrace' ? 'MT' : (s === 'SignInLogs' ? 'SI' : 'UAL'))).join('+'));
+  }
+  if (!p.exists) bits.push('missing');
+  return bits.join(' · ');
+}
+
+function renderPackSelect(packs) {
+  const sel = document.getElementById('packSelect');
+  if (!sel) return;
+  const current = state.path;
+  const rows = packs || [];
+  if (!rows.length) {
+    sel.innerHTML = '<option value="">No report packs found</option>';
+    return;
+  }
+  sel.innerHTML = rows.map((p) => {
+    const value = String(p.path || '').replace(/"/g, '&quot;');
+    const disabled = p.exists === false ? ' disabled' : '';
+    const selected = current && String(p.path).toLowerCase() === current.toLowerCase() ? ' selected' : '';
+    return `<option value="${value}"${disabled}${selected}>${formatPackLabel(p)}</option>`;
+  }).join('');
+  if (current && ![...sel.options].some((o) => o.value.toLowerCase() === current.toLowerCase())) {
+    const opt = document.createElement('option');
+    opt.value = current;
+    opt.textContent = current;
+    opt.selected = true;
+    sel.append(opt);
+  }
+}
+
+async function loadPackList(opts = {}) {
+  const sel = document.getElementById('packSelect');
+  const q = (document.getElementById('packSearch')?.value || '').trim();
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (state.sessionId) params.set('session', state.sessionId);
+  try {
+    const data = await api(`/api/investigate/packs?${params}`);
+    state.packs = data.result?.packs || [];
+    renderPackSelect(state.packs);
+    if (opts.autoOpen && !state.path) {
+      const first = state.packs.find((p) => p.exists && p.path);
+      if (first) applyFolderPath(first.path);
+    }
+  } catch (e) {
+    if (sel) sel.innerHTML = '<option value="">Could not list packs — paste a path below</option>';
+    if (!state.path) setStatus(`Pack list unavailable (${e.message}). Restart the web runner, or paste a folder path.`);
+  }
+}
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  applyFolderPath(folderInput.value.trim());
+});
+document.getElementById('openPackBtn')?.addEventListener('click', () => {
+  const sel = document.getElementById('packSelect');
+  applyFolderPath(sel?.value || '');
+});
+document.getElementById('packSelect')?.addEventListener('change', () => {
+  const sel = document.getElementById('packSelect');
+  if (sel?.value) applyFolderPath(sel.value);
+});
+let packSearchTimer = null;
+document.getElementById('packSearch')?.addEventListener('input', () => {
+  clearTimeout(packSearchTimer);
+  packSearchTimer = setTimeout(() => loadPackList().catch((e) => setStatus(e.message)), 250);
 });
 
 document.getElementById('applyBtn').addEventListener('click', () => {
@@ -576,11 +978,13 @@ document.getElementById('clearBtn').addEventListener('click', () => {
   document.getElementById('timeEnd').value = '';
   document.getElementById('addressQ').value = '';
   document.getElementById('ipQ').value = '';
+  document.getElementById('geoQ').value = '';
   document.getElementById('statusQ').value = '';
   state.offset = 0;
   refreshAll();
 });
 document.getElementById('graphBtn').addEventListener('click', () => loadGraph().catch((e) => setStatus(e.message)));
+document.getElementById('accessBtn').addEventListener('click', () => loadAccessGraph().catch((e) => setStatus(e.message)));
 
 document.querySelectorAll('.tabBtn').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -645,3 +1049,4 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
 });
 
 if (state.path || state.demo) refreshAll();
+loadPackList({ autoOpen: Boolean(state.sessionId) && !state.path }).catch((e) => setStatus(e.message));

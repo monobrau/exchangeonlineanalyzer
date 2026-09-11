@@ -3240,6 +3240,12 @@ function Enable-GraphMessageTraceAccess {
     return $result
 }
 
+function Test-EoaGraphMessageTraceUnsupportedCloud {
+    # Graph /admin/exchange/tracing is commercial-only; GCC returns 403 with this text.
+    param([string]$ErrorText)
+    return ($ErrorText -match 'not currently supported for Microsoft 365 GCC|not supported for Microsoft 365 GCC|GCC tenants')
+}
+
 function Test-GraphMessageTraceAvailable {
     param([string]$StatusFile = $null)
     if ($null -ne $global:EOA_GraphMessageTraceOk) {
@@ -3270,6 +3276,18 @@ function Test-GraphMessageTraceAvailable {
         return $true
     } catch {
         $err = [string]$_.Exception.Message
+        $errBody = ''
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $errBody = [string]$_.ErrorDetails.Message }
+        if (Test-EoaGraphMessageTraceUnsupportedCloud -ErrorText "$err $errBody") {
+            # Government clouds do not host this endpoint, so granting scopes or provisioning
+            # the Transport Data Platform SP cannot ever make it answer. Do neither.
+            $global:EOA_GraphMessageTraceOk = $false
+            $global:EOA_GraphMessageTraceError = 'Graph message trace is not supported in Microsoft 365 Government (GCC/GCC High/DoD) tenants.'
+            $msg = 'Graph messageTraces unavailable: not supported for Microsoft 365 Government (GCC) tenants. Skipping Transport Data Platform provisioning.'
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+            return $false
+        }
         if ($err -match '401|403|Forbidden|Unauthorized|Authorization_RequestDenied') {
             $fix = Enable-GraphMessageTraceAccess -StatusFile $StatusFile
             if ($fix.RetryReady) {
@@ -3364,6 +3382,8 @@ function Get-GraphMessageTrace {
     return [System.Collections.ArrayList]$results
 }
 
+$script:EOA_HistoricalJobPrefix = 'EOA-MT'
+
 function ConvertTo-EoaMessageTraceRowFromHistorical {
     param($Row)
     if (-not $Row) { return $null }
@@ -3417,29 +3437,57 @@ function Get-HistoricalMessageTraceAddressFilters {
     return [pscustomobject]@{ Recipients = @($recipients | Select-Object -First 100); Senders = @($senders | Select-Object -First 100) }
 }
 
-function Wait-HistoricalSearchJob {
+function Get-EoaHistoricalSearchPlan {
+    # Exchange rejects a wildcard recipient combined with any other address, and
+    # -SenderAddress does not support wildcards at all, so plan one job per wildcard
+    # domain and drop wildcard senders instead of sending a request that always fails.
     param(
-        [Parameter(Mandatory = $true)]$Job,
-        [string]$StatusFile = $null,
-        [int]$TimeoutMinutes = 20
+        [array]$Recipients = @(),
+        [array]$Senders = @(),
+        [int]$MaxWildcardJobs = 10
     )
-    $jobId = $Job.JobId
-    if (-not $jobId) { $jobId = $Job.Identity }
-    if (-not $jobId) { throw 'Start-HistoricalSearch did not return a JobId.' }
-    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
-    $current = $Job
-    while ((Get-Date) -lt $deadline) {
-        $status = [string]$current.Status
-        if ($status -match 'Done|Completed|Ready') { return $current }
-        if ($status -match 'Failed|Error|Stopped|Cancelled') {
-            throw "Historical search $jobId failed ($status $($current.ErrorDescription))."
-        }
-        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace $jobId status=$status (waiting, up to $TimeoutMinutes min)..."
-        Start-Sleep -Seconds 20
-        $current = Get-HistoricalSearch -JobId $jobId -ErrorAction Stop
-        if ($current -is [array]) { $current = $current | Select-Object -First 1 }
+    $recip = @($Recipients | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $send  = @($Senders    | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+    $wildcardRecipients = @($recip | Where-Object { $_ -match '\*' })
+    $exactRecipients    = @($recip | Where-Object { $_ -notmatch '\*' })
+    $exactSenders       = @($send  | Where-Object { $_ -notmatch '\*' })
+
+    $runWildcards = @($wildcardRecipients | Select-Object -First $MaxWildcardJobs)
+
+    return [pscustomobject]@{
+        ExactRecipients   = $exactRecipients
+        WildcardJobs      = $runWildcards
+        SkippedWildcards  = @($wildcardRecipients | Select-Object -Skip $runWildcards.Count)
+        ExactSenders      = $exactSenders
+        DroppedWildcardSenders = @($send | Where-Object { $_ -match '\*' })
     }
-    throw "Historical search $jobId still $($current.Status) after $TimeoutMinutes minutes. Download later from EAC (Mail flow > Message trace > pending/completed)."
+}
+
+function Get-EoaHistoricalSearchTitle {
+    # Deterministic title so a re-run recognises its own pending job instead of queueing
+    # a duplicate. Historical searches take hours, so duplicates starve the queue.
+    param(
+        [datetime]$StartDate,
+        [datetime]$EndDate,
+        [string]$Kind,
+        [string]$Address
+    )
+    $slug = ([string]$Address) -replace '[^A-Za-z0-9]', '-'
+    $slug = $slug.Trim('-')
+    if ($slug.Length -gt 24) { $slug = $slug.Substring(0, 24) }
+    return ('{0}_{1:yyyyMMdd}-{2:yyyyMMdd}_{3}_{4}' -f $script:EOA_HistoricalJobPrefix, $StartDate, $EndDate, $Kind, $slug)
+}
+
+function Get-EoaHistoricalSearchJobs {
+    param([int]$MaxAgeDays = 14)
+    if (-not (Get-Command Get-HistoricalSearch -ErrorAction SilentlyContinue)) { return @() }
+    try { $all = @(Get-HistoricalSearch -ErrorAction Stop) } catch { return @() }
+    $cutoff = (Get-Date).AddDays(-$MaxAgeDays)
+    return @($all | Where-Object {
+        ([string]$_.ReportTitle).StartsWith($script:EOA_HistoricalJobPrefix) -and
+        ((-not $_.SubmitDate) -or ([datetime]$_.SubmitDate -ge $cutoff))
+    })
 }
 
 function Import-HistoricalSearchFileUrl {
@@ -3462,52 +3510,189 @@ function Import-HistoricalSearchFileUrl {
             [void]$mapped.Add($item)
         }
     }
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     return $mapped
 }
 
-function Get-HistoricalMessageTrace {
+function Submit-EoaHistoricalMessageTrace {
+    # Fire-and-forget: historical searches run for hours on Microsoft's queue, so never wait.
+    # Results are picked up by Receive-EoaHistoricalMessageTrace on a later run.
     param(
         [datetime]$StartDate,
         [datetime]$EndDate,
         [array]$SelectedUsers = @(),
-        [string]$StatusFile = $null
+        [string]$StatusFile = $null,
+        [int]$MaxJobs = 8
     )
+    if (-not (Get-Command Start-HistoricalSearch -ErrorAction SilentlyContinue)) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message 'Historical message trace: Start-HistoricalSearch is not in this session, so the older span cannot be requested.'
+        return [pscustomobject]@{ Submitted = 0; Skipped = 0; Failed = 0 }
+    }
     $filters = Get-HistoricalMessageTraceAddressFilters -SelectedUsers $SelectedUsers
     if (-not $filters.Recipients -and -not $filters.Senders) {
-        throw 'Start-HistoricalSearch needs a recipient, sender, or accepted domain.'
+        Write-ExportStatusLine -StatusFile $StatusFile -Message 'Historical message trace: no recipient, sender, or accepted domain to search, so nothing was requested.'
+        return [pscustomobject]@{ Submitted = 0; Skipped = 0; Failed = 0 }
     }
-    $stamp = Get-Date -Format 'yyyyMMddHHmmss'
-    $jobs = @()
-    if ($filters.Recipients.Count -gt 0) {
-        Write-ExportStatusLine -StatusFile $StatusFile -Message ("Starting historical message trace (recipients {0})..." -f ($filters.Recipients -join ', '))
-        $jobs += Start-HistoricalSearch -ReportTitle "EOA-MT-R-$stamp" -ReportType MessageTrace -StartDate $StartDate -EndDate $EndDate -RecipientAddress $filters.Recipients -ErrorAction Stop
+    $plan = Get-EoaHistoricalSearchPlan -Recipients $filters.Recipients -Senders $filters.Senders
+
+    $specs = [System.Collections.Generic.List[object]]::new()
+    if ($plan.ExactRecipients.Count -gt 0) {
+        [void]$specs.Add([pscustomobject]@{ Kind = 'rcpt'; Addresses = $plan.ExactRecipients; Key = "$($plan.ExactRecipients.Count)-$($plan.ExactRecipients[0])" })
     }
-    if ($filters.Senders.Count -gt 0) {
-        Write-ExportStatusLine -StatusFile $StatusFile -Message ("Starting historical message trace (senders {0})..." -f ($filters.Senders -join ', '))
-        $jobs += Start-HistoricalSearch -ReportTitle "EOA-MT-S-$stamp" -ReportType MessageTrace -StartDate $StartDate -EndDate $EndDate -SenderAddress $filters.Senders -ErrorAction Stop
+    foreach ($wc in @($plan.WildcardJobs)) {
+        [void]$specs.Add([pscustomobject]@{ Kind = 'rcpt'; Addresses = @($wc); Key = $wc })
     }
-    $results = [System.Collections.Generic.List[object]]::new()
-    foreach ($job in @($jobs)) {
-        $done = Wait-HistoricalSearchJob -Job $job -StatusFile $StatusFile
-        $url = [string]$done.FileUrl
-        if (-not $url) {
-            throw "Historical search $($done.JobId) is $($done.Status) but FileUrl is empty. Check EAC Mail flow > Message trace."
+    if ($plan.ExactSenders.Count -gt 0) {
+        [void]$specs.Add([pscustomobject]@{ Kind = 'sndr'; Addresses = $plan.ExactSenders; Key = "$($plan.ExactSenders.Count)-$($plan.ExactSenders[0])" })
+    }
+    if ($plan.SkippedWildcards.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message ("Historical message trace: skipped {0} accepted domain(s) over the per-run job limit: {1}" -f $plan.SkippedWildcards.Count, ($plan.SkippedWildcards -join ', '))
+    }
+    if ($plan.ExactSenders.Count -eq 0 -and $plan.DroppedWildcardSenders.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message 'Historical message trace: no sender search (Start-HistoricalSearch -SenderAddress does not accept wildcards). Select specific users to capture outbound mail.'
+    }
+
+    $existing = @{}
+    foreach ($job in (Get-EoaHistoricalSearchJobs)) {
+        if ($job.Status -notmatch 'Failed|Error|Cancelled') { $existing[[string]$job.ReportTitle] = [string]$job.Status }
+    }
+
+    $submitted = 0; $skipped = 0; $failed = 0
+    foreach ($spec in $specs) {
+        if ($submitted -ge $MaxJobs) {
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: reached the $MaxJobs job submit cap for this run; remaining spans will be requested next run."
+            break
         }
-        foreach ($item in @(Import-HistoricalSearchFileUrl -FileUrl $url -StatusFile $StatusFile)) {
-            if ($item) { [void]$results.Add($item) }
+        $title = Get-EoaHistoricalSearchTitle -StartDate $StartDate -EndDate $EndDate -Kind $spec.Kind -Address $spec.Key
+        if ($existing.ContainsKey($title)) {
+            $skipped++
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: already queued ($($existing[$title])) for $($spec.Addresses -join ', ') - not resubmitting."
+            continue
+        }
+        try {
+            $p = @{ ReportTitle = $title; ReportType = 'MessageTrace'; StartDate = $StartDate; EndDate = $EndDate; ErrorAction = 'Stop' }
+            if ($spec.Kind -eq 'rcpt') { $p['RecipientAddress'] = $spec.Addresses } else { $p['SenderAddress'] = $spec.Addresses }
+            $job = Start-HistoricalSearch @p
+            $submitted++
+            Write-ExportStatusLine -StatusFile $StatusFile -Message ("Historical message trace requested: {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd}) job {3}" -f ($spec.Addresses -join ', '), $StartDate, $EndDate, $job.JobId)
+        } catch {
+            $failed++
+            $msg = "Historical message trace request failed for $($spec.Addresses -join ', '): $($_.Exception.Message)"
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
         }
     }
-    $unique = @()
-    $seen = @{}
-    foreach ($item in $results) {
-        $key = if ($item.MessageId) { $item.MessageId } else { "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.Received)_$($item.Subject)" }
-        if ($key -and -not $seen.ContainsKey($key)) {
-            $seen[$key] = $true
-            $unique += $item
+    if ($submitted -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: $submitted job(s) queued for the older span. These run on Microsoft's queue for hours - re-run Generate later (or use Collect historical trace) to pull the results in."
+    }
+    return [pscustomobject]@{ Submitted = $submitted; Skipped = $skipped; Failed = $failed }
+}
+
+function Receive-EoaHistoricalMessageTrace {
+    # Downloads whatever previously queued historical searches have finished.
+    param(
+        [string]$StatusFile = $null,
+        [int]$MaxJobs = 12
+    )
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $jobs = @(Get-EoaHistoricalSearchJobs)
+    if ($jobs.Count -eq 0) { return $rows }
+
+    $ready = @($jobs | Where-Object { ([string]$_.Status) -match 'Done|Completed' -and $_.FileUrl } | Sort-Object SubmitDate -Descending | Select-Object -First $MaxJobs)
+    $pending = @($jobs | Where-Object { ([string]$_.Status) -match 'NotStarted|InProgress|Queued' })
+
+    if ($ready.Count -eq 0) {
+        if ($pending.Count -gt 0) {
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: $($pending.Count) job(s) still running on Microsoft's queue - nothing to collect yet."
+        }
+        return $rows
+    }
+
+    foreach ($job in $ready) {
+        try {
+            $batch = @(Import-HistoricalSearchFileUrl -FileUrl ([string]$job.FileUrl) -StatusFile $StatusFile)
+            foreach ($item in $batch) { if ($item) { [void]$rows.Add($item) } }
+            Write-ExportStatusLine -StatusFile $StatusFile -Message ("Historical message trace collected: {0} row(s) from {1}" -f $batch.Count, $job.ReportTitle)
+        } catch {
+            $msg = "Historical message trace could not collect $($job.ReportTitle): $($_.Exception.Message)"
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
         }
     }
-    Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($unique.Count) entries (Historical Search)"
-    return [System.Collections.ArrayList]$unique
+    if ($pending.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: $($pending.Count) further job(s) still running - re-run later to add those days."
+    }
+    return $rows
+}
+
+function Export-EoaHistoricalMessageTraceCsv {
+    # Manual collect: pulls whatever historical searches have finished and writes them to CSV
+    # so the older span can be used without waiting for the next Generate.
+    param(
+        [string]$OutputFolder = $null,
+        [string]$StatusFile = $null
+    )
+    if (-not (Get-Command Get-HistoricalSearch -ErrorAction SilentlyContinue)) {
+        throw 'Get-HistoricalSearch is not in this Exchange session. Run Exchange Auth first.'
+    }
+    $jobs = @(Get-EoaHistoricalSearchJobs)
+    $pending = @($jobs | Where-Object { ([string]$_.Status) -match 'NotStarted|InProgress|Queued' })
+    $rows = @(Receive-EoaHistoricalMessageTrace -StatusFile $StatusFile)
+
+    $path = $null
+    if ($rows.Count -gt 0) {
+        if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
+            $tenantName = 'Tenant'
+            try {
+                $org = Get-OrganizationConfig -ErrorAction Stop
+                if ($org.DisplayName) { $tenantName = [string]$org.DisplayName } elseif ($org.Name) { $tenantName = [string]$org.Name }
+            } catch { }
+            $safeTenant = ($tenantName -replace '[\\/:*?"<>|]', '_')
+            $OutputFolder = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation\$safeTenant\HistoricalMessageTrace"
+        }
+        if (-not (Test-Path $OutputFolder)) { $null = New-Item -ItemType Directory -Path $OutputFolder -Force }
+        $path = Join-Path $OutputFolder ("HistoricalMessageTrace_{0}.csv" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        $rows | Export-Csv -Path $path -NoTypeInformation -Encoding UTF8
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace exported: $($rows.Count) row(s) -> $path"
+    }
+    return [pscustomobject]@{
+        RowCount    = $rows.Count
+        PendingJobs = $pending.Count
+        TotalJobs   = $jobs.Count
+        CsvPath     = $path
+    }
+}
+
+function Add-EoaHistoricalMessageTraceRows {
+    # Merges any finished historical reports into this run, then queues the span the
+    # synchronous API could not reach.
+    param(
+        [Parameter(Mandatory = $true)]$Results,
+        [datetime]$RequestedStart,
+        [datetime]$ReachableStart,
+        [datetime]$EndDate,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null,
+        [int]$UnreachableDays = 0
+    )
+    if (-not (Get-Command Get-HistoricalSearch -ErrorAction SilentlyContinue)) { return }
+    try {
+        $collected = @(Receive-EoaHistoricalMessageTrace -StatusFile $StatusFile)
+        foreach ($item in $collected) { if ($item) { [void]$Results.Add($item) } }
+    } catch {
+        $msg = "Historical message trace collection failed: $($_.Exception.Message)"
+        Write-Warning $msg
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+    }
+    if ($UnreachableDays -gt 0 -and $RequestedStart -lt $ReachableStart) {
+        try {
+            $null = Submit-EoaHistoricalMessageTrace -StartDate $RequestedStart -EndDate $ReachableStart -SelectedUsers $SelectedUsers -StatusFile $StatusFile
+        } catch {
+            $msg = "Historical message trace request failed: $($_.Exception.Message)"
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+        }
+    }
 }
 
 function Test-ExchangeMessageTraceV2Available {
@@ -3573,23 +3758,268 @@ function Invoke-EoaMessageTraceCall {
     }
 }
 
+$script:EOA_LegacyMessageTraceLookbackDays = 10
+
+function Invoke-EoaLegacyMessageTracePaged {
+    # Legacy Get-MessageTrace returns a single page per call, so one call silently truncates any
+    # day busier than PageSize. Page until the service hands back a short page.
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Filter,
+        [string]$Label = '',
+        [string]$StatusFile = $null,
+        [int]$PageSize = 5000,
+        [int]$MaxPages = 200
+    )
+    $rows = New-Object System.Collections.Generic.List[object]
+    $page = 1
+    while ($page -le $MaxPages) {
+        $p = @{} + $Filter
+        $p['Page'] = $page
+        $p['PageSize'] = $PageSize
+        $p['ErrorAction'] = 'Stop'
+        $batch = @(Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "$Label page $page" -Call { Get-MessageTrace @p })
+        if ($batch.Count -gt 0) { [void]$rows.AddRange($batch) }
+        if ($batch.Count -lt $PageSize) { break }
+        $page++
+    }
+    return $rows
+}
+
+function Get-EoaMessageTraceV2DedupKey {
+    param($Row)
+    if (-not $Row) { return $null }
+    $recip = [string]$Row.RecipientAddress
+    if ($Row.PSObject.Properties['MessageTraceId'] -and $null -ne $Row.MessageTraceId -and [string]$Row.MessageTraceId -ne '') {
+        return "tid:$($Row.MessageTraceId)|$recip"
+    }
+    $mid = $Row.MessageId
+    if (-not $mid) { $mid = $Row.MessageID }
+    if ($mid) { return "mid:$mid|$recip" }
+    return "fb:$($Row.SenderAddress)|$recip|$($Row.Subject)|$($Row.Received)"
+}
+
+function Get-EoaMessageTraceV2CursorToken {
+    param($Row)
+    if (-not $Row) { return '' }
+    $rec = $Row.Received
+    if ($rec -is [datetime]) { $rec = $rec.ToUniversalTime().ToString('o') }
+    return "$rec|$($Row.RecipientAddress)"
+}
+
+function Get-EoaMessageTraceV2SplitWindows {
+    # Hour slices first, then 15-minute slices, matching UAL's "window still full, split smaller"
+    # idea without bisecting into awkward midpoints.
+    param(
+        [Parameter(Mandatory = $true)][DateTime]$WinStart,
+        [Parameter(Mandatory = $true)][DateTime]$WinEnd
+    )
+    $spanMinutes = ($WinEnd - $WinStart).TotalMinutes
+    if ($spanMinutes -le 15) { return @() }
+    $sliceMinutes = if ($spanMinutes -gt 60) { 60 } else { 15 }
+    $windows = New-Object System.Collections.Generic.List[object]
+    $cursor = $WinStart
+    while ($cursor -lt $WinEnd) {
+        $next = $cursor.AddMinutes($sliceMinutes)
+        if ($next -gt $WinEnd) { $next = $WinEnd }
+        [void]$windows.Add([pscustomobject]@{ Start = $cursor; End = $next })
+        $cursor = $next
+    }
+    if ($windows.Count -le 1) { return @() }
+    return $windows
+}
+
+function Invoke-EoaMessageTraceV2Paged {
+    # Get-MessageTraceV2 has no Page/PageSize. Default ResultSize is 1000, max 5000. Results are
+    # Received descending, then RecipientAddress ascending. Next round must move EndDate to the
+    # last row's Received AND StartingRecipientAddress to its RecipientAddress. Do not filter
+    # remaining rows with RecipientAddress -gt last; that drops the rest of a mail-bomb recipient.
+    param(
+        [Parameter(Mandatory = $true)]$V2Command,
+        [Parameter(Mandatory = $true)][DateTime]$WinStart,
+        [Parameter(Mandatory = $true)][DateTime]$WinEnd,
+        [string]$SenderAddress = $null,
+        [string]$RecipientAddress = $null,
+        [string]$Label = '',
+        [string]$StatusFile = $null,
+        [int]$MaxRounds = 200,
+        [int]$Depth = 0
+    )
+    $resultSize = 5000
+    $maxDepth = 6
+    $rows = New-Object System.Collections.ArrayList
+    $seen = @{}
+    $currentEnd = $WinEnd
+    $startRecipient = $null
+    $round = 0
+    $incomplete = $false
+    $incompleteReason = ''
+    $lastPageFull = $false
+    $prevCursor = ''
+    if ($null -eq $script:EOA_MessageTraceCallCount) { $script:EOA_MessageTraceCallCount = 0 }
+
+    while ($round -lt $MaxRounds) {
+        $round++
+        if ($script:EOA_MessageTraceCallCount -gt 0 -and ($script:EOA_MessageTraceCallCount % 9) -eq 0) {
+            Start-Sleep -Seconds 7
+        }
+        $script:EOA_MessageTraceCallCount++
+
+        $params = @{
+            StartDate   = $WinStart
+            EndDate     = $currentEnd
+            ResultSize  = $resultSize
+            ErrorAction = 'Stop'
+        }
+        if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
+        if ($SenderAddress) { $params.SenderAddress = $SenderAddress }
+        if ($RecipientAddress) { $params.RecipientAddress = $RecipientAddress }
+
+        $raw = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "$Label round $round" -Call { & $V2Command @params }
+        $chunk = New-Object System.Collections.ArrayList
+        foreach ($item in @($raw)) {
+            if ($null -eq $item) { continue }
+            # A short Object[] page can arrive as one pipeline object; flatten one level.
+            if ($item -is [System.Array] -and $item -isnot [string]) {
+                foreach ($inner in $item) { if ($null -ne $inner) { [void]$chunk.Add($inner) } }
+            } else {
+                [void]$chunk.Add($item)
+            }
+        }
+        foreach ($item in $chunk) {
+            $key = Get-EoaMessageTraceV2DedupKey -Row $item
+            if ($key -and $seen.ContainsKey($key)) { continue }
+            if ($key) { $seen[$key] = $true }
+            [void]$rows.Add($item)
+        }
+
+        $stat = "Message trace: $Label round $round, $($rows.Count) rows..."
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $stat
+        if ($round -eq 1 -or ($round % 5) -eq 0) {
+            Write-Host $stat -ForegroundColor Gray
+        }
+
+        if ($chunk.Count -lt $resultSize) {
+            $lastPageFull = $false
+            break
+        }
+
+        $lastPageFull = $true
+        $last = $chunk[-1]
+        $uniformOverflow = ($chunk[0].Received -eq $last.Received -and [string]$chunk[0].RecipientAddress -eq [string]$last.RecipientAddress)
+        $newCursor = Get-EoaMessageTraceV2CursorToken -Row $last
+        $cursorStalled = ($prevCursor -and $newCursor -eq $prevCursor) -or $uniformOverflow
+        if ($cursorStalled) {
+            $splitWindows = @()
+            if ($Depth -lt $maxDepth) {
+                $splitWindows = @(Get-EoaMessageTraceV2SplitWindows -WinStart $WinStart -WinEnd $WinEnd)
+            }
+            if ($splitWindows.Count -gt 0) {
+                $warn = "Message trace cursor stalled for $Label (same Received and RecipientAddress); splitting window..."
+                Write-Warning $warn
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
+                $merged = New-Object System.Collections.ArrayList
+                $mergedSeen = @{}
+                $childRounds = 0
+                foreach ($w in $splitWindows) {
+                    $child = Invoke-EoaMessageTraceV2Paged -V2Command $V2Command -WinStart $w.Start -WinEnd $w.End `
+                        -SenderAddress $SenderAddress -RecipientAddress $RecipientAddress `
+                        -Label $Label -StatusFile $StatusFile -MaxRounds $MaxRounds -Depth ($Depth + 1)
+                    $childRounds += [int]$child.RoundCount
+                    foreach ($item in @($child.Rows)) {
+                        if (-not $item) { continue }
+                        $key = Get-EoaMessageTraceV2DedupKey -Row $item
+                        if ($key -and $mergedSeen.ContainsKey($key)) { continue }
+                        if ($key) { $mergedSeen[$key] = $true }
+                        [void]$merged.Add($item)
+                    }
+                    if ($child.Incomplete) {
+                        $incomplete = $true
+                        $incompleteReason = $child.IncompleteReason
+                    }
+                }
+                return [pscustomobject]@{
+                    Rows              = $merged
+                    Incomplete        = $incomplete
+                    IncompleteReason  = $incompleteReason
+                    RoundCount        = ($round + $childRounds)
+                    LastPageFull      = $false
+                }
+            }
+            $incomplete = $true
+            $incompleteReason = "cursor stalled (same Received and RecipientAddress) for $Label"
+            Write-Warning "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            break
+        }
+
+        $startRecipient = [string]$last.RecipientAddress
+        $currentEnd = $last.Received
+        $prevCursor = $newCursor
+        if (-not $startRecipient) {
+            $incomplete = $true
+            $incompleteReason = "paging stopped on a full page with no RecipientAddress cursor for $Label"
+            Write-Warning "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            break
+        }
+    }
+
+    if ($round -ge $MaxRounds -and $lastPageFull) {
+        $incomplete = $true
+        $incompleteReason = "round cap $MaxRounds reached for $Label"
+        Write-Warning "INCOMPLETE message trace window ${Label}: $incompleteReason."
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "INCOMPLETE message trace window ${Label}: $incompleteReason."
+    }
+
+    return [pscustomobject]@{
+        Rows             = $rows
+        Incomplete       = $incomplete
+        IncompleteReason = $incompleteReason
+        RoundCount       = $round
+        LastPageFull     = $lastPageFull
+    }
+}
+
 function Write-EoaMessageTraceCoverage {
     param(
         [int]$EntryCount,
         [int]$DaysRequested,
         [System.Collections.Generic.List[string]]$MissingDays,
+        [System.Collections.Generic.List[string]]$TruncatedDays,
         [string]$StopReason = '',
-        [string]$StatusFile = $null
+        [string]$StatusFile = $null,
+        [int]$UnreachableDays = 0,
+        [string]$UnreachableReason = ''
     )
-    if (-not $MissingDays -or $MissingDays.Count -eq 0) {
-        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $EntryCount entries ($DaysRequested of $DaysRequested days)"
+    # Days trimmed by API retention are counted separately: reporting "10 of 10 days" after a
+    # 90-day request reads as success while hiding 80 days the caller asked for. Truncated days
+    # returned a newest-slice (or stalled cursor) and must not be reported as complete coverage.
+    $unreachable = if ($UnreachableDays -gt 0) { " $UnreachableDays earlier day(s) requested but unavailable$(if ($UnreachableReason) { " ($UnreachableReason)" })." } else { '' }
+    $hasMissing = $MissingDays -and $MissingDays.Count -gt 0
+    $hasTrunc = $TruncatedDays -and $TruncatedDays.Count -gt 0
+    if (-not $hasMissing -and -not $hasTrunc) {
+        $msg = "Message trace collected: $EntryCount entries ($DaysRequested of $DaysRequested days).$unreachable"
+        if ($UnreachableDays -gt 0) { Write-Warning $msg }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
         return
     }
-    $sorted = @($MissingDays | Sort-Object)
-    $covered = [Math]::Max(0, $DaysRequested - $sorted.Count)
-    $range = if ($sorted.Count -eq 1) { $sorted[0] } else { "$($sorted[0]) to $($sorted[-1])" }
+    $problemCount = 0
+    if ($hasMissing) { $problemCount += $MissingDays.Count }
+    if ($hasTrunc) { $problemCount += $TruncatedDays.Count }
+    $covered = [Math]::Max(0, $DaysRequested - $problemCount)
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($hasTrunc) {
+        $tsorted = @($TruncatedDays | Sort-Object)
+        $trange = if ($tsorted.Count -eq 1) { $tsorted[0] } else { "$($tsorted[0]) to $($tsorted[-1])" }
+        [void]$parts.Add("Truncated $($tsorted.Count) day(s) (partial newest-slice or paging stopped early): $trange.")
+    }
+    if ($hasMissing) {
+        $sorted = @($MissingDays | Sort-Object)
+        $range = if ($sorted.Count -eq 1) { $sorted[0] } else { "$($sorted[0]) to $($sorted[-1])" }
+        [void]$parts.Add("No data for $($sorted.Count) day(s): $range.")
+    }
     $reason = if ($StopReason) { " $StopReason" } else { '' }
-    $warn = "INCOMPLETE message trace: $EntryCount entries covering $covered of $DaysRequested days. No data for $($sorted.Count) day(s): $range.$reason"
+    $warn = "INCOMPLETE message trace: $EntryCount entries covering $covered of $DaysRequested days. $($parts -join ' ')$reason$unreachable"
     Write-Warning $warn
     Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
 }
@@ -3628,28 +4058,23 @@ function Get-ExchangeMessageTrace {
         }
 
         # V2: up to 90 days lookback, max ~10 days per query (we chunk by day).
-        # Legacy Get-MessageTrace was retired starting 2025-09-01 and now errors on every call.
+        # Legacy Get-MessageTrace is retired in commercial clouds but still served in government
+        # clouds, where neither V2 nor the Graph endpoint is exposed - see the fallback order below.
         $v2Cmd = Get-ExchangeMessageTraceV2CommandInfo
         $hasV2 = $null -ne $v2Cmd -or (Test-ExchangeMessageTraceV2Available)
         $useGraph = $false
+        $canUseLegacy = $false
         if (-not $hasV2) {
             if (Test-GraphMessageTraceAvailable -StatusFile $StatusFile) {
                 $useGraph = $true
-            } elseif (Get-Command Start-HistoricalSearch -ErrorAction SilentlyContinue) {
-                $apiMsg = 'Message trace API: Start-HistoricalSearch (Get-MessageTraceV2 is not in this session; Graph messageTraces is waiting on Transport Data Platform provisioning).'
-                Write-Host $apiMsg -ForegroundColor Cyan
-                Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
-                try {
-                    return (Get-HistoricalMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile)
-                } catch {
-                    $histErr = $_.Exception.Message
-                    Write-Warning $histErr
-                    Write-ExportStatusLine -StatusFile $StatusFile -Message $histErr
-                    return [System.Collections.ArrayList]@()
-                }
+            } elseif (Get-Command Get-MessageTrace -ErrorAction SilentlyContinue) {
+                # Government clouds expose neither the V2 cmdlets nor the Graph endpoint but still
+                # serve legacy Get-MessageTrace. Its 10-day lookback is clamped below, which returns
+                # the days it can reach instead of nothing.
+                $canUseLegacy = $true
             } else {
                 $graphErr = if ($global:EOA_GraphMessageTraceError) { $global:EOA_GraphMessageTraceError } else { 'not attempted' }
-                $skipMsg = "Message trace skipped: Get-MessageTraceV2 is not exported in this Exchange session and legacy Get-MessageTrace is retired. Graph messageTraces failed ($graphErr). Start-HistoricalSearch is not in this session."
+                $skipMsg = "Message trace skipped: neither Get-MessageTraceV2 nor legacy Get-MessageTrace is exported in this Exchange session. Graph messageTraces failed ($graphErr). Re-run Exchange Auth; if the cmdlets are still missing, this tenant does not expose a message trace API."
                 Write-Warning $skipMsg
                 Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
                 return [System.Collections.ArrayList]@()
@@ -3677,23 +4102,21 @@ function Get-ExchangeMessageTrace {
             # A clean empty result means the tenant really had no matching mail. Only distrust it
             # when some windows errored, since a half-provisioned Transport Data Platform answers
             # HTTP 200 with an empty set on the nodes that are not ready yet.
-            if ($script:EOA_GraphMessageTraceWindowErrors -gt 0 -and (Get-Command Start-HistoricalSearch -ErrorAction SilentlyContinue)) {
-                $fallbackMsg = 'Message trace: Graph returned 0 entries (Transport Data Platform may still be provisioning). Falling back to Start-HistoricalSearch.'
-                Write-Host $fallbackMsg -ForegroundColor Yellow
-                Write-ExportStatusLine -StatusFile $StatusFile -Message $fallbackMsg
-                try {
-                    return (Get-HistoricalMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile)
-                } catch {
-                    $histErr = $_.Exception.Message
-                    Write-Warning $histErr
-                    Write-ExportStatusLine -StatusFile $StatusFile -Message $histErr
-                }
+            if ($script:EOA_GraphMessageTraceWindowErrors -gt 0) {
+                $warnMsg = "Message trace: Graph returned 0 entries but $($script:EOA_GraphMessageTraceWindowErrors) window(s) errored, so this is NOT a reliable empty result (Transport Data Platform may still be provisioning). Re-run Graph Auth and try again."
+                Write-Warning $warnMsg
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $warnMsg
             }
             return [System.Collections.ArrayList]@()
         }
         if (-not $v2Cmd) { $v2Cmd = Get-Command -Name Get-MessageTraceV2 -ErrorAction SilentlyContinue }
-        $maxLookbackDays = 90
-        $apiLabel = 'Get-MessageTraceV2'
+        if ($canUseLegacy) {
+            $maxLookbackDays = $script:EOA_LegacyMessageTraceLookbackDays
+            $apiLabel = 'Get-MessageTrace (legacy)'
+        } else {
+            $maxLookbackDays = 90
+            $apiLabel = 'Get-MessageTraceV2'
+        }
         $apiMsg = "Message trace API: $apiLabel (max lookback ~$maxLookbackDays days; chunked queries)."
         Write-Host $apiMsg -ForegroundColor Cyan
         Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
@@ -3705,8 +4128,13 @@ function Get-ExchangeMessageTrace {
             Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
             return [System.Collections.ArrayList]@()
         }
+        $unreachableDays = 0
+        $unreachableReason = ''
+        $requestedStart = $start
         if ($start -lt $earliestAllowed) {
-            $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} (V2 ~90-day retention)." -f $start, $earliestAllowed)
+            $unreachableDays = [int][Math]::Floor(($earliestAllowed - $start).TotalDays)
+            $unreachableReason = "$apiLabel reaches back only $maxLookbackDays days in this tenant"
+            $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} ({2} ~{3}-day retention)." -f $start, $earliestAllowed, $apiLabel, $maxLookbackDays)
             Write-Host $clampMsg -ForegroundColor Yellow
             Write-ExportStatusLine -StatusFile $StatusFile -Message $clampMsg
             $start = $earliestAllowed
@@ -3714,6 +4142,7 @@ function Get-ExchangeMessageTrace {
 
         $results = New-Object System.Collections.Generic.List[object]
         $traceCallCount = 0
+        $script:EOA_MessageTraceCallCount = 0
 
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             $selectedUserList = @()
@@ -3724,6 +4153,7 @@ function Get-ExchangeMessageTrace {
 
             $daysToIterate = if ($useDateRange) { [Math]::Max(1, [int][Math]::Ceiling(($end - $start).TotalDays)) } else { $DaysBack }
             $failedCalls = 0
+            $incompletePaging = $false
             foreach ($upn in $selectedUserList) {
                 for ($d = 0; $d -lt $daysToIterate; $d++) {
                     $winStart = $start.AddDays($d)
@@ -3732,9 +4162,9 @@ function Get-ExchangeMessageTrace {
 
                     if ($hasV2) {
                         try {
-                            if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $chunk = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Call { & $v2Cmd -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ResultSize 5000 -ErrorAction Stop }
-                            if ($chunk) { foreach ($item in @($chunk)) { if ($item) { [void]$results.Add($item) } } }
+                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -SenderAddress $upn -Label "sender $upn $dayLabel" -StatusFile $StatusFile
+                            if ($page.Rows) { foreach ($item in @($page.Rows)) { if ($item) { [void]$results.Add($item) } } }
+                            if ($page.Incomplete) { $incompletePaging = $true }
                         } catch {
                             $failedCalls++
                             $traceErr = "Failed message trace sender ${upn} (${dayLabel}): $($_.Exception.Message)"
@@ -3742,9 +4172,9 @@ function Get-ExchangeMessageTrace {
                             Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                         }
                         try {
-                            if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $chunk = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Call { & $v2Cmd -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ResultSize 5000 -ErrorAction Stop }
-                            if ($chunk) { foreach ($item in @($chunk)) { if ($item) { [void]$results.Add($item) } } }
+                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -RecipientAddress $upn -Label "recipient $upn $dayLabel" -StatusFile $StatusFile
+                            if ($page.Rows) { foreach ($item in @($page.Rows)) { if ($item) { [void]$results.Add($item) } } }
+                            if ($page.Incomplete) { $incompletePaging = $true }
                         } catch {
                             $failedCalls++
                             $traceErr = "Failed message trace recipient ${upn} (${dayLabel}): $($_.Exception.Message)"
@@ -3754,7 +4184,7 @@ function Get-ExchangeMessageTrace {
                     } else {
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $batch = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Call { Get-MessageTrace -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ErrorAction Stop }
+                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Filter @{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn }
                             if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
                             $failedCalls++
@@ -3764,7 +4194,7 @@ function Get-ExchangeMessageTrace {
                         }
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $batch = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Call { Get-MessageTrace -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ErrorAction Stop }
+                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Filter @{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn }
                             if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
                             $failedCalls++
@@ -3775,6 +4205,8 @@ function Get-ExchangeMessageTrace {
                     }
                 }
             }
+
+            Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
 
             $uniqueResults = @()
             $seenIds = @{}
@@ -3787,17 +4219,28 @@ function Get-ExchangeMessageTrace {
                     $uniqueResults += $item
                 }
             }
-            if ($failedCalls -gt 0) {
-                $warn = "INCOMPLETE message trace: $($uniqueResults.Count) entries (filtered users) with $failedCalls failed quer(ies) after retries. Coverage has gaps - re-run later or use a shorter timeframe."
+            $unreachableNote = if ($unreachableDays -gt 0) { " $unreachableDays earlier day(s) requested but unavailable ($unreachableReason)." } else { '' }
+            if ($failedCalls -gt 0 -or $incompletePaging) {
+                $detail = if ($failedCalls -gt 0 -and $incompletePaging) {
+                    "$failedCalls failed quer(ies) after retries; one or more days truncated by V2 paging"
+                } elseif ($incompletePaging) {
+                    "one or more days truncated by V2 paging (partial newest-slice, cursor stall, or round cap)"
+                } else {
+                    "$failedCalls failed quer(ies) after retries. Coverage has gaps - re-run later or use a shorter timeframe"
+                }
+                $warn = "INCOMPLETE message trace: $($uniqueResults.Count) entries (filtered users) with $detail.$unreachableNote"
                 Write-Warning $warn
                 Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
             } else {
-                Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($uniqueResults.Count) entries (filtered users)"
+                $msg = "Message trace collected: $($uniqueResults.Count) entries (filtered users).$unreachableNote"
+                if ($unreachableDays -gt 0) { Write-Warning $msg }
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
             }
             return [System.Collections.ArrayList]$uniqueResults
         } else {
             $daysToIterateAll = if ($useDateRange) { [Math]::Max(1, [int][Math]::Ceiling(($end - $start).TotalDays)) } else { $DaysBack }
             $missingDays = [System.Collections.Generic.List[string]]::new()
+            $truncatedDays = [System.Collections.Generic.List[string]]::new()
             $stopReason = ''
             $staleRetryUsed = $false
             for ($d = 0; $d -lt $daysToIterateAll; $d++) {
@@ -3813,27 +4256,17 @@ function Get-ExchangeMessageTrace {
 
                 try {
                     if ($hasV2) {
-                        $startRecipient = $null
-                        $iterations = 0
-                        do {
-                            if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop'; ResultSize = 1000 }
-                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                            $chunk = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label $dayLabel -Call { & $v2Cmd @params }
-                            if ($chunk) {
-                                if ($startRecipient) { $filtered = $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient } }
-                                else { $filtered = $chunk }
-                                if ($filtered) { [void]$results.AddRange(@($filtered)) }
-                                $prev = $startRecipient
-                                $last = $chunk[-1]
-                                $startRecipient = $last.RecipientAddress
-                                if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
-                            } else { $startRecipient = $null }
-                            $iterations++
-                        } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
+                        $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -Label $dayLabel -StatusFile $StatusFile
+                        if ($page.Rows -and $page.Rows.Count -gt 0) { [void]$results.AddRange(@($page.Rows)) }
+                        if ($page.Incomplete) { [void]$truncatedDays.Add($dayLabel) }
+                        $dayStatus = "Message trace: day $($d + 1) of $daysToIterateAll ($dayLabel), $($page.RoundCount) rounds, $($results.Count) rows..."
+                        Write-ExportStatusLine -StatusFile $StatusFile -Message $dayStatus
+                        if ($d -eq 0 -or $d -eq ($daysToIterateAll - 1) -or ($d % 10) -eq 0) {
+                            Write-Host $dayStatus -ForegroundColor Gray
+                        }
                     } else {
                         if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                        $batch = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label $dayLabel -Call { Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop }
+                        $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label $dayLabel -Filter @{ StartDate = $winStart; EndDate = $winEnd }
                         if ($batch) { [void]$results.AddRange(@($batch)) }
                     }
                 } catch {
@@ -3877,7 +4310,12 @@ function Get-ExchangeMessageTrace {
                     }
                 }
             }
-            Write-EoaMessageTraceCoverage -EntryCount $results.Count -DaysRequested $daysToIterateAll -MissingDays $missingDays -StopReason $stopReason -StatusFile $StatusFile
+            $syncCount = $results.Count
+            Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
+            Write-EoaMessageTraceCoverage -EntryCount $syncCount -DaysRequested $daysToIterateAll -MissingDays $missingDays -TruncatedDays $truncatedDays -StopReason $stopReason -StatusFile $StatusFile -UnreachableDays $unreachableDays -UnreachableReason $unreachableReason
+            if ($results.Count -gt $syncCount) {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace total with historical rows: $($results.Count) entries."
+            }
             return [System.Collections.ArrayList]$results
         }
 
@@ -8531,6 +8969,7 @@ function Get-DLPViolations {
 
 Export-ModuleMember -Function Set-GraphRestBearerToken,Clear-GraphRestBearerToken,Test-GraphRestBearerToken,Get-GraphRestBearerToken,Invoke-GraphRestRequest,Invoke-GraphRestPaged,Get-MgUserCompat
 Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,Get-GraphAccessToken,Connect-MgGraphForReportSession,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
+Export-ModuleMember -Function Export-EoaHistoricalMessageTraceCsv,Submit-EoaHistoricalMessageTrace,Receive-EoaHistoricalMessageTrace
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
 Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs,ConvertTo-SlimUnifiedAuditLogExportRows
 Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents,Get-IntuneDeviceComplianceRecords
