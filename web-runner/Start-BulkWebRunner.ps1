@@ -187,17 +187,6 @@ function Handle-ApiRequest {
         return @{ ok = $true; path = $opened }
     }
 
-    if ($Method -eq 'POST' -and $Path -eq '/api/analyze-reports') {
-        if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
-        Import-Module (Join-Path $script:ProjectRoot 'Modules\ReportAnalysis.psm1') -Force -ErrorAction Stop
-        $result = Invoke-ReportFolderAnalysis -Path ([string]$Body.path) -WriteOutputFiles
-        return @{
-            ok     = $true
-            path   = [string]$Body.path
-            result = $result
-        }
-    }
-
     if ($Method -eq 'POST' -and $Path -eq '/api/curate/facets') {
         if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.path)) { throw 'Missing path' }
         Import-Module (Join-Path $script:ProjectRoot 'Modules\LogCuration.psm1') -Force -ErrorAction Stop

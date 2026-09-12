@@ -49,6 +49,9 @@ function Get-BulkRunnerDefaultReportSelections {
     if (-not $bec.ContainsKey('IncludeExchangeItemAggregated')) {
         $bec['IncludeExchangeItemAggregated'] = $false
     }
+    if (-not $bec.ContainsKey('MessageTraceStatuses')) {
+        $bec['MessageTraceStatuses'] = @()
+    }
     return $bec
 }
 
@@ -85,6 +88,7 @@ function ConvertTo-BulkRunnerReportSelectionsHashtable {
         IncludeSharePointOneDriveFileActions = if ($null -ne $JsonObject.IncludeSharePointOneDriveFileActions) { [bool]$JsonObject.IncludeSharePointOneDriveFileActions } else { $false }
         SignInLogsDaysBack               = if ($null -ne $JsonObject.SignInLogsDaysBack) { [int]$JsonObject.SignInLogsDaysBack } else { 7 }
         MessageTraceDaysBack             = if ($null -ne $JsonObject.MessageTraceDaysBack) { [int]$JsonObject.MessageTraceDaysBack } else { 7 }
+        MessageTraceStatuses             = if ($null -ne $JsonObject.MessageTraceStatuses) { @($JsonObject.MessageTraceStatuses | ForEach-Object { [string]$_ } | Where-Object { $_ }) } else { @() }
     }
 }
 

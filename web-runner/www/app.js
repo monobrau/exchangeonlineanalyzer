@@ -243,6 +243,7 @@ function buildContainmentPanelHtml() {
                   <tr>
                     <th>Mailbox</th>
                     <th>Litigation hold</th>
+                    <th>Hold date</th>
                     <th>Retain deleted</th>
                     <th>Audit</th>
                   </tr>
@@ -270,6 +271,7 @@ function buildContainmentPanelHtml() {
                     <th>User</th>
                     <th>Type</th>
                     <th>Details</th>
+                    <th>Created</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -453,6 +455,8 @@ function buildContainmentPanelHtml() {
                     <th>Mailbox</th>
                     <th>State</th>
                     <th>External</th>
+                    <th>Start</th>
+                    <th>End</th>
                     <th>Message</th>
                   </tr>
                 </thead>
@@ -520,6 +524,7 @@ function buildContainmentPanelHtml() {
                     <th>On</th>
                     <th>Priority</th>
                     <th>Details</th>
+                    <th>Changed</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -539,6 +544,7 @@ function buildContainmentPanelHtml() {
                     <th>Name</th>
                     <th>On</th>
                     <th>Details</th>
+                    <th>Created</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -577,6 +583,7 @@ function buildContainmentPanelHtml() {
                     <th>Kind</th>
                     <th>App</th>
                     <th>Name</th>
+                    <th>Created</th>
                     <th>Expires</th>
                   </tr>
                 </thead>
@@ -615,6 +622,7 @@ function buildContainmentPanelHtml() {
                     <th>Recipient</th>
                     <th>Journal to</th>
                     <th>On</th>
+                    <th>Changed</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -652,6 +660,7 @@ function buildContainmentPanelHtml() {
                     <th>Name</th>
                     <th>Environment</th>
                     <th>Enabled</th>
+                    <th>Created</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -1326,11 +1335,38 @@ function defaultReportSelections() {
     ...REPORT_EXPORT_PRESETS[DEFAULT_BEC_PRESET_NAME],
     SignInLogsDaysBack: 7,
     MessageTraceDaysBack: 7,
+    MessageTraceStatuses: [],
   };
 }
 
+const MESSAGE_TRACE_STATUSES = [
+  { value: 'Delivered', label: 'Delivered', hint: 'Mailbox delivery (junk/quarantine can still show as Delivered)' },
+  { value: 'Failed', label: 'Failed', hint: 'Not delivered' },
+  { value: 'Pending', label: 'Pending' },
+  { value: 'Expanded', label: 'Expanded', hint: 'Distribution-group expansion' },
+  { value: 'Quarantined', label: 'Quarantined', hint: 'Last 10 days only' },
+  { value: 'FilteredAsSpam', label: 'Filtered as spam', hint: 'Last 10 days only' },
+  { value: 'GettingStatus', label: 'Getting status' },
+];
+
+const MT_STATUS_TEN_DAY = new Set(['Quarantined', 'FilteredAsSpam']);
+const MT_STATUS_ISSUE_SET = ['Failed', 'Quarantined', 'FilteredAsSpam'];
+
+let mtStatusDialogTarget = null;
+let mtStatusDialogWired = false;
+
 function reportExportCheckboxClass(key) {
   return `rs_${key}`;
+}
+
+function messageTraceStatusesNeedTenDayWindow(statuses) {
+  return (statuses || []).some((s) => MT_STATUS_TEN_DAY.has(s));
+}
+
+function parseMessageTraceStatuses(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map((s) => String(s || '').trim()).filter(Boolean);
+  return String(raw).split(/[,;]/).map((s) => s.trim()).filter(Boolean);
 }
 
 function buildReportExportsPanelHtml(scope) {
@@ -1338,7 +1374,11 @@ function buildReportExportsPanelHtml(scope) {
   for (const group of REPORT_EXPORT_GROUPS) {
     html.push(`<div class="reportExportGroup"><div class="reportExportGroupTitle">${group.title}</div><div class="reportExportGrid">`);
     for (const item of group.items) {
-      html.push(`<label><input type="checkbox" class="${reportExportCheckboxClass(item.key)}" data-rs-key="${item.key}" /> ${item.label}</label>`);
+      if (item.key === 'IncludeMessageTrace') {
+        html.push(`<div class="reportExportMt"><label><input type="checkbox" class="${reportExportCheckboxClass(item.key)}" data-rs-key="${item.key}" /> ${item.label}</label><button type="button" class="small mtStatusOpen">Statuses…</button></div>`);
+      } else {
+        html.push(`<label><input type="checkbox" class="${reportExportCheckboxClass(item.key)}" data-rs-key="${item.key}" /> ${item.label}</label>`);
+      }
     }
     html.push('</div></div>');
   }
@@ -1364,6 +1404,16 @@ function readReportSelectionsFromContainer(container) {
       if (Array.isArray(parsed) && parsed.length) rs.UnifiedAuditLogRecordTypes = parsed;
     } catch (_) {}
   }
+  if (container.dataset.messageTraceStatuses) {
+    try {
+      const parsed = JSON.parse(container.dataset.messageTraceStatuses);
+      rs.MessageTraceStatuses = parseMessageTraceStatuses(parsed);
+    } catch (_) {
+      rs.MessageTraceStatuses = [];
+    }
+  } else {
+    rs.MessageTraceStatuses = [];
+  }
   if (container.dataset.exportPresetName) {
     rs.ExportPresetName = container.dataset.exportPresetName;
   }
@@ -1372,6 +1422,19 @@ function readReportSelectionsFromContainer(container) {
     rs.UnifiedAuditLogRecordTypes = [...rs.UnifiedAuditLogRecordTypes, 'ExchangeItemAggregated'];
   }
   return rs;
+}
+
+function applyMessageTraceDays(days) {
+  const mt = document.getElementById('messageTraceDays');
+  if (!mt || days == null) return;
+  const want = String(days);
+  if (![...mt.options].some((o) => o.value === want)) {
+    const opt = document.createElement('option');
+    opt.value = want;
+    opt.textContent = want;
+    mt.appendChild(opt);
+  }
+  mt.value = want;
 }
 
 function applyReportSelectionsToContainer(container, selections) {
@@ -1388,9 +1451,13 @@ function applyReportSelectionsToContainer(container, selections) {
   } else {
     delete container.dataset.ualRecordTypes;
   }
+  const mtStatuses = parseMessageTraceStatuses(rs.MessageTraceStatuses);
+  if (mtStatuses.length) container.dataset.messageTraceStatuses = JSON.stringify(mtStatuses);
+  else delete container.dataset.messageTraceStatuses;
   if (rs.ExportPresetName) container.dataset.exportPresetName = rs.ExportPresetName;
   else delete container.dataset.exportPresetName;
-  updateUalScopeHint(container, rs);
+  if (rs.MessageTraceDaysBack != null) applyMessageTraceDays(rs.MessageTraceDaysBack);
+  updateReportScopeHints(container, rs);
 }
 
 function formatUalScopeHint(selections) {
@@ -1402,16 +1469,159 @@ function formatUalScopeHint(selections) {
   return 'UAL RecordTypes: default set (no Aggregated)';
 }
 
-function updateUalScopeHint(container, selections) {
-  if (!container) return;
-  let hint = container.querySelector('.ualScopeHint');
-  if (!hint) {
-    hint = document.createElement('p');
-    hint.className = 'ualScopeHint muted';
-    hint.style.cssText = 'margin:0.35rem 0 0;font-size:0.85rem';
-    container.appendChild(hint);
+function formatMessageTraceScopeHint(selections) {
+  if (!selections?.IncludeMessageTrace) return 'Message trace: off';
+  const st = parseMessageTraceStatuses(selections.MessageTraceStatuses);
+  if (st.length) {
+    const days = messageTraceStatusesNeedTenDayWindow(st) ? ' (clamped to 10 days)' : '';
+    return `Message trace statuses: ${st.join(', ')}${days}`;
   }
-  hint.textContent = formatUalScopeHint(selections || readReportSelectionsFromContainer(container));
+  return 'Message trace statuses: all';
+}
+
+function updateUalScopeHint(container, selections) {
+  updateReportScopeHints(container, selections);
+}
+
+function updateReportScopeHints(container, selections) {
+  if (!container) return;
+  const rs = selections || readReportSelectionsFromContainer(container);
+  let ual = container.querySelector('.ualScopeHint');
+  if (!ual) {
+    ual = document.createElement('p');
+    ual.className = 'ualScopeHint muted';
+    container.appendChild(ual);
+  }
+  ual.textContent = formatUalScopeHint(rs);
+  let mt = container.querySelector('.mtScopeHint');
+  if (!mt) {
+    mt = document.createElement('p');
+    mt.className = 'mtScopeHint muted';
+    container.appendChild(mt);
+  }
+  mt.textContent = formatMessageTraceScopeHint(rs);
+}
+
+function renderMessageTraceStatusList(filterText, selected) {
+  const list = document.getElementById('mtStatusList');
+  if (!list) return;
+  const q = String(filterText || '').trim().toLowerCase();
+  const chosen = new Set(selected || []);
+  const html = [];
+  for (const item of MESSAGE_TRACE_STATUSES) {
+    const hay = `${item.value} ${item.label} ${item.hint || ''}`.toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    const hint = item.hint ? `<span class="muted"> — ${item.hint}</span>` : '';
+    html.push(`<label><input type="checkbox" data-mt-status="${item.value}" ${chosen.has(item.value) ? 'checked' : ''} /> ${item.label}${hint}</label>`);
+  }
+  list.innerHTML = html.join('') || '<p class="muted">No statuses match that search.</p>';
+  updateMessageTraceStatusWarn();
+}
+
+function readMessageTraceStatusDialogSelection() {
+  return [...document.querySelectorAll('#mtStatusList input[data-mt-status]:checked')].map((el) => el.dataset.mtStatus);
+}
+
+function updateMessageTraceStatusWarn() {
+  const el = document.getElementById('mtStatusWarn');
+  if (!el) return;
+  const selected = readMessageTraceStatusDialogSelection();
+  if (!selected.length) {
+    el.textContent = 'No statuses selected — Generate pulls all delivery statuses.';
+    return;
+  }
+  if (messageTraceStatusesNeedTenDayWindow(selected)) {
+    el.textContent = 'Quarantined / Filtered as spam require a search shorter than 10 days. Generate will clamp the message-trace window.';
+    return;
+  }
+  el.textContent = `Filter: ${selected.join(', ')}.`;
+}
+
+function applyMessageTraceStatusChip(chip) {
+  let next = [];
+  if (chip === 'all') next = [];
+  else if (chip === 'issues') next = [...MT_STATUS_ISSUE_SET];
+  else if (chip) next = [chip];
+  renderMessageTraceStatusList(document.getElementById('mtStatusSearch')?.value, next);
+}
+
+function closeMessageTraceStatusDialog() {
+  const dlg = document.getElementById('mtStatusDialog');
+  if (dlg) dlg.hidden = true;
+  mtStatusDialogTarget = null;
+}
+
+function openMessageTraceStatusDialog(container) {
+  if (!container) return;
+  ensureMessageTraceStatusDialog();
+  mtStatusDialogTarget = container;
+  const rs = readReportSelectionsFromContainer(container);
+  const search = document.getElementById('mtStatusSearch');
+  if (search) search.value = '';
+  renderMessageTraceStatusList('', parseMessageTraceStatuses(rs.MessageTraceStatuses));
+  const dlg = document.getElementById('mtStatusDialog');
+  if (dlg) dlg.hidden = false;
+  search?.focus();
+}
+
+function applyMessageTraceStatusDialog() {
+  if (!mtStatusDialogTarget) return;
+  const selected = readMessageTraceStatusDialogSelection();
+  if (selected.length) mtStatusDialogTarget.dataset.messageTraceStatuses = JSON.stringify(selected);
+  else delete mtStatusDialogTarget.dataset.messageTraceStatuses;
+  const include = mtStatusDialogTarget.querySelector(`.${reportExportCheckboxClass('IncludeMessageTrace')}`);
+  if (include && selected.length) include.checked = true;
+  if (messageTraceStatusesNeedTenDayWindow(selected)) {
+    const mt = document.getElementById('messageTraceDays');
+    const current = parseInt(mt?.value, 10) || 7;
+    if (current > 10) applyMessageTraceDays(10);
+  }
+  mtStatusDialogTarget.dataset.exportPresetName = 'Custom (manual selection)';
+  const sessionPreset = document.getElementById('sessionReportPreset');
+  if (sessionPreset && mtStatusDialogTarget.id === 'sessionReportExportsBody') {
+    const custom = [...sessionPreset.options].find((o) => String(o.value).startsWith('Custom'));
+    if (custom) sessionPreset.value = custom.value;
+  }
+  updateReportScopeHints(mtStatusDialogTarget);
+  updateSessionReportExportsSummary(readReportSelectionsFromContainer(mtStatusDialogTarget));
+  scheduleSessionReportSelectionsSync();
+  const tenantDetails = mtStatusDialogTarget.closest('.tenant');
+  const tenantBody = mtStatusDialogTarget.closest('.tenantBody');
+  if (tenantDetails?.dataset.client && tenantBody) {
+    saveTenantUiState(tenantDetails.dataset.client, tenantBody);
+  }
+  closeMessageTraceStatusDialog();
+}
+
+function ensureMessageTraceStatusDialog() {
+  if (mtStatusDialogWired) return;
+  const dlg = document.getElementById('mtStatusDialog');
+  if (!dlg) return;
+  mtStatusDialogWired = true;
+  dlg.addEventListener('click', (e) => {
+    if (e.target?.dataset?.mtDismiss) closeMessageTraceStatusDialog();
+  });
+  document.getElementById('mtStatusCancel')?.addEventListener('click', closeMessageTraceStatusDialog);
+  document.getElementById('mtStatusApply')?.addEventListener('click', applyMessageTraceStatusDialog);
+  document.getElementById('mtStatusSearch')?.addEventListener('input', (e) => {
+    renderMessageTraceStatusList(e.target.value, readMessageTraceStatusDialogSelection());
+  });
+  dlg.querySelectorAll('[data-mt-chip]').forEach((btn) => {
+    btn.addEventListener('click', () => applyMessageTraceStatusChip(btn.dataset.mtChip));
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dlg && !dlg.hidden) closeMessageTraceStatusDialog();
+  });
+}
+
+function wireMessageTraceStatusUi(container) {
+  if (!container || container.dataset.mtStatusWired === '1') return;
+  container.dataset.mtStatusWired = '1';
+  container.querySelector('.mtStatusOpen')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openMessageTraceStatusDialog(container);
+  });
 }
 
 function countEnabledReportExports(selections) {
@@ -1619,18 +1829,20 @@ function initSessionReportExportsPanel() {
   if (!body || body.dataset.initialized === '1') return;
   body.innerHTML = buildReportExportsPanelHtml('session');
   body.dataset.initialized = '1';
+  wireMessageTraceStatusUi(body);
   const markPresetCustom = () => {
     const sel = document.getElementById('sessionReportPreset');
     if (!sel) return;
     const custom = [...sel.options].find(o => String(o.value).startsWith('Custom'));
     if (custom) sel.value = custom.value;
   };
-  body.addEventListener('change', () => {
+  body.addEventListener('change', (e) => {
+    if (e.target?.closest?.('#mtStatusDialog')) return;
     markPresetCustom();
     delete body.dataset.ualRecordTypes;
     delete body.dataset.exportPresetName;
     body.dataset.exportPresetName = 'Custom (manual selection)';
-    updateUalScopeHint(body);
+    updateReportScopeHints(body);
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
@@ -1652,12 +1864,14 @@ function initSessionReportExportsPanel() {
   document.getElementById('btnReportSelectAll')?.addEventListener('click', () => {
     setAllReportSelections(body, true);
     markPresetCustom();
+    updateReportScopeHints(body);
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
   document.getElementById('btnReportSelectNone')?.addEventListener('click', () => {
     setAllReportSelections(body, false);
     markPresetCustom();
+    updateReportScopeHints(body);
     updateSessionReportExportsSummary(readReportSelectionsFromContainer(body));
     scheduleSessionReportSelectionsSync();
   });
@@ -1688,6 +1902,7 @@ function wireTenantReportExportsPanel(div, clientNumber) {
   const legacyCheck = div.querySelector('.useSessionReportDefaults');
 
   populateTenantPresetSelect(presetSel);
+  if (customBody) wireMessageTraceStatusUi(customBody);
 
   const applyVisibility = (skipSave = false) => {
     const mode = getTenantReportExportMode(div);
@@ -1726,7 +1941,7 @@ function wireTenantReportExportsPanel(div, clientNumber) {
   customBody?.addEventListener('change', () => {
     delete customBody.dataset.ualRecordTypes;
     customBody.dataset.exportPresetName = 'Custom (manual selection)';
-    updateUalScopeHint(customBody);
+    updateReportScopeHints(customBody);
     saveTenantUiState(clientNumber, div);
   });
   if (customBody && !customBody.querySelector('.tenantReportSelectAll')) {
@@ -1738,7 +1953,7 @@ function wireTenantReportExportsPanel(div, clientNumber) {
       setAllReportSelections(customBody, true);
       delete customBody.dataset.ualRecordTypes;
       customBody.dataset.exportPresetName = 'Custom (manual selection)';
-      updateUalScopeHint(customBody);
+      updateReportScopeHints(customBody);
       saveTenantUiState(clientNumber, div);
     });
     bar.querySelector('.tenantReportSelectNone')?.addEventListener('click', () => {
@@ -2435,6 +2650,8 @@ function saveTenantUiState(clientNumber, div) {
 
     tenantId: div.querySelector('.appRegSelect')?.value || '',
 
+    appRegManual: isAppRegManual(div),
+
     interactive: Boolean(div.querySelector('.interactiveCheck')?.checked),
 
     filterUsers: Boolean(div.querySelector('.filterUsersCheck')?.checked),
@@ -2506,7 +2723,8 @@ function restoreTenantUiState(clientNumber, div) {
 
   if (ticket) ticket.value = saved.ticket;
 
-  if (appReg && saved.tenantId) appReg.value = saved.tenantId;
+  setAppRegManual(div, Boolean(saved.appRegManual && saved.tenantId));
+  if (appReg && isAppRegManual(div)) appReg.value = saved.tenantId;
 
   if (interactive) interactive.checked = saved.interactive;
 
@@ -2907,7 +3125,10 @@ function setContainmentStatus(div, text, opts = {}) {
       el.classList.add('hasStatus');
       const tone = opts.tone || classifyContainmentStatusTone(text);
       if (tone) el.classList.add(tone);
-      if (!opts.skipSave && !opts.skipScroll) {
+      // Only jump to this banner when it is the result surface (sign-in chips,
+      // password/SSPR text, failures). List/delete results live in the table
+      // next to the button — do not yank the viewport back to the top.
+      if (opts.reveal) {
         try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
       }
     }
@@ -2918,7 +3139,7 @@ function setContainmentStatus(div, text, opts = {}) {
 }
 
 function setContainmentUserStatus(div, users) {
-  setContainmentStatus(div, formatContainmentUserStatus(users), { html: formatContainmentUserStatusHtml(users) });
+  setContainmentStatus(div, formatContainmentUserStatus(users), { html: formatContainmentUserStatusHtml(users), reveal: true });
 }
 
 function rememberContainment(div, patch, immediate = false) {
@@ -3167,7 +3388,7 @@ async function saveContainmentPacks(clientNumber, div) {
   }
   const names = (data.files || []).map((f) => String(f).split(/[/\\]/).pop()).join(', ');
   const audit = data.auditCsv ? `\nAccount changes: ${String(data.auditCsv).split(/[/\\]/).pop()}` : '';
-  setContainmentStatus(div, `Saved ${data.files?.length || 0} zip(s) to ${data.folder}${names ? `\n${names}` : ''}${audit}`);
+  setContainmentStatus(div, `Saved ${data.files?.length || 0} zip(s) to ${data.folder}${names ? `\n${names}` : ''}${audit}`, { reveal: true });
   log(`Client ${clientNumber}: saved containment zips to ${data.folder}`);
 }
 
@@ -3240,6 +3461,297 @@ function parseRemediatePayload(final) {
   return { prefix: '', data: null, raw: text };
 }
 
+function shortenGraphError(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  if (/not applicable to target tenant/i.test(t)) return 'Intune is not available in this tenant.';
+  if (/Request_ResourceNotFound|does not exist or one of its queried reference-property/i.test(t)) {
+    return 'Already gone (not found).';
+  }
+  const m = t.match(/"message"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (m) {
+    return m[1].replace(/\\u0027/g, "'").replace(/\\"/g, '"').replace(/\\n/g, ' ');
+  }
+  if (t.startsWith('{') || t.length > 280) {
+    return `${t.slice(0, 240)}${t.length > 240 ? '…' : ''}`;
+  }
+  return t;
+}
+
+function isGraphAlreadyGone(text) {
+  return /Request_ResourceNotFound|does not exist or one of its queried reference-property|Already gone/i.test(String(text || ''));
+}
+
+function summarizeRemediateFailure(parsed, fallback) {
+  const data = parsed && parsed.data && typeof parsed.data === 'object' ? parsed.data : null;
+  if (data) {
+    const deleted = asArray(data.Deleted).concat(asArray(data.Results));
+    const failed = deleted.filter((x) => x && x.Success === false);
+    const ok = Number(data.SuccessCount);
+    const fail = Number(data.FailCount);
+    const hasCounts = Number.isFinite(ok) || Number.isFinite(fail);
+    if (failed.length || (hasCounts && (ok || fail))) {
+      const gone = failed.filter((x) => isGraphAlreadyGone(x.Error)).length;
+      if (fail > 0 && !(ok > 0) && gone === failed.length && failed.length) {
+        return { text: `Already gone (${gone}). Reloaded remaining rows.`, tone: 'statusOk' };
+      }
+      const first = failed[0]?.Error || data.reason || '';
+      const short = shortenGraphError(first);
+      const counts = hasCounts ? `Success ${ok || 0}; failed ${fail || 0}.` : (fallback || 'Action failed.');
+      return { text: short ? `${counts} ${short}` : counts, tone: fail > 0 ? 'statusBad' : 'statusWarn' };
+    }
+    if (data.reason) return { text: String(data.reason), tone: 'statusBad' };
+    const rowErr = asArray(data.Devices).concat(asArray(data.Users), asArray(data.Methods), asArray(data.Grants))
+      .map((x) => x && x.Error)
+      .find(Boolean);
+    if (rowErr) return { text: shortenGraphError(rowErr), tone: 'statusWarn' };
+  }
+  const raw = (parsed && parsed.raw) || '';
+  if (raw) {
+    return { text: shortenGraphError(raw) || fallback || 'Action failed.', tone: 'statusBad' };
+  }
+  return { text: fallback || 'Action failed.', tone: 'statusBad' };
+}
+
+function showContainmentFailure(div, clientNumber, parsed, fallback) {
+  const s = summarizeRemediateFailure(parsed, fallback);
+  setContainmentStatus(div, s.text, { tone: s.tone, reveal: true });
+  log(`Client ${clientNumber}: ${s.text}`);
+  return s;
+}
+
+function containmentDateText(...values) {
+  for (const value of values) {
+    if (value == null || value === '') continue;
+    if (typeof value === 'object') {
+      const inner = containmentDateText(
+        value.DateTime,
+        value.dateTime,
+        value.UtcDateTime,
+        value.utcDateTime,
+        value.Value,
+        value.value,
+        value.startDateTime,
+        value.StartDateTime,
+        value.WhenChanged,
+        value.WhenCreated,
+        value.createdDateTime
+      );
+      if (inner) return inner;
+      continue;
+    }
+    const s = String(value).trim();
+    if (!s || s === '[object Object]') continue;
+    const msDotNet = s.match(/^\/Date\((-?\d+)(?:[+-]\d+)?\)\/$/);
+    if (msDotNet) {
+      const d = new Date(Number(msDotNet[1]));
+      if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    return s;
+  }
+  return '';
+}
+
+function parseContainmentDateMs(text) {
+  const raw = containmentDateText(text).replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  const created = raw.match(/^created\s+(.+)$/i);
+  const src = created ? created[1].trim() : raw;
+  const iso = src.match(/^(\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)/);
+  if (iso) {
+    let stamp = iso[1];
+    if (!/[TZ+-]/.test(stamp) && /^\d{4}-\d{2}-\d{2} /.test(stamp)) stamp = stamp.replace(' ', 'T');
+    const d = Date.parse(stamp);
+    return Number.isFinite(d) ? d : null;
+  }
+  const us = src.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (us) {
+    const d = new Date(Number(us[3]), Number(us[1]) - 1, Number(us[2]), Number(us[4] || 0), Number(us[5] || 0), Number(us[6] || 0));
+    return Number.isNaN(d.getTime()) ? null : d.getTime();
+  }
+  return null;
+}
+
+function parseContainmentCell(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s || s === '(none)' || s === '—') return { empty: true, kind: 'empty', n: 0, t: '' };
+  const ms = parseContainmentDateMs(s);
+  if (ms != null) return { empty: false, kind: 'date', n: ms, t: s.toLowerCase() };
+  if (/^-?\d+(\.\d+)?$/.test(s)) return { empty: false, kind: 'num', n: Number(s), t: s };
+  return { empty: false, kind: 'text', n: 0, t: s.toLowerCase() };
+}
+
+function containmentHeaderLabel(th) {
+  if (!th) return '';
+  const clone = th.cloneNode(true);
+  clone.querySelectorAll('.sortInd').forEach((n) => n.remove());
+  return String(clone.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+const CONTAINMENT_DATE_HEADER_RES = [
+  /^last sign-in$/i,
+  /^last sync$/i,
+  /^first sync$/i,
+  /^created$/i,
+  /^changed$/i,
+  /^modified$/i,
+  /^hold date$/i,
+  /^start$/i,
+  /^expires$/i,
+  /^end$/i,
+  /^date$/i,
+];
+
+function isContainmentDateHeader(label) {
+  return CONTAINMENT_DATE_HEADER_RES.some((re) => re.test(label));
+}
+
+function findDefaultContainmentDateColumn(table) {
+  const ths = [...table.querySelectorAll('thead th')];
+  let best = -1;
+  let bestRank = CONTAINMENT_DATE_HEADER_RES.length;
+  ths.forEach((th, idx) => {
+    if (th.classList.contains('colEmpty')) return;
+    const label = containmentHeaderLabel(th);
+    const rank = CONTAINMENT_DATE_HEADER_RES.findIndex((re) => re.test(label));
+    if (rank >= 0 && rank < bestRank) {
+      best = idx;
+      bestRank = rank;
+    }
+  });
+  return best;
+}
+
+function isContainmentEmptyCellText(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  return !s || s === '—' || s === '-';
+}
+
+function hideEmptyContainmentColumns(table) {
+  if (!table) return;
+  const ths = [...table.querySelectorAll('thead tr:first-child th')];
+  const rows = [...table.querySelectorAll('tbody tr')];
+  ths.forEach((th) => th.classList.remove('colEmpty'));
+  rows.forEach((row) => {
+    [...row.children].forEach((cell) => cell.classList.remove('colEmpty'));
+  });
+  const isPlaceholder = !rows.length || (rows.length === 1 && rows[0].querySelector('td.muted, td[colspan]'));
+  if (isPlaceholder) return;
+  ths.forEach((th, i) => {
+    const label = containmentHeaderLabel(th);
+    if (i === 0 && !label) return;
+    const allEmpty = rows.every((row) => isContainmentEmptyCellText(row.children[i]?.textContent));
+    if (!allEmpty) return;
+    th.classList.add('colEmpty');
+    rows.forEach((row) => {
+      if (row.children[i]) row.children[i].classList.add('colEmpty');
+    });
+  });
+  if (table.dataset.sortCol !== undefined && table.dataset.sortCol !== '') {
+    const th = ths[Number(table.dataset.sortCol)];
+    if (th && th.classList.contains('colEmpty')) {
+      delete table.dataset.sortCol;
+      delete table.dataset.sortDir;
+      delete table.dataset.sortUser;
+    }
+  }
+}
+
+function updateContainmentSortIndicators(table) {
+  const col = table.dataset.sortCol;
+  const dir = table.dataset.sortDir || 'desc';
+  table.querySelectorAll('thead th').forEach((th, idx) => {
+    const ind = th.querySelector('.sortInd');
+    if (!ind) return;
+    const active = col !== undefined && col !== '' && Number(col) === idx;
+    th.classList.toggle('sortActive', active);
+    ind.textContent = active ? (dir === 'asc' ? '▲' : '▼') : '';
+  });
+}
+
+function applyContainmentTableSort(table) {
+  const tbody = table.querySelector('tbody');
+  if (!tbody) return;
+  const rows = [...tbody.querySelectorAll('tr')];
+  const isEmpty = !rows.length || (rows.length === 1 && rows[0].querySelector('td.muted, td[colspan]'));
+  if (isEmpty) {
+    updateContainmentSortIndicators(table);
+    return;
+  }
+  let col = table.dataset.sortCol !== undefined && table.dataset.sortCol !== '' ? Number(table.dataset.sortCol) : -1;
+  if (!(col >= 0) && table.dataset.sortUser !== '1') {
+    col = findDefaultContainmentDateColumn(table);
+    if (col >= 0) {
+      table.dataset.sortCol = String(col);
+      if (!table.dataset.sortDir) table.dataset.sortDir = 'desc';
+    }
+  }
+  if (!(col >= 0)) {
+    updateContainmentSortIndicators(table);
+    return;
+  }
+  const dir = table.dataset.sortDir === 'asc' ? 1 : -1;
+  const ths = [...table.querySelectorAll('thead th')];
+  const preferDate = isContainmentDateHeader(containmentHeaderLabel(ths[col]));
+  rows.sort((a, b) => {
+    const va = parseContainmentCell(a.children[col]?.textContent);
+    const vb = parseContainmentCell(b.children[col]?.textContent);
+    if (va.empty && vb.empty) return 0;
+    if (va.empty) return 1;
+    if (vb.empty) return -1;
+    if (preferDate) {
+      const da = va.kind === 'date' ? va.n : null;
+      const db = vb.kind === 'date' ? vb.n : null;
+      if (da == null && db == null) return va.t.localeCompare(vb.t, undefined, { numeric: true, sensitivity: 'base' }) * dir;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return (da - db) * dir;
+    }
+    if (va.kind === 'num' && vb.kind === 'num') return (va.n - vb.n) * dir;
+    if (va.kind === 'date' && vb.kind === 'date') return (va.n - vb.n) * dir;
+    return va.t.localeCompare(vb.t, undefined, { numeric: true, sensitivity: 'base' }) * dir;
+  });
+  rows.forEach((row) => tbody.appendChild(row));
+  updateContainmentSortIndicators(table);
+}
+
+function wireContainmentTableSort(table) {
+  if (!table) return;
+  hideEmptyContainmentColumns(table);
+  if (table.dataset.sortWired !== '1') {
+    table.dataset.sortWired = '1';
+    [...table.querySelectorAll('thead th')].forEach((th, idx) => {
+      const label = containmentHeaderLabel(th);
+      if (idx === 0 && !label) return;
+      th.classList.add('sortable');
+      if (!th.querySelector('.sortInd')) {
+        const ind = document.createElement('span');
+        ind.className = 'sortInd';
+        th.appendChild(ind);
+      }
+      th.addEventListener('click', () => {
+        const cur = table.dataset.sortCol;
+        if (cur === String(idx)) {
+          table.dataset.sortDir = table.dataset.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          table.dataset.sortCol = String(idx);
+          table.dataset.sortDir = isContainmentDateHeader(label) ? 'desc' : 'asc';
+        }
+        table.dataset.sortUser = '1';
+        applyContainmentTableSort(table);
+      });
+    });
+  }
+  applyContainmentTableSort(table);
+}
+
+function containmentCreatedText(created, details) {
+  const direct = containmentDateText(created);
+  if (direct) return direct;
+  const m = String(details || '').match(/created\s+(.+?)(?:\s*·|$)/i);
+  return m ? m[1].trim() : '';
+}
+
 function renderContainmentRules(div, mailbox, rules) {
   const rows = asArray(rules);
   rememberContainment(div, { rules: rows, rulesUser: mailbox || '' }, true);
@@ -3251,6 +3763,7 @@ function renderContainmentRules(div, mailbox, rules) {
     tbody.innerHTML = '<tr><td colspan="6" class="muted">No inbox rules (including hidden).</td></tr>';
     wrap.style.display = 'block';
     updateContainmentButtons(div);
+    wireContainmentTableSort(div.querySelector('.containmentRulesTable'));
     return;
   }
   tbody.innerHTML = rows.map((rule, idx) => {
@@ -3280,6 +3793,7 @@ function renderContainmentRules(div, mailbox, rules) {
     cb.addEventListener('change', () => updateContainmentButtons(div));
   });
   updateContainmentButtons(div);
+  wireContainmentTableSort(div.querySelector('.containmentRulesTable'));
 }
 
 function applyMailboxAccessResult(div, users) {
@@ -3336,6 +3850,7 @@ function applyMailboxAccessResult(div, users) {
     tbody.innerHTML = '<tr><td colspan="5" class="muted">No forwarding or delegates.</td></tr>';
     wrap.style.display = 'block';
     updateContainmentButtons(div);
+    wireContainmentTableSort(div.querySelector('.containmentMailboxTable'));
     return;
   }
   tbody.innerHTML = rows.map((row) => {
@@ -3358,6 +3873,7 @@ function applyMailboxAccessResult(div, users) {
     cb.addEventListener('change', () => updateContainmentButtons(div));
   });
   updateContainmentButtons(div);
+  wireContainmentTableSort(div.querySelector('.containmentMailboxTable'));
 }
 
 function renderGenericPickTable(div, wrapSel, tbodySel, pickClass, emptyCols, emptyText, htmlRows) {
@@ -3368,6 +3884,7 @@ function renderGenericPickTable(div, wrapSel, tbodySel, pickClass, emptyCols, em
     tbody.innerHTML = `<tr><td colspan="${emptyCols}" class="muted">${emptyText}</td></tr>`;
     wrap.style.display = 'block';
     updateContainmentButtons(div);
+    wireContainmentTableSort(tbody.closest('table'));
     return;
   }
   tbody.innerHTML = htmlRows.join('');
@@ -3376,6 +3893,7 @@ function renderGenericPickTable(div, wrapSel, tbodySel, pickClass, emptyCols, em
     cb.addEventListener('change', () => updateContainmentButtons(div));
   });
   updateContainmentButtons(div);
+  wireContainmentTableSort(tbody.closest('table'));
 }
 
 function asArray(value) {
@@ -3395,9 +3913,10 @@ function applyTransportRulesResult(div, rules) {
       <td>${escapeHtml(String(rule.State || ''))}</td>
       <td>${rule.Priority != null ? escapeHtml(String(rule.Priority)) : ''}</td>
       <td>${escapeHtml(String(rule.Description || ''))}</td>
+      <td>${escapeHtml(containmentDateText(rule.WhenChanged, rule.WhenChangedUTC, rule.LastModifiedTime))}</td>
     </tr>`;
   });
-  renderGenericPickTable(div, '.containmentTransportWrap', '.containmentTransportTable tbody', 'containmentTransportPick', 5, 'No transport rules.', html);
+  renderGenericPickTable(div, '.containmentTransportWrap', '.containmentTransportTable tbody', 'containmentTransportPick', 6, 'No transport rules.', html);
 }
 
 function applyAuthMethodsResult(div, methods) {
@@ -3413,9 +3932,10 @@ function applyAuthMethodsResult(div, methods) {
       <td>${escapeHtml(m.UserPrincipalName || '')}</td>
       <td>${escapeHtml(m.Type || '')}</td>
       <td>${escapeHtml(m.Details || m.Error || '')}</td>
+      <td>${escapeHtml(containmentCreatedText(m.Created, m.Details))}</td>
     </tr>`;
   });
-  renderGenericPickTable(div, '.containmentMfaWrap', '.containmentMfaTable tbody', 'containmentMfaPick', 4, 'No MFA methods.', html);
+  renderGenericPickTable(div, '.containmentMfaWrap', '.containmentMfaTable tbody', 'containmentMfaPick', 5, 'No MFA methods.', html);
 }
 
 function applyDevicesResult(div, devices) {
@@ -3432,7 +3952,7 @@ function applyDevicesResult(div, devices) {
       <td>${escapeHtml(d.OperatingSystem || '')}</td>
       <td>${escapeHtml(d.TrustType || '')}</td>
       <td>${escapeHtml(d.Relation || '')}</td>
-      <td>${escapeHtml(d.LastSignIn || d.Error || '')}</td>
+      <td>${escapeHtml(containmentDateText(d.LastSignIn, d.approximateLastSignInDateTime) || d.Error || '')}</td>
     </tr>`;
   });
   renderGenericPickTable(div, '.containmentDevicesWrap', '.containmentDevicesTable tbody', 'containmentDevicePick', 7, 'No registered or owned devices.', html);
@@ -3449,7 +3969,7 @@ function applyAppsResult(div, apps) {
       <td>${kind}</td>
       <td>${escapeHtml(String(a.DisplayName || ''))}</td>
       <td>${escapeHtml(String(a.AppId || ''))}</td>
-      <td>${escapeHtml(String(a.Created || ''))}</td>
+      <td>${escapeHtml(containmentDateText(a.Created, a.createdDateTime))}</td>
       <td>${escapeHtml(String(a.Publisher || ''))}</td>
     </tr>`;
   });
@@ -3469,9 +3989,10 @@ function applyConnectorsResult(div, connectors) {
       <td>${name}</td>
       <td>${c.Enabled ? 'yes' : 'no'}</td>
       <td>${escapeHtml(details)}</td>
+      <td>${escapeHtml(containmentDateText(c.WhenCreated, c.WhenChanged, c.WhenCreatedUTC))}</td>
     </tr>`;
   });
-  renderGenericPickTable(div, '.containmentConnectorsWrap', '.containmentConnectorsTable tbody', 'containmentConnectorPick', 5, 'No inbound or outbound connectors.', html);
+  renderGenericPickTable(div, '.containmentConnectorsWrap', '.containmentConnectorsTable tbody', 'containmentConnectorPick', 6, 'No inbound or outbound connectors.', html);
 }
 
 function applyOauthResult(div, grants) {
@@ -3493,20 +4014,27 @@ function applyMobileResult(div, devices) {
       <td>${escapeHtml(String(d.UserPrincipalName || ''))}</td>
       <td>${escapeHtml(String(d.FriendlyName || d.Error || ''))}</td>
       <td>${escapeHtml(String(d.DeviceType || ''))}</td>
-      <td>${escapeHtml(String(d.FirstSync || ''))}</td>
+      <td>${escapeHtml(containmentDateText(d.FirstSync, d.FirstSyncTime))}</td>
     </tr>`);
   renderGenericPickTable(div, '.containmentMobileWrap', '.containmentMobileTable tbody', 'containmentMobilePick', 5, 'No ActiveSync partnerships.', html);
 }
 
 function applyIntuneResult(div, devices) {
   rememberContainmentResult(div, 'intune', devices);
-  const html = asArray(devices).filter((d) => d.Id || d.Error).map((d) => `<tr>
+  const list = asArray(devices);
+  const errOnly = list.filter((d) => d.Error && !d.Id);
+  if (errOnly.length && !list.some((d) => d.Id)) {
+    const msg = shortenGraphError(errOnly[0].Error) || errOnly[0].Error;
+    renderGenericPickTable(div, '.containmentIntuneWrap', '.containmentIntuneTable tbody', 'containmentIntunePick', 6, msg, []);
+    return;
+  }
+  const html = list.filter((d) => d.Id || d.Error).map((d) => `<tr>
       <td>${d.Id ? `<input type="checkbox" class="containmentIntunePick" data-id="${escapeHtml(String(d.Id))}" data-name="${escapeHtml(String(d.DeviceName || ''))}" />` : ''}</td>
       <td>${escapeHtml(String(d.UserPrincipalName || ''))}</td>
       <td>${escapeHtml(String(d.DeviceName || d.Error || ''))}</td>
       <td>${escapeHtml(String(d.Os || ''))}</td>
       <td>${escapeHtml(String(d.Compliance || ''))}</td>
-      <td>${escapeHtml(String(d.LastSync || ''))}</td>
+      <td>${escapeHtml(containmentDateText(d.LastSync, d.lastSyncDateTime))}</td>
     </tr>`);
   renderGenericPickTable(div, '.containmentIntuneWrap', '.containmentIntuneTable tbody', 'containmentIntunePick', 6, 'No Intune-managed devices.', html);
 }
@@ -3530,16 +4058,19 @@ function applyAutoreplyResult(div, users) {
   if (!wrap || !tbody) return;
   const list = asArray(users);
   if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="muted">No auto-reply data.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">No auto-reply data.</td></tr>';
   } else {
     tbody.innerHTML = list.map((u) => `<tr>
       <td>${escapeHtml(String(u.UserPrincipalName || ''))}</td>
       <td>${escapeHtml(String(u.AutoReplyState || u.Error || ''))}</td>
       <td>${escapeHtml(String(u.ExternalAudience || ''))}</td>
+      <td>${escapeHtml(containmentDateText(u.StartTime))}</td>
+      <td>${escapeHtml(containmentDateText(u.EndTime))}</td>
       <td>${escapeHtml(String((u.InternalMessage || u.ExternalMessage || '').replace(/<[^>]+>/g, ' ').slice(0, 180)))}</td>
     </tr>`).join('');
   }
   wrap.style.display = 'block';
+  wireContainmentTableSort(div.querySelector('.containmentAutoreplyTable'));
 }
 
 function applyOrgfwdResult(div, policies) {
@@ -3575,8 +4106,9 @@ function applyJournalResult(div, rules) {
       <td>${escapeHtml(String(r.Recipient || ''))}</td>
       <td>${escapeHtml(String(r.JournalEmailAddress || ''))}</td>
       <td>${r.Enabled ? 'yes' : 'no'}</td>
+      <td>${escapeHtml(containmentDateText(r.WhenChanged, r.WhenChangedUTC))}</td>
     </tr>`);
-  renderGenericPickTable(div, '.containmentJournalWrap', '.containmentJournalTable tbody', 'containmentJournalPick', 5, 'No journal rules.', html);
+  renderGenericPickTable(div, '.containmentJournalWrap', '.containmentJournalTable tbody', 'containmentJournalPick', 6, 'No journal rules.', html);
 }
 
 function applyHoldResult(div, users) {
@@ -3589,11 +4121,13 @@ function applyHoldResult(div, users) {
     ? list.map((u) => `<tr>
       <td>${escapeHtml(String(u.UserPrincipalName || ''))}</td>
       <td>${u.Error ? escapeHtml(String(u.Error)) : (u.LitigationHoldEnabled ? 'yes' : 'no')}</td>
+      <td>${escapeHtml(containmentDateText(u.LitigationHoldDate))}</td>
       <td>${escapeHtml(String(u.RetainDeletedItemsFor || ''))}</td>
       <td>${u.AuditEnabled ? 'yes' : 'no'}</td>
     </tr>`).join('')
-    : '<tr><td colspan="4" class="muted">No mailbox hold data.</td></tr>';
+    : '<tr><td colspan="5" class="muted">No mailbox hold data.</td></tr>';
   wrap.style.display = 'block';
+  wireContainmentTableSort(div.querySelector('.containmentHoldTable'));
 }
 
 function applyElsewhereResult(div, grants) {
@@ -3626,9 +4160,10 @@ function applyAppcredsResult(div, creds) {
       <td>${escapeHtml(String(c.Kind || ''))}</td>
       <td>${escapeHtml(String(c.AppName || ''))}</td>
       <td>${escapeHtml(String(c.DisplayName || c.Error || ''))}</td>
-      <td>${escapeHtml(String(c.End || ''))}</td>
+      <td>${escapeHtml(containmentDateText(c.Created, c.startDateTime, c.StartDateTime))}</td>
+      <td>${escapeHtml(containmentDateText(c.End, c.endDateTime, c.EndDateTime))}</td>
     </tr>`);
-  renderGenericPickTable(div, '.containmentAppcredsWrap', '.containmentAppcredsTable tbody', 'containmentAppcredPick', 5, 'No app secrets or owners (certificates are listed but must be removed in Entra).', html);
+  renderGenericPickTable(div, '.containmentAppcredsWrap', '.containmentAppcredsTable tbody', 'containmentAppcredPick', 6, 'No app secrets or owners (certificates are listed but must be removed in Entra).', html);
 }
 
 function applyFlowsResult(div, flows) {
@@ -3638,8 +4173,9 @@ function applyFlowsResult(div, flows) {
       <td>${escapeHtml(String(f.Name || f.Error || ''))}</td>
       <td>${escapeHtml(String(f.Environment || ''))}</td>
       <td>${f.Enabled === true ? 'yes' : (f.Enabled === false ? 'no' : '')}</td>
+      <td>${escapeHtml(containmentDateText(f.Created, f.CreatedTime, f.lastModifiedTime))}</td>
     </tr>`);
-  renderGenericPickTable(div, '.containmentFlowsWrap', '.containmentFlowsTable tbody', 'containmentFlowPick', 4, 'No flows returned.', html);
+  renderGenericPickTable(div, '.containmentFlowsWrap', '.containmentFlowsTable tbody', 'containmentFlowPick', 5, 'No flows returned.', html);
 }
 
 async function sendRemediateCommand(clientNumber, div, command, progressLabel, waitSeconds = 180) {
@@ -3679,7 +4215,7 @@ async function runContainmentQuickSteps(clientNumber, div, label, steps, options
     noteContainmentAction(div, step.kind, step.targets || [], parsed);
     const ok = parsed.prefix === 'REMEDIATE_SUCCESS:';
     const details = asArray(parsed.data?.Details);
-    results.push({ step, parsed, ok, detail: details.length ? details.join('\n') : (parsed.raw || final || '') });
+    results.push({ step, parsed, ok, detail: details.length ? details.join('\n') : summarizeRemediateFailure(parsed, final || '').text });
     log(`Client ${clientNumber}: ${label} — ${step.label} ${ok ? 'finished' : 'FAILED'}.`);
     if (!ok && options.stopOnFailure) halted = true;
   }
@@ -3724,7 +4260,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       { kind: 'block', label: 'blocking sign-in', cmd: `REMEDIATE_BLOCK|USERS:${usersJson}`, targets: users },
       { kind: 'revoke', label: 'revoking sessions', cmd: `REMEDIATE_REVOKE_SESSIONS|USERS:${usersJson}`, targets: users },
     ]);
-    setContainmentStatus(div, formatContainmentQuickSummary(results));
+    setContainmentStatus(div, formatContainmentQuickSummary(results), { reveal: true });
     await runContainmentAction(clientNumber, div, 'signin-status');
     return;
   }
@@ -3763,7 +4299,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       lines.push(containmentPasswordResetInstruction(resetUrl));
       log(`Client ${clientNumber}: password reset — send the user ${resetUrl}`);
     }
-    setContainmentStatus(div, lines.join('\n\n'));
+    setContainmentStatus(div, lines.join('\n\n'), { reveal: true });
     await runContainmentAction(clientNumber, div, 'signin-status');
     return;
   }
@@ -3778,8 +4314,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentUserStatus(div, parsed.data?.Users);
       log(`Client ${clientNumber}: sign-in status updated.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Sign-in status failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Sign-in status failed.');
     }
     return;
   }
@@ -3815,13 +4350,12 @@ async function runContainmentAction(clientNumber, div, kind) {
         '',
         containmentPasswordResetInstruction(resetUrl),
       ];
-      setContainmentStatus(div, lines.filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n'));
+      setContainmentStatus(div, lines.filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n'), { reveal: true });
       const field = div.querySelector('.containmentAssignPasswordInput');
       if (field) field.value = '';
       log(`Client ${clientNumber}: password reset finished. Send the user ${resetUrl}`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Password reset failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Password reset failed.');
     }
     noteContainmentAction(div, kind, users, parsed);
     return;
@@ -3838,8 +4372,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `${asArray(parsed.data?.Methods).length} MFA method row(s).`);
       log(`Client ${clientNumber}: MFA methods loaded.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'List MFA methods failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'List MFA methods failed.');
     }
     return;
   }
@@ -3859,13 +4392,12 @@ async function runContainmentAction(clientNumber, div, kind) {
     const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_AUTH_METHODS|ITEMS:${JSON.stringify(selected)}`, 'removing MFA methods');
     const parsed = parseRemediatePayload(final || '');
     if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.data?.Methods) applyAuthMethodsResult(div, parsed.data.Methods);
     if (parsed.prefix === 'REMEDIATE_AUTHMETHODS:') {
-      applyAuthMethodsResult(div, parsed.data?.Methods);
       setContainmentStatus(div, `Removed ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
       log(`Client ${clientNumber}: MFA method delete finished.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Remove MFA methods failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Remove MFA methods failed.');
     }
     noteContainmentAction(div, kind, selected, parsed);
     return;
@@ -3882,8 +4414,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `${asArray(parsed.data?.Devices).filter((d) => d.Id).length} device(s).`);
       log(`Client ${clientNumber}: devices loaded.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'List devices failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'List devices failed.');
     }
     return;
   }
@@ -3902,13 +4433,12 @@ async function runContainmentAction(clientNumber, div, kind) {
     const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_DEVICES|DEVICES:${JSON.stringify(selected)}`, 'removing devices');
     const parsed = parseRemediatePayload(final || '');
     if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.data?.Devices) applyDevicesResult(div, parsed.data.Devices);
     if (parsed.prefix === 'REMEDIATE_DEVICES:') {
-      applyDevicesResult(div, parsed.data?.Devices);
       setContainmentStatus(div, `Removed ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
       log(`Client ${clientNumber}: device delete finished.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Remove devices failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Remove devices failed.');
     }
     noteContainmentAction(div, kind, selected, parsed);
     return;
@@ -3926,8 +4456,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `${asArray(parsed.data?.Apps).length} app(s).`);
       log(`Client ${clientNumber}: app registrations loaded.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'List apps failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'List apps failed.');
     }
     return;
   }
@@ -3947,13 +4476,12 @@ async function runContainmentAction(clientNumber, div, kind) {
     const final = await sendRemediateCommand(clientNumber, div, `REMEDIATE_DELETE_APPS|APPS:${JSON.stringify(selected)}`, 'deleting apps');
     const parsed = parseRemediatePayload(final || '');
     if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
+    if (parsed.data?.Apps) applyAppsResult(div, parsed.data.Apps);
     if (parsed.prefix === 'REMEDIATE_APPS:') {
-      applyAppsResult(div, parsed.data?.Apps);
       setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
       log(`Client ${clientNumber}: app delete finished.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Delete apps failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Delete apps failed.');
     }
     noteContainmentAction(div, kind, selected, parsed);
     return;
@@ -3974,8 +4502,7 @@ async function runContainmentAction(clientNumber, div, kind) {
         ? `Client ${clientNumber}: ${hits.length} selected user(s) restricted from sending — Unrestrict is available.`
         : `Client ${clientNumber}: selected user(s) are not on Restricted entities.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Restricted status check failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Restricted status check failed.');
     }
     return;
   }
@@ -3991,8 +4518,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `${(parsed.data?.Rules || []).length} inbox rule(s) for ${mailbox}.`);
       log(`Client ${clientNumber}: loaded inbox rules for ${mailbox}.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'List inbox rules failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'List inbox rules failed.');
     }
     return;
   }
@@ -4022,8 +4548,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
       log(`Client ${clientNumber}: inbox rule delete finished.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Delete inbox rules failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Delete inbox rules failed.');
     }
     noteContainmentAction(div, kind, mailbox, parsed);
     return;
@@ -4040,8 +4565,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `Mailbox access loaded for ${mailboxUsers.length} user(s).`);
       log(`Client ${clientNumber}: mailbox access updated.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Mailbox access check failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Mailbox access check failed.');
     }
     return;
   }
@@ -4064,8 +4588,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `Forwarding set for ${mailbox}.`);
       log(`Client ${clientNumber}: forwarding set for ${mailbox}.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Set forwarding failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Set forwarding failed.');
     }
     noteContainmentAction(div, kind, mailbox, parsed);
     return;
@@ -4091,8 +4614,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, Array.isArray(parsed.data?.Details) ? parsed.data.Details.join('\n') : `Removed ${parsed.data?.SuccessCount || 0} forwarding entry(ies).`);
       log(`Client ${clientNumber}: selected forwarding removed.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Remove forwarding failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Remove forwarding failed.');
     }
     noteContainmentAction(div, kind, selected, parsed);
     return;
@@ -4109,8 +4631,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, Array.isArray(parsed.data?.Details) ? parsed.data.Details.join('\n') : 'Forwarding cleared.');
       log(`Client ${clientNumber}: forwarding cleared.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Clear forwarding failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Clear forwarding failed.');
     }
     noteContainmentAction(div, kind, users, parsed);
     return;
@@ -4134,8 +4655,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `Added ${right} for ${delegate} on ${mailbox}.`);
       log(`Client ${clientNumber}: delegate added.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Add delegate failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Add delegate failed.');
     }
     noteContainmentAction(div, kind, mailbox, parsed);
     return;
@@ -4161,8 +4681,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       if (parsed.prefix === 'REMEDIATE_MAILBOX:') {
         lastUsers = asArray(parsed.data?.Users);
       } else {
-        setContainmentStatus(div, parsed.raw || final || 'Remove delegate failed.');
-        log(`Client ${clientNumber}: ${final}`);
+        showContainmentFailure(div, clientNumber, parsed, 'Remove delegate failed.');
         return;
       }
     }
@@ -4185,8 +4704,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `${transportRules.length} transport rule(s).`);
       log(`Client ${clientNumber}: transport rules loaded.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'List transport rules failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'List transport rules failed.');
     }
     return;
   }
@@ -4206,8 +4724,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
       log(`Client ${clientNumber}: transport rule delete finished.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Delete transport rules failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Delete transport rules failed.');
     }
     noteContainmentAction(div, kind, '', parsed);
     return;
@@ -4224,8 +4741,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `${connectors.length} connector(s).`);
       log(`Client ${clientNumber}: connectors loaded.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'List connectors failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'List connectors failed.');
     }
     return;
   }
@@ -4248,8 +4764,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       setContainmentStatus(div, `Deleted ${parsed.data?.SuccessCount || 0}; failed ${parsed.data?.FailCount || 0}.`);
       log(`Client ${clientNumber}: connector delete finished.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || 'Delete connectors failed.');
-      log(`Client ${clientNumber}: ${final}`);
+      showContainmentFailure(div, clientNumber, parsed, 'Delete connectors failed.');
     }
     noteContainmentAction(div, kind, '', parsed);
     return;
@@ -4261,7 +4776,7 @@ async function runContainmentAction(clientNumber, div, kind) {
     'reregister-mfa': { need: 'graph', users: true, write: true, cmd: () => `REMEDIATE_REREGISTER_MFA|USERS:${usersJson}`, label: 'wiping MFA methods', prefix: 'REMEDIATE_SUCCESS:', confirmText: () => `Delete all removable MFA methods and revoke sessions for:\n${users.join('\n')}\n\nThe user must re-register MFA. Continue?` },
     'list-mobile': { need: 'exo', users: true, cmd: () => `REMEDIATE_LIST_MOBILE_DEVICES|USERS:${usersJson}`, label: 'listing mobile partnerships', prefix: 'REMEDIATE_MOBILE:', apply: (d, data) => applyMobileResult(d, data?.Devices), count: (data) => asArray(data?.Devices).filter((x) => x.Identity).length },
     'delete-mobile': { need: 'exo', confirm: true, prefix: 'REMEDIATE_MOBILE:', apply: (d, data) => applyMobileResult(d, data?.Devices), picks: '.containmentMobilePick:checked', map: (cb) => ({ Identity: cb.dataset.identity, UserPrincipalName: cb.dataset.user }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_MOBILE_DEVICES', label: 'removing mobile partnerships', confirmText: (items) => `Remove ${items.length} ActiveSync partnership(s)?` },
-    'list-intune': { need: 'graph', users: true, cmd: () => `REMEDIATE_LIST_INTUNE|USERS:${usersJson}`, label: 'listing Intune devices', prefix: 'REMEDIATE_INTUNE:', apply: (d, data) => applyIntuneResult(d, data?.Devices), count: (data) => asArray(data?.Devices).filter((x) => x.Id).length },
+    'list-intune': { need: 'graph', users: true, cmd: () => `REMEDIATE_LIST_INTUNE|USERS:${usersJson}`, label: 'listing Intune devices', prefix: 'REMEDIATE_INTUNE:', apply: (d, data) => applyIntuneResult(d, data?.Devices), count: (data) => asArray(data?.Devices).filter((x) => x.Id).length, after: (data) => { const err = asArray(data?.Devices).find((x) => x.Error && !x.Id)?.Error; if (err) setContainmentStatus(div, shortenGraphError(err), { tone: 'statusWarn' }); } },
     'wipe-intune': { need: 'graph', confirm: true, prefix: 'REMEDIATE_INTUNE:', picks: '.containmentIntunePick:checked', map: (cb) => ({ Id: cb.dataset.id }), token: 'DEVICES', cmdName: 'REMEDIATE_WIPE_INTUNE', label: 'wiping Intune devices', confirmText: (items) => `WIPE ${items.length} Intune device(s)? This is destructive.` },
     'retire-intune': { need: 'graph', confirm: true, prefix: 'REMEDIATE_INTUNE:', picks: '.containmentIntunePick:checked', map: (cb) => ({ Id: cb.dataset.id }), token: 'DEVICES', cmdName: 'REMEDIATE_RETIRE_INTUNE', label: 'retiring Intune devices', confirmText: (items) => `Retire ${items.length} Intune device(s)?` },
     'list-folders': { need: 'exo', users: true, cmd: () => `REMEDIATE_LIST_FOLDER_PERMS|USERS:${usersJson}`, label: 'listing folder permissions', prefix: 'REMEDIATE_FOLDERS:', apply: (d, data) => applyFoldersResult(d, data?.Permissions), count: (data) => asArray(data?.Permissions).filter((x) => x.User && x.User !== '(none)').length },
@@ -4282,7 +4797,7 @@ async function runContainmentAction(clientNumber, div, kind) {
     'delete-roles': { need: 'graph', confirm: true, prefix: 'REMEDIATE_ROLES:', apply: (d, data) => applyRolesResult(d, data?.Roles), picks: '.containmentRolePick:checked', map: (cb) => ({ Id: cb.dataset.id, Kind: cb.dataset.kind, UserPrincipalName: cb.dataset.user }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_ROLES', label: 'removing roles / groups', confirmText: (items) => `Remove ${items.length} role assignment / group membership(s)?` },
     'list-appcreds': { need: 'graph', cmd: () => 'REMEDIATE_LIST_APP_CREDS', label: 'listing app secrets / owners', prefix: 'REMEDIATE_APPCREDS:', apply: (d, data) => applyAppcredsResult(d, data?.Credentials), count: (data) => asArray(data?.Credentials).filter((x) => x.AppId).length },
     'delete-appcreds': { need: 'graph', confirm: true, prefix: 'REMEDIATE_APPCREDS:', apply: (d, data) => applyAppcredsResult(d, data?.Credentials), picks: '.containmentAppcredPick:checked', map: (cb) => ({ Kind: cb.dataset.kind, AppId: cb.dataset.appid, KeyId: cb.dataset.keyid, OwnerId: cb.dataset.ownerid }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_APP_CREDS', label: 'removing secrets / owners', confirmText: (items) => `Remove ${items.length} app secret(s) or owner(s)?` },
-    'list-flows': { cmd: () => 'REMEDIATE_LIST_FLOWS', label: 'listing Power Automate flows', prefix: 'REMEDIATE_FLOWS:', apply: (d, data) => applyFlowsResult(d, data?.Flows), after: (data) => { if (data?.Message) setContainmentStatus(div, data.Message); } },
+    'list-flows': { cmd: () => 'REMEDIATE_LIST_FLOWS', label: 'listing Power Automate flows', prefix: 'REMEDIATE_FLOWS:', apply: (d, data) => applyFlowsResult(d, data?.Flows), after: (data) => { if (data?.Message) setContainmentStatus(div, data.Message, { reveal: true }); } },
     'delete-flows': { confirm: true, prefix: 'REMEDIATE_FLOWS:', apply: (d, data) => applyFlowsResult(d, data?.Flows), picks: '.containmentFlowPick:checked', map: (cb) => ({ Id: cb.dataset.id, Environment: cb.dataset.env }), token: 'ITEMS', cmdName: 'REMEDIATE_DELETE_FLOWS', label: 'deleting flows', confirmText: (items) => `Delete ${items.length} flow(s)?` },
   };
   const extraSpec = extra[kind];
@@ -4317,15 +4832,16 @@ async function runContainmentAction(clientNumber, div, kind) {
     if (parsed.data?.Capabilities) applyContainmentCapabilities(div, parsed.data.Capabilities);
     if (parsed.prefix === extraSpec.prefix) {
       if (extraSpec.apply) extraSpec.apply(div, parsed.data);
-      if (parsed.data?.SuccessCount != null) setContainmentStatus(div, `Finished. Success ${parsed.data.SuccessCount || 0}; failed ${parsed.data.FailCount || 0}.`);
-      else if (extraSpec.count) setContainmentStatus(div, `${extraSpec.count(parsed.data)} row(s).`);
-      else if (Array.isArray(parsed.data?.Details)) setContainmentStatus(div, parsed.data.Details.join('\n'));
-      else setContainmentStatus(div, 'Done.');
+      const statusOpts = extraSpec.apply ? {} : { reveal: true };
+      if (parsed.data?.SuccessCount != null) setContainmentStatus(div, `Finished. Success ${parsed.data.SuccessCount || 0}; failed ${parsed.data.FailCount || 0}.`, statusOpts);
+      else if (extraSpec.count) setContainmentStatus(div, `${extraSpec.count(parsed.data)} row(s).`, statusOpts);
+      else if (Array.isArray(parsed.data?.Details)) setContainmentStatus(div, parsed.data.Details.join('\n'), statusOpts);
+      else setContainmentStatus(div, 'Done.', statusOpts);
       if (extraSpec.after) extraSpec.after(parsed.data);
       log(`Client ${clientNumber}: ${extraSpec.label} finished.`);
     } else {
-      setContainmentStatus(div, parsed.raw || final || `${extraSpec.label} failed.`);
-      log(`Client ${clientNumber}: ${final}`);
+      if (extraSpec.apply && parsed.data) extraSpec.apply(div, parsed.data);
+      showContainmentFailure(div, clientNumber, parsed, `${extraSpec.label} failed.`);
     }
     if (extraSpec.confirm || extraSpec.write) {
       noteContainmentAction(div, kind, selected.length ? selected : users, parsed);
@@ -4377,7 +4893,7 @@ async function runContainmentAction(clientNumber, div, kind) {
   noteContainmentAction(div, kind, confirmTargets, parsed);
   if (parsed.prefix === 'REMEDIATE_SUCCESS:') {
     const details = parsed.data?.Details;
-    setContainmentStatus(div, Array.isArray(details) ? details.join('\n') : (parsed.raw || 'Done.'));
+    setContainmentStatus(div, Array.isArray(details) ? details.join('\n') : (parsed.raw || 'Done.'), { reveal: true });
     log(`Client ${clientNumber}: ${spec.action} finished.`);
     if (kind === 'block' || kind === 'unblock') {
       await runContainmentAction(clientNumber, div, 'signin-status');
@@ -4386,8 +4902,7 @@ async function runContainmentAction(clientNumber, div, kind) {
       await runContainmentAction(clientNumber, div, 'restricted-status');
     }
   } else {
-    setContainmentStatus(div, parsed.raw || final || `${spec.action} failed.`);
-    log(`Client ${clientNumber}: ${final}`);
+    showContainmentFailure(div, clientNumber, parsed, `${spec.action} failed.`);
   }
 }
 
@@ -4405,7 +4920,7 @@ function wireContainmentPanel(div, clientNumber) {
           await runContainmentAction(clientNumber, div, kind);
         } catch (e) {
           log(`Client ${clientNumber}: containment error: ${e.message}`);
-          setContainmentStatus(div, e.message);
+          setContainmentStatus(div, e.message, { reveal: true });
         }
       });
     });
@@ -4474,7 +4989,7 @@ function wireContainmentPanel(div, clientNumber) {
   div.querySelector('.containmentSavePacks')?.addEventListener('click', () => {
     saveContainmentPacks(clientNumber, div).catch((e) => {
       log(`Client ${clientNumber}: save containment zips failed: ${e.message}`);
-      setContainmentStatus(div, e.message);
+      setContainmentStatus(div, e.message, { reveal: true });
     });
   });
   div.querySelector('.containmentClearUserPulls')?.addEventListener('click', () => {
@@ -4845,13 +5360,21 @@ function authInfoHtml(t) {
 
 }
 
+function isAppRegManual(div) {
+  return div?.dataset.appRegManual === '1';
+}
+
+function setAppRegManual(div, manual) {
+  if (div) div.dataset.appRegManual = manual ? '1' : '0';
+}
+
 function autoSelectAppRegForExo(div, exoTenantId) {
 
   if (!exoTenantId || !div) return;
 
   const sel = div.querySelector('.appRegSelect');
 
-  if (!sel || sel.value) return;
+  if (!sel || isAppRegManual(div)) return;
 
   const match = appRegistrations.find(a => (a.tenantId || '').toLowerCase() === exoTenantId.toLowerCase());
 
@@ -5106,8 +5629,6 @@ function renderTenants(session) {
 
         <button class="resetAuth">Reset auth</button>
 
-        <button class="analyzeReports" ${t.outputFolder ? '' : 'disabled'}>Analyze reports</button>
-
         <button class="investigateLogs" ${t.outputFolder ? '' : 'disabled'}>Investigate logs</button>
 
         <select class="investigateFolderSelect" ${t.outputFolder ? '' : 'disabled'} title="Pack to investigate"></select>
@@ -5181,12 +5702,15 @@ function renderTenants(session) {
 
     div.querySelectorAll('.extractEmails').forEach(btn => btn.addEventListener('click', () => extractEmailsFromTicket(t.clientNumber, div)));
 
-    div.querySelector('.analyzeReports')?.addEventListener('click', () => analyzeTenantReports(t.clientNumber, div, t.outputFolder));
-
     fillInvestigateFolderSelect(div, t);
     div.querySelector('.investigateLogs')?.addEventListener('click', () => openInvestigateLogs(t.clientNumber, div));
 
     restoreTenantUiState(t.clientNumber, div);
+    div.querySelector('.appRegSelect')?.addEventListener('change', () => {
+      const picked = div.querySelector('.appRegSelect')?.value || '';
+      setAppRegManual(div, Boolean(picked));
+      saveTenantUiState(t.clientNumber, div);
+    });
     wireTenantTimeframePanel(div, t.clientNumber);
     wireTenantReportExportsPanel(div, t.clientNumber);
     wireSecurityIntegrationsPanel(div, t.clientNumber);
@@ -5428,18 +5952,27 @@ async function graphAuth(clientNumber, div) {
         return;
       }
 
+      const sel = div?.querySelector('.appRegSelect');
+      const interactive = Boolean(div?.querySelector('.interactiveCheck')?.checked);
       let tenantId = null;
-      try {
-        const session = await api('/api/session');
-        const tenant = session.tenants?.find(x => Number(x.clientNumber) === Number(clientNumber));
-        if (tenant?.exoTenantId) {
-          tenantId = tenant.exoTenantId;
-          autoSelectAppRegForExo(div, tenant.exoTenantId);
-          log(`Client ${clientNumber}: auto WCM using EXO tenant ${tenantId}.`);
-        }
-      } catch { /* ignore */ }
-      if (!tenantId) {
-        tenantId = div?.querySelector('.appRegSelect')?.value || null;
+      if (isAppRegManual(div) && sel?.value) {
+        tenantId = sel.value;
+        log(`Client ${clientNumber}: using selected App reg ${tenantId}.`);
+      } else {
+        try {
+          const session = await api('/api/session');
+          const tenant = session.tenants?.find(x => Number(x.clientNumber) === Number(clientNumber));
+          if (tenant?.exoTenantId) {
+            tenantId = tenant.exoTenantId;
+            autoSelectAppRegForExo(div, tenant.exoTenantId);
+            const label = appRegTenantLabel(tenantId);
+            log(`Client ${clientNumber}: auto WCM using EXO tenant ${label} (${tenantId}).`);
+          }
+        } catch { /* ignore */ }
+      }
+      if (!tenantId && !interactive) {
+        log(`Client ${clientNumber}: auto WCM has no Exchange tenant ID. Run Exchange Auth first, or pick App reg tenant. Not guessing among WCM entries.`);
+        return;
       }
       const ui = tenantUiState.get(String(clientNumber)) || {};
       const orgHint = (ui.organizationHint || '').trim();
@@ -5450,8 +5983,6 @@ async function graphAuth(clientNumber, div) {
           log(`Client ${clientNumber}: App reg "${selected.displayText}" may not match ticket org "${orgHint}" — pick the correct tenant in App reg before Graph Auth.`);
         }
       }
-      const interactive = div?.querySelector('.interactiveCheck')?.checked;
-
       let cmd = 'GRAPH_AUTH';
 
       if (tenantId) cmd += `|TENANT_ID:${tenantId}`;
@@ -5885,22 +6416,6 @@ function openInvestigateLogs(clientNumber, div) {
   window.location.href = `investigate.html?${q}`;
 }
 
-async function analyzeTenantReports(clientNumber, div, outputFolder) {
-  const folder = outputFolder || div.dataset.outputFolder;
-  if (!folder) {
-    log(`Client ${clientNumber}: no report folder yet.`);
-    return;
-  }
-  try {
-    log(`Client ${clientNumber}: analyzing reports in ${folder}…`);
-    const data = await api('/api/analyze-reports', { method: 'POST', body: JSON.stringify({ path: folder }) });
-    log(`Client ${clientNumber}: analysis complete.`);
-    if (data.result?.Summary) log(String(data.result.Summary));
-  } catch (e) {
-    log(`Client ${clientNumber}: Analyze failed: ${e.message}`);
-  }
-}
-
 function appendTicketAndDateRange(cmd, ticketNumber, ticketContent, dateStart, dateEnd) {
 
   let out = cmd;
@@ -6241,11 +6756,9 @@ async function generateReports(clientNumber, div) {
         div.dataset.outputFolder = path;
         rememberReportFolder(clientNumber, path);
 
-        const analyzeBtn = div.querySelector('.analyzeReports');
         const openBtn = div.querySelector('.openReports');
         const investigateBtn = div.querySelector('.investigateLogs');
         const investigateSel = div.querySelector('.investigateFolderSelect');
-        if (analyzeBtn) analyzeBtn.disabled = false;
         if (openBtn) openBtn.disabled = false;
         if (investigateBtn) investigateBtn.disabled = false;
         if (investigateSel) investigateSel.disabled = false;

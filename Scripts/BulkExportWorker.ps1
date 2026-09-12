@@ -304,6 +304,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
         IncludeSharePointOneDriveFileActions = if ($null -ne $jsonObj.IncludeSharePointOneDriveFileActions) { $jsonObj.IncludeSharePointOneDriveFileActions } else { $false }
         SignInLogsDaysBack = if ($null -ne $jsonObj.SignInLogsDaysBack) { $jsonObj.SignInLogsDaysBack } else { 7 }
         MessageTraceDaysBack = if ($null -ne $jsonObj.MessageTraceDaysBack) { $jsonObj.MessageTraceDaysBack } else { 10 }
+        MessageTraceStatuses = if ($null -ne $jsonObj.MessageTraceStatuses) { @($jsonObj.MessageTraceStatuses | ForEach-Object { [string]$_ } | Where-Object { $_ }) } else { @() }
     }
 }
 
@@ -553,14 +554,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         $graphAuthExplicitTenantId = $matches[1]
                         $tenantIdsToTry = @($graphAuthExplicitTenantId)
                     } else {
-                        $graphAppMod = Join-Path $ScriptRoot "Modules\GraphAppCredential.psm1"
-                        if (Test-Path $graphAppMod) {
-                            Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
-                            if (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue) {
-                                $allIds = Get-WCMTenantIds
-                                if ($allIds -and $allIds.Count -gt 0) { $tenantIdsToTry = @($allIds) }
-                            }
-                        }
+                        Write-Host "No tenant ID on GRAPH_AUTH — not trying every WCM entry. Run Exchange Auth first or pick App reg tenant." -ForegroundColor Yellow
                     }
                 }
                 if ($useInteractiveOnly) {
@@ -847,7 +841,39 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     $exchangeAuthenticated = $true
                     Write-Status "Exchange Online authentication successful!"
                     Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
-                    Write-CommandResponse "EXCHANGE_AUTH_SUCCESS"
+                    $exoTid = $null
+                    $exoOrg = $null
+                    try {
+                        $conn = Get-ConnectionInformation -ErrorAction SilentlyContinue
+                        $cInfo = if ($conn -is [Array] -and $conn.Count -gt 0) { $conn[0] } else { $conn }
+                        if ($cInfo) {
+                            if ($cInfo.TenantId) { $exoTid = [string]$cInfo.TenantId }
+                            elseif ($cInfo.TenantID) { $exoTid = [string]$cInfo.TenantID }
+                            if ($cInfo.OrganizationName) { $exoOrg = [string]$cInfo.OrganizationName }
+                            elseif ($cInfo.Organization) { $exoOrg = [string]$cInfo.Organization }
+                        }
+                    } catch {}
+                    try {
+                        $org = Get-OrganizationConfig -ErrorAction SilentlyContinue
+                        if ($org) {
+                            if (-not $exoTid -and $org.ExternalDirectoryOrganizationId) { $exoTid = [string]$org.ExternalDirectoryOrganizationId }
+                            if ($org.DisplayName) { $exoOrg = [string]$org.DisplayName }
+                            elseif (-not $exoOrg -and $org.Name) { $exoOrg = [string]$org.Name }
+                        }
+                    } catch {}
+                    if ($exoOrg) { $exoOrg = ($exoOrg -replace '[|]', ' ').Trim() }
+                    if ($exoTid) {
+                        if ($exoOrg) {
+                            Write-CommandResponse "EXCHANGE_AUTH_SUCCESS|TENANT_ID:$exoTid|ORG:$exoOrg"
+                            Write-Status "Exchange tenant: $exoOrg ($exoTid)"
+                        } else {
+                            Write-CommandResponse "EXCHANGE_AUTH_SUCCESS|TENANT_ID:$exoTid"
+                            Write-Status "Exchange tenant ID: $exoTid"
+                        }
+                    } else {
+                        Write-CommandResponse "EXCHANGE_AUTH_SUCCESS"
+                        Write-Status "EXO tenant ID not detected — pick App reg tenant before Graph Auth"
+                    }
                 } catch {
                     $err = $_.Exception.Message
                     if ($err -match 'AADSTS500014') {
@@ -1370,6 +1396,13 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 }
                 try {
                     $messageTraceDays = if ($reportSelections.MessageTraceDaysBack) { $reportSelections.MessageTraceDaysBack } else { $DaysBack }
+                    $mtStatuses = @()
+                    if ($reportSelections.ContainsKey('MessageTraceStatuses') -and $reportSelections.MessageTraceStatuses) {
+                        $mtStatuses = @($reportSelections.MessageTraceStatuses)
+                    }
+                    if ($mtStatuses.Count -gt 0) {
+                        Write-Status ("Message trace statuses: {0}" -f ($mtStatuses -join ', '))
+                    }
                     $reportParams = @{
                         InvestigatorName = $InvestigatorName
                         CompanyName = $CompanyName
@@ -1407,6 +1440,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         UnifiedAuditLogRecordTypes = @(if ($reportSelections.UnifiedAuditLogRecordTypes) { $reportSelections.UnifiedAuditLogRecordTypes } else { @() })
                         SignInLogsDaysBack = $reportSelections.SignInLogsDaysBack
                         MessageTraceDaysBack = $messageTraceDays
+                        MessageTraceStatuses = $mtStatuses
                         SelectedUsers = $selectedUsersForReport
                         TicketNumbers = $ticketNumbers
                         TicketContent = $ticketContent

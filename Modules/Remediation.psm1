@@ -318,7 +318,6 @@ function Get-RemediationAuthMethodDetails {
         $Method.emailAddress
         $Method.deviceTag
         $Method.model
-        if ($Method.createdDateTime) { "created $($Method.createdDateTime)" }
     ) | Where-Object { $_ }
     return ($parts -join ' · ')
 }
@@ -336,6 +335,7 @@ function Get-RemediationAuthMethods {
                 ODataType         = ''
                 Type              = 'Error'
                 Details           = $_.Exception.Message
+                Created           = ''
                 CanDelete         = $false
                 Error             = (Get-RemediationGraphErrorText $_)
             }
@@ -353,6 +353,7 @@ function Get-RemediationAuthMethods {
                 ODataType         = ''
                 Type              = 'Error'
                 Details           = $_.Exception.Message
+                Created           = ''
                 CanDelete         = $false
                 Error             = (Get-RemediationGraphErrorText $_)
             }
@@ -366,6 +367,7 @@ function Get-RemediationAuthMethods {
                 ODataType         = [string]$m.'@odata.type'
                 Type              = $meta.Label
                 Details           = Get-RemediationAuthMethodDetails -Method $m
+                Created           = (Get-RemediationObjectDateText -Object $m -PropertyNames @('createdDateTime', 'CreatedDateTime', 'Created'))
                 CanDelete         = [bool]$meta.Segment
                 Error             = ''
             }
@@ -393,7 +395,11 @@ function Remove-RemediationAuthMethods {
             Invoke-RemediationGraphDelete -Uri "https://graph.microsoft.com/v1.0/users/$encUser/authentication/$($meta.Segment)/$encMethod"
             [pscustomobject]@{ UserPrincipalName = $upn; Id = $methodId; Success = $true; Error = '' }
         } catch {
-            [pscustomobject]@{ UserPrincipalName = $upn; Id = $methodId; Success = $false; Error = (Get-RemediationGraphErrorText $_) }
+            if (Test-RemediationGraphAlreadyGone $_) {
+                [pscustomobject]@{ UserPrincipalName = $upn; Id = $methodId; Success = $true; Error = '' }
+            } else {
+                [pscustomobject]@{ UserPrincipalName = $upn; Id = $methodId; Success = $false; Error = (Get-RemediationGraphErrorText $_) }
+            }
         }
     }
 }
@@ -448,7 +454,7 @@ function Get-RemediationUserDevices {
                     OperatingSystem   = $os
                     TrustType         = [string]$d.trustType
                     Relation          = $label
-                    LastSignIn        = if ($d.approximateLastSignInDateTime) { [string]$d.approximateLastSignInDateTime } else { '' }
+                    LastSignIn        = (Get-RemediationObjectDateText -Object $d -PropertyNames @('approximateLastSignInDateTime', 'ApproximateLastSignInDateTime', 'lastSignInDateTime'))
                     Enabled           = [bool]$d.accountEnabled
                     Error             = ''
                 }
@@ -482,7 +488,11 @@ function Remove-RemediationDevices {
             Invoke-RemediationGraphDelete -Uri "https://graph.microsoft.com/v1.0/devices/$enc"
             [pscustomobject]@{ Id = $id; Success = $true; Error = '' }
         } catch {
-            [pscustomobject]@{ Id = $id; Success = $false; Error = (Get-RemediationGraphErrorText $_) }
+            if (Test-RemediationGraphAlreadyGone $_) {
+                [pscustomobject]@{ Id = $id; Success = $true; Error = '' }
+            } else {
+                [pscustomobject]@{ Id = $id; Success = $false; Error = (Get-RemediationGraphErrorText $_) }
+            }
         }
     }
 }
@@ -503,7 +513,7 @@ function Get-RemediationDirectoryApps {
                 Id          = [string]$app.id
                 AppId       = [string]$app.appId
                 DisplayName = [string]$app.displayName
-                Created     = if ($app.createdDateTime) { [string]$app.createdDateTime } else { '' }
+                Created     = (Get-RemediationObjectDateText -Object $app -PropertyNames @('createdDateTime', 'CreatedDateTime'))
                 Publisher   = [string]$app.publisherDomain
                 Audience    = [string]$app.signInAudience
                 OwnerTenant = $tenantId
@@ -523,7 +533,7 @@ function Get-RemediationDirectoryApps {
                 Id          = [string]$sp.id
                 AppId       = [string]$sp.appId
                 DisplayName = [string]$sp.displayName
-                Created     = if ($sp.createdDateTime) { [string]$sp.createdDateTime } else { '' }
+                Created     = (Get-RemediationObjectDateText -Object $sp -PropertyNames @('createdDateTime', 'CreatedDateTime'))
                 Publisher   = if ($sp.publisherName) { [string]$sp.publisherName } else { $owner }
                 Audience    = 'external-tenant'
                 OwnerTenant = $owner
@@ -545,7 +555,11 @@ function Remove-RemediationDirectoryApps {
             Invoke-RemediationGraphDelete -Uri "https://graph.microsoft.com/v1.0/$path/$enc"
             [pscustomobject]@{ Id = $id; Kind = $kind; Success = $true; Error = '' }
         } catch {
-            [pscustomobject]@{ Id = $id; Kind = $kind; Success = $false; Error = (Get-RemediationGraphErrorText $_) }
+            if (Test-RemediationGraphAlreadyGone $_) {
+                [pscustomobject]@{ Id = $id; Kind = $kind; Success = $true; Error = '' }
+            } else {
+                [pscustomobject]@{ Id = $id; Kind = $kind; Success = $false; Error = (Get-RemediationGraphErrorText $_) }
+            }
         }
     }
 }
@@ -831,20 +845,101 @@ function Remove-RemediationMailboxDelegation {
     }
 }
 
+function Convert-RemediationDateToText {
+    param($Value, [int]$Depth = 0)
+    if ($null -eq $Value -or $Depth -gt 4) { return '' }
+    if ($Value -is [datetime]) {
+        if ($Value.Year -le 1601) { return '' }
+        try { return $Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { return $Value.ToString('o') }
+    }
+    if ($Value -is [datetimeoffset]) {
+        if ($Value.Year -le 1601) { return '' }
+        return $Value.UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    if ($Value -is [string]) {
+        $s = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($s) -or $s -eq '[object Object]') { return '' }
+        return $s
+    }
+    if ($Value -is [valuetype]) { return '' }
+    $props = @($Value.PSObject.Properties)
+    foreach ($name in @('DateTime', 'dateTime', 'UtcDateTime', 'utcDateTime', 'Value', 'value', 'DisplayDateTime')) {
+        $p = $props | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if ($p -and $null -ne $p.Value) {
+            $inner = Convert-RemediationDateToText -Value $p.Value -Depth ($Depth + 1)
+            if ($inner) { return $inner }
+        }
+    }
+    return ''
+}
+
+function Get-RemediationObjectDateText {
+    param($Object, [string[]]$PropertyNames)
+    if ($null -eq $Object) { return '' }
+    $wanted = @($PropertyNames)
+    foreach ($name in $wanted) {
+        $prop = $Object.PSObject.Properties | Where-Object { $_.Name -ieq $name } | Select-Object -First 1
+        if (-not $prop) { continue }
+        $text = Convert-RemediationDateToText $prop.Value
+        if ($text) { return $text }
+    }
+    foreach ($prop in $Object.PSObject.Properties) {
+        if ($prop.Name -notmatch 'WhenChanged|WhenCreated|LastModified|CreatedTime|CreationTime|ModifiedTime|startDateTime|createdDateTime|LitigationHoldDate|StartTime|EndTime|approximateLastSignIn') {
+            continue
+        }
+        $text = Convert-RemediationDateToText $prop.Value
+        if ($text) { return $text }
+    }
+    return ''
+}
+
+function Get-RemediationHydratedDateText {
+    param(
+        $Listed,
+        [string]$Identity,
+        [scriptblock]$Loader,
+        [string[]]$PropertyNames,
+        $State
+    )
+    $text = Get-RemediationObjectDateText -Object $Listed -PropertyNames $PropertyNames
+    if ($text) { return $text }
+    if ($State.Skip -or [string]::IsNullOrWhiteSpace($Identity) -or -not $Loader) { return '' }
+    try {
+        $full = & $Loader $Identity
+        $text = Get-RemediationObjectDateText -Object $full -PropertyNames $PropertyNames
+        if ($text) {
+            $State.Hits++
+            return $text
+        }
+        $State.Misses++
+    } catch {
+        $State.Misses++
+    }
+    if ($State.Hits -eq 0 -and $State.Misses -ge 3) { $State.Skip = $true }
+    return ''
+}
+
 function Get-RemediationTransportRules {
     if (-not (Get-Command Get-TransportRule -ErrorAction SilentlyContinue)) {
         throw 'Get-TransportRule is not available. Complete Exchange Auth.'
     }
+    $dateNames = @('WhenChanged', 'WhenChangedUTC', 'LastModifiedTime', 'LastModifiedDateTime', 'ModifiedTime')
+    $hydrate = @{ Hits = 0; Misses = 0; Skip = $false }
     foreach ($rule in @(Get-TransportRule -ErrorAction Stop)) {
         $desc = [string]$rule.Description
         if ($desc.Length -gt 400) { $desc = $desc.Substring(0, 400) + '…' }
+        $identity = [string]$rule.Identity
+        $changed = Get-RemediationHydratedDateText -Listed $rule -Identity $identity -PropertyNames $dateNames -State $hydrate -Loader {
+            param($id) Get-TransportRule -Identity $id -ErrorAction Stop
+        }
         [pscustomobject]@{
-            Identity    = [string]$rule.Identity
+            Identity    = $identity
             Name        = [string]$rule.Name
             Priority    = $rule.Priority
             State       = [string]$rule.State
             Mode        = [string]$rule.Mode
             Description = $desc
+            WhenChanged = $changed
         }
     }
 }
@@ -877,19 +972,32 @@ function Convert-RemediationConnectorList {
             SmartHosts = $smart
             SenderIPAddresses = $ips
             Domains   = $domains
+            WhenCreated = (Get-RemediationObjectDateText -Object $c -PropertyNames @('WhenCreated', 'WhenCreatedUTC', 'CreationTime', 'CreatedTime', 'WhenChanged', 'WhenChangedUTC'))
         }
     }
 }
 
 function Get-RemediationConnectors {
     $rows = [System.Collections.ArrayList]::new()
+    $dateNames = @('WhenCreated', 'WhenCreatedUTC', 'CreationTime', 'CreatedTime', 'WhenChanged', 'WhenChangedUTC')
+    $hydrate = @{ Hits = 0; Misses = 0; Skip = $false }
     try {
         foreach ($c in @(Convert-RemediationConnectorList -Connectors (Get-InboundConnector -ErrorAction Stop) -Direction 'Inbound')) {
+            if (-not $c.WhenCreated) {
+                $c.WhenCreated = Get-RemediationHydratedDateText -Listed $c -Identity $c.Identity -PropertyNames $dateNames -State $hydrate -Loader {
+                    param($id) Get-InboundConnector -Identity $id -ErrorAction Stop
+                }
+            }
             [void]$rows.Add($c)
         }
     } catch {}
     try {
         foreach ($c in @(Convert-RemediationConnectorList -Connectors (Get-OutboundConnector -ErrorAction Stop) -Direction 'Outbound')) {
+            if (-not $c.WhenCreated) {
+                $c.WhenCreated = Get-RemediationHydratedDateText -Listed $c -Identity $c.Identity -PropertyNames $dateNames -State $hydrate -Loader {
+                    param($id) Get-OutboundConnector -Identity $id -ErrorAction Stop
+                }
+            }
             [void]$rows.Add($c)
         }
     } catch {}
@@ -929,6 +1037,28 @@ function Convert-RemediationJsonTailFromCommand {
     } catch {
         return @()
     }
+}
+
+function Get-RemediationGraphErrorTextFromAny {
+    param($ErrorRecordOrText)
+    if ($ErrorRecordOrText -is [System.Management.Automation.ErrorRecord]) {
+        return Get-RemediationGraphErrorText $ErrorRecordOrText
+    }
+    return [string]$ErrorRecordOrText
+}
+
+function Test-RemediationGraphAlreadyGone {
+    param($ErrorRecordOrText)
+    $text = Get-RemediationGraphErrorTextFromAny $ErrorRecordOrText
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    return [bool]($text -match 'Request_ResourceNotFound|does not exist or one of its queried reference-property objects are not present')
+}
+
+function Test-RemediationIntuneUnavailable {
+    param($ErrorRecordOrText)
+    $text = Get-RemediationGraphErrorTextFromAny $ErrorRecordOrText
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    return [bool]($text -match 'not applicable to target tenant')
 }
 
 function Get-RemediationGraphErrorText {
@@ -1125,6 +1255,10 @@ function Invoke-RemediationWorkerCommand {
             $upns = @($items | ForEach-Object { if ($_.UserPrincipalName) { $_.UserPrincipalName } elseif ($_.User) { $_.User } } | Select-Object -Unique)
             $remaining = @()
             if ($upns.Count -gt 0) { $remaining = @(Get-RemediationAuthMethods -UserPrincipalNames $upns) }
+            $goneIds = @($deleted | Where-Object { $_.Success -and $_.Id } | ForEach-Object { [string]$_.Id })
+            if ($goneIds.Count -gt 0) {
+                $remaining = @($remaining | Where-Object { -not $_.Id -or ($goneIds -notcontains [string]$_.Id) })
+            }
             $ok = @($deleted | Where-Object { $_.Success }).Count
             $fail = @($deleted | Where-Object { -not $_.Success }).Count
             $payload = @{ Deleted = @($deleted); Methods = @($remaining); SuccessCount = $ok; FailCount = $fail; Capabilities = $caps } | ConvertTo-Json -Compress -Depth 6
@@ -1152,6 +1286,10 @@ function Invoke-RemediationWorkerCommand {
             $upns = @($items | ForEach-Object { if ($_.UserPrincipalName) { $_.UserPrincipalName } elseif ($_.User) { $_.User } } | Where-Object { $_ } | Select-Object -Unique)
             $remaining = @()
             if ($upns.Count -gt 0) { $remaining = @(Get-RemediationUserDevices -UserPrincipalNames $upns) }
+            $goneIds = @($deleted | Where-Object { $_.Success -and $_.Id } | ForEach-Object { [string]$_.Id })
+            if ($goneIds.Count -gt 0) {
+                $remaining = @($remaining | Where-Object { -not $_.Id -or ($goneIds -notcontains [string]$_.Id) })
+            }
             $ok = @($deleted | Where-Object { $_.Success }).Count
             $fail = @($deleted | Where-Object { -not $_.Success }).Count
             $payload = @{ Deleted = @($deleted); Devices = @($remaining); SuccessCount = $ok; FailCount = $fail; Capabilities = $caps } | ConvertTo-Json -Compress -Depth 6
@@ -1428,6 +1566,8 @@ function Invoke-RemediationWorkerCommand {
 . (Join-Path $PSScriptRoot 'RemediationExtended.ps1')
 
 Export-ModuleMember -Function Get-GraphContainmentCapabilities, Get-RemediationGraphUser
+Export-ModuleMember -Function Test-RemediationGraphAlreadyGone, Test-RemediationIntuneUnavailable
+Export-ModuleMember -Function Convert-RemediationDateToText, Get-RemediationObjectDateText
 Export-ModuleMember -Function Invoke-RemediationRevokeSessions, Invoke-RemediationSetAccountEnabled, Invoke-RemediationResetPassword
 Export-ModuleMember -Function Get-RemediationAuthMethods, Remove-RemediationAuthMethods
 Export-ModuleMember -Function Get-RemediationUserDevices, Remove-RemediationDevices

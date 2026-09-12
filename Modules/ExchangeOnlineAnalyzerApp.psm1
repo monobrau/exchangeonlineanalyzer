@@ -18,8 +18,6 @@ Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\Connectors.psm1"
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\SessionRevocation.psm1"
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\SignInManagement.psm1"
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\ExportUtils.psm1"
-$reportAnalysisPath = Join-Path $script:EOA_AppRoot 'Modules\ReportAnalysis.psm1'
-if (Test-Path $reportAnalysisPath) { Safe-ImportModule -ModulePath $reportAnalysisPath }
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule -ModulePath "$script:EOA_AppRoot\Modules\SecurityAnalysis.psm1"
 # Import Settings module (needed for settings tab and configuration)
@@ -1819,145 +1817,25 @@ $aiPanel.Dock = 'Fill'
 $aiPanel.Padding = New-Object System.Windows.Forms.Padding(10)
 $aiPanel.AutoScroll = $true
 
-# Rule-Based Analysis section (no LLM)
-$aiRuleBasedTitle = New-Object System.Windows.Forms.Label
-$aiRuleBasedTitle.Text = "Rule-Based Analysis (No LLM)"
-$aiRuleBasedTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiRuleBasedTitle.Location = New-Object System.Drawing.Point(10,10)
-$aiRuleBasedTitle.AutoSize = $true
-
-$aiRuleBasedDesc = New-Object System.Windows.Forms.Label
-$aiRuleBasedDesc.Text = "Analyze report folder with deterministic rules. Writes Findings.csv, _Automated_Summary.txt. No API key required."
-$aiRuleBasedDesc.Location = New-Object System.Drawing.Point(10,32)
-$aiRuleBasedDesc.Size = New-Object System.Drawing.Size(740, 28)
-$aiRuleBasedDesc.ForeColor = [System.Drawing.Color]::DarkGray
-
-$aiRuleBasedFolderLabel = New-Object System.Windows.Forms.Label
-$aiRuleBasedFolderLabel.Text = "Report Folder:"
-$aiRuleBasedFolderLabel.Location = New-Object System.Drawing.Point(10,62)
-$aiRuleBasedFolderLabel.AutoSize = $true
-
-$aiRuleBasedFolderText = New-Object System.Windows.Forms.TextBox
-$aiRuleBasedFolderText.Location = New-Object System.Drawing.Point(100, 59)
-$aiRuleBasedFolderText.Width = 520
-
-$aiRuleBasedBrowseBtn = New-Object System.Windows.Forms.Button
-$aiRuleBasedBrowseBtn.Text = "Browse..."
-$aiRuleBasedBrowseBtn.Location = New-Object System.Drawing.Point(630, 57)
-$aiRuleBasedBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
-$aiRuleBasedBrowseBtn.add_Click({
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select report folder with CSV files"
-    if ($aiRuleBasedFolderText.Text -and (Test-Path $aiRuleBasedFolderText.Text)) { $fbd.SelectedPath = $aiRuleBasedFolderText.Text }
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $aiRuleBasedFolderText.Text = $fbd.SelectedPath }
-})
-
-$aiAnalyzeBtn = New-Object System.Windows.Forms.Button
-$aiAnalyzeBtn.Text = "Analyze Report"
-$aiAnalyzeBtn.Location = New-Object System.Drawing.Point(10, 90)
-$aiAnalyzeBtn.Size = New-Object System.Drawing.Size(120, 28)
-$aiAnalyzeBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-$aiAnalyzeBtn.ForeColor = [System.Drawing.Color]::White
-$aiAnalyzeBtn.add_Click({
-    $folder = $aiRuleBasedFolderText.Text
-    if (-not $folder -or -not (Test-Path $folder)) {
-        [System.Windows.Forms.MessageBox]::Show("Select a valid report folder.", "Invalid Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        return
-    }
-    $aiRuleBasedStatus.Text = "Analyzing..."
-    $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Gray
-    $aiAnalyzeBtn.Enabled = $false
-    try {
-        if (Get-Command Invoke-ReportFolderAnalysis -ErrorAction SilentlyContinue) {
-            $result = Invoke-ReportFolderAnalysis -Path $folder -WriteOutputFiles
-            $aiRuleBasedStatus.Text = "Done: $($result.Findings.Count) findings, Risk $($result.RiskScore.Level)"
-            $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Green
-            $analysisResultForm = New-Object System.Windows.Forms.Form
-            $analysisResultForm.Text = "Rule-Based Analysis Results"
-            $analysisResultForm.Size = New-Object System.Drawing.Size(900, 600)
-            $analysisResultForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-            $tb = New-Object System.Windows.Forms.RichTextBox
-            $tb.Dock = 'Fill'
-            $tb.ReadOnly = $true
-            $tb.Font = New-Object System.Drawing.Font('Consolas', 9)
-            $tb.Text = $result.Summary
-            $analysisResultForm.Controls.Add($tb)
-            $analysisResultForm.ShowDialog()
-        } else {
-            $aiRuleBasedStatus.Text = "ReportAnalysis module not found."
-            $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Red
-        }
-    } catch {
-        $aiRuleBasedStatus.Text = "Error: $($_.Exception.Message)"
-        $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Red
-    } finally {
-        $aiAnalyzeBtn.Enabled = $true
-    }
-})
-
-$aiBulkAnalyzeBtn = New-Object System.Windows.Forms.Button
-$aiBulkAnalyzeBtn.Text = "Analyze Bulk Folders..."
-$aiBulkAnalyzeBtn.Location = New-Object System.Drawing.Point(140, 90)
-$aiBulkAnalyzeBtn.Size = New-Object System.Drawing.Size(140, 28)
-$aiBulkAnalyzeBtn.add_Click({
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select parent folder (e.g. SecurityInvestigation) with tenant subfolders"
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        try {
-            if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                $aiRuleBasedStatus.Text = "Bulk analysis: $($results.Count) tenants ranked"
-                $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Green
-                $bulkForm = New-Object System.Windows.Forms.Form
-                $bulkForm.Text = "Bulk Tenant Ranking"
-                $bulkForm.Size = New-Object System.Drawing.Size(800, 500)
-                $bulkForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                $dg = New-Object System.Windows.Forms.DataGridView
-                $dg.Dock = 'Fill'
-                $dg.AutoGenerateColumns = $true
-                $dg.DataSource = $results
-                $bulkForm.Controls.Add($dg)
-                $bulkForm.ShowDialog()
-            }
-        } catch {
-            $aiRuleBasedStatus.Text = "Error: $($_.Exception.Message)"
-            $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Red
-        }
-    }
-})
-
-$aiRuleBasedStatus = New-Object System.Windows.Forms.Label
-$aiRuleBasedStatus.Text = "Ready"
-$aiRuleBasedStatus.Location = New-Object System.Drawing.Point(290, 95)
-$aiRuleBasedStatus.Size = New-Object System.Drawing.Size(400, 20)
-$aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::DarkGray
-
-# LLM Analysis section
-$aiLlmSeparator = New-Object System.Windows.Forms.Label
-$aiLlmSeparator.Text = "--- LLM Analysis ---"
-$aiLlmSeparator.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$aiLlmSeparator.Location = New-Object System.Drawing.Point(10,135)
-$aiLlmSeparator.AutoSize = $true
-
+# LLM Analysis
 $aiTitle = New-Object System.Windows.Forms.Label
 $aiTitle.Text = "Send to AI (Gemini/Claude)"
 $aiTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiTitle.Location = New-Object System.Drawing.Point(10,158)
+$aiTitle.Location = New-Object System.Drawing.Point(10,10)
 $aiTitle.AutoSize = $true
 
 $aiDesc = New-Object System.Windows.Forms.Label
 $aiDesc.Text = "Send the latest or selected investigation dataset to Gemini or Claude for analysis. Configure API keys in Settings."
-$aiDesc.Location = New-Object System.Drawing.Point(10,178)
+$aiDesc.Location = New-Object System.Drawing.Point(10,32)
 $aiDesc.Size = New-Object System.Drawing.Size(740, 30)
 
-# Folder selection (shared with rule-based - sync on browse)
 $aiProviderLabel = New-Object System.Windows.Forms.Label
 $aiProviderLabel.Text = "Provider:"
-$aiProviderLabel.Location = New-Object System.Drawing.Point(10,213)
+$aiProviderLabel.Location = New-Object System.Drawing.Point(10,68)
 $aiProviderLabel.AutoSize = $true
 
 $aiProviderCombo = New-Object System.Windows.Forms.ComboBox
-$aiProviderCombo.Location = New-Object System.Drawing.Point(100, 210)
+$aiProviderCombo.Location = New-Object System.Drawing.Point(100, 65)
 $aiProviderCombo.Width = 140
 $aiProviderCombo.DropDownStyle = 'DropDownList'
 $aiProviderCombo.Items.AddRange(@('Gemini','Claude'))
@@ -1965,16 +1843,16 @@ $aiProviderCombo.SelectedIndex = 0
 
 $aiFolderLabel = New-Object System.Windows.Forms.Label
 $aiFolderLabel.Text = "Report Folder:"
-$aiFolderLabel.Location = New-Object System.Drawing.Point(250,213)
+$aiFolderLabel.Location = New-Object System.Drawing.Point(250,68)
 $aiFolderLabel.AutoSize = $true
 
 $aiFolderText = New-Object System.Windows.Forms.TextBox
-$aiFolderText.Location = New-Object System.Drawing.Point(340, 210)
+$aiFolderText.Location = New-Object System.Drawing.Point(340, 65)
 $aiFolderText.Width = 380
 
 $aiBrowseBtn = New-Object System.Windows.Forms.Button
 $aiBrowseBtn.Text = "Browse..."
-$aiBrowseBtn.Location = New-Object System.Drawing.Point(730, 208)
+$aiBrowseBtn.Location = New-Object System.Drawing.Point(730, 63)
 $aiBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiBrowseBtn.add_Click({
     $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -1986,16 +1864,16 @@ $aiBrowseBtn.add_Click({
 # Extra files list
 $aiExtraLabel = New-Object System.Windows.Forms.Label
 $aiExtraLabel.Text = "Extra Files (optional):"
-$aiExtraLabel.Location = New-Object System.Drawing.Point(10,258)
+$aiExtraLabel.Location = New-Object System.Drawing.Point(10,113)
 $aiExtraLabel.AutoSize = $true
 
 $aiExtraList = New-Object System.Windows.Forms.ListBox
-$aiExtraList.Location = New-Object System.Drawing.Point(10,278)
+$aiExtraList.Location = New-Object System.Drawing.Point(10,133)
 $aiExtraList.Size = New-Object System.Drawing.Size(610, 120)
 
 $aiAddExtraBtn = New-Object System.Windows.Forms.Button
 $aiAddExtraBtn.Text = "Add..."
-$aiAddExtraBtn.Location = New-Object System.Drawing.Point(630, 278)
+$aiAddExtraBtn.Location = New-Object System.Drawing.Point(630, 133)
 $aiAddExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiAddExtraBtn.add_Click({
     $ofd = New-Object System.Windows.Forms.OpenFileDialog
@@ -2011,7 +1889,7 @@ $aiAddExtraBtn.add_Click({
 
 $aiRemoveExtraBtn = New-Object System.Windows.Forms.Button
 $aiRemoveExtraBtn.Text = "Remove"
-$aiRemoveExtraBtn.Location = New-Object System.Drawing.Point(630, 308)
+$aiRemoveExtraBtn.Location = New-Object System.Drawing.Point(630, 163)
 $aiRemoveExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiRemoveExtraBtn.add_Click({
     $sel = @($aiExtraList.SelectedItems)
@@ -2021,15 +1899,15 @@ $aiRemoveExtraBtn.add_Click({
 # Send button and status
 $aiSendBtn = New-Object System.Windows.Forms.Button
 $aiSendBtn.Text = "Send to AI"
-$aiSendBtn.Location = New-Object System.Drawing.Point(10, 413)
+$aiSendBtn.Location = New-Object System.Drawing.Point(10, 268)
 $aiSendBtn.Size = New-Object System.Drawing.Size(140, 30)
 
 $aiStatus = New-Object System.Windows.Forms.Label
-$aiStatus.Location = New-Object System.Drawing.Point(160, 418)
+$aiStatus.Location = New-Object System.Drawing.Point(160, 273)
 $aiStatus.Size = New-Object System.Drawing.Size(555, 20)
 $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
-$aiPanel.Controls.AddRange(@($aiRuleBasedTitle,$aiRuleBasedDesc,$aiRuleBasedFolderLabel,$aiRuleBasedFolderText,$aiRuleBasedBrowseBtn,$aiAnalyzeBtn,$aiBulkAnalyzeBtn,$aiRuleBasedStatus,$aiLlmSeparator,$aiTitle,$aiDesc,$aiProviderLabel,$aiProviderCombo,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
+$aiPanel.Controls.AddRange(@($aiTitle,$aiDesc,$aiProviderLabel,$aiProviderCombo,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
 $aiTab.Controls.Add($aiPanel)
 $tabControl.TabPages.Add($aiTab)
 
@@ -2057,7 +1935,6 @@ $aiTab.add_Enter({
         $latest = & $getLatestReportFolder
         if ($latest) {
             if (-not $aiFolderText.Text -or -not (Test-Path $aiFolderText.Text)) { $aiFolderText.Text = $latest }
-            if (-not $aiRuleBasedFolderText.Text -or -not (Test-Path $aiRuleBasedFolderText.Text)) { $aiRuleBasedFolderText.Text = $latest }
         }
     } catch {}
 })
@@ -6918,8 +6795,6 @@ $securityInvestigationButton.add_Click({
                         if ($filePaths.AppRegistrationsJson) { $exportedFiles += "AppRegistrations.json" }
                         if ($filePaths.AppRegistrationsError) { $exportedFiles += "AppRegistrations_Error.txt" }
                         if ($filePaths.UserSecurityPostureCsv) { $exportedFiles += "UserSecurityPosture.csv" }
-                        if ($filePaths.FindingsCsv) { $exportedFiles += "Findings.csv" }
-                        if ($filePaths.AutomatedSummaryTxt) { $exportedFiles += "_Automated_Summary.txt" }
                         if ($filePaths.LLMInstructionsTxt) { $exportedFiles += "_AI_Readme.txt" }
                         if ($filePaths.ZipFile) {
                             # Handle multiple zip files (comma-separated)
@@ -6991,8 +6866,6 @@ $securityInvestigationButton.add_Click({
                                         "AppRegistrations.json" { $filePath = $filePaths.AppRegistrationsJson }
                                         "AppRegistrations_Error.txt" { $filePath = $filePaths.AppRegistrationsError }
                                         "UserSecurityPosture.csv" { $filePath = $filePaths.UserSecurityPostureCsv }
-                                        "Findings.csv" { $filePath = $filePaths.FindingsCsv }
-                                        "_Automated_Summary.txt" { $filePath = $filePaths.AutomatedSummaryTxt }
                                         "_AI_Readme.txt" { $filePath = $filePaths.LLMInstructionsTxt }
                                     }
                                 }
@@ -7008,34 +6881,8 @@ $securityInvestigationButton.add_Click({
                     $filesPanel.Controls.AddRange(@($filesLabel, $filesListBox))
                     $filesTab.Controls.Add($filesPanel)
 
-                    # Automated Findings tab (when rule-based analysis ran)
-                    $autoFindingsTab = $null
-                    if ($securityReport.AutomatedFindings -or $securityReport.AutomatedSummary) {
-                        $autoFindingsTab = New-Object System.Windows.Forms.TabPage
-                        $autoFindingsTab.Text = "Automated Findings"
-                        $autoFindingsPanel = New-Object System.Windows.Forms.Panel
-                        $autoFindingsPanel.Dock = 'Fill'
-                        $autoFindingsPanel.Padding = New-Object System.Windows.Forms.Padding(10)
-                        $autoRiskLabel = New-Object System.Windows.Forms.Label
-                        $autoRiskLabel.Text = "Risk Level: $($securityReport.RiskScore.Level) (Score: $($securityReport.RiskScore.Score))"
-                        $autoRiskLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-                        $autoRiskLabel.Location = New-Object System.Drawing.Point(10, 10)
-                        $autoRiskLabel.AutoSize = $true
-                        $autoFindingsPanel.Controls.Add($autoRiskLabel)
-                        $autoFindingsTb = New-Object System.Windows.Forms.RichTextBox
-                        $autoFindingsTb.Location = New-Object System.Drawing.Point(10, 40)
-                        $autoFindingsTb.Size = New-Object System.Drawing.Size(950, 650)
-                        $autoFindingsTb.Anchor = 'Top','Left','Bottom','Right'
-                        $autoFindingsTb.ReadOnly = $true
-                        $autoFindingsTb.Font = New-Object System.Drawing.Font('Consolas', 9)
-                        $autoFindingsTb.Text = $securityReport.AutomatedSummary
-                        $autoFindingsPanel.Controls.Add($autoFindingsTb)
-                        $autoFindingsTab.Controls.Add($autoFindingsPanel)
-                    }
-
                     # Add tabs
                     $resultsTabControl.TabPages.Add($summaryTab)
-                    if ($autoFindingsTab) { $resultsTabControl.TabPages.Add($autoFindingsTab) }
                     $resultsTabControl.TabPages.Add($aiPromptTab)
                     $resultsTabControl.TabPages.Add($ticketTab)
                     $resultsTabControl.TabPages.Add($filesTab)

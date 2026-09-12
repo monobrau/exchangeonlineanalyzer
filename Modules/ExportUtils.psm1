@@ -773,6 +773,8 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [int]$MessageTraceDaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [string[]]$MessageTraceStatuses = @(),
+        [Parameter(Mandatory=$false)]
         [DateTime]$StartDate = [DateTime]::MinValue,
         [Parameter(Mandatory=$false)]
         [DateTime]$EndDate = [DateTime]::MinValue,
@@ -1003,6 +1005,7 @@ function New-SecurityInvestigationReport {
             $params = @{
                 DaysBack = $DaysBack
                 MessageTraceDaysBack = $MessageTraceDaysBack
+                MessageTraceStatuses = $MessageTraceStatuses
                 SignInLogsDaysBack = $SignInLogsDaysBack
                 StartDate = $StartDate
                 EndDate = $EndDate
@@ -1060,7 +1063,7 @@ function New-SecurityInvestigationReport {
                 if ($Params.IncludeMessageTrace) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting message trace..." -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: collecting message trace..." } catch {}
-                    $r.MessageTrace = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-ExchangeMessageTrace -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile } else { Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile }
+                    $r.MessageTrace = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-ExchangeMessageTrace -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -Status $Params.MessageTraceStatuses -StatusFile $Params.StatusFile } else { Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -Status $Params.MessageTraceStatuses -StatusFile $Params.StatusFile }
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" } catch {}
                 }
@@ -1260,7 +1263,7 @@ function New-SecurityInvestigationReport {
 
                 # Exchange in main thread (reuses existing session)
                 $writeStatus = { param($m) Write-ExportStatusLine -StatusFile $StatusFile -Message $m }
-                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile } }
+                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile } }
                 if ($IncludeInboxRules) { try { & $writeStatus "Exchange (main): collecting inbox rules..." } catch {}; $exchangeResult.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential $true -StatusFile $StatusFile }
                 if ($IncludeTransportRules) { $exchangeResult.TransportRules = Get-ExchangeTransportRules }
                 if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
@@ -1383,7 +1386,7 @@ function New-SecurityInvestigationReport {
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                 Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile }
+                $report.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile }
                 if ($ProgressCallback) { try { & $ProgressCallback "Collected $($report.MessageTrace.Count) message trace entries" } catch {} }
                 Invoke-DoEventsSafe
             }
@@ -2048,6 +2051,8 @@ function New-SecurityInvestigationReport {
     if ($report.OutputFolder) {
         $statusMsg = "Exporting data to CSV files..."
         if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+        if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $statusMsg
         Write-Host $statusMsg -ForegroundColor Cyan
         Write-Host "Output folder: $($report.OutputFolder)" -ForegroundColor Gray
         $exportError = $null
@@ -2804,41 +2809,6 @@ Export phase error (if set): $(if ($exportError) { $exportError.Exception.Messag
             }
         }
 
-        # Rule-based automated analysis (reduces LLM reliance)
-        try {
-            $reportAnalysisPath = Join-Path $PSScriptRoot 'ReportAnalysis.psm1'
-            if (Test-Path $reportAnalysisPath) {
-                $statusMsg = "Running rule-based analysis..."
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                Write-Host $statusMsg -ForegroundColor Cyan
-                Import-Module $reportAnalysisPath -Force -ErrorAction Stop
-                $analysisResult = Get-ReportFindings -Report $report
-                $report.AutomatedFindings = $analysisResult.Findings
-                $report.RiskScore = $analysisResult.RiskScore
-                $report.AutomatedSummary = $analysisResult.Summary
-                if ($analysisResult.Findings -and $analysisResult.Findings.Count -gt 0) {
-                    $findingsCsv = Join-Path $report.OutputFolder "Findings$ticketSuffix.csv"
-                    $analysisResult.Findings | Export-Csv -Path $findingsCsv -NoTypeInformation -Encoding UTF8
-                    $report.FilePaths.FindingsCsv = $findingsCsv
-                }
-                $findingsJson = Join-Path $report.OutputFolder "Findings$ticketSuffix.json"
-                $jsonObj = @{ Findings = $analysisResult.Findings; RiskScore = $analysisResult.RiskScore; HasUAL = $analysisResult.HasUAL }
-                if ($analysisResult.UserSummaries) {
-                    $usForJson = @{}
-                    foreach ($k in $analysisResult.UserSummaries.Keys) { $usForJson[$k] = $analysisResult.UserSummaries[$k] }
-                    $jsonObj['UserSummaries'] = $usForJson
-                }
-                $jsonObj | ConvertTo-Json -Depth 5 | Out-File -Path $findingsJson -Encoding utf8
-                $report.FilePaths.FindingsJson = $findingsJson
-                $autoSummaryPath = Join-Path $report.OutputFolder "_Automated_Summary$ticketSuffix.txt"
-                $analysisResult.Summary | Out-File -Path $autoSummaryPath -Encoding utf8
-                $report.FilePaths.AutomatedSummaryTxt = $autoSummaryPath
-                Write-Host "Automated analysis: $($analysisResult.Findings.Count) findings, Risk $($analysisResult.RiskScore.Level)" -ForegroundColor Green
-            }
-        } catch {
-            Write-Warning "Rule-based analysis failed: $($_.Exception.Message)"
-        }
-
         # Generate Memberberry-Slim package (ticket + exceptions + settings) or fallback to AI readme
         $report.FilePaths.MemberberrySlimPackage = $null
         try {
@@ -3021,7 +2991,8 @@ function Invoke-GraphMessageTraceQuery {
         [Parameter(Mandatory = $true)][datetime]$StartDate,
         [Parameter(Mandatory = $true)][datetime]$EndDate,
         [string]$SenderAddress,
-        [string]$RecipientAddress
+        [string]$RecipientAddress,
+        [string[]]$Status = @()
     )
     $startUtc = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'")
     $endUtc = $EndDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'")
@@ -3034,6 +3005,13 @@ function Invoke-GraphMessageTraceQuery {
     }
     if ($RecipientAddress) {
         $filters += "recipientAddress eq '$($RecipientAddress.Replace("'", "''"))'"
+    }
+    $statusValues = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    if ($statusValues.Count -eq 1) {
+        $filters += "status eq '$($statusValues[0].Replace("'", "''"))'"
+    } elseif ($statusValues.Count -gt 1) {
+        $ors = @($statusValues | ForEach-Object { "status eq '$($_.Replace("'", "''"))'" })
+        $filters += '(' + ($ors -join ' or ') + ')'
     }
     $filter = $filters -join ' and '
     $uri = "https://graph.microsoft.com/v1.0/admin/exchange/tracing/messageTraces?`$top=1000&`$filter=$([uri]::EscapeDataString($filter))"
@@ -3318,6 +3296,7 @@ function Get-GraphMessageTrace {
         [datetime]$StartDate,
         [datetime]$EndDate,
         [array]$SelectedUsers = @(),
+        [string[]]$Status = @(),
         [string]$StatusFile = $null
     )
     $results = New-Object System.Collections.Generic.List[object]
@@ -3349,7 +3328,7 @@ function Get-GraphMessageTrace {
             try {
                 if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }
                 $traceCallCount++
-                foreach ($item in @(Invoke-GraphMessageTraceQuery -StartDate $cursor -EndDate $winEnd -SenderAddress $call.Sender -RecipientAddress $call.Recipient)) {
+                foreach ($item in @(Invoke-GraphMessageTraceQuery -StartDate $cursor -EndDate $winEnd -SenderAddress $call.Sender -RecipientAddress $call.Recipient -Status $Status)) {
                     if ($item) { [void]$results.Add($item) }
                 }
             } catch {
@@ -3374,12 +3353,14 @@ function Get-GraphMessageTrace {
                 $uniqueResults += $item
             }
         }
+        $uniqueResults = @(Select-EoaMessageTraceByStatus -Rows $uniqueResults -Status $Status)
         Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($uniqueResults.Count) entries (Graph, filtered users)"
         return [System.Collections.ArrayList]$uniqueResults
     }
 
-    Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($results.Count) entries (Graph)"
-    return [System.Collections.ArrayList]$results
+    $filtered = @(Select-EoaMessageTraceByStatus -Rows $results -Status $Status)
+    Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($filtered.Count) entries (Graph)"
+    return [System.Collections.ArrayList]$filtered
 }
 
 $script:EOA_HistoricalJobPrefix = 'EOA-MT'
@@ -3828,6 +3809,58 @@ function Get-EoaMessageTraceV2SplitWindows {
     return $windows
 }
 
+$script:EOA_MessageTraceStatusValues = @('GettingStatus', 'Failed', 'Pending', 'Delivered', 'Expanded', 'Quarantined', 'FilteredAsSpam')
+
+function Get-EoaNormalizedMessageTraceStatuses {
+    param([string[]]$Status = @())
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($raw in @($Status)) {
+        if ([string]::IsNullOrWhiteSpace([string]$raw)) { continue }
+        foreach ($part in ([string]$raw -split '[,;]')) {
+            $n = $part.Trim()
+            if ([string]::IsNullOrWhiteSpace($n)) { continue }
+            $match = $script:EOA_MessageTraceStatusValues | Where-Object { $_ -eq $n } | Select-Object -First 1
+            if ($match -and -not $seen.ContainsKey($match)) {
+                $seen[$match] = $true
+                [void]$out.Add($match)
+            }
+        }
+    }
+    return @($out)
+}
+
+function Test-EoaMessageTraceStatusNeedsTenDayWindow {
+    param([string[]]$Status = @())
+    $norm = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    return ($norm -contains 'Quarantined' -or $norm -contains 'FilteredAsSpam')
+}
+
+function Get-EoaMessageTraceStatusFilterValue {
+    param([string[]]$Status = @())
+    $norm = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    if ($norm.Count -eq 0) { return $null }
+    return ($norm -join ',')
+}
+
+function Select-EoaMessageTraceByStatus {
+    param(
+        $Rows,
+        [string[]]$Status = @()
+    )
+    $norm = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    if ($norm.Count -eq 0) { return @($Rows) }
+    $wanted = @{}
+    foreach ($s in $norm) { $wanted[$s.ToLowerInvariant()] = $true }
+    $kept = New-Object System.Collections.ArrayList
+    foreach ($row in @($Rows)) {
+        if (-not $row) { continue }
+        $st = [string]$row.Status
+        if ($st -and $wanted.ContainsKey($st.ToLowerInvariant())) { [void]$kept.Add($row) }
+    }
+    return @($kept)
+}
+
 function Invoke-EoaMessageTraceV2Paged {
     # Get-MessageTraceV2 has no Page/PageSize. Default ResultSize is 1000, max 5000. Results are
     # Received descending, then RecipientAddress ascending. Next round must move EndDate to the
@@ -3839,6 +3872,7 @@ function Invoke-EoaMessageTraceV2Paged {
         [Parameter(Mandatory = $true)][DateTime]$WinEnd,
         [string]$SenderAddress = $null,
         [string]$RecipientAddress = $null,
+        [string[]]$Status = @(),
         [string]$Label = '',
         [string]$StatusFile = $null,
         [int]$MaxRounds = 200,
@@ -3873,6 +3907,8 @@ function Invoke-EoaMessageTraceV2Paged {
         if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
         if ($SenderAddress) { $params.SenderAddress = $SenderAddress }
         if ($RecipientAddress) { $params.RecipientAddress = $RecipientAddress }
+        $statusFilter = Get-EoaMessageTraceStatusFilterValue -Status $Status
+        if ($statusFilter) { $params.Status = $statusFilter }
 
         $raw = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "$Label round $round" -Call { & $V2Command @params }
         $chunk = New-Object System.Collections.ArrayList
@@ -3922,7 +3958,7 @@ function Invoke-EoaMessageTraceV2Paged {
                 $childRounds = 0
                 foreach ($w in $splitWindows) {
                     $child = Invoke-EoaMessageTraceV2Paged -V2Command $V2Command -WinStart $w.Start -WinEnd $w.End `
-                        -SenderAddress $SenderAddress -RecipientAddress $RecipientAddress `
+                        -SenderAddress $SenderAddress -RecipientAddress $RecipientAddress -Status $Status `
                         -Label $Label -StatusFile $StatusFile -MaxRounds $MaxRounds -Depth ($Depth + 1)
                     $childRounds += [int]$child.RoundCount
                     foreach ($item in @($child.Rows)) {
@@ -4034,6 +4070,8 @@ function Get-ExchangeMessageTrace {
         [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @(),
         [Parameter(Mandatory=$false)]
+        [string[]]$Status = @(),
+        [Parameter(Mandatory=$false)]
         [string]$StatusFile = $null
     )
 
@@ -4048,6 +4086,23 @@ function Get-ExchangeMessageTrace {
             $end = (Get-Date).ToUniversalTime()
             $start = $end.AddDays(-$DaysBack).Date
             Write-Host "Collecting message trace data (last $DaysBack days, through run time)..." -ForegroundColor Yellow
+        }
+
+        $statusValues = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+        $statusFilter = Get-EoaMessageTraceStatusFilterValue -Status $statusValues
+        if ($statusFilter) {
+            $filterMsg = "Message trace status filter: $statusFilter"
+            Write-Host $filterMsg -ForegroundColor Cyan
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $filterMsg
+        }
+        if (Test-EoaMessageTraceStatusNeedsTenDayWindow -Status $statusValues) {
+            $tenDayStart = (Get-Date).ToUniversalTime().AddDays(-10)
+            if ($start -lt $tenDayStart) {
+                $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} (Quarantined/FilteredAsSpam only work for searches shorter than 10 days)." -f $start, $tenDayStart)
+                Write-Host $clampMsg -ForegroundColor Yellow
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $clampMsg
+                $start = $tenDayStart
+            }
         }
 
         if (-not (Test-ExchangeUserMailboxesPresent)) {
@@ -4097,7 +4152,7 @@ function Get-ExchangeMessageTrace {
             $apiMsg = 'Message trace API: Graph /admin/exchange/tracing/messageTraces (max lookback ~90 days; 10-day windows).'
             Write-Host $apiMsg -ForegroundColor Cyan
             Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
-            $graphRows = Get-GraphMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile
+            $graphRows = Get-GraphMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -Status $statusValues -StatusFile $StatusFile
             if (@($graphRows).Count -gt 0) { return $graphRows }
             # A clean empty result means the tenant really had no matching mail. Only distrust it
             # when some windows errored, since a half-provisioned Transport Data Platform answers
@@ -4162,7 +4217,7 @@ function Get-ExchangeMessageTrace {
 
                     if ($hasV2) {
                         try {
-                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -SenderAddress $upn -Label "sender $upn $dayLabel" -StatusFile $StatusFile
+                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -SenderAddress $upn -Status $statusValues -Label "sender $upn $dayLabel" -StatusFile $StatusFile
                             if ($page.Rows) { foreach ($item in @($page.Rows)) { if ($item) { [void]$results.Add($item) } } }
                             if ($page.Incomplete) { $incompletePaging = $true }
                         } catch {
@@ -4172,7 +4227,7 @@ function Get-ExchangeMessageTrace {
                             Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                         }
                         try {
-                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -RecipientAddress $upn -Label "recipient $upn $dayLabel" -StatusFile $StatusFile
+                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -RecipientAddress $upn -Status $statusValues -Label "recipient $upn $dayLabel" -StatusFile $StatusFile
                             if ($page.Rows) { foreach ($item in @($page.Rows)) { if ($item) { [void]$results.Add($item) } } }
                             if ($page.Incomplete) { $incompletePaging = $true }
                         } catch {
@@ -4184,7 +4239,7 @@ function Get-ExchangeMessageTrace {
                     } else {
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Filter @{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn }
+                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Filter (@{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn } + $(if ($statusFilter) { @{ Status = $statusFilter } } else { @{} }))
                             if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
                             $failedCalls++
@@ -4194,7 +4249,7 @@ function Get-ExchangeMessageTrace {
                         }
                         try {
                             if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Filter @{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn }
+                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Filter (@{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn } + $(if ($statusFilter) { @{ Status = $statusFilter } } else { @{} }))
                             if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
                         } catch {
                             $failedCalls++
@@ -4206,7 +4261,11 @@ function Get-ExchangeMessageTrace {
                 }
             }
 
-            Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
+            if ($statusValues.Count -eq 0) {
+                Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
+            } else {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message 'Message trace: skipping historical search because a Status filter is set (historical reports are unfiltered).'
+            }
 
             $uniqueResults = @()
             $seenIds = @{}
@@ -4256,7 +4315,7 @@ function Get-ExchangeMessageTrace {
 
                 try {
                     if ($hasV2) {
-                        $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -Label $dayLabel -StatusFile $StatusFile
+                        $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -Status $statusValues -Label $dayLabel -StatusFile $StatusFile
                         if ($page.Rows -and $page.Rows.Count -gt 0) { [void]$results.AddRange(@($page.Rows)) }
                         if ($page.Incomplete) { [void]$truncatedDays.Add($dayLabel) }
                         $dayStatus = "Message trace: day $($d + 1) of $daysToIterateAll ($dayLabel), $($page.RoundCount) rounds, $($results.Count) rows..."
@@ -4266,7 +4325,7 @@ function Get-ExchangeMessageTrace {
                         }
                     } else {
                         if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
-                        $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label $dayLabel -Filter @{ StartDate = $winStart; EndDate = $winEnd }
+                        $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label $dayLabel -Filter (@{ StartDate = $winStart; EndDate = $winEnd } + $(if ($statusFilter) { @{ Status = $statusFilter } } else { @{} }))
                         if ($batch) { [void]$results.AddRange(@($batch)) }
                     }
                 } catch {
@@ -4311,7 +4370,11 @@ function Get-ExchangeMessageTrace {
                 }
             }
             $syncCount = $results.Count
-            Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
+            if ($statusValues.Count -eq 0) {
+                Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
+            } else {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message 'Message trace: skipping historical search because a Status filter is set (historical reports are unfiltered).'
+            }
             Write-EoaMessageTraceCoverage -EntryCount $syncCount -DaysRequested $daysToIterateAll -MissingDays $missingDays -TruncatedDays $truncatedDays -StopReason $stopReason -StatusFile $StatusFile -UnreachableDays $unreachableDays -UnreachableReason $unreachableReason
             if ($results.Count -gt $syncCount) {
                 Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace total with historical rows: $($results.Count) entries."

@@ -195,7 +195,7 @@ Poll `/api/tenants/{n}/command` with `{ "command": "GRAPH_AUTH", "waitSeconds": 
 - [x] Create Graph App / Update Graph App scopes / export-import creds / clear WCM (`/api/wcm/*`)
 - [x] Hidden workers + tabbed log UI with status polling (Activity + Client N)
 - [x] Session history save/restore/archive
-- [x] Post-export analysis (`POST /api/analyze-reports`), Graph logout/reset, ticket email extraction
+- [x] Graph logout/reset, ticket email extraction
 - [x] Investigate logs (`GET /api/investigate/packs`, `POST /api/investigate/sources|query|mail-graph|access-graph|export`, `investigate.html`)
 - [x] Worker alive check + auto-restart before Generate/auth (safe re-runs with new dates or report selections)
 - [ ] SSE or WebSocket for live status tail (polling is sufficient for now)

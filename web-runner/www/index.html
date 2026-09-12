@@ -87,12 +87,26 @@
     .historyTable th.sortable:hover { color: #0969da; }
     .historyTable th .sortInd { font-size: 0.72rem; color: #57606a; margin-left: 0.15rem; }
     .historyTable th.sortActive .sortInd { color: #0969da; }
+    .historyTable th.colEmpty, .historyTable td.colEmpty { display: none; }
     .historyClients { line-height: 1.35; }
     .reportExportGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.25rem 1rem; margin: 0.35rem 0; }
     .reportExportGrid label { font-size: 0.88rem; font-weight: normal; margin: 0; }
     .reportExportGroup { margin: 0.5rem 0 0.75rem; }
     .reportExportGroupTitle { font-size: 0.82rem; font-weight: 600; color: #57606a; margin-bottom: 0.25rem; }
     .reportExportsHint.customized { color: #9a6700; font-weight: 600; }
+    .reportExportMt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.45rem; }
+    .reportExportMt label { margin: 0; }
+    .mtScopeHint, .ualScopeHint { margin: 0.35rem 0 0; font-size: 0.85rem; }
+    .eoaDialog { position: fixed; inset: 0; z-index: 80; display: flex; align-items: flex-start; justify-content: center; padding: 8vh 1rem 1rem; }
+    .eoaDialog[hidden] { display: none !important; }
+    .eoaDialogBackdrop { position: absolute; inset: 0; background: rgba(27, 31, 36, 0.45); }
+    .eoaDialogPanel { position: relative; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 1rem 1.15rem; width: min(34rem, 100%); max-height: 80vh; overflow: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+    .eoaDialogPanel h3 { margin: 0 0 0.35rem; font-size: 1.05rem; }
+    .mtStatusPresets { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.4rem 0; }
+    .mtStatusList { display: flex; flex-direction: column; gap: 0.28rem; margin: 0.5rem 0; max-height: 16rem; overflow: auto; }
+    .mtStatusList label { font-weight: normal; margin: 0; align-items: flex-start; }
+    .mtStatusList .muted { font-size: 0.78rem; }
+    .eoaDialogActions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.65rem; }
     .logTabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.35rem; }
     .logTabs button { padding: 0.25rem 0.55rem; font-size: 0.82rem; }
     .logTabs button.active { background: #0969da; color: #fff; border-color: #0969da; }
@@ -157,6 +171,7 @@
     .containmentAutoreplyWrap, .containmentOrgfwdWrap, .containmentJunkWrap, .containmentJournalWrap,
     .containmentHoldWrap, .containmentElsewhereWrap, .containmentRolesWrap, .containmentAppcredsWrap,
     .containmentFlowsWrap { max-height: 16rem; overflow: auto; margin-top: 0.45rem; }
+    .containmentPhase .historyTable thead th { position: sticky; top: 0; background: #f6f8fa; z-index: 1; }
     .containmentRulesTable input, .containmentMailboxTable input, .containmentTransportTable input, .containmentConnectorsTable input,
     .containmentMfaTable input, .containmentDevicesTable input, .containmentAppsTable input,
     .containmentOauthTable input, .containmentIntuneTable input, .containmentMobileTable input, .containmentFoldersTable input,
@@ -362,6 +377,34 @@
   </div>
 
 
+
+  </div>
+
+
+
+  <div id="mtStatusDialog" class="eoaDialog" hidden>
+    <div class="eoaDialogBackdrop" data-mt-dismiss="1"></div>
+    <div class="eoaDialogPanel" role="dialog" aria-labelledby="mtStatusTitle">
+      <h3 id="mtStatusTitle">Message trace statuses</h3>
+      <p class="muted" style="margin:0 0 0.45rem">Leave all unchecked for every status (full volume). Quarantined and Filtered as spam only work for searches shorter than 10 days — generate will clamp those pulls.</p>
+      <label>Search
+        <input type="search" id="mtStatusSearch" placeholder="quarantined, failed, spam…" autocomplete="off" />
+      </label>
+      <div class="mtStatusPresets">
+        <button type="button" class="small" data-mt-chip="all">All</button>
+        <button type="button" class="small" data-mt-chip="Quarantined">Quarantined</button>
+        <button type="button" class="small" data-mt-chip="Failed">Failed</button>
+        <button type="button" class="small" data-mt-chip="FilteredAsSpam">Filtered as spam</button>
+        <button type="button" class="small" data-mt-chip="issues">Delivery issues</button>
+      </div>
+      <div id="mtStatusList" class="mtStatusList"></div>
+      <p id="mtStatusWarn" class="muted"></p>
+      <div class="eoaDialogActions">
+        <button type="button" class="primary" id="mtStatusApply">Apply</button>
+        <button type="button" id="mtStatusCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 

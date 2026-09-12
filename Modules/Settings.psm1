@@ -2152,6 +2152,49 @@ function Get-BecExportPresetSelections {
         IncludeS1Agents                       = $false
         IncludeS1Activities                   = $false
         IncludeLiongardContext                = $false
+        MessageTraceStatuses                  = [string[]]@()
+        MessageTraceDaysBack                  = 7
+    }
+}
+
+function Get-MessageTraceFilterExportPreset {
+    <#
+    .SYNOPSIS
+        Message-trace-only investigation preset with a delivery-status filter.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Statuses,
+        [int]$DaysBack = 10
+    )
+    return @{
+        IncludeMessageTrace                   = $true
+        MessageTraceDaysBack                  = $DaysBack
+        MessageTraceStatuses                  = [string[]]$Statuses
+        IncludeUnifiedAuditLogs               = $false
+        IncludeExchangeItemAggregated         = $false
+        UnifiedAuditLogRecordTypes            = [string[]]@()
+        ExportPresetName                      = $Name
+        IncludeInboxRules                     = $false
+        IncludeTransportRules                 = $false
+        IncludeMailFlowConnectors             = $false
+        IncludeMailboxForwarding              = $false
+        IncludeAuditLogs                      = $false
+        IncludeSignInLogs                     = $false
+        IncludeMfaCoverage                    = $false
+        IncludeConditionalAccessPolicies      = $false
+        IncludeAppRegistrations               = $false
+        IncludeSecurityAlerts                 = $false
+        IncludeSecurityIncidents              = $false
+        IncludeIntuneDevices                  = $false
+        IncludeSharePointActivity             = $false
+        IncludeOneDriveActivity               = $false
+        IncludeTeamsActivity                  = $false
+        IncludeSharePointSharing              = $false
+        IncludeAnonymousSharePointSharing     = $false
+        IncludeSharePointFileSharingLinks     = $false
+        IncludeDLPViolations                  = $false
+        IncludeSharePointOneDriveFileActions  = $false
     }
 }
 
@@ -2398,6 +2441,10 @@ function Get-ExportPresets {
             IncludeDLPViolations                  = $true
             IncludeSharePointOneDriveFileActions  = $true
         }
+        'Quarantined mail (10 days)' = (Get-MessageTraceFilterExportPreset -Name 'Quarantined mail (10 days)' -Statuses @('Quarantined') -DaysBack 10)
+        'Failed mail' = (Get-MessageTraceFilterExportPreset -Name 'Failed mail' -Statuses @('Failed') -DaysBack 10)
+        'Filtered as spam (10 days)' = (Get-MessageTraceFilterExportPreset -Name 'Filtered as spam (10 days)' -Statuses @('FilteredAsSpam') -DaysBack 10)
+        'Mail delivery issues (failed/quarantined/spam)' = (Get-MessageTraceFilterExportPreset -Name 'Mail delivery issues (failed/quarantined/spam)' -Statuses @('Failed', 'Quarantined', 'FilteredAsSpam') -DaysBack 10)
         'Custom (manual selection)' = $null
     }
     foreach ($k in @($presets.Keys)) {
@@ -2411,6 +2458,9 @@ function Get-ExportPresets {
             }
             if (-not $p.ContainsKey('ExportPresetName')) {
                 $p['ExportPresetName'] = [string]$k
+            }
+            if (-not $p.ContainsKey('MessageTraceStatuses')) {
+                $p['MessageTraceStatuses'] = [string[]]@()
             }
         }
     }

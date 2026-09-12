@@ -184,8 +184,6 @@ function Search-AndValidateUsers {
 # Import required modules
 Write-Host "Loading required modules..." -ForegroundColor Cyan
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\ExportUtils.psm1"
-$reportAnalysisPath = Join-Path $script:scriptRoot 'Modules\ReportAnalysis.psm1'
-if (Test-Path $reportAnalysisPath) { Safe-ImportModule -ModulePath $reportAnalysisPath }
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\GraphOnline.psm1"
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\BrowserIntegration.psm1"
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\Settings.psm1"
@@ -628,81 +626,10 @@ $bulkCloseButton.add_Click({
     $bulkForm.Close()
 })
 
-# Analyze Single Report button (rule-based analysis on one report folder)
-$bulkAnalyzeSingleBtn = New-Object System.Windows.Forms.Button
-$bulkAnalyzeSingleBtn.Text = "Analyze Single Report"
-$bulkAnalyzeSingleBtn.Location = New-Object System.Drawing.Point(720, 110)
-$bulkAnalyzeSingleBtn.Size = New-Object System.Drawing.Size(160, 24)
-$bulkAnalyzeSingleBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-$bulkAnalyzeSingleBtn.ForeColor = [System.Drawing.Color]::White
-$bulkAnalyzeSingleBtn.add_Click({
-    $defaultPath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select a single report folder (e.g. SecurityInvestigation\TenantName\2024-03-09_123456)"
-    $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        try {
-            if (Get-Command Invoke-ReportFolderAnalysis -ErrorAction SilentlyContinue) {
-                $result = Invoke-ReportFolderAnalysis -Path $fbd.SelectedPath -WriteOutputFiles
-                $analysisResultForm = New-Object System.Windows.Forms.Form
-                $analysisResultForm.Text = "Rule-Based Analysis Results"
-                $analysisResultForm.Size = New-Object System.Drawing.Size(900, 600)
-                $analysisResultForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                $tb = New-Object System.Windows.Forms.RichTextBox
-                $tb.Dock = 'Fill'
-                $tb.ReadOnly = $true
-                $tb.Font = New-Object System.Drawing.Font('Consolas', 9)
-                $tb.Text = $result.Summary
-                $analysisResultForm.Controls.Add($tb)
-                $analysisResultForm.ShowDialog()
-            } else {
-                [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            }
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        }
-    }
-})
-
-# Analyze All Reports button (rule-based analysis on existing report folders)
-$bulkAnalyzeAllBtn = New-Object System.Windows.Forms.Button
-$bulkAnalyzeAllBtn.Text = "Analyze All Reports"
-$bulkAnalyzeAllBtn.Location = New-Object System.Drawing.Point(720, 138)
-$bulkAnalyzeAllBtn.Size = New-Object System.Drawing.Size(160, 24)
-$bulkAnalyzeAllBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-$bulkAnalyzeAllBtn.ForeColor = [System.Drawing.Color]::White
-$bulkAnalyzeAllBtn.add_Click({
-    $defaultPath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
-    $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        try {
-            if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                $rankForm = New-Object System.Windows.Forms.Form
-                $rankForm.Text = "Bulk Tenant Risk Ranking"
-                $rankForm.Size = New-Object System.Drawing.Size(850, 500)
-                $rankForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                $dg = New-Object System.Windows.Forms.DataGridView
-                $dg.Dock = 'Fill'
-                $dg.AutoGenerateColumns = $true
-                $dg.DataSource = $results
-                $rankForm.Controls.Add($dg)
-                $rankForm.ShowDialog()
-            } else {
-                [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            }
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        }
-    }
-})
-
 # Add controls to main panel
 $bulkMainPanel.Controls.AddRange(@(
     $bulkTitleLabel, $bulkDescLabel, $bulkConfigGroupBox, $bulkReportsGroupBox,
-    $bulkProgressLabel, $bulkStatusTextBox, $bulkStartButton, $bulkAnalyzeSingleBtn, $bulkAnalyzeAllBtn, $bulkCloseButton
+    $bulkProgressLabel, $bulkStatusTextBox, $bulkStartButton, $bulkCloseButton
 ))
 
 # Add panel to form
@@ -1225,42 +1152,6 @@ $bulkStartButton.add_Click({
         }
     })
 
-    # Analyze All Reports button - rule-based bulk analysis (no LLM)
-    $analyzeAllReportsBtn = New-Object System.Windows.Forms.Button
-    $analyzeAllReportsBtn.Text = "Analyze All Reports"
-    $analyzeAllReportsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $analyzeAllReportsBtn.Location = New-Object System.Drawing.Point(795, 98)
-    $analyzeAllReportsBtn.Size = New-Object System.Drawing.Size(160, 35)
-    $analyzeAllReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-    $analyzeAllReportsBtn.ForeColor = [System.Drawing.Color]::White
-    $analyzeAllReportsBtn.add_Click({
-        $defaultPath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
-        $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
-        $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-        if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            try {
-                if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                    $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                    $bulkForm = New-Object System.Windows.Forms.Form
-                    $bulkForm.Text = "Bulk Tenant Risk Ranking"
-                    $bulkForm.Size = New-Object System.Drawing.Size(850, 500)
-                    $bulkForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                    $dg = New-Object System.Windows.Forms.DataGridView
-                    $dg.Dock = 'Fill'
-                    $dg.AutoGenerateColumns = $true
-                    $dg.DataSource = $results
-                    $bulkForm.Controls.Add($dg)
-                    $bulkForm.ShowDialog()
-                } else {
-                    [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                }
-            } catch {
-                [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
-        }
-    })
-
     # Create Panel for client authentication rows
     $authPanel = New-Object System.Windows.Forms.Panel
     $authPanel.Location = New-Object System.Drawing.Point(15, 180)
@@ -1276,7 +1167,7 @@ $bulkStartButton.add_Click({
     $clientRowSpacing = 10  # Increased spacing between rows
 
     # Add controls to form
-    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $refreshTenantNamesBtn, $analyzeAllReportsBtn, $authPanel))
+    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $refreshTenantNamesBtn, $authPanel))
 
     # Close button
     $authCloseBtn = New-Object System.Windows.Forms.Button

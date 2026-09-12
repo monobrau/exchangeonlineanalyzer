@@ -12,6 +12,7 @@ function global:Fake-GetMessageTraceV2 {
         $ResultSize = 1000,
         $SenderAddress,
         $RecipientAddress,
+        $Status,
         $ErrorAction
     )
     [void]$global:EoaMtTestCalls.Add([pscustomobject]@{
@@ -21,6 +22,7 @@ function global:Fake-GetMessageTraceV2 {
         ResultSize               = $ResultSize
         SenderAddress            = $SenderAddress
         RecipientAddress         = $RecipientAddress
+        Status                   = $Status
     })
 
     if ($global:EoaMtTestStall) {
@@ -198,5 +200,38 @@ Describe 'MessageTrace V2 paging' {
         $warn | Should -Match '6 of 7 days'
         $warn | Should -Not -Match '7 of 7 days'
         $warn | Should -Not -Match 'No data for'
+    }
+
+    It 'passes Status to Get-MessageTraceV2' {
+        $global:EoaMtTestRows = @(
+            [pscustomobject]@{
+                Received         = $script:WinEnd.AddHours(-1)
+                RecipientAddress = 'bob@contoso.com'
+                SenderAddress    = 'alice@fabrikam.com'
+                MessageTraceId   = 'q-1'
+                MessageId        = '<q-1@contoso.com>'
+                Subject          = 'held'
+                Status           = 'Quarantined'
+            }
+        )
+        $page = InModuleScope ExportUtils -Parameters @{ Cmd = $script:V2Cmd; WinStart = $script:WinStart; WinEnd = $script:WinEnd } {
+            $script:EOA_MessageTraceCallCount = 0
+            Invoke-EoaMessageTraceV2Paged -V2Command $Cmd -WinStart $WinStart -WinEnd $WinEnd -Status @('Quarantined') -Label '2026-08-31'
+        }
+        $page.Rows.Count | Should -Be 1
+        $global:EoaMtTestCalls[0].Status | Should -Be 'Quarantined'
+    }
+
+    It 'normalizes mixed status input and detects the 10-day statuses' {
+        $got = InModuleScope ExportUtils {
+            Get-EoaNormalizedMessageTraceStatuses -Status @('quarantined', 'Failed,FilteredAsSpam', 'nope')
+        }
+        $got | Should -Be @('Quarantined', 'Failed', 'FilteredAsSpam')
+        InModuleScope ExportUtils {
+            Test-EoaMessageTraceStatusNeedsTenDayWindow -Status @('Failed')
+        } | Should -Be $false
+        InModuleScope ExportUtils {
+            Test-EoaMessageTraceStatusNeedsTenDayWindow -Status @('Quarantined', 'Failed')
+        } | Should -Be $true
     }
 }

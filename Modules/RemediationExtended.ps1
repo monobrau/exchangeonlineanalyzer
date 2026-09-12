@@ -137,6 +137,7 @@ function Get-RemediationIntuneDevices {
             try {
                 $rows = @(Invoke-GraphRestPaged -Uri "https://graph.microsoft.com/v1.0/users/$enc/managedDevices")
             } catch {
+                if (Test-RemediationIntuneUnavailable $_) { throw }
                 $filter = [Uri]::EscapeDataString("userPrincipalName eq '$($user.userPrincipalName)'")
                 $rows = @(Invoke-GraphRestPaged -Uri "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?`$filter=$filter")
             }
@@ -161,20 +162,25 @@ function Get-RemediationIntuneDevices {
                     Os                = ("$($d.operatingSystem) $($d.osVersion)").Trim()
                     Management        = [string]$d.managementAgent
                     Compliance        = [string]$d.complianceState
-                    LastSync          = if ($d.lastSyncDateTime) { [string]$d.lastSyncDateTime } else { '' }
+                    LastSync          = (Get-RemediationObjectDateText -Object $d -PropertyNames @('lastSyncDateTime', 'LastSyncDateTime'))
                     Error             = ''
                 }
             }
         } catch {
+            $intuneOff = Test-RemediationIntuneUnavailable $_
             [pscustomobject]@{
                 UserPrincipalName = $upn
                 Id                = ''
-                DeviceName        = ''
+                DeviceName        = if ($intuneOff) { '(none)' } else { '' }
                 Os                = ''
                 Management        = ''
                 Compliance        = ''
                 LastSync          = ''
-                Error             = (Get-RemediationGraphErrorText $_)
+                Error             = if ($intuneOff) {
+                    'Intune is not available in this tenant.'
+                } else {
+                    Get-RemediationGraphErrorText $_
+                }
             }
         }
     }
@@ -351,7 +357,8 @@ function Get-RemediationAppCredentials {
                 AppName     = $name
                 KeyId       = [string]$p.keyId
                 DisplayName = [string]$p.displayName
-                End         = if ($p.endDateTime) { [string]$p.endDateTime } else { '' }
+                Created     = (Get-RemediationObjectDateText -Object $p -PropertyNames @('startDateTime', 'StartDateTime', 'createdDateTime', 'CreatedDateTime'))
+                End         = (Get-RemediationObjectDateText -Object $p -PropertyNames @('endDateTime', 'EndDateTime'))
                 OwnerId     = ''
                 Error       = ''
             })
@@ -363,7 +370,8 @@ function Get-RemediationAppCredentials {
                 AppName     = $name
                 KeyId       = [string]$k.keyId
                 DisplayName = [string]$k.displayName
-                End         = if ($k.endDateTime) { [string]$k.endDateTime } else { '' }
+                Created     = (Get-RemediationObjectDateText -Object $k -PropertyNames @('startDateTime', 'StartDateTime', 'createdDateTime', 'CreatedDateTime'))
+                End         = (Get-RemediationObjectDateText -Object $k -PropertyNames @('endDateTime', 'EndDateTime'))
                 OwnerId     = ''
                 Error       = ''
             })
@@ -379,6 +387,7 @@ function Get-RemediationAppCredentials {
                     AppName     = $name
                     KeyId       = ''
                     DisplayName = $ownerLabel
+                    Created     = ''
                     End         = ''
                     OwnerId     = [string]$o.id
                     Error       = ''
@@ -388,7 +397,7 @@ function Get-RemediationAppCredentials {
     }
     if ($rows.Count -eq 0) {
         [void]$rows.Add([pscustomobject]@{
-            Kind = ''; AppId = ''; AppName = '(none)'; KeyId = ''; DisplayName = ''; End = ''; OwnerId = ''; Error = ''
+            Kind = ''; AppId = ''; AppName = '(none)'; KeyId = ''; DisplayName = ''; Created = ''; End = ''; OwnerId = ''; Error = ''
         })
     }
     return @($rows)
@@ -552,8 +561,8 @@ function Get-RemediationAutoReply {
                 UserPrincipalName = $upn
                 AutoReplyState    = [string]$cfg.AutoReplyState
                 ExternalAudience  = [string]$cfg.ExternalAudience
-                StartTime         = if ($cfg.StartTime) { [string]$cfg.StartTime } else { '' }
-                EndTime           = if ($cfg.EndTime) { [string]$cfg.EndTime } else { '' }
+                StartTime         = (Get-RemediationObjectDateText -Object $cfg -PropertyNames @('StartTime', 'StartDateTime'))
+                EndTime           = (Get-RemediationObjectDateText -Object $cfg -PropertyNames @('EndTime', 'EndDateTime'))
                 InternalMessage   = [string]$cfg.InternalMessage
                 ExternalMessage   = [string]$cfg.ExternalMessage
                 Error             = ''
@@ -723,20 +732,26 @@ function Get-RemediationJournalRules {
     try {
         $rules = @(Get-JournalRule -ErrorAction Stop)
         if ($rules.Count -eq 0) {
-            return @([pscustomobject]@{ Identity = ''; Name = '(none)'; Recipient = ''; JournalEmailAddress = ''; Enabled = $null; Error = '' })
+            return @([pscustomobject]@{ Identity = ''; Name = '(none)'; Recipient = ''; JournalEmailAddress = ''; Enabled = $null; WhenChanged = ''; Error = '' })
         }
+        $hydrate = @{ Hits = 0; Misses = 0; Skip = $false }
+        $dateNames = @('WhenChanged', 'WhenChangedUTC', 'LastModifiedTime', 'LastModifiedDateTime')
         foreach ($r in $rules) {
+            $identity = [string]$r.Identity
             [pscustomobject]@{
-                Identity            = [string]$r.Identity
+                Identity            = $identity
                 Name                = [string]$r.Name
                 Recipient           = [string]$r.Recipient
                 JournalEmailAddress = [string]$r.JournalEmailAddress
                 Enabled             = [bool]$r.Enabled
+                WhenChanged         = (Get-RemediationHydratedDateText -Listed $r -Identity $identity -PropertyNames $dateNames -State $hydrate -Loader {
+                    param($id) Get-JournalRule -Identity $id -ErrorAction Stop
+                })
                 Error               = ''
             }
         }
     } catch {
-        [pscustomobject]@{ Identity = ''; Name = ''; Recipient = ''; JournalEmailAddress = ''; Enabled = $null; Error = $_.Exception.Message }
+        [pscustomobject]@{ Identity = ''; Name = ''; Recipient = ''; JournalEmailAddress = ''; Enabled = $null; WhenChanged = ''; Error = $_.Exception.Message }
     }
 }
 
@@ -763,6 +778,7 @@ function Get-RemediationMailboxHold {
                 UserPrincipalName      = [string]$mbx.UserPrincipalName
                 LitigationHoldEnabled  = [bool]$mbx.LitigationHoldEnabled
                 RetainDeletedItemsFor  = [string]$mbx.RetainDeletedItemsFor
+                LitigationHoldDate     = (Get-RemediationObjectDateText -Object $mbx -PropertyNames @('LitigationHoldDate', 'LitigationHoldDateTime'))
                 AuditEnabled           = [bool]$mbx.AuditEnabled
                 Error                  = ''
             }
@@ -771,6 +787,7 @@ function Get-RemediationMailboxHold {
                 UserPrincipalName     = $upn
                 LitigationHoldEnabled = $null
                 RetainDeletedItemsFor = ''
+                LitigationHoldDate    = ''
                 AuditEnabled          = $null
                 Error                 = $_.Exception.Message
             }
@@ -903,6 +920,7 @@ function Get-RemediationFlows {
                 Environment = [string]$flow.EnvironmentName
                 Enabled     = if ($null -ne $flow.Enabled) { [bool]$flow.Enabled } else { $null }
                 CreatedBy   = [string]$flow.CreatedBy.userId
+                Created     = (Get-RemediationObjectDateText -Object $flow -PropertyNames @('CreatedTime', 'CreatedTimeUtc', 'createdTime', 'LastModifiedTime', 'lastModifiedTime'))
                 Error       = ''
             })
         }
