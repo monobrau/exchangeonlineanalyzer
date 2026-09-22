@@ -141,3 +141,61 @@ Describe 'LogInvestigate' {
         (@($hit.sources) -contains 'MessageTrace') | Should -Be $true
     }
 }
+
+Describe 'Investigate Conditional Access parse' {
+    It 'normalizes Graph appliedConditionalAccessPolicies results' {
+        ConvertTo-InvestigateCaResultLabel -Result 'success' | Should -Be 'Success'
+        ConvertTo-InvestigateCaResultLabel -Result 'failure' | Should -Be 'Failed'
+        ConvertTo-InvestigateCaResultLabel -Result 'notApplied' | Should -Be 'Not Applied'
+        ConvertTo-InvestigateCaResultLabel -Result 'reportOnly' | Should -Be 'Report-only'
+        ConvertTo-InvestigateCaResultLabel -Result 'reportOnlyFailure' | Should -Be 'Report-only'
+    }
+
+    It 'parses appliedConditionalAccessPolicies JSON' {
+        $json = '[{"id":"p1","displayName":"Require MFA","result":"success"},{"id":"p2","displayName":"Block legacy","result":"notApplied"},{"id":"p3","displayName":"Geo report","result":"reportOnly"}]'
+        $parsed = Parse-InvestigateConditionalAccess -Json $json -Status 'success'
+        $parsed.policies.Count | Should -Be 3
+        $parsed.policies[0].result | Should -Be 'Success'
+        $parsed.policies[0].tone | Should -Be 'ok'
+        $parsed.policies[1].result | Should -Be 'Not Applied'
+        $parsed.policies[2].result | Should -Be 'Report-only'
+        $parsed.policies[2].tone | Should -Be 'report'
+        $parsed.summary | Should -Match 'Require MFA:Success'
+    }
+
+    It 'falls back to semicolon CAPolicy columns' {
+        $parsed = Parse-InvestigateConditionalAccess -Status 'failure' -Names 'Require MFA; Block countries' -Results 'Failed; Not Applied'
+        $parsed.policies.Count | Should -Be 2
+        $parsed.policies[0].name | Should -Be 'Require MFA'
+        $parsed.policies[0].result | Should -Be 'Failed'
+        $parsed.policies[0].tone | Should -Be 'fail'
+        $parsed.policies[1].result | Should -Be 'Not Applied'
+    }
+
+    It 'exposes CA columns and filters _CA on SignInLogs query' {
+        $folder = Join-Path $TestDrive 'CaPack'
+        New-Item -ItemType Directory -Path $folder | Out-Null
+        $json = '[{"id":"p1","displayName":"Require MFA","result":"failure"}]'
+        $jsonCsv = $json.Replace('"', '""')
+        @(
+            'CreatedDateTime,UserPrincipalName,IPAddress,AppDisplayName,Status,CountryOrRegion,ClientAppUsed,ConditionalAccessStatus,CAPolicyNames,CAPolicyResults,CAPolicyDetails,ConditionalAccessPoliciesJSON'
+            "2026-01-15T10:05:00Z,alice@contoso.com,203.0.113.10,Outlook,Success,US,Browser,failure,Require MFA,Failed,Require MFA (BLOCKED),`"$jsonCsv`""
+            '2026-01-15T12:00:00Z,eve@fabrikam.com,198.51.100.8,Browser,Success,DE,Browser,notApplied,,,,'
+        ) | Set-Content -LiteralPath (Join-Path $folder 'SignInLogs.csv') -Encoding UTF8
+
+        $q = Invoke-InvestigateQuery -Path $folder -Source 'SignInLogs'
+        ($q.columns -contains 'ConditionalAccessStatus') | Should -Be $true
+        ($q.columns -contains '_CA') | Should -Be $true
+        ($q.columns -contains '_CAPolicies') | Should -Be $true
+        $q.total | Should -Be 2
+        $alice = @($q.rows | Where-Object { $_.UserPrincipalName -eq 'alice@contoso.com' })[0]
+        $alice._CA | Should -Match 'Require MFA'
+        $alice._CAPolicies | Should -Match 'Failed'
+
+        $blocked = Invoke-InvestigateQuery -Path $folder -Source 'SignInLogs' -Filters @(
+            @{ column = '_CA'; op = 'icontains'; value = 'Require MFA' }
+        )
+        $blocked.total | Should -Be 1
+        $blocked.rows[0].UserPrincipalName | Should -Be 'alice@contoso.com'
+    }
+}

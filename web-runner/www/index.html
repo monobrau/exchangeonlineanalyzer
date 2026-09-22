@@ -180,6 +180,59 @@
     .containmentFlowsTable input { margin: 0; }
     .containmentSubLabel { font-size: 0.82rem; font-weight: 600; color: #424a53; margin: 0.65rem 0 0.25rem; }
     .containmentPhase .containmentSubLabel:first-of-type { margin-top: 0.15rem; }
+    .caCatalogPanel { margin: 0.65rem 0; padding: 0.35rem 0.55rem 0.45rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .caCatalogPanel .caCatalogBody { margin-top: 0.5rem; }
+    .caCatalogPoliciesWrap, .caCatalogLocationsWrap { margin-top: 0.35rem; overflow: visible; }
+    .caCatalogPanel .historyTable { table-layout: auto; }
+    .caCatalogPanel .historyTable td { overflow-wrap: anywhere; word-break: break-word; }
+    .caCatalogBackdrop { position: fixed; inset: 0; z-index: 89; background: rgba(27, 31, 36, 0.45); }
+    .caCatalogBackdrop[hidden] { display: none !important; }
+    .caCatalogBody.caCatalogPopped {
+      display: block !important;
+      position: fixed;
+      inset: 3vh 2vw;
+      z-index: 90;
+      width: auto;
+      height: auto;
+      margin: 0;
+      padding: 1rem 1.2rem 1.15rem;
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+    }
+    .caCatalogClosePopup { display: none; }
+    .caCatalogBody.caCatalogPopped .caCatalogClosePopup { display: inline-block; }
+    .caCatalogBody.caCatalogPopped .caCatalogOpenPopup { display: none; }
+    .caCatalogPopupBar { display: none; }
+    .caCatalogBody.caCatalogPopped .caCatalogPopupBar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.75rem; margin: 0 0 0.45rem; }
+    .caCatalogPopupBar h3 { margin: 0; font-size: 1.05rem; }
+    .caCatalogSubLabel { font-size: 0.82rem; font-weight: 600; color: #424a53; margin: 0.65rem 0 0.25rem; }
+    .caCatalogPolicyRow { cursor: pointer; }
+    .caCatalogDrawer { margin: 0.55rem 0 0; padding: 0.55rem 0.7rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .caCatalogDrawer h3 { margin: 0 0 0.35rem; font-size: 0.88rem; }
+    .caCatalogDrawer ul { margin: 0; padding-left: 1.1rem; }
+    .caCatalogDrawer li { margin: 0.15rem 0; font-size: 0.82rem; }
+    .caCatalogEdit { margin: 0.7rem 0 0; padding: 0.55rem 0.65rem; border: 1px dashed #d0d7de; border-radius: 6px; background: #fff; }
+    .caCatalogEdit h4 { margin: 0 0 0.3rem; font-size: 0.84rem; }
+    .caCatalogEditHint { font-size: 0.78rem; color: #57606a; margin: 0 0 0.4rem; }
+    .caCatalogUserList { max-height: 11rem; overflow: auto; margin: 0 0 0.35rem; padding: 0.2rem 0; }
+    .caCatalogUserRow { display: flex; align-items: flex-start; gap: 0.35rem; font-size: 0.8rem; margin: 0.12rem 0; }
+    .caCatalogUserRow input { margin-top: 0.15rem; }
+    .caCatalogSearchRow { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0; }
+    .caCatalogSearchRow input[type="search"] { flex: 1 1 12rem; min-width: 10rem; }
+    .caCatalogSearchHits { max-height: 9rem; overflow: auto; margin: 0.25rem 0 0.4rem; }
+    .caCatalogStatus { display: none; font-size: 0.88rem; margin: 0.45rem 0; padding: 0.45rem 0.65rem; border-radius: 6px; border: 1px solid #d0d7de; white-space: pre-wrap; }
+    .caCatalogStatus.hasStatus { display: block; }
+    .caCatalogStatus.statusBusy { background: #fff8c5; border-color: #d4a72c; color: #633c01; }
+    .caCatalogStatus.statusOk { background: #dafbe1; border-color: #1a7f37; color: #0f3d1a; }
+    .caCatalogStatus.statusWarn { background: #fff8c5; border-color: #d4a72c; color: #633c01; }
+    .caCatalogStatus.statusBad { background: #ffebe9; border-color: #cf222e; color: #82071e; }
+    .caStateChip { display: inline-block; font-size: 0.72rem; line-height: 1.2; padding: 0.12rem 0.4rem; border-radius: 999px; border: 1px solid #d0d7de; background: #f6f8fa; }
+    .caStateChip.ok { background: #dafbe1; border-color: #2da44e; color: #1a7f37; }
+    .caStateChip.report { background: #fff8c5; border-color: #bf8700; color: #9a6700; }
+    .caStateChip.muted { color: #57606a; }
 
   </style>
 

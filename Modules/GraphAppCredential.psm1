@@ -1360,7 +1360,9 @@ function Invoke-GraphAppCreateWithWcmSave {
         [Parameter(Mandatory = $false)]
         [string]$TenantId,
 
-        [switch]$UpdateExisting
+        [switch]$UpdateExisting,
+
+        [switch]$NoWait
     )
     $launcherPath = Join-Path $ProjectRoot 'Start-NewGraphInboxRulesApp.ps1'
     if (-not (Test-Path -LiteralPath $launcherPath)) {
@@ -1390,8 +1392,25 @@ function Invoke-GraphAppCreateWithWcmSave {
         [void]$argList.Add($tid)
     }
     # Interactive console required for browser sign-in and Read-Host (Y/n). Redirecting stdout breaks both.
-    $proc = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru `
-        -WorkingDirectory $ProjectRoot
+    $startParams = @{
+        FilePath         = $psExe
+        ArgumentList     = [string[]]$argList
+        PassThru         = $true
+        WorkingDirectory = $ProjectRoot
+    }
+    if (-not $NoWait) { $startParams.Wait = $true }
+    $proc = Start-Process @startParams
+    if ($NoWait) {
+        return [pscustomobject]@{
+            Started   = $true
+            ProcessId = $proc.Id
+            Process   = $proc
+            ResultPath = $resultPath
+            LogPath   = $logPath
+            ExitCode  = $null
+            Result    = $null
+        }
+    }
     $result = $null
     if (Test-Path -LiteralPath $resultPath) {
         try {

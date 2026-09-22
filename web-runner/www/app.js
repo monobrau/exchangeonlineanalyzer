@@ -679,6 +679,59 @@ function buildContainmentPanelHtml() {
       </details>`;
 }
 
+function buildCaCatalogPanelHtml() {
+  return `
+      <details class="caCatalogPanel collapsible">
+        <summary>Conditional Access <span class="muted">(catalog + user exceptions — Graph Auth, then Refresh)</span></summary>
+        <div class="caCatalogBackdrop" hidden></div>
+        <div class="collapsible-body caCatalogBody">
+          <div class="caCatalogPopupBar">
+            <h3 class="caCatalogPopupTitle">Conditional Access</h3>
+            <button type="button" class="caCatalogClosePopup small" title="Return the catalog to the tenant card">Close popup</button>
+          </div>
+          <p class="muted" style="font-size:0.85rem;margin:0 0 0.45rem">
+            Current policies and named locations after <strong>Graph Auth</strong>. Open a policy to add or remove included users and exclusions. <strong>Refresh</strong> uses the worker cache; <strong>Hard refresh</strong> reloads from Graph.
+          </p>
+          <div class="caCatalogHint muted">Complete Graph Auth to list current policies.</div>
+          <div class="row">
+            <button type="button" class="caCatalogRefresh small" disabled title="List policies and named locations from the worker session cache.">Refresh</button>
+            <button type="button" class="caCatalogHardRefresh small" disabled title="Bypass the session cache and reload policies and named locations from Graph.">Hard refresh</button>
+            <button type="button" class="caCatalogOpenPopup small" title="Open this catalog in a wider popup">Open popup</button>
+          </div>
+          <div class="caCatalogStatus" role="status" aria-live="polite"></div>
+          <div class="caCatalogSubLabel">Policies</div>
+          <div class="caCatalogPoliciesWrap">
+            <table class="historyTable caCatalogPoliciesTable">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>State</th>
+                  <th>Users</th>
+                  <th>Exclusions</th>
+                  <th>Locations</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="caCatalogSubLabel">Named locations</div>
+          <div class="caCatalogLocationsWrap">
+            <table class="historyTable caCatalogLocationsTable">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>IP ranges / countries</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="caCatalogDrawer" hidden></div>
+        </div>
+      </details>`;
+}
+
 function upsertCurateRule(rules, mode, source, facet, value) {
   if (!source || !facet || value == null || value === '') return;
   let rule = rules.find((r) => r.source === source && r.facet === facet);
@@ -1972,7 +2025,19 @@ async function ensureWorkerForCommands(clientNumber, { restartIfDead = true, sho
   return api(`/api/tenants/${clientNumber}/ensure-worker`, {
     method: 'POST',
     body: JSON.stringify({ restartIfDead, showConsole }),
-  });
+  }, 60000);
+}
+
+async function waitForGraphAppJob(started) {
+  if (!started?.started) return started;
+  log(`Graph app console opened (PID ${started.processId}). Finish sign-in there — other runner actions stay available.`);
+  const deadline = Date.now() + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const st = await api('/api/wcm/graph-app-job', {}, 10000);
+    if (!st?.running) return st;
+  }
+  throw new Error('Graph app console is still open after 10 minutes. Finish or close that window, then retry.');
 }
 
 async function requireLiveWorker(clientNumber, { restartIfDead = true, showConsole = false, actionLabel = 'continue' } = {}) {
@@ -2809,6 +2874,8 @@ function restoreTenantUiState(clientNumber, div) {
   refreshContainmentUsers(div);
   updateContainmentButtons(div);
   restoreContainmentOutput(div, saved);
+  updateCaCatalogButtons(div);
+  restoreCaCatalogOutput(div, saved);
 
 }
 
@@ -4200,6 +4267,701 @@ async function sendRemediateCommand(clientNumber, div, command, progressLabel, w
   return final;
 }
 
+const CA_SUCCESS_PREFIXES = ['CA_POLICIES:', 'CA_LOCATIONS:', 'CA_POLICY:', 'CA_USERS:'];
+
+function parseCaPayload(final) {
+  const prefixes = ['CA_FAILED:', ...CA_SUCCESS_PREFIXES];
+  const text = extractWorkerTokenResponse(final || '', prefixes);
+  for (const prefix of prefixes) {
+    if (text.startsWith(prefix)) {
+      const rest = text.slice(prefix.length);
+      try {
+        return { prefix, data: JSON.parse(rest), raw: rest };
+      } catch {
+        return { prefix, data: null, raw: rest };
+      }
+    }
+  }
+  return { prefix: '', data: null, raw: text };
+}
+
+function rememberCaCatalog(div, patch) {
+  const clientNumber = div?.closest('details.tenant')?.dataset?.client;
+  if (!clientNumber || !patch) return;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  tenantUiState.set(String(clientNumber), { ...prior, caCatalog: { ...(prior.caCatalog || {}), ...patch } });
+}
+
+function setCaCatalogStatus(div, text, tone) {
+  const el = div.querySelector('.caCatalogStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'caCatalogStatus' + (text ? ` hasStatus ${tone || ''}` : '');
+}
+
+function caStateChip(state) {
+  const s = String(state || '');
+  let cls = 'muted';
+  let label = s || 'unknown';
+  if (/^enabled$/i.test(s)) { cls = 'ok'; label = 'enabled'; }
+  else if (/report/i.test(s)) { cls = 'report'; label = 'report-only'; }
+  else if (/disabled/i.test(s)) { cls = 'muted'; label = 'disabled'; }
+  return `<span class="caStateChip ${cls}">${escapeHtml(label)}</span>`;
+}
+
+const CA_ISO_COUNTRIES = 'AD,AE,AF,AG,AI,AL,AM,AO,AQ,AR,AS,AT,AU,AW,AX,AZ,BA,BB,BD,BE,BF,BG,BH,BI,BJ,BL,BM,BN,BO,BQ,BR,BS,BT,BV,BW,BY,BZ,CA,CC,CD,CF,CG,CH,CI,CK,CL,CM,CN,CO,CR,CU,CV,CW,CX,CY,CZ,DE,DJ,DK,DM,DO,DZ,EC,EE,EG,EH,ER,ES,ET,FI,FJ,FK,FM,FO,FR,GA,GB,GD,GE,GF,GG,GH,GI,GL,GM,GN,GP,GQ,GR,GS,GT,GU,GW,GY,HK,HM,HN,HR,HT,HU,ID,IE,IL,IM,IN,IO,IQ,IR,IS,IT,JE,JM,JO,JP,KE,KG,KH,KI,KM,KN,KP,KR,KW,KY,KZ,LA,LB,LC,LI,LK,LR,LS,LT,LU,LV,LY,MA,MC,MD,ME,MF,MG,MH,MK,ML,MM,MN,MO,MP,MQ,MR,MS,MT,MU,MV,MW,MX,MY,MZ,NA,NC,NE,NF,NG,NI,NL,NO,NP,NR,NU,NZ,OM,PA,PE,PF,PG,PH,PK,PL,PM,PN,PR,PS,PT,PW,PY,QA,RE,RO,RS,RU,RW,SA,SB,SC,SD,SE,SG,SH,SI,SJ,SK,SL,SM,SN,SO,SR,SS,ST,SV,SX,SY,SZ,TC,TD,TF,TG,TH,TJ,TK,TL,TM,TN,TO,TR,TT,TV,TW,TZ,UA,UG,UM,US,UY,UZ,VA,VC,VE,VG,VI,VN,VU,WF,WS,YE,YT,ZA,ZM,ZW'.split(',');
+
+function isCaAllowlistName(name) {
+  return /allow|trust|permit|safe|whitelist/i.test(String(name || ''));
+}
+
+function parseCaCountryCodes(loc) {
+  const fromField = asArray(loc?.countries).map((c) => String(c || '').trim().toUpperCase()).filter((c) => /^[A-Z]{2}$/.test(c));
+  if (fromField.length) return fromField;
+  const detail = String(loc?.detail || '');
+  if (/^Allowed:/i.test(detail) || /range|\//i.test(detail)) return [];
+  return (detail.match(/\b[A-Z]{2}\b/g) || []).filter((c) => CA_ISO_COUNTRIES.includes(c));
+}
+
+function invertCaCountryCodes(blocked) {
+  const set = new Set(asArray(blocked).map((c) => String(c || '').trim().toUpperCase()).filter(Boolean));
+  if (!set.size) return [];
+  return CA_ISO_COUNTRIES.filter((c) => !set.has(c));
+}
+
+function withCaAllowedCountries(loc) {
+  if (!loc || typeof loc !== 'object') return loc;
+  const existing = asArray(loc.allowedCountries).filter(Boolean);
+  if (existing.length) return loc;
+  if (/IP range/i.test(loc.type || '')) return loc;
+  if (isCaAllowlistName(loc.displayName || loc.label)) return loc;
+  const blocked = parseCaCountryCodes(loc);
+  if (!blocked.length) return loc;
+  const allowed = invertCaCountryCodes(blocked);
+  return {
+    ...loc,
+    countries: blocked,
+    allowedCountries: allowed,
+    countryMode: 'blocklist',
+    type: loc.type && loc.type !== 'Location' ? loc.type : 'Country blocklist',
+    detail: allowed.length ? `Allowed: ${allowed.join(', ')}` : 'Allowed: (none)',
+  };
+}
+
+function formatCaLocationRef(item) {
+  if (item == null || item === '') return '';
+  if (typeof item !== 'object') {
+    const raw = String(item);
+    if (raw === 'AllTrusted') return 'All trusted IPs';
+    if (raw === 'All') return 'All';
+    return raw;
+  }
+  const loc = withCaAllowedCountries(item);
+  const name = loc.label || loc.displayName || loc.id || '';
+  const allowed = asArray(loc.allowedCountries).filter(Boolean);
+  if (allowed.length) return `${name} (allowed: ${allowed.join(', ')})`;
+  const cidrs = asArray(loc.ipRanges).filter(Boolean);
+  const extra = cidrs.length ? cidrs.join(', ') : (loc.detail && /IP range|blocklist/i.test(loc.type || '') ? loc.detail : '');
+  return extra ? `${name} (${extra})` : (loc.detail ? `${name} (${loc.detail})` : name);
+}
+
+function formatCaLocationList(items) {
+  const labels = asArray(items).map(formatCaLocationRef).filter(Boolean);
+  return labels.length ? labels.join(', ') : '—';
+}
+
+function formatCaLocationSummary(policy) {
+  const inc = asArray(policy?.includeLocations || policy?.includeLocationIds);
+  const exc = asArray(policy?.excludeLocations || policy?.excludeLocationIds);
+  const incIps = asArray(policy?.includeIpRanges);
+  const excIps = asArray(policy?.excludeIpRanges);
+  const parts = [];
+  if (inc.length) parts.push(`Include: ${formatCaLocationList(inc)}`);
+  else if (incIps.length) parts.push(`Include IPs: ${incIps.join(', ')}`);
+  if (exc.length) parts.push(`Exclude: ${formatCaLocationList(exc)}`);
+  else if (excIps.length) parts.push(`Exclude IPs: ${excIps.join(', ')}`);
+  return parts.join(' | ') || '—';
+}
+
+const CA_GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CA_WELL_KNOWN_ROLES = {
+  '62e90394-69f5-4237-9190-012177145e10': 'Global Administrator',
+  '9b895d77-7237-7278-86d2-56d3bd9720bd': 'Application Administrator',
+  '9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3': 'Application Administrator',
+  'c4e39bd9-1100-46d3-8c65-fb160da0071f': 'Authentication Administrator',
+  '0526716b-113d-4c15-b2c8-68e3c22b9f80': 'Authentication Policy Administrator',
+  'b0f54661-2d74-4c50-afa3-1ec803f12efe': 'Billing Administrator',
+  '158c047a-c907-4556-b7ef-446551a6b5f7': 'Cloud Application Administrator',
+  'b1be1c3e-b65d-4f19-8427-f6fa0d97feb9': 'Conditional Access Administrator',
+  '44367163-eba1-44c3-98af-f5787879f96a': 'Dynamics 365 Administrator',
+  '29232cdf-9323-42fd-ade2-1d097af3e4de': 'Exchange Administrator',
+  'f2ef992c-3afb-46b9-b7cf-a126ee74c451': 'Global Reader',
+  '729827e3-9c14-49f7-bb1b-9608f156bbb8': 'Helpdesk Administrator',
+  '3a2c62dc-778b-46ae-8129-6b6e3c87330d': 'Intune Administrator',
+  '3a2c62db-5318-420d-8d74-23affee5d9d5': 'Intune Administrator',
+  '966707d0-3269-4727-9be2-8c5a1d0f0f90': 'Password Administrator',
+  '966707d0-3269-4727-9be2-8c3a10f19b9d': 'Password Administrator',
+  '1169501e-1cda-4adb-99d3-e6c394ecb116': 'Power Platform Administrator',
+  '7be44c8a-adaf-4e2a-884d-2d2b0dec86ba': 'Privileged Authentication Administrator',
+  '7be44c8a-adaf-4e2a-84d6-ab2649e08a13': 'Privileged Authentication Administrator',
+  'e8611ab8-c189-46e8-94e1-8229d6d9673b': 'Privileged Role Administrator',
+  'e8611ab8-c189-46e8-94e1-60213ab1f814': 'Privileged Role Administrator',
+  '194ae4cb-b126-40b2-bd5b-6091b380977d': 'Security Administrator',
+  '5d6b6bb7-de71-4623-b4af-96380a352509': 'Security Reader',
+  'f28a1f50-f6e7-4571-818b-6a12f2af6b6c': 'SharePoint Administrator',
+  '69091246-20e8-4a56-aa4d-066075b2a7a8': 'Teams Administrator',
+  'fe930be7-5e62-47db-91af-98c3a49a38b1': 'User Administrator',
+};
+
+function caWellKnownRoleName(id) {
+  if (!id) return '';
+  return CA_WELL_KNOWN_ROLES[String(id)] || CA_WELL_KNOWN_ROLES[String(id).toLowerCase()] || '';
+}
+
+function formatCaPrincipalLabel(item) {
+  if (item == null || item === '') return '';
+  const id = (item && typeof item === 'object') ? String(item.id || '') : String(item);
+  let label = (item && typeof item === 'object')
+    ? String(item.label || item.displayName || item.id || '')
+    : String(item);
+  const role = caWellKnownRoleName(label) || caWellKnownRoleName(id);
+  if (role) return role;
+  if (id && new RegExp(`\\s*\\(${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)\\s*$`, 'i').test(label)) {
+    label = label.replace(new RegExp(`\\s*\\(${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)\\s*$`, 'i'), '').trim();
+  }
+  return label;
+}
+
+function formatCaUserScope(policy) {
+  const bits = [];
+  const incU = formatCaNamedList(policy?.includeUsers);
+  const excU = formatCaNamedList(policy?.excludeUsers);
+  const incG = formatCaNamedList(policy?.includeGroups);
+  const excG = formatCaNamedList(policy?.excludeGroups);
+  const incR = formatCaNamedList(policy?.includeRoles);
+  const excR = formatCaNamedList(policy?.excludeRoles);
+  if (incU !== '—') bits.push(`Include users: ${incU}`);
+  if (incG !== '—') bits.push(`Include groups: ${incG}`);
+  if (incR !== '—') bits.push(`Include roles: ${incR}`);
+  if (excU !== '—') bits.push(`Exclude users: ${excU}`);
+  if (excG !== '—') bits.push(`Exclude groups: ${excG}`);
+  if (excR !== '—') bits.push(`Exclude roles: ${excR}`);
+  if (bits.length) return bits.join(' | ');
+  return String(policy?.userScope || '') || '—';
+}
+
+function formatCaExclusionSummary(policy) {
+  const bits = [];
+  const users = formatCaNamedList(policy?.excludeUsers);
+  const groups = formatCaNamedList(policy?.excludeGroups);
+  const roles = formatCaNamedList(policy?.excludeRoles);
+  if (users !== '—') bits.push(`Users: ${users}`);
+  if (groups !== '—') bits.push(`Groups: ${groups}`);
+  if (roles !== '—') bits.push(`Roles: ${roles}`);
+  if (!bits.length && policy?.exclusions && policy.exclusions !== '—') bits.push(policy.exclusions);
+  const excLoc = asArray(policy?.excludeLocations);
+  if (excLoc.length) bits.push(`Locations: ${formatCaLocationList(excLoc)}`);
+  return bits.length ? [...new Set(bits)].join(' | ') : '—';
+}
+
+function formatCaNamedList(items) {
+  const labels = asArray(items).map((x) => formatCaPrincipalLabel(x)).filter(Boolean);
+  return labels.length ? labels.join(', ') : '—';
+}
+
+function mergeCaNamedList(preferred, fallback) {
+  const byId = new Map();
+  asArray(fallback).forEach((item) => {
+    const id = String((item && typeof item === 'object') ? (item.id || '') : item).toLowerCase();
+    if (id) byId.set(id, item);
+  });
+  const source = asArray(preferred).length ? preferred : fallback;
+  return asArray(source).map((item) => {
+    const id = String((item && typeof item === 'object') ? (item.id || '') : item);
+    const cached = byId.get(id.toLowerCase());
+    const label = formatCaPrincipalLabel(item);
+    const cachedLabel = formatCaPrincipalLabel(cached);
+    const useCached = cachedLabel && !CA_GUID_RE.test(cachedLabel) && (CA_GUID_RE.test(label) || !label);
+    return {
+      id: id || (cached && cached.id) || '',
+      label: useCached ? cachedLabel : (label || cachedLabel || id),
+    };
+  });
+}
+
+function mergeCaPolicyNames(detail, listed) {
+  if (!detail) return detail;
+  if (!listed) return detail;
+  return {
+    ...listed,
+    ...detail,
+    includeUsers: mergeCaNamedList(detail.includeUsers, listed.includeUsers),
+    excludeUsers: mergeCaNamedList(detail.excludeUsers, listed.excludeUsers),
+    includeGroups: mergeCaNamedList(detail.includeGroups, listed.includeGroups),
+    excludeGroups: mergeCaNamedList(detail.excludeGroups, listed.excludeGroups),
+    includeRoles: mergeCaNamedList(detail.includeRoles, listed.includeRoles),
+    excludeRoles: mergeCaNamedList(detail.excludeRoles, listed.excludeRoles),
+  };
+}
+
+function caJsonCommand(name, payload) {
+  return `${name}|${JSON.stringify(payload || {})}`;
+}
+
+function confirmCaWrite(message) {
+  return window.confirm(message);
+}
+
+function confirmCaEnabledPolicy(policy, action) {
+  const state = String(policy?.state || '');
+  if (!/^enabled$/i.test(state)) return true;
+  return confirmCaWrite(`Policy '${policy.displayName || policy.id}' is ENABLED.\n\n${action}\n\nContinue?`);
+}
+
+function caUserItems(policy, key) {
+  return asArray(policy?.[key]).map((item) => {
+    const id = String((item && typeof item === 'object') ? (item.id || '') : item);
+    return { id, label: formatCaPrincipalLabel(item) || id };
+  }).filter((x) => x.id);
+}
+
+function renderCaUserCheckList(items, className) {
+  const rows = asArray(items).filter((x) => x.id && x.id !== 'All' && x.id !== 'GuestsOrExternalUsers' && x.id !== 'None');
+  if (!rows.length) return '<div class="muted">None</div>';
+  return `<div class="caCatalogUserList">${rows.map((x) => `
+    <label class="caCatalogUserRow">
+      <input type="checkbox" class="${className}" value="${escapeHtml(x.id)}" />
+      <span>${escapeHtml(x.label)}</span>
+    </label>`).join('')}</div>`;
+}
+
+function rememberCaAudit(div, entry) {
+  if (!div || !entry) return;
+  const clientNumber = div.closest('details.tenant')?.dataset?.client;
+  if (!clientNumber) return;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  const catalog = { ...(prior.caCatalog || {}) };
+  catalog.audit = asArray(catalog.audit).concat([{
+    Timestamp: entry.Timestamp || new Date().toISOString(),
+    UPN: String(entry.UPN || entry.Upn || ''),
+    Action: String(entry.Action || ''),
+    Result: String(entry.Result || 'success'),
+    Detail: String(entry.Detail || '').slice(0, 500),
+  }]);
+  tenantUiState.set(String(clientNumber), { ...prior, caCatalog: catalog });
+}
+
+function selectedCaUserIds(root, selector) {
+  return [...(root?.querySelectorAll(`${selector}:checked`) || [])].map((el) => el.value).filter(Boolean);
+}
+
+function grantControlsText(grant) {
+  if (!grant) return '—';
+  const builtIn = asArray(grant.builtInControls || grant.BuiltInControls);
+  const custom = asArray(grant.customAuthenticationFactors || grant.CustomAuthenticationFactors);
+  const tou = asArray(grant.termsOfUse || grant.TermsOfUse);
+  const op = grant.operator || grant.Operator || '';
+  const parts = [];
+  if (op) parts.push(`Operator: ${op}`);
+  if (builtIn.length) parts.push(builtIn.join(', '));
+  if (custom.length) parts.push(`Custom: ${custom.join(', ')}`);
+  if (tou.length) parts.push(`Terms of use: ${tou.length}`);
+  return parts.join(' | ') || '—';
+}
+
+function sessionControlsText(session) {
+  if (!session || typeof session !== 'object') return '—';
+  const keys = Object.keys(session).filter((k) => {
+    if (k.startsWith('@')) return false;
+    const v = session[k];
+    return v != null && v !== false && v !== '';
+  });
+  return keys.length ? keys.join(', ') : '—';
+}
+
+function updateCaCatalogButtons(div) {
+  if (!div) return;
+  const graph = div.dataset.graphAuthenticated === '1';
+  div.querySelectorAll('.caCatalogRefresh, .caCatalogHardRefresh').forEach((btn) => {
+    btn.disabled = !graph;
+  });
+  const hint = div.querySelector('.caCatalogHint');
+  if (hint) {
+    hint.textContent = graph
+      ? 'Graph Auth connected. Refresh uses the worker cache. Hard refresh reloads from Graph.'
+      : 'Complete Graph Auth to list current policies.';
+  }
+}
+
+function renderCaPolicies(div, policies) {
+  const tbody = div.querySelector('.caCatalogPoliciesTable tbody');
+  if (!tbody) return;
+  const rows = asArray(policies);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No Conditional Access policies.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((p) => {
+    const id = String(p.id || '');
+    return `<tr class="caCatalogPolicyRow" data-policy-id="${escapeHtml(id)}" title="Open policy detail">
+      <td>${escapeHtml(p.displayName || id)}</td>
+      <td>${caStateChip(p.state)}</td>
+      <td>${escapeHtml(formatCaUserScope(p))}</td>
+      <td>${escapeHtml(formatCaExclusionSummary(p))}</td>
+      <td>${escapeHtml(formatCaLocationSummary(p))}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderCaLocations(div, locations) {
+  const tbody = div.querySelector('.caCatalogLocationsTable tbody');
+  if (!tbody) return;
+  const rows = asArray(locations);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="muted">No named locations.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((raw) => {
+    const l = withCaAllowedCountries(raw);
+    const allowed = asArray(l.allowedCountries).filter(Boolean);
+    const cidrs = asArray(l.ipRanges).filter(Boolean);
+    const detail = allowed.length
+      ? `Allowed: ${allowed.join(', ')}`
+      : (cidrs.length ? cidrs.join(', ') : (l.detail || ''));
+    return `<tr>
+    <td>${escapeHtml(l.displayName || l.id || '')}</td>
+    <td>${escapeHtml(l.type || '')}</td>
+    <td>${escapeHtml(detail)}</td>
+  </tr>`;
+  }).join('');
+}
+
+function renderCaPolicyDetail(div, policy) {
+  const drawer = div.querySelector('.caCatalogDrawer');
+  if (!drawer) return;
+  if (!policy) {
+    drawer.hidden = true;
+    drawer.innerHTML = '';
+    return;
+  }
+  drawer.hidden = false;
+  const includeUsers = caUserItems(policy, 'includeUsers');
+  const excludeUsers = caUserItems(policy, 'excludeUsers');
+  const includesAll = includeUsers.some((x) => x.id === 'All');
+  drawer.innerHTML = `
+    <h3>${escapeHtml(policy.displayName || policy.id || 'Policy')}</h3>
+    <p class="muted" style="margin:0 0 0.35rem">${caStateChip(policy.state)} <span>${escapeHtml(formatCaUserScope(policy))}</span></p>
+    <ul>
+      <li>Include users: ${escapeHtml(formatCaNamedList(policy.includeUsers))}</li>
+      <li>Exclude users: ${escapeHtml(formatCaNamedList(policy.excludeUsers))}</li>
+      <li>Include groups: ${escapeHtml(formatCaNamedList(policy.includeGroups))}</li>
+      <li>Exclude groups: ${escapeHtml(formatCaNamedList(policy.excludeGroups))}</li>
+      <li>Include roles: ${escapeHtml(formatCaNamedList(policy.includeRoles))}</li>
+      <li>Exclude roles: ${escapeHtml(formatCaNamedList(policy.excludeRoles))}</li>
+      <li>Include locations: ${escapeHtml(formatCaLocationList(policy.includeLocations))}</li>
+      <li>Exclude locations: ${escapeHtml(formatCaLocationList(policy.excludeLocations))}</li>
+      <li>Grant: ${escapeHtml(grantControlsText(policy.grantControls))}</li>
+      <li>Session: ${escapeHtml(sessionControlsText(policy.sessionControls))}</li>
+    </ul>
+    <div class="caCatalogEdit" data-policy-id="${escapeHtml(policy.id || '')}">
+      <h4>User exceptions</h4>
+      <p class="caCatalogEditHint">Search does not page the whole tenant. Groups and roles stay read-only this increment. Enabled policies ask for confirm.</p>
+      <div class="caCatalogSubLabel">Included users${includesAll ? ' (All users)' : ''}</div>
+      ${includesAll ? '<div class="muted">All users. Adding specific accounts replaces All.</div>' : renderCaUserCheckList(includeUsers, 'caIncludeUser')}
+      <div class="row">
+        <button type="button" class="caRemoveInclude small" ${includesAll ? 'disabled' : ''}>Remove selected include</button>
+      </div>
+      <div class="caCatalogSubLabel">Excluded users</div>
+      ${renderCaUserCheckList(excludeUsers, 'caExcludeUser')}
+      <div class="row">
+        <button type="button" class="caRemoveExclude small">Remove selected exclusions</button>
+      </div>
+      <div class="caCatalogSubLabel">Find users</div>
+      <div class="caCatalogSearchRow">
+        <input type="search" class="caUserSearch" placeholder="Name or email (2+ characters)" autocomplete="off" />
+        <button type="button" class="caUserSearchBtn small">Search</button>
+      </div>
+      <div class="caCatalogSearchHits muted">Search to add people to include or exclude.</div>
+      <div class="row">
+        <button type="button" class="caAddInclude small">Add selected to include</button>
+        <button type="button" class="caAddExclude small">Add selected to exclusions</button>
+      </div>
+    </div>`;
+}
+
+function restoreCaCatalogOutput(div, state) {
+  const c = state?.caCatalog;
+  if (!div || !c || typeof c !== 'object') return;
+  if (c.policies) renderCaPolicies(div, c.policies);
+  if (c.locations) renderCaLocations(div, c.locations);
+  if (c.detail) renderCaPolicyDetail(div, c.detail);
+  if (c.status) setCaCatalogStatus(div, c.status, c.statusTone || '');
+}
+
+async function sendCaCommand(clientNumber, div, command, progressLabel, waitSeconds = 180) {
+  if (!await requireLiveWorker(clientNumber, { actionLabel: progressLabel || 'Conditional Access' })) {
+    return null;
+  }
+  const initial = await api(`/api/tenants/${clientNumber}/command`, {
+    method: 'POST',
+    body: workerCommandBody(command),
+  });
+  let final = extractWorkerTokenResponse(initial.response, ['CA_FAILED:', ...CA_SUCCESS_PREFIXES, 'CA_STARTED']);
+  if (!final || final === 'CA_STARTED') {
+    final = await pollWorkerResponse(
+      clientNumber,
+      'CA_STARTED',
+      CA_SUCCESS_PREFIXES,
+      'CA_FAILED:',
+      waitSeconds,
+      progressLabel || 'Conditional Access'
+    );
+  }
+  return final;
+}
+
+async function refreshCaCatalog(clientNumber, div, force) {
+  if (div.dataset.graphAuthenticated !== '1') {
+    const msg = `Client ${clientNumber}: Graph Auth is required to list Conditional Access policies.`;
+    log(msg);
+    window.alert(msg);
+    return;
+  }
+  const suffix = force ? '|REFRESH:1' : '';
+  if (force) rememberCaCatalog(div, { policies: [], locations: [], detail: null });
+  setCaCatalogStatus(div, force ? 'Reloading from Graph…' : 'Loading Conditional Access catalog…', 'statusBusy');
+  const panel = div.querySelector('details.caCatalogPanel');
+  if (panel) panel.open = true;
+  const policiesFinal = await sendCaCommand(clientNumber, div, `CA_LIST_POLICIES${suffix}`, 'listing CA policies');
+  const policiesParsed = parseCaPayload(policiesFinal || '');
+  if (policiesParsed.prefix !== 'CA_POLICIES:') {
+    throw new Error(policiesParsed.raw || 'CA_LIST_POLICIES failed');
+  }
+  const policies = asArray(policiesParsed.data?.Policies);
+  renderCaPolicies(div, policies);
+
+  const locationsFinal = await sendCaCommand(clientNumber, div, `CA_LIST_LOCATIONS${suffix}`, 'listing CA locations');
+  const locationsParsed = parseCaPayload(locationsFinal || '');
+  if (locationsParsed.prefix !== 'CA_LOCATIONS:') {
+    throw new Error(locationsParsed.raw || 'CA_LIST_LOCATIONS failed');
+  }
+  const locations = asArray(locationsParsed.data?.Locations);
+  renderCaLocations(div, locations);
+  const status = `${policies.length} polic${policies.length === 1 ? 'y' : 'ies'}, ${locations.length} location${locations.length === 1 ? '' : 's'}${force ? '' : ' (cached after first load)'}`;
+  setCaCatalogStatus(div, status, 'statusOk');
+  rememberCaCatalog(div, { policies, locations, status, statusTone: 'statusOk' });
+}
+
+function currentCaDetail(div) {
+  const clientNumber = div?.closest('details.tenant')?.dataset?.client;
+  return tenantUiState.get(String(clientNumber))?.caCatalog?.detail || null;
+}
+
+function applyCaPolicyResult(clientNumber, div, parsed, statusText) {
+  const policy = parsed?.data?.Policy || parsed?.data;
+  if (!policy) throw new Error(parsed?.raw || 'CA policy payload missing');
+  const listed = asArray(tenantUiState.get(String(clientNumber))?.caCatalog?.policies)
+    .find((p) => String(p?.id || '') === String(policy.id || ''));
+  const merged = mergeCaPolicyNames(policy, listed);
+  renderCaPolicyDetail(div, merged);
+  rememberCaCatalog(div, { detail: merged });
+  if (parsed?.data?.Audit) rememberCaAudit(div, parsed.data.Audit);
+  if (statusText) setCaCatalogStatus(div, statusText, 'statusOk');
+  return merged;
+}
+
+async function loadCaPolicyDetail(clientNumber, div, policyId) {
+  if (!policyId) return;
+  setCaCatalogStatus(div, 'Loading policy detail…', 'statusBusy');
+  const final = await sendCaCommand(clientNumber, div, `CA_GET_POLICY|POLICY_ID:${policyId}`, 'loading CA policy', 120);
+  const parsed = parseCaPayload(final || '');
+  if (parsed.prefix !== 'CA_POLICY:') {
+    throw new Error(parsed.raw || 'CA_GET_POLICY failed');
+  }
+  applyCaPolicyResult(clientNumber, div, parsed, `Opened ${parsed.data?.Policy?.displayName || policyId}`);
+}
+
+async function patchCaPolicyUsers(clientNumber, div, scope, op, ids, allowAllFallback) {
+  const policy = currentCaDetail(div);
+  const policyId = policy?.id;
+  if (!policyId) throw new Error('Open a policy first.');
+  const wanted = asArray(ids).filter(Boolean);
+  if (!wanted.length) throw new Error('Select at least one user.');
+  const replacingAll = scope === 'include' && op === 'add' && caUserItems(policy, 'includeUsers').some((x) => x.id === 'All');
+  if (replacingAll && !confirmCaWrite(`Policy '${policy.displayName}' currently includes All users.\n\nAdding specific accounts replaces All with only the selected people.\n\nContinue?`)) {
+    return;
+  }
+  const emptyingInclude = scope === 'include' && op === 'remove' && !allowAllFallback;
+  const remaining = caUserItems(policy, 'includeUsers').filter((x) => x.id !== 'All' && !wanted.includes(x.id));
+  const hasOther = caUserItems(policy, 'includeGroups').length || caUserItems(policy, 'includeRoles').length;
+  if (emptyingInclude && remaining.length === 0 && !hasOther) {
+    if (!confirmCaWrite(`Removing the last included user leaves no include target.\n\nFallback to All users?\n\nContinue?`)) return;
+    allowAllFallback = true;
+  }
+  const action = `${op === 'add' ? 'Add' : 'Remove'} ${wanted.length} user(s) on ${scope}.`;
+  if (!confirmCaEnabledPolicy(policy, action)) return;
+  setCaCatalogStatus(div, 'Updating policy users…', 'statusBusy');
+  const final = await sendCaCommand(
+    clientNumber,
+    div,
+    caJsonCommand('CA_PATCH_USERS', { policyId, scope, op, ids: wanted, allowAllFallback: Boolean(allowAllFallback) }),
+    'updating CA users',
+    180
+  );
+  const parsed = parseCaPayload(final || '');
+  if (parsed.prefix !== 'CA_POLICY:') {
+    throw new Error(parsed.raw || 'CA_PATCH_USERS failed');
+  }
+  applyCaPolicyResult(clientNumber, div, parsed, `Updated users on ${parsed.data?.Policy?.displayName || policyId}`);
+  log(`Client ${clientNumber}: CA ${op} ${scope} ${wanted.length} user(s) on ${policy.displayName || policyId}.`);
+  try { await refreshCaCatalog(clientNumber, div, false); } catch { /* list refresh is best-effort */ }
+}
+
+async function searchCaCatalogUsers(clientNumber, div) {
+  const input = div.querySelector('.caUserSearch');
+  const hits = div.querySelector('.caCatalogSearchHits');
+  const q = String(input?.value || '').trim();
+  if (q.length < 2) {
+    if (hits) hits.textContent = 'Enter at least 2 characters.';
+    return;
+  }
+  setCaCatalogStatus(div, 'Searching users…', 'statusBusy');
+  const final = await sendCaCommand(clientNumber, div, caJsonCommand('CA_SEARCH_USERS', { q }), 'searching CA users', 90);
+  const parsed = parseCaPayload(final || '');
+  if (parsed.prefix !== 'CA_USERS:') {
+    throw new Error(parsed.raw || 'CA_SEARCH_USERS failed');
+  }
+  const users = asArray(parsed.data?.Users);
+  if (hits) {
+    hits.classList.remove('muted');
+    hits.innerHTML = users.length
+      ? users.map((u) => {
+          const id = String(u.id || '');
+          const label = formatCaPrincipalLabel(u) || u.userPrincipalName || id;
+          const dept = u.department ? ` — ${u.department}` : '';
+          return `<label class="caCatalogUserRow">
+            <input type="checkbox" class="caSearchUser" value="${escapeHtml(id)}" />
+            <span>${escapeHtml(label)}${escapeHtml(dept)}</span>
+          </label>`;
+        }).join('')
+      : '<div class="muted">No users matched.</div>';
+  }
+  setCaCatalogStatus(div, `${users.length} user${users.length === 1 ? '' : 's'} matched`, users.length ? 'statusOk' : 'statusWarn');
+}
+
+let caCatalogPopupEscBound = false;
+
+function setCaCatalogPopup(div, open) {
+  const panel = div?.querySelector('details.caCatalogPanel');
+  const body = div?.querySelector('.caCatalogBody');
+  const backdrop = div?.querySelector('.caCatalogBackdrop');
+  if (!body) return;
+  if (open) {
+    if (panel) panel.open = true;
+    body.classList.add('caCatalogPopped');
+    if (backdrop) backdrop.hidden = false;
+  } else {
+    body.classList.remove('caCatalogPopped');
+    if (backdrop) backdrop.hidden = true;
+  }
+}
+
+function runCaCatalogRefresh(clientNumber, div, force) {
+  withClientLock(clientNumber, async () => {
+    focusClientLogTab(clientNumber);
+    try {
+      await refreshCaCatalog(clientNumber, div, force);
+      log(`Client ${clientNumber}: Conditional Access catalog ${force ? 'reloaded from Graph' : 'loaded'}.`);
+    } catch (err) {
+      const msg = err?.message || String(err);
+      log(`Client ${clientNumber}: CA catalog error: ${msg}`);
+      setCaCatalogStatus(div, msg, 'statusBad');
+      rememberCaCatalog(div, { status: msg, statusTone: 'statusBad' });
+    }
+  });
+}
+
+function wireCaCatalogPanel(div, clientNumber) {
+  updateCaCatalogButtons(div);
+  restoreCaCatalogOutput(div, tenantUiState.get(String(clientNumber)));
+  div.querySelector('.caCatalogRefresh')?.addEventListener('click', (e) => {
+    runCaCatalogRefresh(clientNumber, div, Boolean(e.shiftKey));
+  });
+  div.querySelector('.caCatalogHardRefresh')?.addEventListener('click', () => {
+    runCaCatalogRefresh(clientNumber, div, true);
+  });
+  div.querySelectorAll('.caCatalogOpenPopup').forEach((btn) => {
+    btn.addEventListener('click', () => setCaCatalogPopup(div, true));
+  });
+  div.querySelector('.caCatalogClosePopup')?.addEventListener('click', () => setCaCatalogPopup(div, false));
+  div.querySelector('.caCatalogBackdrop')?.addEventListener('click', () => setCaCatalogPopup(div, false));
+  if (!caCatalogPopupEscBound) {
+    caCatalogPopupEscBound = true;
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      document.querySelectorAll('.caCatalogBody.caCatalogPopped').forEach((body) => {
+        const host = body.closest('.tenantBody');
+        if (host) setCaCatalogPopup(host, false);
+      });
+    });
+  }
+  div.querySelector('.caCatalogPoliciesTable')?.addEventListener('click', (e) => {
+    const row = e.target.closest('.caCatalogPolicyRow');
+    if (!row) return;
+    const policyId = row.dataset.policyId;
+    withClientLock(clientNumber, async () => {
+      focusClientLogTab(clientNumber);
+      try {
+        await loadCaPolicyDetail(clientNumber, div, policyId);
+      } catch (err) {
+        const msg = err?.message || String(err);
+        log(`Client ${clientNumber}: CA policy detail error: ${msg}`);
+        setCaCatalogStatus(div, msg, 'statusBad');
+      }
+    });
+  });
+  const runCaEdit = (work) => {
+    withClientLock(clientNumber, async () => {
+      focusClientLogTab(clientNumber);
+      try {
+        await work();
+      } catch (err) {
+        const msg = err?.message || String(err);
+        log(`Client ${clientNumber}: CA edit error: ${msg}`);
+        setCaCatalogStatus(div, msg, 'statusBad');
+      }
+    });
+  };
+  const drawer = div.querySelector('.caCatalogDrawer');
+  drawer?.addEventListener('click', (e) => {
+    if (e.target.closest('.caUserSearchBtn')) {
+      runCaEdit(() => searchCaCatalogUsers(clientNumber, div));
+      return;
+    }
+    if (e.target.closest('.caAddExclude')) {
+      runCaEdit(() => patchCaPolicyUsers(clientNumber, div, 'exclude', 'add', selectedCaUserIds(drawer, '.caSearchUser')));
+      return;
+    }
+    if (e.target.closest('.caAddInclude')) {
+      runCaEdit(() => patchCaPolicyUsers(clientNumber, div, 'include', 'add', selectedCaUserIds(drawer, '.caSearchUser')));
+      return;
+    }
+    if (e.target.closest('.caRemoveExclude')) {
+      runCaEdit(() => patchCaPolicyUsers(clientNumber, div, 'exclude', 'remove', selectedCaUserIds(drawer, '.caExcludeUser')));
+      return;
+    }
+    if (e.target.closest('.caRemoveInclude')) {
+      runCaEdit(() => patchCaPolicyUsers(clientNumber, div, 'include', 'remove', selectedCaUserIds(drawer, '.caIncludeUser')));
+    }
+  });
+  drawer?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.classList?.contains('caUserSearch')) {
+      e.preventDefault();
+      runCaEdit(() => searchCaCatalogUsers(clientNumber, div));
+    }
+  });
+}
+
 async function runContainmentQuickSteps(clientNumber, div, label, steps, options = {}) {
   const results = [];
   let halted = false;
@@ -5045,6 +5807,7 @@ function setTenantButtonsDisabled(div, disabled) {
   });
 
   updateContainmentButtons(div);
+  updateCaCatalogButtons(div);
 
 }
 
@@ -5605,11 +6368,15 @@ function renderTenants(session) {
 
       ${buildCurateLogsPanelHtml(Boolean(t.outputFolder))}
 
+      ${buildCaCatalogPanelHtml()}
+
       <div>
 
         <button class="exoAuth">Exchange Auth</button>
 
         <button class="graphAuth">Graph Auth</button>
+
+        <button type="button" class="caCatalogJump small" title="Scroll to the read-only Conditional Access catalog on this tenant">CA catalog</button>
 
         <button class="generateReports primary" ${canGenerate ? '' : 'disabled'}>${t.reportInProgress ? 'Generating…' : (t.outputFolder ? 'Generate another report pack' : 'Generate Reports')}</button>
 
@@ -5669,6 +6436,14 @@ function renderTenants(session) {
 
     div.querySelector('.graphAuth').addEventListener('click', () => graphAuth(t.clientNumber, div));
 
+    div.querySelector('.caCatalogJump')?.addEventListener('click', () => {
+      const panel = div.querySelector('details.caCatalogPanel');
+      if (panel) {
+        panel.open = true;
+        panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    });
+
     div.querySelector('.exoAuth').addEventListener('click', () => exoAuth(t.clientNumber, div));
 
     div.querySelector('.validateUsers').addEventListener('click', () => validateUsers(t.clientNumber, div));
@@ -5676,6 +6451,7 @@ function renderTenants(session) {
     div.querySelector('.collectHistorical').addEventListener('click', () => collectHistoricalTrace(t.clientNumber, div));
 
     wireContainmentPanel(div, t.clientNumber);
+    wireCaCatalogPanel(div, t.clientNumber);
 
     div.querySelector('.fetchTicket')?.addEventListener('click', () => fetchManageTicket(t.clientNumber, div));
 
@@ -6544,7 +7320,7 @@ async function fetchManageTicket(clientNumber, div) {
 
       body: JSON.stringify({ ticketId }),
 
-    });
+    }, 90000);
 
     div.dataset.ticketContent = data.ticketContent || '';
     const paste = div.querySelector('.ticketPaste');
@@ -6927,7 +7703,7 @@ async function loadAppRegistrations(options = {}) {
   if (!quiet) log(forceRefreshFromGraph ? 'Refreshing app registrations from Graph…' : 'Loading app registrations…');
   try {
     const url = forceRefreshFromGraph ? '/api/app-registrations?refresh=1' : '/api/app-registrations';
-    appRegistrations = await api(url);
+    appRegistrations = await api(url, {}, forceRefreshFromGraph ? 120000 : 45000);
     const count = appRegistrations.length;
     appRegsEl.textContent = appRegistrations.map(a => a.displayText).join('\n') || '(none in WCM)';
     if (summaryEl) {
@@ -6963,7 +7739,7 @@ async function runUpdateGraphAppScopes(preferredTenantId) {
     const body = tid ? { tenantId: tid } : {};
     let data;
     try {
-      data = await api('/api/wcm/update-graph-app-scopes', { method: 'POST', body: JSON.stringify(body) });
+      data = await waitForGraphAppJob(await api('/api/wcm/update-graph-app-scopes', { method: 'POST', body: JSON.stringify(body) }, 30000));
     } catch (e) {
       if (String(e.message || e).includes('Not found')) {
         throw new Error('Update Graph App scopes needs a web-runner restart (new /api/wcm/update-graph-app-scopes route).');
@@ -6980,7 +7756,7 @@ async function runUpdateGraphAppScopes(preferredTenantId) {
 }
 
 document.getElementById('btnCreateGraphApp')?.addEventListener('click', () => runAction('Create Graph App (browser sign-in on this PC)…', async () => {
-  const data = await api('/api/wcm/create-graph-app', { method: 'POST', body: '{}' });
+  const data = await waitForGraphAppJob(await api('/api/wcm/create-graph-app', { method: 'POST', body: '{}' }, 30000));
   if (data.result?.WcmSaved) {
     log(`Graph app created for ${data.result.TenantDisplayName || data.result.TenantId}. Select it in App reg tenant, then Graph Auth.`);
   } else {

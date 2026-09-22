@@ -16,7 +16,8 @@ $script:InvestigateSources = @(
         AddressCols = @('UserPrincipalName', 'UPN', 'User')
         IpCols      = @('IPAddress', 'IpAddress', 'IP address', 'IP')
         GeoCols     = @('CountryOrRegion', 'Country', 'Location')
-        Preset      = @('CreatedDateTime', 'UserPrincipalName', 'IPAddress', 'AppDisplayName', 'Status', 'CountryOrRegion', 'ClientAppUsed')
+        Preset      = @('CreatedDateTime', 'UserPrincipalName', 'IPAddress', 'AppDisplayName', 'Status', 'ConditionalAccessStatus', 'CAPolicyDetails', 'CountryOrRegion', 'ClientAppUsed')
+        EnrichSignInCa = $true
     }
     @{
         Name        = 'UnifiedAuditLogs'
@@ -87,7 +88,8 @@ function Import-InvestigateCsv {
 function Get-InvestigateCachedRows {
     param(
         [Parameter(Mandatory)][string]$Path,
-        [switch]$EnrichUal
+        [switch]$EnrichUal,
+        [switch]$EnrichSignInCa
     )
     $item = Get-Item -LiteralPath $Path
     $key = $item.FullName
@@ -99,6 +101,9 @@ function Get-InvestigateCachedRows {
     $rows = Import-InvestigateCsv -Path $Path
     if ($EnrichUal) {
         foreach ($row in $rows) { Add-InvestigateUalFields -Row $row }
+    }
+    if ($EnrichSignInCa) {
+        foreach ($row in $rows) { Add-InvestigateSignInCaFields -Row $row }
     }
 
     while ($script:CsvCache.Count -ge $script:CsvCacheMax) {
@@ -137,6 +142,123 @@ function Add-InvestigateUalFields {
     Add-Member -InputObject $Row -NotePropertyName '_ClientIP' -NotePropertyValue $ip -Force
     Add-Member -InputObject $Row -NotePropertyName '_MailboxOwnerUPN' -NotePropertyValue $mbx -Force
     Add-Member -InputObject $Row -NotePropertyName '_User' -NotePropertyValue $user -Force
+}
+
+function ConvertTo-InvestigateCaResultLabel {
+    param([string]$Result)
+    $r = ([string]$Result).Trim()
+    if ([string]::IsNullOrWhiteSpace($r)) { return 'Unknown' }
+    switch -Regex ($r) {
+        '^(?i)success$' { return 'Success' }
+        '^(?i)fail(ure|ed)$' { return 'Failed' }
+        '^(?i)notApplied$' { return 'Not Applied' }
+        '^(?i)not[\s-]?applied$' { return 'Not Applied' }
+        '^(?i)reportOnly' { return 'Report-only' }
+        '^(?i)notEnabled$' { return 'Not Enabled' }
+        default {
+            if ($r -match '(?i)report') { return 'Report-only' }
+            return $r
+        }
+    }
+}
+
+function ConvertTo-InvestigateCaTone {
+    param([string]$Label)
+    switch -Regex ([string]$Label) {
+        '^(?i)Failed$' { return 'fail' }
+        '^(?i)Success$' { return 'ok' }
+        '^(?i)Report-only$' { return 'report' }
+        default { return 'muted' }
+    }
+}
+
+function Parse-InvestigateConditionalAccess {
+    param(
+        [string]$Json,
+        [string]$Status,
+        [string]$Details,
+        [string]$Names,
+        [string]$Results
+    )
+    $policies = [System.Collections.Generic.List[object]]::new()
+    $raw = [string]$Json
+    if ($raw -and $raw.TrimStart() -match '^[\[\{]') {
+        try {
+            $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+            foreach ($p in @($parsed)) {
+                $id = [string](Get-InvestigateProp -Object $p -Name 'id')
+                if (-not $id) { $id = [string](Get-InvestigateProp -Object $p -Name 'Id') }
+                $name = [string](Get-InvestigateProp -Object $p -Name 'displayName')
+                if (-not $name) { $name = [string](Get-InvestigateProp -Object $p -Name 'DisplayName') }
+                $result = [string](Get-InvestigateProp -Object $p -Name 'result')
+                if (-not $result) { $result = [string](Get-InvestigateProp -Object $p -Name 'Result') }
+                $label = ConvertTo-InvestigateCaResultLabel -Result $result
+                [void]$policies.Add([pscustomobject]@{
+                        id     = $id
+                        name   = $(if ($name) { $name } else { $id })
+                        result = $label
+                        tone   = ConvertTo-InvestigateCaTone -Label $label
+                    })
+            }
+        }
+        catch { }
+    }
+    if ($policies.Count -eq 0 -and ($Names -or $Results -or $Details)) {
+        $nameList = @([string]$Names -split '\s*;\s*' | Where-Object { $_ })
+        $resultList = @([string]$Results -split '\s*;\s*' | Where-Object { $_ })
+        $detailList = @([string]$Details -split '\s*;\s*' | Where-Object { $_ })
+        $n = [Math]::Max($nameList.Count, [Math]::Max($resultList.Count, $detailList.Count))
+        for ($i = 0; $i -lt $n; $i++) {
+            $name = if ($i -lt $nameList.Count -and $nameList[$i]) { $nameList[$i] }
+            elseif ($i -lt $detailList.Count -and $detailList[$i]) { $detailList[$i] }
+            else { "Policy $($i + 1)" }
+            $res = if ($i -lt $resultList.Count) { $resultList[$i] } else { '' }
+            $label = ConvertTo-InvestigateCaResultLabel -Result $res
+            [void]$policies.Add([pscustomobject]@{
+                    id     = ''
+                    name   = $name
+                    result = $label
+                    tone   = ConvertTo-InvestigateCaTone -Label $label
+                })
+        }
+    }
+    $statusLabel = ConvertTo-InvestigateCaResultLabel -Result $Status
+    if ($statusLabel -eq 'Unknown' -and $Status) { $statusLabel = $Status }
+    $summary = if ($policies.Count -gt 0) {
+        ($policies | ForEach-Object { "$($_.name):$($_.result)" }) -join '; '
+    }
+    else {
+        $(if ($Status) { $Status } else { $statusLabel })
+    }
+    return [pscustomobject]@{
+        status      = $(if ($Status) { $Status } else { $statusLabel })
+        statusLabel = $statusLabel
+        summary     = $summary
+        policies    = @($policies)
+    }
+}
+
+function Add-InvestigateSignInCaFields {
+    param($Row)
+    if (-not $Row) { return }
+    $json = ''
+    $status = ''
+    $details = ''
+    $names = ''
+    $results = ''
+    if ($Row.PSObject.Properties['ConditionalAccessPoliciesJSON']) { $json = [string]$Row.ConditionalAccessPoliciesJSON }
+    if ($Row.PSObject.Properties['ConditionalAccessStatus']) { $status = [string]$Row.ConditionalAccessStatus }
+    if ($Row.PSObject.Properties['CAPolicyDetails']) { $details = [string]$Row.CAPolicyDetails }
+    if ($Row.PSObject.Properties['CAPolicyNames']) { $names = [string]$Row.CAPolicyNames }
+    if ($Row.PSObject.Properties['CAPolicyResults']) { $results = [string]$Row.CAPolicyResults }
+    $parsed = Parse-InvestigateConditionalAccess -Json $json -Status $status -Details $details -Names $names -Results $results
+    $policiesJson = '[]'
+    if ($parsed.policies.Count -gt 0) {
+        $policiesJson = @($parsed.policies) | ConvertTo-Json -Compress -Depth 4
+        if ($parsed.policies.Count -eq 1 -and $policiesJson -notmatch '^\s*\[') { $policiesJson = "[$policiesJson]" }
+    }
+    Add-Member -InputObject $Row -NotePropertyName '_CA' -NotePropertyValue $parsed.summary -Force
+    Add-Member -InputObject $Row -NotePropertyName '_CAPolicies' -NotePropertyValue $policiesJson -Force
 }
 
 function Resolve-InvestigateColumn {
@@ -276,6 +398,14 @@ function Get-InvestigateCell {
         if ($c) { return [string]$Row.$c }
         return ''
     }
+    if ($Column -eq '_CA' -or $Column -eq '_ca') {
+        if ($Row.PSObject.Properties['_CA']) { return [string]$Row._CA }
+        $bits = [System.Collections.Generic.List[string]]::new()
+        foreach ($c in @('ConditionalAccessStatus', 'CAPolicyDetails', 'CAPolicyNames', 'CAPolicyResults')) {
+            if ($Row.PSObject.Properties[$c] -and $Row.$c) { [void]$bits.Add([string]$Row.$c) }
+        }
+        return ($bits -join ' ')
+    }
     if ($Row.PSObject.Properties[$Column]) { return [string]$Row.$Column }
     $resolved = $null
     if ($ColMap.Resolved.ContainsKey($Column)) { $resolved = $ColMap.Resolved[$Column] }
@@ -361,6 +491,11 @@ function Resolve-InvestigatePreset {
                 if ($picked -notcontains $extra) { $picked += $extra }
             }
         }
+        if ($Def.EnrichSignInCa) {
+            foreach ($extra in @('_CA', '_CAPolicies')) {
+                if ($picked -notcontains $extra) { $picked += $extra }
+            }
+        }
         return $picked
     }
     if ($Columns -eq 'signin_triage' -or $Columns -eq 'audit_triage' -or $Columns -eq 'message_triage') {
@@ -371,6 +506,11 @@ function Resolve-InvestigatePreset {
         }
         if ($Def.EnrichUal) {
             foreach ($extra in @('_Operation', '_ClientIP', '_MailboxOwnerUPN')) {
+                if ($picked -notcontains $extra) { $picked += $extra }
+            }
+        }
+        if ($Def.EnrichSignInCa) {
+            foreach ($extra in @('_CA', '_CAPolicies')) {
                 if ($picked -notcontains $extra) { $picked += $extra }
             }
         }
@@ -389,7 +529,7 @@ function Get-InvestigateOpenContext {
     if (-not $def) { throw "Unknown source: $Source" }
     $csv = Get-InvestigateCsvPath -Folder $Path -BaseName $def.Name
     if (-not $csv) { throw "No $($def.Name) CSV in $Path" }
-    $rows = Get-InvestigateCachedRows -Path $csv -EnrichUal:$def.EnrichUal
+    $rows = Get-InvestigateCachedRows -Path $csv -EnrichUal:$def.EnrichUal -EnrichSignInCa:$def.EnrichSignInCa
     $sample = $null
     if ($rows.Count -gt 0) { $sample = $rows[0] }
     $map = New-InvestigateColMap -SampleRow $sample -Def $def
@@ -423,7 +563,7 @@ function Get-InvestigateSources {
                 })
             continue
         }
-        $rows = Get-InvestigateCachedRows -Path $csv -EnrichUal:$def.EnrichUal
+        $rows = Get-InvestigateCachedRows -Path $csv -EnrichUal:$def.EnrichUal -EnrichSignInCa:$def.EnrichSignInCa
         $cols = @()
         $time = $null
         if ($rows.Count -gt 0) {
@@ -1267,4 +1407,4 @@ function Get-InvestigatePacks {
     }
 }
 
-Export-ModuleMember -Function Get-InvestigateSources, Invoke-InvestigateQuery, Get-InvestigateMailGraph, Get-InvestigateAccessGraph, Export-InvestigateQuery, Get-InvestigateCsvPath, Get-InvestigatePacks, Get-InvestigatePackRoots
+Export-ModuleMember -Function Get-InvestigateSources, Invoke-InvestigateQuery, Get-InvestigateMailGraph, Get-InvestigateAccessGraph, Export-InvestigateQuery, Get-InvestigateCsvPath, Get-InvestigatePacks, Get-InvestigatePackRoots, Parse-InvestigateConditionalAccess, ConvertTo-InvestigateCaResultLabel

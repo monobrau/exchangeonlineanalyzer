@@ -33,7 +33,7 @@ const DEMO = {
   path: 'C:\\Reports\\Contoso\\Client1_Ticket1839334',
   sources: [
     { name: 'MessageTrace', present: true, rowCount: 13, columns: ['Received', 'SenderAddress', 'RecipientAddress', 'Subject', 'Status', 'FromIP', 'Size'], timeCol: 'Received', preset: [] },
-    { name: 'SignInLogs', present: true, rowCount: 7, columns: ['CreatedDateTime', 'UserPrincipalName', 'IPAddress', 'AppDisplayName', 'Status', 'CountryOrRegion', 'ClientAppUsed'], timeCol: 'CreatedDateTime', preset: [] },
+    { name: 'SignInLogs', present: true, rowCount: 7, columns: ['CreatedDateTime', 'UserPrincipalName', 'IPAddress', 'AppDisplayName', 'Status', 'ConditionalAccessStatus', 'CAPolicyDetails', 'CountryOrRegion', 'ClientAppUsed'], timeCol: 'CreatedDateTime', preset: [] },
     { name: 'UnifiedAuditLogs', present: true, rowCount: 6, columns: ['CreationDate', 'UserIds', 'Operations', 'RecordType', 'ClientIP', 'ResultStatus', '_Operation', '_ClientIP', '_MailboxOwnerUPN'], timeCol: 'CreationDate', preset: [] },
   ],
   graph: {
@@ -106,15 +106,15 @@ const DEMO = {
       ],
     },
     SignInLogs: {
-      columns: ['CreatedDateTime', 'UserPrincipalName', 'IPAddress', 'AppDisplayName', 'Status', 'CountryOrRegion', 'ClientAppUsed'],
+      columns: ['CreatedDateTime', 'UserPrincipalName', 'IPAddress', 'AppDisplayName', 'Status', 'ConditionalAccessStatus', 'CAPolicyDetails', '_CA', '_CAPolicies', 'CountryOrRegion', 'ClientAppUsed'],
       rows: [
-        { CreatedDateTime: '2026-01-15T08:55:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '203.0.113.10', AppDisplayName: 'Office 365', Status: 'Success', CountryOrRegion: 'US', ClientAppUsed: 'Browser' },
-        { CreatedDateTime: '2026-01-15T09:01:00Z', UserPrincipalName: 'bob@contoso.com', IPAddress: '203.0.113.11', AppDisplayName: 'Outlook Mobile', Status: 'Success', CountryOrRegion: 'US', ClientAppUsed: 'Mobile Apps and Desktop clients' },
-        { CreatedDateTime: '2026-01-15T10:01:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '198.51.100.44', AppDisplayName: 'Office 365', Status: 'Success', CountryOrRegion: 'DE', ClientAppUsed: 'Browser' },
-        { CreatedDateTime: '2026-01-15T10:04:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '198.51.100.44', AppDisplayName: 'Azure Portal', Status: 'Success', CountryOrRegion: 'DE', ClientAppUsed: 'Browser' },
-        { CreatedDateTime: '2026-01-15T11:02:00Z', UserPrincipalName: 'eve@adventure-works.com', IPAddress: '203.0.113.88', AppDisplayName: 'Office 365', Status: 'Failure', CountryOrRegion: 'RU', ClientAppUsed: 'Browser' },
-        { CreatedDateTime: '2026-01-16T08:12:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '192.0.2.55', AppDisplayName: 'Office 365', Status: 'Success', CountryOrRegion: 'NG', ClientAppUsed: 'Browser' },
-        { CreatedDateTime: '2026-01-16T08:13:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '192.0.2.55', AppDisplayName: 'Microsoft Authenticator', Status: 'Failure', CountryOrRegion: 'NG', ClientAppUsed: 'Mobile Apps and Desktop clients' },
+        { CreatedDateTime: '2026-01-15T08:55:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '203.0.113.10', AppDisplayName: 'Office 365', Status: 'Success', ConditionalAccessStatus: 'success', CAPolicyDetails: 'Require MFA', _CA: 'Require MFA:Success', _CAPolicies: '[{"id":"p-mfa","name":"Require MFA","result":"Success","tone":"ok"}]', CountryOrRegion: 'US', ClientAppUsed: 'Browser' },
+        { CreatedDateTime: '2026-01-15T09:01:00Z', UserPrincipalName: 'bob@contoso.com', IPAddress: '203.0.113.11', AppDisplayName: 'Outlook Mobile', Status: 'Success', ConditionalAccessStatus: 'success', CAPolicyDetails: 'Require MFA', _CA: 'Require MFA:Success', _CAPolicies: '[{"id":"p-mfa","name":"Require MFA","result":"Success","tone":"ok"}]', CountryOrRegion: 'US', ClientAppUsed: 'Mobile Apps and Desktop clients' },
+        { CreatedDateTime: '2026-01-15T10:01:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '198.51.100.44', AppDisplayName: 'Office 365', Status: 'Success', ConditionalAccessStatus: 'success', CAPolicyDetails: 'Trusted DE (report-only)', _CA: 'Trusted DE:Report-only', _CAPolicies: '[{"id":"p-geo","name":"Trusted DE","result":"Report-only","tone":"report"}]', CountryOrRegion: 'DE', ClientAppUsed: 'Browser' },
+        { CreatedDateTime: '2026-01-15T10:04:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '198.51.100.44', AppDisplayName: 'Azure Portal', Status: 'Success', ConditionalAccessStatus: 'success', CAPolicyDetails: 'Trusted DE (report-only)', _CA: 'Trusted DE:Report-only', _CAPolicies: '[{"id":"p-geo","name":"Trusted DE","result":"Report-only","tone":"report"}]', CountryOrRegion: 'DE', ClientAppUsed: 'Browser' },
+        { CreatedDateTime: '2026-01-15T11:02:00Z', UserPrincipalName: 'eve@adventure-works.com', IPAddress: '203.0.113.88', AppDisplayName: 'Office 365', Status: 'Failure', ConditionalAccessStatus: 'failure', CAPolicyDetails: 'Block high-risk countries (BLOCKED)', _CA: 'Block high-risk countries:Failed', _CAPolicies: '[{"id":"p-block","name":"Block high-risk countries","result":"Failed","tone":"fail"}]', CountryOrRegion: 'RU', ClientAppUsed: 'Browser' },
+        { CreatedDateTime: '2026-01-16T08:12:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '192.0.2.55', AppDisplayName: 'Office 365', Status: 'Success', ConditionalAccessStatus: 'notApplied', CAPolicyDetails: '', _CA: 'notApplied', _CAPolicies: '[]', CountryOrRegion: 'NG', ClientAppUsed: 'Browser' },
+        { CreatedDateTime: '2026-01-16T08:13:00Z', UserPrincipalName: 'alice@contoso.com', IPAddress: '192.0.2.55', AppDisplayName: 'Microsoft Authenticator', Status: 'Failure', ConditionalAccessStatus: 'failure', CAPolicyDetails: 'Require MFA (BLOCKED)', _CA: 'Require MFA:Failed', _CAPolicies: '[{"id":"p-mfa","name":"Require MFA","result":"Failed","tone":"fail"}]', CountryOrRegion: 'NG', ClientAppUsed: 'Mobile Apps and Desktop clients' },
       ],
     },
     UnifiedAuditLogs: {
@@ -149,9 +149,11 @@ function matchDemoRow(row, filters) {
         ? `${row.FromIP || ''} ${row.IPAddress || ''} ${row.ClientIP || ''}`
         : (f.column === '_geo'
           ? `${row.CountryOrRegion || ''}`
+          : (f.column === '_CA' || f.column === '_ca'
+            ? `${row._CA || ''} ${row.CAPolicyDetails || ''} ${row.ConditionalAccessStatus || ''}`
           : (f.column === '_time'
             ? (row.Received || row.CreatedDateTime || row.CreationDate || '')
-            : String(row[f.column] ?? ''))));
+            : String(row[f.column] ?? '')))));
     const val = String(f.value ?? '');
     if (f.op === 'icontains') return col.toLowerCase().includes(val.toLowerCase());
     if (f.op === 'gte') return col >= val;
@@ -445,6 +447,8 @@ function currentFilters(mode = 'table') {
   if (ip) filters.push({ column: '_ip', op: 'icontains', value: ip });
   const geo = document.getElementById('geoQ').value.trim();
   if (geo) filters.push({ column: '_geo', op: 'icontains', value: geo });
+  const ca = document.getElementById('caQ')?.value.trim();
+  if (ca) filters.push({ column: '_CA', op: 'icontains', value: ca });
   if (status) {
     if (mode === 'mail') {
       filters.push({ column: 'Status', op: 'icontains', value: status });
@@ -500,21 +504,68 @@ async function loadSources() {
   });
 }
 
+function parseCaPolicies(row) {
+  if (!row) return [];
+  const raw = row._CAPolicies;
+  if (raw) {
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+    } catch { /* fall through */ }
+  }
+  const json = row.ConditionalAccessPoliciesJSON;
+  if (json) {
+    try {
+      const parsed = typeof json === 'string' ? JSON.parse(json) : json;
+      return (Array.isArray(parsed) ? parsed : [parsed]).filter(Boolean).map((p) => {
+        const result = String(p.result || p.Result || 'Unknown');
+        const tone = /fail/i.test(result) ? 'fail' : (/success/i.test(result) ? 'ok' : (/report/i.test(result) ? 'report' : 'muted'));
+        return { id: p.id || p.Id || '', name: p.displayName || p.DisplayName || p.id || 'Policy', result, tone };
+      });
+    } catch { /* fall through */ }
+  }
+  return [];
+}
+
+function caChipHtml(name, result, tone) {
+  const label = result && result !== name ? `${name}: ${result}` : (name || result || '');
+  return `<span class="ca-chip ${escapeHtml(tone || 'muted')}">${escapeHtml(label)}</span>`;
+}
+
+function renderCaCell(row, column) {
+  const policies = parseCaPolicies(row);
+  if (column === 'ConditionalAccessStatus' || column === '_CA' || column === 'CAPolicyDetails') {
+    if (policies.length) {
+      return policies.map((p) => caChipHtml(p.name, p.result, p.tone)).join('');
+    }
+    const status = row.ConditionalAccessStatus || row._CA || '';
+    if (status) {
+      const tone = /fail/i.test(status) ? 'fail' : (/success/i.test(status) ? 'ok' : (/report/i.test(status) ? 'report' : 'muted'));
+      return caChipHtml(String(status), '', tone);
+    }
+  }
+  const v = row[column];
+  return escapeHtml(v == null ? '' : String(v));
+}
+
 function renderTable(result) {
   state.total = result.total || 0;
   state.offset = result.offset || 0;
-  state.columns = result.columns || [];
+  const rawCols = result.columns || [];
+  const hideStatus = rawCols.includes('_CA');
+  state.columns = rawCols.filter((c) => {
+    if (['_CAPolicies', 'CAPolicyDetails', 'ConditionalAccessPoliciesJSON'].includes(c)) return false;
+    if (hideStatus && c === 'ConditionalAccessStatus') return false;
+    return true;
+  });
   state.rows = result.rows || [];
   tableHead.innerHTML = `<tr>${state.columns.map((c) => {
     const ind = state.sortBy === c ? (state.ascending ? ' ▲' : ' ▼') : '';
-    return `<th class="sortable" data-col="${c}">${c}${ind}</th>`;
+    const label = c === '_CA' ? 'Conditional Access' : c;
+    return `<th class="sortable" data-col="${c}">${escapeHtml(label)}${ind}</th>`;
   }).join('')}</tr>`;
   tableBody.innerHTML = state.rows.map((row, i) => {
-    const cells = state.columns.map((c) => {
-      const v = row[c];
-      const text = v == null ? '' : String(v);
-      return `<td>${escapeHtml(text)}</td>`;
-    }).join('');
+    const cells = state.columns.map((c) => `<td>${renderCaCell(row, c)}</td>`).join('');
     return `<tr data-idx="${i}">${cells}</tr>`;
   }).join('');
   const start = state.total ? state.offset + 1 : 0;
@@ -524,6 +575,11 @@ function renderTable(result) {
   document.getElementById('nextBtn').disabled = state.offset + state.rows.length >= state.total;
   rowDetail.classList.remove('show');
   rowDetail.textContent = '';
+  const caDrawer = document.getElementById('caDrawer');
+  if (caDrawer) {
+    caDrawer.classList.remove('show');
+    caDrawer.innerHTML = '';
+  }
 }
 
 function escapeHtml(s) {
@@ -980,6 +1036,8 @@ document.getElementById('clearBtn').addEventListener('click', () => {
   document.getElementById('ipQ').value = '';
   document.getElementById('geoQ').value = '';
   document.getElementById('statusQ').value = '';
+  const caQ = document.getElementById('caQ');
+  if (caQ) caQ.value = '';
   state.offset = 0;
   refreshAll();
 });
@@ -1027,7 +1085,22 @@ tableBody.addEventListener('click', (e) => {
   tableBody.querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
   tr.classList.add('selected');
   const row = state.rows[Number(tr.dataset.idx)];
-  rowDetail.textContent = JSON.stringify(row, null, 2);
+  const caDrawer = document.getElementById('caDrawer');
+  const policies = parseCaPolicies(row);
+  if (caDrawer && state.source === 'SignInLogs') {
+    const status = row.ConditionalAccessStatus || '';
+    const items = policies.length
+      ? policies.map((p) => `<li>${caChipHtml(p.name, p.result, p.tone)}${p.id ? ` <span class="muted">${escapeHtml(p.id)}</span>` : ''}</li>`).join('')
+      : '<li class="muted">No applied Conditional Access policies on this sign-in.</li>';
+    caDrawer.innerHTML = `<h3>Conditional Access${status ? ` — ${escapeHtml(String(status))}` : ''}</h3><ul>${items}</ul>`;
+    caDrawer.classList.add('show');
+  } else if (caDrawer) {
+    caDrawer.classList.remove('show');
+    caDrawer.innerHTML = '';
+  }
+  const display = { ...row };
+  delete display._CAPolicies;
+  rowDetail.textContent = JSON.stringify(display, null, 2);
   rowDetail.classList.add('show');
 });
 

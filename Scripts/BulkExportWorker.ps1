@@ -246,6 +246,9 @@ try {
     Write-Host "Importing Remediation module..." -ForegroundColor Gray
     $remediationMod = Join-Path $ScriptRoot "Modules\Remediation.psm1"
     if (Test-Path $remediationMod) { Import-Module $remediationMod -Force -ErrorAction SilentlyContinue }
+    Write-Host "Importing Conditional Access catalog module..." -ForegroundColor Gray
+    $caCatalogMod = Join-Path $ScriptRoot "Modules\ConditionalAccessCatalog.psm1"
+    if (Test-Path $caCatalogMod) { Import-Module $caCatalogMod -Force -ErrorAction SilentlyContinue }
     Write-Status "Modules imported successfully"
     Write-Host "All modules imported successfully" -ForegroundColor Green
     Write-Host ""
@@ -1098,6 +1101,49 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
+            } elseif ($command -match "^CA_") {
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "CONDITIONAL ACCESS CATALOG COMMAND" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Conditional Access catalog command received"
+                Write-CommandResponse "CA_STARTED"
+                $caCatalogMod = Join-Path $ScriptRoot "Modules\ConditionalAccessCatalog.psm1"
+                $caNeedReload = ($command -match 'REFRESH:1') -or -not (Get-Command Invoke-CaCatalogWorkerCommand -ErrorAction SilentlyContinue)
+                if ((Test-Path $caCatalogMod) -and $caNeedReload) { Import-Module $caCatalogMod -Force -ErrorAction SilentlyContinue }
+                if ($command -match 'REFRESH:1' -and (Get-Command Clear-CaCatalogCache -ErrorAction SilentlyContinue)) { Clear-CaCatalogCache }
+                if (-not (Get-Command Invoke-CaCatalogWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Write-CommandResponse "CA_FAILED:Conditional Access catalog module is not loaded"
+                    continue
+                }
+                if (-not (Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue) -or -not (Test-GraphRestBearerToken)) {
+                    $tokenToUse = $script:graphTokenFromWCM
+                    if (-not $tokenToUse -and $script:currentTenantId -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAppTokenFromWCM -TenantId $script:currentTenantId } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if (-not $tokenToUse -and (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAccessToken } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if ($tokenToUse -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+                        Set-GraphRestBearerToken -Token $tokenToUse
+                    }
+                }
+                try {
+                    $caAuditFolder = $null
+                    if ($script:lastReportOutputFolder -and (Test-Path -LiteralPath $script:lastReportOutputFolder)) { $caAuditFolder = $script:lastReportOutputFolder }
+                    $resp = Invoke-CaCatalogWorkerCommand -Command $command -AuditFolder $caAuditFolder
+                    $respText = [string]$resp
+                    if ($respText) { Write-Status $respText }
+                    Write-CommandResponse $respText
+                } catch {
+                    Write-Status "ERROR: CA catalog failed - $($_.Exception.Message)"
+                    Write-CommandResponse "CA_FAILED:$($_.Exception.Message)"
+                }
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+                
             } elseif ($command -match "^GENERATE_REPORTS") {
                 # Reload effective tenant selections written by web runner (overrides session defaults)
                 if ($command -match '\|ReportSelectionsFile:([^|]+)') {
@@ -1583,6 +1629,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 } catch {}
                 $script:graphTokenFromWCM = $null
                 if (Get-Command Clear-GraphRestBearerToken -ErrorAction SilentlyContinue) { Clear-GraphRestBearerToken }
+                if (Get-Command Clear-CaCatalogCache -ErrorAction SilentlyContinue) { Clear-CaCatalogCache }
                 Write-Status "Microsoft Graph disconnected"
                 Write-Host "Graph session ended in this window. Use Graph Auth to sign in again." -ForegroundColor Green
                 Write-CommandResponse "GRAPH_DISCONNECT_SUCCESS"

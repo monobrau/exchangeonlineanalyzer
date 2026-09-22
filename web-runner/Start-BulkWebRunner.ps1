@@ -34,6 +34,7 @@ Import-Module (Join-Path $script:RunnerRoot 'Modules\BulkRunnerSession.psm1') -F
 Set-BulkRunnerWorkerVisibility -Hidden:(-not $ShowWorkers)
 $script:BulkSession = $null
 $script:ShutdownRequested = $false
+$script:GraphAppJob = $null
 
 function Write-JsonResponse {
     param(
@@ -476,25 +477,59 @@ function Handle-ApiRequest {
             return @{ entries = @($rows | Sort-Object displayText) }
         }
 
+        if ($Method -eq 'GET' -and $Path -eq '/api/wcm/graph-app-job') {
+            if (-not $script:GraphAppJob) { return @{ running = $false } }
+            $proc = $script:GraphAppJob.Process
+            $running = $false
+            try { $running = ($null -ne $proc -and -not $proc.HasExited) } catch { $running = $false }
+            if ($running) {
+                return @{
+                    running   = $true
+                    processId = $script:GraphAppJob.ProcessId
+                    logPath   = $script:GraphAppJob.LogPath
+                    updated   = [bool]$script:GraphAppJob.UpdateExisting
+                }
+            }
+            $result = $null
+            if ($script:GraphAppJob.ResultPath -and (Test-Path -LiteralPath $script:GraphAppJob.ResultPath)) {
+                try { $result = Get-Content -LiteralPath $script:GraphAppJob.ResultPath -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+            }
+            $exitCode = $null
+            try { $exitCode = $proc.ExitCode } catch { }
+            return @{
+                running   = $false
+                processId = $script:GraphAppJob.ProcessId
+                exitCode  = $exitCode
+                result    = $result
+                logPath   = $script:GraphAppJob.LogPath
+                updated   = [bool]$script:GraphAppJob.UpdateExisting
+            }
+        }
+
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/create-graph-app') {
             $tid = if ($Body.tenantId) { [string]$Body.tenantId } else { '' }
-            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid
-            return @{
-                exitCode = $outcome.ExitCode
-                result   = $outcome.Result
-                logPath  = $outcome.LogPath
+            if ($script:GraphAppJob -and $script:GraphAppJob.Process) {
+                $busy = $false
+                try { $busy = -not $script:GraphAppJob.Process.HasExited } catch { }
+                if ($busy) { throw 'A Graph app console is already open. Finish or close it, then retry.' }
             }
+            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -NoWait
+            $script:GraphAppJob = $outcome
+            $script:GraphAppJob | Add-Member -NotePropertyName UpdateExisting -NotePropertyValue $false -Force
+            return @{ started = $true; processId = $outcome.ProcessId; logPath = $outcome.LogPath }
         }
 
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/update-graph-app-scopes') {
             $tid = if ($Body.tenantId) { [string]$Body.tenantId } else { '' }
-            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -UpdateExisting
-            return @{
-                exitCode = $outcome.ExitCode
-                result   = $outcome.Result
-                logPath  = $outcome.LogPath
-                updated  = $true
+            if ($script:GraphAppJob -and $script:GraphAppJob.Process) {
+                $busy = $false
+                try { $busy = -not $script:GraphAppJob.Process.HasExited } catch { }
+                if ($busy) { throw 'A Graph app console is already open. Finish or close it, then retry.' }
             }
+            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -UpdateExisting -NoWait
+            $script:GraphAppJob = $outcome
+            $script:GraphAppJob | Add-Member -NotePropertyName UpdateExisting -NotePropertyValue $true -Force
+            return @{ started = $true; processId = $outcome.ProcessId; logPath = $outcome.LogPath; updated = $true }
         }
 
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/delete-graph-app') {
