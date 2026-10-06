@@ -153,7 +153,9 @@ function matchDemoRow(row, filters) {
             ? `${row._CA || ''} ${row.CAPolicyDetails || ''} ${row.ConditionalAccessStatus || ''}`
           : (f.column === '_time'
             ? (row.Received || row.CreatedDateTime || row.CreationDate || '')
-            : String(row[f.column] ?? '')))));
+            : (f.column === '_Operation'
+              ? String(row._Operation || row.Operations || '')
+              : String(row[f.column] ?? ''))))));
     const val = String(f.value ?? '');
     if (f.op === 'icontains') return col.toLowerCase().includes(val.toLowerCase());
     if (f.op === 'gte') return col >= val;
@@ -936,6 +938,47 @@ async function refreshAll() {
   }
 }
 
+function applyLinkFilters() {
+  const address = (params.get('address') || '').trim();
+  const from = (params.get('from') || '').trim();
+  const to = (params.get('to') || '').trim();
+  if (address) document.getElementById('addressQ').value = address;
+  if (from) document.getElementById('timeStart').value = from;
+  if (to) document.getElementById('timeEnd').value = to;
+}
+
+function activateInvestigateSource(source) {
+  state.source = source;
+  state.offset = 0;
+  state.sortBy = '';
+  document.querySelectorAll('.tabBtn').forEach((b) => b.classList.toggle('active', b.dataset.source === source));
+}
+
+function firstRowField(row, keys) {
+  for (const key of keys) {
+    const raw = row?.[key];
+    if (raw == null) continue;
+    const text = String(raw).trim();
+    if (!text || text === '{}' || text === '[]') continue;
+    const piece = text.split(/[;,\s]+/).map((s) => s.trim()).find(Boolean);
+    if (piece) return piece;
+  }
+  return '';
+}
+
+function pinInvestigateRow(row) {
+  const user = firstRowField(row, ['UserPrincipalName', '_MailboxOwnerUPN', '_User', 'UserIds', 'SenderAddress', 'RecipientAddress']);
+  const ip = firstRowField(row, ['IPAddress', 'FromIP', '_ClientIP', 'ClientIP']);
+  const addressEl = document.getElementById('addressQ');
+  const ipEl = document.getElementById('ipQ');
+  const userChanged = Boolean(user && addressEl.value !== user);
+  const ipChanged = Boolean(ip && ipEl.value !== ip);
+  if (!userChanged && !ipChanged) return '';
+  if (user) addressEl.value = user;
+  if (ip) ipEl.value = ip;
+  return `Pinned ${[user, ip].filter(Boolean).join(' · ')}`;
+}
+
 function applyFolderPath(path, extra = {}) {
   state.path = String(path || '').trim();
   folderInput.value = state.path;
@@ -1041,6 +1084,13 @@ document.getElementById('clearBtn').addEventListener('click', () => {
   state.offset = 0;
   refreshAll();
 });
+document.querySelectorAll('.investigatePreset').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    activateInvestigateSource(btn.dataset.source);
+    document.getElementById('statusQ').value = btn.dataset.status || '';
+    refreshAll();
+  });
+});
 document.getElementById('graphBtn').addEventListener('click', () => loadGraph().catch((e) => setStatus(e.message)));
 document.getElementById('accessBtn').addEventListener('click', () => loadAccessGraph().catch((e) => setStatus(e.message)));
 
@@ -1085,6 +1135,12 @@ tableBody.addEventListener('click', (e) => {
   tableBody.querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
   tr.classList.add('selected');
   const row = state.rows[Number(tr.dataset.idx)];
+  const pinned = pinInvestigateRow(row);
+  if (pinned) {
+    state.offset = 0;
+    refreshAll().then(() => setStatus(pinned));
+    return;
+  }
   const caDrawer = document.getElementById('caDrawer');
   const policies = parseCaPolicies(row);
   if (caDrawer && state.source === 'SignInLogs') {
@@ -1121,5 +1177,6 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
   }
 });
 
+applyLinkFilters();
 if (state.path || state.demo) refreshAll();
 loadPackList({ autoOpen: Boolean(state.sessionId) && !state.path }).catch((e) => setStatus(e.message));

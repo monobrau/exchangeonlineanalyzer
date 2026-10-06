@@ -108,6 +108,12 @@
       <button type="button" id="applyBtn" class="primary small">Apply</button>
       <button type="button" id="clearBtn" class="small">Clear</button>
     </div>
+    <div class="row">
+      <span class="muted">Presets</span>
+      <button type="button" class="small investigatePreset" data-source="SignInLogs" data-status="Fail">Failed sign-ins</button>
+      <button type="button" class="small investigatePreset" data-source="UnifiedAuditLogs" data-status="InboxRule">Inbox rule changes</button>
+      <button type="button" class="small investigatePreset" data-source="UnifiedAuditLogs" data-status="MailItemsAccessed">MailItemsAccessed</button>
+    </div>
   </div>
 
   <div class="card">
@@ -171,7 +177,7 @@
       <button type="button" class="tabBtn" data-source="UnifiedAuditLogs">UAL</button>
     </div>
     <div class="row">
-      <span class="muted" id="tableMeta">No rows loaded.</span>
+      <span class="muted" id="tableMeta">No rows loaded. Click a row to pin its user and IP.</span>
       <button type="button" id="prevBtn" class="small" disabled>Prev</button>
       <button type="button" id="nextBtn" class="small" disabled>Next</button>
       <button type="button" id="exportBtn" class="small">Export filtered CSV</button>

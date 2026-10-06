@@ -12,6 +12,10 @@ const clientBusy = new Set();
 
 const tenantUiState = new Map();
 
+// Client numbers whose containment <details> was open before the last re-render.
+// Saved results must not reopen it — see restoreContainmentOutput.
+const containmentPanelOpen = new Set();
+
 let currentSessionId = null;
 
 function containmentStorageKey(clientNumber) {
@@ -180,6 +184,52 @@ function buildCurateLogsPanelHtml(hasFolder) {
       </details>`;
 }
 
+function buildBecInvestigatePanelHtml() {
+  return `
+      <section class="becInvestigate">
+        <div class="sectionLabel">Threat check</div>
+        <p class="muted" style="font-size:0.85rem;margin:0 0 0.45rem">One mailbox. Covers business email compromise, data exfiltration, DLP, and other malicious activity, including new app registrations, mailbox forwarding, delegates, transport rules, and connectors. If Filter by users has exactly one address, that mailbox is used. A ticket on this card is included when you filled one in. Open Containment when you want the lists and the remediation buttons.</p>
+        <div class="row">
+          <label>Mailbox <input type="text" class="becMailbox" placeholder="uses the scoped user when there is one" /></label>
+          <button type="button" class="becInvestigateRun primary" disabled>Threat check</button>
+          <label title="When the review needs an older event, pull a longer window for only the logs that can answer it, up to 90 days or tenant retention."><input type="checkbox" class="becAutoRepull" checked /> Pull a longer window automatically</label>
+        </div>
+        <p class="becInvestigateStatus muted" style="font-size:0.85rem;margin:0.2rem 0"></p>
+        <div class="becReviewWrap" style="display:none">
+          <div class="row">
+            <button type="button" class="becReviewCopy small">Copy review</button>
+            <button type="button" class="becManualRepull small" style="display:none">Pull longer window and review again</button>
+          </div>
+          <pre class="becReviewText copyBlock"></pre>
+        </div>
+        <div class="row">
+          <button type="button" class="writeMemberberry small">Write notes</button>
+        </div>
+        <div class="becNotes" style="display:none">
+          <p class="memberberryRefs muted" style="font-size:0.85rem;margin:0.2rem 0"></p>
+          <div class="sectionLabel">Internal ticket note</div>
+          <pre class="memberberryText copyBlock"></pre>
+          <button type="button" class="copyMemberberry small">Copy internal note</button>
+          <div class="sectionLabel">Client email</div>
+          <pre class="becClientText copyBlock"></pre>
+          <button type="button" class="copyBecClient small">Copy client email</button>
+          <div class="sectionLabel">Incident report</div>
+          <pre class="becIncidentText copyBlock"></pre>
+          <button type="button" class="copyBecIncident small">Copy incident report</button>
+        </div>
+        <div class="storeSuggestions" style="display:none">
+          <div class="sectionLabel">Save for next time</div>
+          <p class="muted" style="font-size:0.85rem;margin:0 0 0.35rem">The last AI pass can suggest one Memberberry note and one memory-vault note. Nothing is written until you press a button. Edit the text first if it is not quite right.</p>
+          <label>Memberberry client <input type="text" class="storeMbClient" placeholder="Client name" /></label>
+          <textarea class="storeMbNote" rows="2" placeholder="Note to append for this client" style="width:100%;font:inherit;margin:0.25rem 0"></textarea>
+          <button type="button" class="storeMbSave small">Add to Memberberry</button>
+          <textarea class="storeMvNote" rows="2" placeholder="Soc memory for the next review" style="width:100%;font:inherit;margin:0.35rem 0 0.25rem"></textarea>
+          <button type="button" class="storeMvSave small">Add to memory vault</button>
+          <p class="storeSuggestStatus muted" style="font-size:0.85rem;margin:0.35rem 0 0"></p>
+        </div>
+      </section>`;
+}
+
 function buildContainmentPanelHtml() {
   return `
       <details class="containmentPanel collapsible">
@@ -205,6 +255,10 @@ function buildContainmentPanelHtml() {
               <button type="button" class="containmentAction containmentQuickRestore success small" disabled title="Resets to a random password nobody is told, then unblocks sign-in. The user gets back in only at passwordreset.microsoftonline.com. If the reset fails, sign-in stays blocked.">Reset password + unblock access</button>
             </div>
             <p class="muted" style="font-size:0.78rem;margin:0.35rem 0 0">Handback after containment: <strong>Reset with random password</strong>, then <strong>Unblock sign-in</strong>. Nobody is shown the new password — send the user <a href="https://passwordreset.microsoftonline.com/" target="_blank" rel="noopener">passwordreset.microsoftonline.com</a>. If the reset fails, the account stays blocked.</p>
+            <div class="row" style="margin-top:0.6rem">
+              <button type="button" class="containmentBecCheck small" disabled title="One selected user. Pulls mailbox persistence, forwarding, delegates, transport rules, connectors, new app registrations, MFA, devices, Intune, OAuth, roles, sign-ins, message trace, unified audit, DLP, and security alerts. A ticket is optional.">Threat check</button>
+            </div>
+            <p class="muted" style="font-size:0.78rem;margin:0.35rem 0 0">Same check as Threat check at the top of this tenant. It uses the mailbox already filled there, or the one selected user here. A clock time on the ticket is this PC's local time. The review, ticket note, client email, and incident report use that same local time. The first pull is only as long as that time needs, or the last 2 days when the ticket has no time. When Pull a longer window automatically is checked, the check keeps pulling a longer window for the logs it still needs, up to 90 days or retention, until the investigation can be finished. Otherwise use Pull longer window and review again.</p>
           </section>
 
           <div class="row">
@@ -362,6 +416,22 @@ function buildContainmentPanelHtml() {
           <section class="containmentPhase">
             <div class="containmentPhaseTitle">3. Mailbox persistence</div>
             <p class="containmentPhaseHint">Classic BEC: hidden inbox rules, mailbox forwarding (SMTP and/or internal recipient), unexpected delegates, folder ACL, auto-reply, junk allow-lists, and rights this user has on other mailboxes. Check Restricted Users if outbound mail was blocked.</p>
+            <div class="containmentSubLabel">AI review for this mailbox</div>
+            <p class="muted" style="font-size:0.78rem;margin:0 0 0.35rem">Same check as Threat check under Quick actions. A ticket on this card is included when you filled one in. Remediate runs only the boxes you leave checked, and it uses the same containment actions as the buttons below.</p>
+            <button type="button" class="containmentBecReview small" disabled>Review this mailbox</button>
+            <div class="containmentBecWrap" style="display:none">
+              <button type="button" class="containmentBecCopy small">Copy review</button>
+              <button type="button" class="becManualRepull small" style="display:none">Pull longer window and review again</button>
+              <pre class="containmentBecText copyBlock"></pre>
+              <div class="containmentBecActions" style="display:none">
+                <div class="row">
+                  <button type="button" class="containmentBecAll small">All</button>
+                  <button type="button" class="containmentBecNone small">None</button>
+                  <button type="button" class="containmentBecRun danger small">Remediate</button>
+                </div>
+                <div class="containmentBecList"></div>
+              </div>
+            </div>
             <div class="containmentSubLabel">Inbox rules</div>
             <div class="row">
               <button type="button" class="containmentAction containmentListRules small" disabled>List inbox rules</button>
@@ -732,6 +802,112 @@ function buildCaCatalogPanelHtml() {
       </details>`;
 }
 
+const TRIAGE_SUCCESS_PREFIXES = ['TRIAGE_QUARANTINE:', 'TRIAGE_DELIVERY:', 'TRIAGE_IMPERSONATION:', 'TRIAGE_CONFIG:', 'TRIAGE_ALL:'];
+
+function buildEmailTriagePanelHtml() {
+  return `
+      <details class="emailTriagePanel collapsible">
+        <summary>Email triage <span class="muted">(pulls are read-only — choose blocks, allows, and config fixes on the triage page)</span></summary>
+        <div class="collapsible-body">
+          <p class="muted" style="font-size:0.85rem;margin:0 0 0.45rem">
+            Quarantine, delivery, impersonation, and config pulls stay read-only. On the triage page, select phishing to block, legitimate mail to release, or config fixes. Apply runs the Exchange commands in this worker. DNS and unlicensed Defender changes are copy-only. The downloaded actions.ps1 file stays commented.
+          </p>
+          <div class="row">
+            <label>Days <input type="number" class="triageDays" min="1" max="30" value="7" /></label>
+            <label>Sender domain <input type="text" class="triageSenderDomain" placeholder="optional" /></label>
+            <label>Header top N <input type="number" class="triageHeaderTopN" min="0" max="25" value="5" /></label>
+            <label>Leg merge seconds <input type="number" class="triageWindow" min="1" max="600" value="120" /></label>
+            <label><input type="checkbox" class="triageFreemail" checked /> Freemail senders only</label>
+          </div>
+          <div class="row">
+            <button type="button" class="triagePull small" data-kind="QUARANTINE">Quarantine</button>
+            <button type="button" class="triagePull small" data-kind="DELIVERY">Delivery</button>
+            <button type="button" class="triagePull small" data-kind="IMPERSONATION">Impersonation</button>
+            <button type="button" class="triagePull small" data-kind="CONFIG">Config</button>
+            <button type="button" class="triagePull small" data-kind="ALL">All</button>
+            <a class="emailTriageOpen" href="triage.html" target="_blank">Open triage</a>
+          </div>
+          <div class="emailTriageStatus muted" role="status"></div>
+        </div>
+      </details>`;
+}
+
+function parseTriagePayload(final) {
+  const prefixes = ['TRIAGE_FAILED:', ...TRIAGE_SUCCESS_PREFIXES];
+  const text = extractWorkerTokenResponse(final || '', prefixes);
+  for (const prefix of prefixes) {
+    if (text.startsWith(prefix)) {
+      const rest = text.slice(prefix.length);
+      try { return { prefix, data: JSON.parse(rest), raw: rest }; }
+      catch { return { prefix, data: null, raw: rest }; }
+    }
+  }
+  return { prefix: '', data: null, raw: text };
+}
+
+async function wireEmailTriagePanel(div, clientNumber) {
+  const statusEl = div.querySelector('.emailTriageStatus');
+  const openLink = div.querySelector('.emailTriageOpen');
+  if (openLink) openLink.href = `triage.html?client=${encodeURIComponent(clientNumber)}`;
+  div.querySelectorAll('.triagePull').forEach((btn) => {
+    btn.addEventListener('click', () => runEmailTriagePull(div, clientNumber, btn.dataset.kind).catch((err) => {
+      if (statusEl) statusEl.textContent = err.message || String(err);
+      log(`Client ${clientNumber}: ${err.message || err}`);
+    }));
+  });
+}
+
+async function runEmailTriagePull(div, clientNumber, kind) {
+  if (div.dataset.exchangeAuthenticated !== '1') {
+    const msg = `Client ${clientNumber}: Exchange Auth is required before an email triage pull.`;
+    log(msg);
+    window.alert(msg);
+    return;
+  }
+  if (!await requireLiveWorker(clientNumber, { actionLabel: 'email triage' })) return;
+  const days = div.querySelector('.triageDays')?.value || '7';
+  const domain = (div.querySelector('.triageSenderDomain')?.value || '').trim();
+  const topN = div.querySelector('.triageHeaderTopN')?.value || '5';
+  const windowSec = div.querySelector('.triageWindow')?.value || '120';
+  const freemail = div.querySelector('.triageFreemail')?.checked ? '1' : '0';
+  const statusEl = div.querySelector('.emailTriageStatus');
+  if (Number(days) > 10 && (kind === 'DELIVERY' || kind === 'ALL' || kind === 'IMPERSONATION')) {
+    if (statusEl) statusEl.textContent = 'Message trace only covers about 10 days for some statuses. This pull will warn instead of running a historical trace.';
+  }
+  const parts = [`TRIAGE_${kind}`, `DAYS:${days}`, `FREEMAIL:${freemail}`, `HEADER_TOPN:${topN}`, `WINDOW:${windowSec}`];
+  if (domain) parts.push(`SENDER_DOMAIN:${domain}`);
+  const priorFolder = div.dataset.triageFolder || '';
+  if (priorFolder) parts.push(`FOLDER:${priorFolder}`);
+  if (statusEl) statusEl.textContent = `Running ${kind}…`;
+  const initial = await api(`/api/tenants/${clientNumber}/command`, {
+    method: 'POST',
+    body: workerCommandBody(parts.join('|')),
+  });
+  let final = extractWorkerTokenResponse(initial.response, ['TRIAGE_FAILED:', ...TRIAGE_SUCCESS_PREFIXES, 'TRIAGE_STARTED']);
+  if (!final || final === 'TRIAGE_STARTED') {
+    final = await pollWorkerResponse(
+      clientNumber,
+      'TRIAGE_STARTED',
+      TRIAGE_SUCCESS_PREFIXES,
+      'TRIAGE_FAILED:',
+      900,
+      `email triage ${kind}`
+    );
+  }
+  const parsed = parseTriagePayload(final || '');
+  if (parsed.prefix === 'TRIAGE_FAILED:' || !parsed.prefix) {
+    throw new Error(parsed.raw || 'Email triage failed');
+  }
+  const folder = parsed.data && parsed.data.folder;
+  if (folder) {
+    div.dataset.triageFolder = folder;
+    const openLink = div.querySelector('.emailTriageOpen');
+    if (openLink) openLink.href = `triage.html?client=${encodeURIComponent(clientNumber)}&folder=${encodeURIComponent(folder)}`;
+  }
+  const warning = parsed.data && parsed.data.warning;
+  if (statusEl) statusEl.textContent = warning || `Pack ready (${parsed.data && parsed.data.rows != null ? parsed.data.rows : '?'} rows). Use Open triage.`;
+}
+
 function upsertCurateRule(rules, mode, source, facet, value) {
   if (!source || !facet || value == null || value === '') return;
   let rule = rules.find((r) => r.source === source && r.facet === facet);
@@ -994,7 +1170,7 @@ function getTenantTicketContent(div) {
 
 function getTenantCompanyName(div, clientNumber) {
   const prior = tenantUiState.get(String(clientNumber)) || {};
-  return prior.organizationHint || div.dataset.organizationHint || '';
+  return (prior.organizationHint || div.dataset.organizationHint || div.dataset.exoOrganizationName || div.dataset.graphTenantName || '').trim();
 }
 
 function applySecurityResolveToPanel(div, data) {
@@ -2750,6 +2926,10 @@ function saveTenantUiState(clientNumber, div) {
       s1Pulls: Object.fromEntries([...div.querySelectorAll('.s1Pull')].map((cb) => [cb.dataset.pull, cb.checked])),
     },
 
+    auditGap: readAuditGap(div) || prior.auditGap || null,
+
+    becReview: div.querySelector('.becReviewText')?.textContent || prior.becReview || '',
+
   });
 
   scheduleTenantUiStateSync(clientNumber, div);
@@ -2847,6 +3027,17 @@ function restoreTenantUiState(clientNumber, div) {
 
   }
 
+  if (saved.becReview) {
+    const reviewPre = div.querySelector('.becReviewText');
+    const reviewWrap = div.querySelector('.becReviewWrap');
+    if (reviewPre && !reviewPre.textContent) reviewPre.textContent = saved.becReview;
+    if (reviewWrap && reviewPre && reviewPre.textContent) reviewWrap.style.display = 'block';
+  }
+
+  if (saved.auditGap && typeof saved.auditGap === 'object') {
+    div.dataset.auditGap = JSON.stringify(saved.auditGap);
+  }
+
   const modeSel = div.querySelector('.tenantReportExportMode');
   const presetWrap = div.querySelector('.tenantReportPresetWrap');
   const presetSel = div.querySelector('.tenantReportPreset');
@@ -2873,7 +3064,7 @@ function restoreTenantUiState(clientNumber, div) {
 
   refreshContainmentUsers(div);
   updateContainmentButtons(div);
-  restoreContainmentOutput(div, saved);
+  restoreContainmentOutput(div, saved, clientNumber);
   updateCaCatalogButtons(div);
   restoreCaCatalogOutput(div, saved);
 
@@ -2938,6 +3129,7 @@ function refreshContainmentUsers(div) {
     const safe = escapeHtml(String(u));
     return `<label><input type="checkbox" class="containmentUser" value="${safe}" checked /> ${safe}</label>`;
   }).join('');
+  if (users.length === 1) fillThreatMailboxIfEmpty(div, users[0]);
   updateContainmentButtons(div);
 }
 
@@ -3050,6 +3242,10 @@ function updateContainmentButtons(div) {
     unrestrictBtn.disabled = !(exo && restrictedHits.length);
   }
   set('.containmentListRules', exo && hasUsers);
+  set('.containmentBecReview', (exo || graph) && users.length === 1);
+  set('.containmentBecCheck', (exo || graph) && users.length === 1);
+  const becRun = div.querySelector('.becInvestigateRun');
+  if (becRun) becRun.disabled = !(exo || graph);
   const hasSelectedRules = [...(div.querySelectorAll('.containmentRulePick:checked') || [])].length > 0;
   const rulesMailbox = div.dataset.containmentRulesUser || (users.length === 1 ? users[0] : '');
   set('.containmentDeleteRules', exo && Boolean(rulesMailbox) && hasSelectedRules);
@@ -3108,7 +3304,9 @@ function updateContainmentButtons(div) {
   set('.containmentDeleteFlows', hasSelectedFlows);
 }
 
+let containmentBatchConfirmed = false;
 function confirmContainmentPopup(message) {
+  if (containmentBatchConfirmed) return true;
   return window.confirm(message);
 }
 
@@ -3186,6 +3384,9 @@ function setContainmentStatus(div, text, opts = {}) {
   const el = div.querySelector('.containmentStatus');
   if (el) {
     el.classList.remove('muted', 'hasStatus', 'statusOk', 'statusWarn', 'statusBad', 'statusBusy');
+    // Restoring a previous tenant's status must not announce it. A live region
+    // inside <details> makes Chromium open that panel and scroll it into view.
+    if (opts.quietLive) el.setAttribute('aria-live', 'off');
     if (opts.html) el.innerHTML = opts.html;
     else el.textContent = text || '';
     if (text) {
@@ -3195,9 +3396,14 @@ function setContainmentStatus(div, text, opts = {}) {
       // Only jump to this banner when it is the result surface (sign-in chips,
       // password/SSPR text, failures). List/delete results live in the table
       // next to the button — do not yank the viewport back to the top.
-      if (opts.reveal) {
+      if (opts.reveal && !opts.quietLive) {
         try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
       }
+    }
+    if (opts.quietLive) {
+      setTimeout(() => {
+        if (el.getAttribute('aria-live') === 'off') el.setAttribute('aria-live', 'polite');
+      }, 200);
     }
   }
   if (!opts.skipSave && text && !/[.…]$/.test(text) && !/^Busy —/i.test(text)) {
@@ -3224,7 +3430,38 @@ function rememberContainmentResult(div, key, data) {
   rememberContainment(div, { [key]: data }, true);
 }
 
-function restoreContainmentOutput(div, state) {
+function snapshotOpenContainmentPanels() {
+  containmentPanelOpen.clear();
+  tenantsEl?.querySelectorAll('details.tenant').forEach((details) => {
+    const clientNumber = details.dataset.client;
+    const panel = details.querySelector('details.containmentPanel');
+    if (clientNumber && panel?.open) containmentPanelOpen.add(String(clientNumber));
+  });
+}
+
+let viewportPinGeneration = 0;
+
+function pinViewport(x, y) {
+  const generation = ++viewportPinGeneration;
+  let ticks = 0;
+  const pin = () => {
+    if (generation !== viewportPinGeneration) return;
+    if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+    const active = document.activeElement;
+    if (active && active.tagName === 'SUMMARY' && active.closest('#tenants')) {
+      active.blur();
+    }
+    ticks += 1;
+    if (ticks === 1) requestAnimationFrame(pin);
+    else if (ticks === 2) requestAnimationFrame(pin);
+    else if (ticks === 3) setTimeout(pin, 0);
+    else if (ticks === 4) setTimeout(pin, 50);
+    else if (ticks === 5) setTimeout(pin, 250);
+  };
+  pin();
+}
+
+function restoreContainmentOutput(div, state, clientNumber) {
   const c = state?.containment;
   if (!div || !c || typeof c !== 'object') return;
   if (c.capabilities) applyContainmentCapabilities(div, c.capabilities);
@@ -3251,10 +3488,12 @@ function restoreContainmentOutput(div, state) {
   if (c.transport) applyTransportRulesResult(div, asArray(c.transport));
   if (c.mailbox) applyMailboxAccessResult(div, asArray(c.mailbox));
   if (c.rules) renderContainmentRules(div, c.rulesUser || '', asArray(c.rules));
-  if (c.status) setContainmentStatus(div, c.status, { skipSave: true });
-  const hasOutput = hasContainmentPayload(c);
+  if (c.status) setContainmentStatus(div, c.status, { skipSave: true, quietLive: true });
+  // Saved containment output used to force this panel open. Chromium then focuses
+  // the summary and scrolls it into view, so a refresh or a new tenant jumps to
+  // an earlier client that still has results. Reopen only if it was already open.
   const panel = div.querySelector('details.containmentPanel');
-  if (hasOutput && panel) panel.open = true;
+  if (panel && clientNumber && containmentPanelOpen.has(String(clientNumber))) panel.open = true;
 }
 
 const USER_CONTAINMENT_KEYS = [
@@ -3499,7 +3738,7 @@ const REMEDIATE_SUCCESS_PREFIXES = [
   'REMEDIATE_APPS:', 'REMEDIATE_OAUTH:', 'REMEDIATE_MOBILE:', 'REMEDIATE_FOLDERS:',
   'REMEDIATE_AUTOREPLY:', 'REMEDIATE_ORGFWD:', 'REMEDIATE_JUNK:', 'REMEDIATE_JOURNAL:',
   'REMEDIATE_HOLD:', 'REMEDIATE_ELSEWHERE:', 'REMEDIATE_ROLES:', 'REMEDIATE_INTUNE:',
-  'REMEDIATE_APPCREDS:', 'REMEDIATE_FLOWS:',
+  'REMEDIATE_APPCREDS:', 'REMEDIATE_FLOWS:', 'REMEDIATE_BEC:',
 ];
 
 function extractWorkerTokenResponse(value, prefixes) {
@@ -3612,16 +3851,33 @@ function containmentDateText(...values) {
     const msDotNet = s.match(/^\/Date\((-?\d+)(?:[+-]\d+)?\)\/$/);
     if (msDotNet) {
       const d = new Date(Number(msDotNet[1]));
-      if (!Number.isNaN(d.getTime())) return d.toISOString();
+      if (!Number.isNaN(d.getTime())) return formatPresentedLocal(d.toISOString());
+    }
+    if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(s) || /^\d{4}-\d{2}-\d{2}T/.test(s)) {
+      const presented = formatPresentedLocal(s);
+      if (presented) return presented;
     }
     return s;
   }
   return '';
 }
 
+function parsePresentedLocalMs(text) {
+  const m = String(text || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])\b/);
+  if (!m) return null;
+  let hour = Number(m[4]);
+  const ampm = m[7] || '';
+  if (/p/i.test(ampm) && hour < 12) hour += 12;
+  if (/a/i.test(ampm) && hour === 12) hour = 0;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), hour, Number(m[5]), Number(m[6] || 0));
+  return Number.isNaN(d.getTime()) ? null : d.getTime();
+}
+
 function parseContainmentDateMs(text) {
   const raw = containmentDateText(text).replace(/\s+/g, ' ').trim();
   if (!raw) return null;
+  const localMs = parsePresentedLocalMs(raw);
+  if (localMs != null) return localMs;
   const created = raw.match(/^created\s+(.+)$/i);
   const src = created ? created[1].trim() : raw;
   const iso = src.match(/^(\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)/);
@@ -5668,12 +5924,687 @@ async function runContainmentAction(clientNumber, div, kind) {
   }
 }
 
+const BEC_RUN_ORDER = ['enable-hold', 'delete-rules', 'remove-forward', 'remove-delegates', 'revoke', 'block', 'reset-password'];
+
+function becRuleIsSuspicious(rule) {
+  if (!rule) return false;
+  if (rule.Hidden === true || rule.hidden === true || rule.Hidden === 'True' || rule.hidden === 'True') return true;
+  if (String(rule.RedirectTo || rule.redirectTo || '').trim()) return true;
+  if (String(rule.ForwardTo || rule.forwardTo || '').trim()) return true;
+  if (String(rule.ForwardAsAttachmentTo || rule.forwardAsAttachmentTo || '').trim()) return true;
+  if (rule.DeleteMessage === true || rule.deleteMessage === true || rule.DeleteMessage === 'True') return true;
+  return false;
+}
+
+function containmentMemory(div) {
+  const clientNumber = div?.closest('details.tenant')?.dataset?.client;
+  return tenantUiState.get(String(clientNumber))?.containment || {};
+}
+
+function buildBecFacts(div, mailbox) {
+  const mem = containmentMemory(div);
+  const want = String(mailbox || '').trim().toLowerCase();
+  const flagOn = (value) => value === true || value === 'True';
+  const rules = asArray(mem.rules).map((rule) => ({
+    name: rule.Name || rule.Identity || '',
+    hidden: flagOn(rule.Hidden),
+    redirectTo: rule.RedirectTo || '',
+    forwardTo: rule.ForwardTo || '',
+    forwardAsAttachmentTo: rule.ForwardAsAttachmentTo || '',
+    deleteMessage: flagOn(rule.DeleteMessage),
+    description: String(rule.Description || '').slice(0, 180),
+  }));
+  const forwards = [];
+  const delegates = [];
+  asArray(mem.mailbox).forEach((mbx) => {
+    const upn = String(mbx.UserPrincipalName || '').trim().toLowerCase();
+    if (want && upn !== want) return;
+    const listed = asArray(mbx.Forwards);
+    if (listed.length) {
+      listed.forEach((row) => {
+        if (row.Address) forwards.push({ address: row.Address, field: row.Field || '' });
+      });
+    } else {
+      if (mbx.ForwardingSmtpAddress) forwards.push({ address: mbx.ForwardingSmtpAddress, field: 'Smtp' });
+      if (mbx.ForwardingAddress) forwards.push({ address: mbx.ForwardingAddress, field: 'Recipient' });
+    }
+    asArray(mbx.Delegates).forEach((row) => {
+      if (row.User) delegates.push({ user: row.User, right: row.Right || '' });
+    });
+  });
+  const ticketNumber = (div.querySelector('.ticketInput')?.value || '').trim();
+  const ticket = (div.querySelector('.ticketPaste')?.value || '').trim() || div.dataset.ticketContent || '';
+  const clientNumber = div.closest('details.tenant')?.dataset?.client;
+  return { mailbox, rules, forwards, delegates, ticketNumber, ticket, company: getTenantCompanyName(div, clientNumber) };
+}
+
+function renderBecReview(div, result) {
+  const text = (result && result.text) || '';
+  const mainWrap = div.querySelector('.becReviewWrap');
+  const mainPre = div.querySelector('.becReviewText');
+  if (mainPre) mainPre.textContent = text;
+  if (mainWrap) mainWrap.style.display = text ? 'block' : 'none';
+  const wrap = div.querySelector('.containmentBecWrap');
+  const pre = div.querySelector('.containmentBecText');
+  const actions = div.querySelector('.containmentBecActions');
+  const list = div.querySelector('.containmentBecList');
+  if (!wrap || !pre || !actions || !list) return;
+  pre.textContent = text;
+  wrap.style.display = 'block';
+  const items = asArray(result && result.remediations);
+  if (!items.length) {
+    actions.style.display = 'none';
+    list.innerHTML = '';
+    setContainmentStatus(div, 'Threat review finished. No remediation was suggested.', { reveal: true });
+    return;
+  }
+  list.innerHTML = items.map((item) => {
+    const id = item.Id || item.id || '';
+    const checked = item.Checked === true || item.checked === true;
+    return `<label class="row" style="align-items:flex-start">
+      <input type="checkbox" class="containmentBecPick" value="${escapeHtml(id)}" ${checked ? 'checked' : ''} />
+      <span><strong>${escapeHtml(item.Title || item.title || id)}</strong><br><span class="muted">${escapeHtml(item.Detail || item.detail || '')}</span></span>
+    </label>`;
+  }).join('');
+  actions.style.display = 'block';
+  setContainmentStatus(div, `Threat review finished. ${items.length} remediation option(s). Nothing has been changed yet.`, { reveal: true });
+}
+
+function selectBecRuleBoxes(div) {
+  const rules = asArray(containmentMemory(div).rules);
+  div.querySelectorAll('.containmentRulePick').forEach((box) => {
+    const idx = Number(box.dataset.idx);
+    box.checked = becRuleIsSuspicious(rules[idx]);
+  });
+  updateContainmentButtons(div);
+}
+
+function becWindowFromTicket(text) {
+  const raw = String(text || '');
+  const iso = raw.match(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?/);
+  const us = raw.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})\s*([AaPp][Mm])?)?/);
+  let event = null;
+  if (iso) {
+    const parsed = new Date(iso[0].includes('T') || iso[0].endsWith('Z') ? iso[0] : iso[0].replace(' ', 'T'));
+    if (!Number.isNaN(parsed.getTime())) event = parsed;
+  } else if (us) {
+    let hour = us[4] ? parseInt(us[4], 10) : 0;
+    const minute = us[5] ? parseInt(us[5], 10) : 0;
+    const ampm = us[6] || '';
+    if (/p/i.test(ampm) && hour < 12) hour += 12;
+    if (/a/i.test(ampm) && hour === 12) hour = 0;
+    event = new Date(parseInt(us[3], 10), parseInt(us[1], 10) - 1, parseInt(us[2], 10), hour, minute, 0);
+  }
+  const now = new Date();
+  let days = 2;
+  if (event && !Number.isNaN(event.getTime())) {
+    const start = new Date(event.getTime() - 24 * 60 * 60 * 1000);
+    days = Math.max(2, Math.min(90, Math.ceil((now.getTime() - start.getTime()) / (24 * 60 * 60 * 1000))));
+  }
+  const startUtc = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  return { days, start: startUtc.toISOString(), end: now.toISOString(), hadTime: Boolean(event && !Number.isNaN(event.getTime())) };
+}
+
+function formatPresentedLocal(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  const parsed = Date.parse(s);
+  if (!Number.isFinite(parsed)) return s;
+  const d = new Date(parsed);
+  const pad = (n) => String(n).padStart(2, '0');
+  let hour = d.getHours();
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  hour = hour % 12 || 12;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hour}:${pad(d.getMinutes())} ${ampm}`;
+}
+
+function presentedLocalZone() {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'long' }).formatToParts(new Date());
+    const name = parts.find((p) => p.type === 'timeZoneName');
+    if (name && name.value && !/^(?:UTC|GMT)\b/i.test(name.value)) return name.value;
+  } catch { /* keep the fallback */ }
+  return 'local time';
+}
+
+function becFactsFromMemory(div, mailbox, audit, windowNote) {
+  const facts = buildBecFacts(div, mailbox);
+  const mem = containmentMemory(div);
+  facts.authMethods = asArray(mem.authMethods);
+  facts.devices = asArray(mem.devices);
+  facts.intune = asArray(mem.intune);
+  facts.oauth = asArray(mem.oauth);
+  facts.roles = asArray(mem.roles);
+  facts.mobile = asArray(mem.mobile);
+  if (audit) {
+    facts.mfaPosture = audit.MfaPosture || audit.mfaPosture || null;
+    facts.messageTrace = asArray(audit.MessageTrace || audit.messageTrace);
+    facts.ual = asArray(audit.Ual || audit.ual);
+    if (audit && (Object.prototype.hasOwnProperty.call(audit, 'Dlp') || Object.prototype.hasOwnProperty.call(audit, 'dlp'))) {
+      facts.dlp = asArray(audit.Dlp || audit.dlp);
+    }
+    if (audit && (Object.prototype.hasOwnProperty.call(audit, 'Files') || Object.prototype.hasOwnProperty.call(audit, 'files'))) {
+      facts.files = asArray(audit.Files || audit.files);
+    }
+    if (audit && (Object.prototype.hasOwnProperty.call(audit, 'Sharing') || Object.prototype.hasOwnProperty.call(audit, 'sharing'))) {
+      facts.sharing = asArray(audit.Sharing || audit.sharing);
+    }
+    if (audit && (Object.prototype.hasOwnProperty.call(audit, 'Alerts') || Object.prototype.hasOwnProperty.call(audit, 'alerts'))) {
+      facts.alerts = asArray(audit.Alerts || audit.alerts);
+    }
+    facts.signIns = asArray(audit.SignIns || audit.signIns);
+    facts.apps = asArray(audit.Apps || audit.apps);
+    if (Object.prototype.hasOwnProperty.call(audit, 'Blasts') || Object.prototype.hasOwnProperty.call(audit, 'blasts')) {
+      facts.blasts = asArray(audit.Blasts || audit.blasts);
+    }
+    facts.pullNotes = asArray(audit.PullNotes || audit.pullNotes);
+    if (audit.Days || audit.days) facts.windowDays = audit.Days || audit.days;
+  }
+  const startIso = div.dataset.becWindowStart || '';
+  facts.apps = threatAppsInWindow(mem.apps, facts.apps, startIso);
+  facts.transport = threatTransportRows(mem.transport, startIso);
+  facts.connectors = threatConnectorRows(mem.connectors, startIso);
+  const gap = readAuditGap(div);
+  if (gap && (asArray(gap.unchecked).length || gap.lead)) facts.collectionGap = gap;
+  if (windowNote) facts.windowNote = windowNote;
+  return facts;
+}
+
+function readAuditGap(div) {
+  try {
+    const parsed = JSON.parse(div?.dataset?.auditGap || '');
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch { /* stored gap is not json */ }
+  return null;
+}
+
+function rememberAuditGap(div, gap) {
+  const clientNumber = div.closest('details.tenant')?.dataset?.client;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  const existing = prior.auditGap && typeof prior.auditGap === 'object' ? prior.auditGap : (readAuditGap(div) || {});
+  const next = {
+    mailbox: gap.mailbox || existing.mailbox || '',
+    unchecked: Array.isArray(gap.unchecked) ? gap.unchecked : (existing.unchecked || []),
+    lead: gap.lead || existing.lead || '',
+  };
+  div.dataset.auditGap = JSON.stringify(next);
+  tenantUiState.set(String(clientNumber), { ...prior, auditGap: next });
+  scheduleTenantUiStateSync(clientNumber, div, true);
+}
+
+function noteAuditCollected(div, mailbox) {
+  const existing = readAuditGap(div);
+  if (!existing) return;
+  if (!existing.lead && !asArray(existing.unchecked).length) return;
+  rememberAuditGap(div, { mailbox, unchecked: [], lead: existing.lead || '' });
+}
+
+function threatInWindow(value, startIso) {
+  const text = String(value || '').trim();
+  if (!text || !startIso) return null;
+  const when = Date.parse(text);
+  const start = Date.parse(startIso);
+  if (Number.isNaN(when) || Number.isNaN(start)) return null;
+  return when >= start;
+}
+
+function threatAppsInWindow(listed, audited, startIso) {
+  const rows = [];
+  const seen = new Set();
+  const add = (app, fromAudit) => {
+    if (!app) return;
+    const name = String(app.DisplayName || app.displayName || '').trim();
+    const created = String(app.Created || app.created || app.createdDateTime || '').trim();
+    if (!name) return;
+    const key = `${name}|${created}`.toLowerCase();
+    if (seen.has(key)) return;
+    const inWindow = threatInWindow(created, startIso);
+    if (inWindow === false) return;
+    if (inWindow !== true && !fromAudit) return;
+    seen.add(key);
+    rows.push({ displayName: name, created });
+  };
+  asArray(audited).forEach((app) => add(app, true));
+  asArray(listed).forEach((app) => add(app, false));
+  return rows.slice(0, 25);
+}
+
+function threatTransportRows(rules, startIso) {
+  const risky = /redirect|forward|delete|drop|bcc|blind|connector|route|reject|quarantine/i;
+  const picked = [];
+  asArray(rules).forEach((rule) => {
+    const when = String(rule.WhenChanged || rule.whenChanged || '').trim();
+    const inWindow = threatInWindow(when, startIso);
+    const text = `${rule.Name || ''} ${rule.Description || ''}`;
+    if (inWindow === false && !risky.test(text)) return;
+    picked.push({
+      name: rule.Name || rule.Identity || '',
+      state: rule.State || '',
+      priority: rule.Priority,
+      whenChanged: when,
+      description: String(rule.Description || '').slice(0, 180),
+    });
+  });
+  return picked.slice(0, 40);
+}
+
+function threatConnectorRows(connectors, startIso) {
+  const picked = [];
+  asArray(connectors).forEach((row) => {
+    const when = String(row.WhenCreated || row.whenCreated || '').trim();
+    const inWindow = threatInWindow(when, startIso);
+    const outbound = String(row.Direction || '').toLowerCase() === 'outbound';
+    const enabled = row.Enabled === true || row.Enabled === 'True';
+    if (inWindow === false && !(outbound && enabled)) return;
+    picked.push({
+      direction: row.Direction || '',
+      name: row.Name || row.Identity || '',
+      enabled: enabled ? 'enabled' : 'disabled',
+      connectorType: row.ConnectorType || '',
+      hosts: row.SmartHosts || '',
+      domains: row.Domains || '',
+      whenCreated: when,
+    });
+  });
+  return picked.slice(0, 30);
+}
+
+function auditPullFailed(audit) {
+  if (!audit) return true;
+  const keys = ['Ual', 'ual', 'Sharing', 'sharing', 'Files', 'files', 'SignIns', 'signIns', 'Dlp', 'dlp'];
+  return !keys.some((key) => Object.prototype.hasOwnProperty.call(audit, key));
+}
+
+const BEC_REPULL_LOGS = ['trace', 'ual', 'sharing', 'files', 'dlp', 'alerts', 'signins', 'apps'];
+
+function becRepullLogs(review) {
+  return asArray(review && (review.repullLogs || review.RepullLogs))
+    .map((name) => String(name || '').trim().toLowerCase())
+    .filter((name) => BEC_REPULL_LOGS.includes(name));
+}
+
+function becRepullLabel(logs) {
+  return Array.isArray(logs) && logs.length ? logs.join(', ') : 'message trace and audit';
+}
+
+function becFollowUpNote(again, logs) {
+  const span = `${formatPresentedLocal(again.start)} through ${formatPresentedLocal(again.end)} ${presentedLocalZone()}`;
+  const cap = again.days >= 90
+    ? 'This is the longest lookback. Do not ask for another pull. If the record is not here, say it was not in the logs.'
+    : 'If this window still cannot answer the investigation, ask for a longer look up to 90 days.';
+  if (Array.isArray(logs) && logs.length) {
+    return `Follow-up pull of ${logs.join(', ')} only, ${again.days} days, ${span}. The other logs stay on their earlier window. ${cap}`;
+  }
+  return `Follow-up pull, ${again.days} days, ${span}. Message trace and unified audit stop at tenant retention if that is shorter. ${cap}`;
+}
+
+function mergeBecAudit(prior, next, logs) {
+  if (!prior || !next || !Array.isArray(logs) || !logs.length) return next || prior;
+  const copy = { ...prior };
+  const fields = {
+    trace: ['MessageTrace', 'messageTrace', 'Blasts', 'blasts'],
+    ual: ['Ual', 'ual'],
+    sharing: ['Sharing', 'sharing'],
+    files: ['Files', 'files'],
+    dlp: ['Dlp', 'dlp'],
+    alerts: ['Alerts', 'alerts'],
+    signins: ['SignIns', 'signIns'],
+    apps: ['Apps', 'apps'],
+  };
+  logs.forEach((log) => {
+    (fields[log] || []).forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(next, key)) copy[key] = next[key];
+    });
+  });
+  copy.Days = next.Days || next.days || prior.Days;
+  copy.PullNotes = [...asArray(prior.PullNotes || prior.pullNotes), ...asArray(next.PullNotes || next.pullNotes)];
+  return copy;
+}
+
+async function pullBecAudit(clientNumber, div, mailbox, window, logs) {
+  const named = Array.isArray(logs) ? logs.filter((name) => BEC_REPULL_LOGS.includes(name)) : [];
+  const extra = named.length ? `|LOGS:${named.join(',')}` : '';
+  const cmd = `REMEDIATE_BEC_AUDIT|USER:${mailbox}|START:${window.start}|END:${window.end}${extra}`;
+  const pulling = named.length ? `pulling ${named.join(', ')}` : 'pulling message trace, audit, DLP, alerts, and sign-ins';
+  const final = await sendRemediateCommand(clientNumber, div, cmd, pulling, 300);
+  const parsed = parseRemediatePayload(final || '');
+  if (parsed.prefix !== 'REMEDIATE_BEC:' || !parsed.data) {
+    const detail = (parsed.data && (parsed.data.message || parsed.data.Message)) || parsed.raw || 'audit pull failed';
+    rememberAuditGap(div, {
+      mailbox,
+      unchecked: ['unified audit', 'file sharing', 'DLP', 'security alerts', 'sign-ins'],
+    });
+    return { PullNotes: [String(detail)], Days: window.days };
+  }
+  noteAuditCollected(div, mailbox);
+  const blasts = asArray(parsed.data.Blasts || parsed.data.blasts);
+  if (blasts.length) div.dataset.becBlasts = JSON.stringify(blasts);
+  else delete div.dataset.becBlasts;
+  return parsed.data;
+}
+
+function blastRecipientSection(div) {
+  let blasts = [];
+  try { blasts = JSON.parse(div?.dataset?.becBlasts || '[]'); } catch { blasts = []; }
+  if (!Array.isArray(blasts)) return '';
+  const blocks = [];
+  blasts.forEach((blast) => {
+    const recips = asArray(blast.Recipients || blast.recipients).map((r) => String(r || '').trim()).filter(Boolean);
+    if (recips.length < 5) return;
+    const subject = String(blast.Subject || blast.subject || '(no subject)').trim() || '(no subject)';
+    const when = formatPresentedLocal(blast.Received || blast.received || '');
+    const lines = [subject];
+    if (when) lines.push(when);
+    recips.forEach((addr) => lines.push(addr));
+    blocks.push(lines.join('\n'));
+  });
+  if (!blocks.length) return '';
+  return `DELIVERED BLAST RECIPIENTS\n\n${blocks.join('\n\n')}`;
+}
+
+function setBecStatus(div, text) {
+  const el = div.querySelector('.becInvestigateStatus');
+  if (el) el.textContent = text || '';
+}
+
+function hideBecRepull(div) {
+  div.querySelectorAll('.becManualRepull').forEach((btn) => { btn.style.display = 'none'; });
+  delete div.dataset.becRepull;
+}
+
+function offerBecRepull(div, days, logs) {
+  const which = Array.isArray(logs) && logs.length ? `${logs.join(', ')} for ` : '';
+  div.querySelectorAll('.becManualRepull').forEach((btn) => {
+    btn.style.display = '';
+    btn.disabled = false;
+    btn.textContent = `Pull ${which}${days} days and review again`;
+  });
+}
+
+function focusContainmentUser(div, mailbox) {
+  const want = String(mailbox || '').trim().toLowerCase();
+  const boxes = [...div.querySelectorAll('.containmentUser')];
+  if (!want || !boxes.length) return;
+  const match = boxes.find((box) => String(box.value || '').toLowerCase() === want);
+  boxes.forEach((box) => { box.checked = box === match; });
+  updateContainmentButtons(div);
+}
+
+function becActionsTaken(div, mailbox) {
+  const clientNumber = div.closest('details.tenant')?.dataset?.client;
+  const prior = tenantUiState.get(String(clientNumber)) || {};
+  const want = String(mailbox || '').trim().toLowerCase();
+  return asArray(prior.containment?.actions).filter((row) => {
+    const upn = String(row.UPN || row.upn || '').trim().toLowerCase();
+    return !upn || !want || upn === want;
+  }).slice(-40);
+}
+
+async function requestBecReview(div, mailbox, audit, windowNote) {
+  const data = await api('/api/triage/bec-review', {
+    method: 'POST',
+    body: JSON.stringify(becFactsFromMemory(div, mailbox, audit, windowNote)),
+  }, 360000);
+  return data.result || {};
+}
+
+async function runBecRepull(clientNumber, div) {
+  let pending = null;
+  try { pending = JSON.parse(div.dataset.becRepull || ''); } catch { pending = null; }
+  if (!pending || !pending.mailbox) return;
+  const longer = Math.min(90, parseInt(pending.days, 10) || 0);
+  if (!longer) return;
+  const logs = becRepullLogs({ repullLogs: pending.logs });
+  const prior = div._becAudit || null;
+  hideBecRepull(div);
+  const again = {
+    days: longer,
+    start: new Date(Date.now() - longer * 24 * 60 * 60 * 1000).toISOString(),
+    end: new Date().toISOString(),
+  };
+  const label = becRepullLabel(logs);
+  const status = logs.length ? `Pulling ${longer} days of ${label}…` : `Pulling ${longer} days of message trace and audit…`;
+  setBecStatus(div, status);
+  setContainmentStatus(div, status);
+  log(`Client ${clientNumber}: Threat check expanding to ${longer} days of ${label}.`);
+  let next = null;
+  try { next = await pullBecAudit(clientNumber, div, pending.mailbox, again, logs); } catch (e) {
+    next = { PullNotes: [e.message], Days: longer };
+  }
+  const audit = logs.length ? mergeBecAudit(prior, next, logs) : next;
+  div._becAudit = audit;
+  if (!logs.length) div.dataset.becWindowStart = again.start;
+  const review = await requestBecReview(div, pending.mailbox, audit, becFollowUpNote(again, logs));
+  renderBecReview(div, review);
+  const more = parseInt(review.repullDays, 10) || 0;
+  if (more > longer) {
+    const moreLogs = becRepullLogs(review);
+    div._becAudit = audit;
+    div.dataset.becRepull = JSON.stringify({ mailbox: pending.mailbox, days: Math.min(90, more), logs: moreLogs });
+    offerBecRepull(div, Math.min(90, more), moreLogs);
+    setBecStatus(div, `The investigation still needs ${becRepullLabel(moreLogs)} for ${Math.min(90, more)} days.`);
+    return;
+  }
+  setBecStatus(div, 'Threat review finished.');
+}
+
+function scopedThreatMailbox(div) {
+  const clientNumber = div.closest('details.tenant')?.dataset?.client;
+  const validated = clientNumber ? getValidatedUsersForTenant(clientNumber, div) : [];
+  if (validated.length === 1) return validated[0];
+  const picked = getSelectedContainmentUsers(div);
+  if (picked.length === 1) return picked[0];
+  const terms = parseSearchTerms(div.querySelector('.userSearchInput')?.value);
+  if (terms.length === 1 && terms[0].includes('@')) return terms[0];
+  return '';
+}
+
+function fillThreatMailboxIfEmpty(div, mailbox) {
+  const box = div.querySelector('.becMailbox');
+  const value = String(mailbox || '').trim();
+  if (box && value && !box.value.trim()) box.value = value;
+}
+
+async function runBecReview(clientNumber, div, opts = {}) {
+  const fromMain = opts.from === 'main';
+  const users = getSelectedContainmentUsers(div);
+  let mailbox = '';
+  if (fromMain) {
+    mailbox = (div.querySelector('.becMailbox')?.value || '').trim();
+    if (!mailbox) mailbox = scopedThreatMailbox(div);
+  } else if (users.length === 1) {
+    mailbox = users[0];
+  } else {
+    mailbox = (div.querySelector('.becMailbox')?.value || '').trim();
+  }
+  if (!mailbox) {
+    const message = fromMain
+      ? 'Enter one mailbox, or scope one user with Filter by users.'
+      : 'Select one mailbox to review.';
+    setBecStatus(div, message);
+    setContainmentStatus(div, message, { reveal: !fromMain });
+    return;
+  }
+  const graph = div.dataset.graphAuthenticated === '1';
+  const exo = div.dataset.exchangeAuthenticated === '1';
+  if (!graph && !exo) {
+    const message = 'Graph or Exchange auth is required for a threat check.';
+    setBecStatus(div, message);
+    setContainmentStatus(div, message, { reveal: !fromMain });
+    return;
+  }
+  if (fromMain) focusContainmentUser(div, mailbox);
+  const mailboxBox = div.querySelector('.becMailbox');
+  if (mailboxBox) mailboxBox.value = mailbox;
+  div.dataset.becMailbox = mailbox;
+  const ticketId = (div.querySelector('.ticketInput')?.value || '').trim();
+  const pasted = (div.querySelector('.ticketPaste')?.value || '').trim() || div.dataset.ticketContent || '';
+  if (ticketId && !pasted) {
+    try { await fetchManageTicket(clientNumber, div); } catch (e) {
+      log(`Client ${clientNumber}: ticket fetch failed, checking the mailbox without it. ${e.message}`);
+    }
+  }
+  const ticket = (div.querySelector('.ticketPaste')?.value || '').trim() || div.dataset.ticketContent || '';
+  const becWindow = becWindowFromTicket(ticket);
+  div.dataset.becWindowStart = becWindow.start;
+  containmentBatchConfirmed = true;
+  try {
+    const pulls = [];
+    if (exo) pulls.push('list-rules', 'mailbox-status', 'list-mobile', 'list-transport', 'list-connectors');
+    if (graph) pulls.push('list-mfa', 'list-devices', 'list-oauth', 'list-intune', 'list-roles', 'list-apps');
+    for (const kind of pulls) {
+      try { await runContainmentAction(clientNumber, div, kind); } catch (e) {
+        log(`Client ${clientNumber}: ${kind} failed, continuing the threat check. ${e.message}`);
+      }
+    }
+    hideBecRepull(div);
+    const progress = `Threat check for ${mailbox}, last ${becWindow.days} day(s)…`;
+    setBecStatus(div, progress);
+    setContainmentStatus(div, progress, { reveal: !fromMain });
+    let audit = null;
+    try {
+      audit = await pullBecAudit(clientNumber, div, mailbox, becWindow);
+    } catch (e) {
+      audit = { PullNotes: [e.message], Days: becWindow.days };
+    }
+    if (auditPullFailed(audit)) {
+      const retryText = `Audit logs were not collected. Pulling unified audit, file sharing, DLP, and sign-ins again…`;
+      setBecStatus(div, retryText);
+      setContainmentStatus(div, retryText, { reveal: !fromMain });
+      log(`Client ${clientNumber}: threat check is downloading the missing audit logs.`);
+      try {
+        audit = await pullBecAudit(clientNumber, div, mailbox, becWindow);
+      } catch (e) {
+        audit = { PullNotes: [e.message], Days: becWindow.days };
+      }
+    }
+    const tz = presentedLocalZone();
+    let windowNote = becWindow.hadTime
+      ? `Ticket time was read as ${tz}. This pull is ${becWindow.days} days, ${formatPresentedLocal(becWindow.start)} through ${formatPresentedLocal(becWindow.end)} ${tz}. Log times below are ${tz}.`
+      : `No event time was found. This pull is the last ${becWindow.days} days, ${formatPresentedLocal(becWindow.start)} through ${formatPresentedLocal(becWindow.end)} ${tz}. Log times below are ${tz}.`;
+    let review = await requestBecReview(div, mailbox, audit, windowNote);
+    renderBecReview(div, review);
+    renderStoreSuggestions(div, review);
+    div._becAudit = audit;
+    const seenPulls = new Set();
+    let followUps = 0;
+    div.dataset.becExpanding = '1';
+    try {
+      while (followUps < 2) {
+        const asked = parseInt(review.repullDays, 10) || 0;
+        const askedLogs = becRepullLogs(review);
+        const pulled = parseInt((audit && (audit.Days || audit.days)) || becWindow.days, 10) || becWindow.days;
+        if (!(asked > pulled)) break;
+        const longer = Math.min(90, asked);
+        const pullKey = `${longer}:${askedLogs.join(',')}`;
+        if (seenPulls.has(pullKey)) break;
+        seenPulls.add(pullKey);
+        const label = becRepullLabel(askedLogs);
+        const auto = div.querySelector('.becAutoRepull')?.checked !== false;
+        if (!auto) {
+          div.dataset.becRepull = JSON.stringify({ mailbox, days: longer, logs: askedLogs });
+          offerBecRepull(div, longer, askedLogs);
+          const waitText = `The investigation still needs ${longer} days of ${label}. Pull that window when you are ready.`;
+          setBecStatus(div, waitText);
+          setContainmentStatus(div, waitText, { reveal: !fromMain });
+          break;
+        }
+        const again = {
+          days: longer,
+          start: new Date(Date.now() - longer * 24 * 60 * 60 * 1000).toISOString(),
+          end: new Date().toISOString(),
+        };
+        const againText = `The investigation needs ${label} going back ${longer} days. Pulling those logs…`;
+        setBecStatus(div, againText);
+        setContainmentStatus(div, againText, { reveal: !fromMain });
+        log(`Client ${clientNumber}: Threat check expanding to ${longer} days of ${label}.`);
+        const prior = audit;
+        let next = null;
+        try { next = await pullBecAudit(clientNumber, div, mailbox, again, askedLogs); } catch (e) {
+          next = { PullNotes: [e.message], Days: longer };
+        }
+        audit = askedLogs.length ? mergeBecAudit(prior, next, askedLogs) : next;
+        div._becAudit = audit;
+        if (!askedLogs.length) div.dataset.becWindowStart = again.start;
+        followUps += 1;
+        review = await requestBecReview(div, mailbox, audit, becFollowUpNote(again, askedLogs));
+        renderBecReview(div, review);
+        renderStoreSuggestions(div, review);
+      }
+    } finally {
+      delete div.dataset.becExpanding;
+    }
+    renderBecReview(div, review);
+    renderStoreSuggestions(div, review);
+  if (!div.dataset.becRepull) setBecStatus(div, 'Threat review finished.');
+    if (fromMain) {
+      div.querySelector('.becReviewWrap')?.scrollIntoView({ block: 'nearest' });
+    } else {
+      const panel = div.querySelector('details.containmentPanel');
+      const wrap = div.querySelector('.containmentBecWrap');
+      if (panel) panel.open = true;
+      if (wrap) wrap.scrollIntoView({ block: 'nearest' });
+    }
+  } finally {
+    containmentBatchConfirmed = false;
+  }
+}
+
+async function runBecRemediations(clientNumber, div) {
+  const selected = [...div.querySelectorAll('.containmentBecPick:checked')].map((box) => box.value).filter(Boolean);
+  if (!selected.length) {
+    setContainmentStatus(div, 'Select at least one remediation.', { reveal: true });
+    return;
+  }
+  const users = getSelectedContainmentUsers(div);
+  const mailbox = users[0] || div.dataset.containmentRulesUser || 'the selected mailbox';
+  const labels = selected.map((id) => {
+    const box = [...div.querySelectorAll('.containmentBecPick')].find((item) => item.value === id);
+    const title = box?.parentElement?.querySelector('strong')?.textContent || id;
+    return title;
+  });
+  if (!window.confirm(`Run ${selected.length} remediation(s) for ${mailbox}?\n\n${labels.join('\n')}\n\nThis uses the containment actions and changes the mailbox.`)) return;
+  const kindFor = {
+    'delete-rules': 'delete-rule',
+    'remove-forward': 'remove-forward',
+    'remove-delegates': 'remove-delegate',
+    'enable-hold': 'enable-hold',
+    revoke: 'revoke',
+    block: 'block',
+    'reset-password': 'reset-password',
+  };
+  containmentBatchConfirmed = true;
+  try {
+    for (const id of BEC_RUN_ORDER) {
+      if (!selected.includes(id) || !kindFor[id]) continue;
+      if (id === 'delete-rules') selectBecRuleBoxes(div);
+      if (id === 'remove-forward') {
+        div.querySelectorAll('.containmentForwardPick').forEach((box) => { box.checked = true; });
+        updateContainmentButtons(div);
+      }
+      if (id === 'remove-delegates') {
+        div.querySelectorAll('.containmentDelegatePick').forEach((box) => { box.checked = true; });
+        updateContainmentButtons(div);
+      }
+      await runContainmentAction(clientNumber, div, kindFor[id]);
+    }
+  } finally {
+    containmentBatchConfirmed = false;
+  }
+  setContainmentStatus(div, 'Selected BEC remediations finished. Check the status above for each step.', { reveal: true });
+}
+
 function wireContainmentPanel(div, clientNumber) {
   const savedCaps = tenantUiState.get(String(clientNumber))?.graphCapabilities;
   if (savedCaps) applyContainmentCapabilities(div, savedCaps);
   refreshContainmentUsers(div);
   updateContainmentButtons(div);
-  div.querySelector('.containmentUserList')?.addEventListener('change', () => updateContainmentButtons(div));
+  div.querySelector('.containmentUserList')?.addEventListener('change', () => {
+    updateContainmentButtons(div);
+    const picked = getSelectedContainmentUsers(div);
+    const box = div.querySelector('.becMailbox');
+    if (box && picked.length === 1) box.value = picked[0];
+  });
   const bind = (sel, kind) => {
     div.querySelector(sel)?.addEventListener('click', () => {
       withClientLock(clientNumber, async () => {
@@ -5759,7 +6690,89 @@ function wireContainmentPanel(div, clientNumber) {
     clearContainmentUserPulls(div);
     log(`Client ${clientNumber}: cleared per-user containment pulls.`);
   });
-  restoreContainmentOutput(div, tenantUiState.get(String(clientNumber)));
+  const startBecCheck = () => {
+    withClientLock(clientNumber, async () => {
+      focusClientLogTab(clientNumber);
+      try {
+        await runBecReview(clientNumber, div);
+      } catch (e) {
+        log(`Client ${clientNumber}: Threat check error: ${e.message}`);
+        setContainmentStatus(div, e.message, { reveal: true });
+      }
+    });
+  };
+  div.querySelector('.containmentBecCheck')?.addEventListener('click', startBecCheck);
+  div.querySelector('.containmentBecReview')?.addEventListener('click', startBecCheck);
+  div.querySelector('.becInvestigateRun')?.addEventListener('click', () => {
+    withClientLock(clientNumber, async () => {
+      focusClientLogTab(clientNumber);
+      try {
+        await runBecReview(clientNumber, div, { from: 'main' });
+      } catch (e) {
+        log(`Client ${clientNumber}: Threat check error: ${e.message}`);
+        setBecStatus(div, e.message);
+        setContainmentStatus(div, e.message);
+        const mainPre = div.querySelector('.becReviewText');
+        const mainWrap = div.querySelector('.becReviewWrap');
+        if (mainPre && !mainPre.textContent) mainPre.textContent = e.message;
+        if (mainWrap && mainPre && mainPre.textContent) mainWrap.style.display = 'block';
+      }
+    });
+  });
+  div.querySelectorAll('.becManualRepull').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      withClientLock(clientNumber, async () => {
+        focusClientLogTab(clientNumber);
+        try {
+          await runBecRepull(clientNumber, div);
+        } catch (e) {
+          log(`Client ${clientNumber}: Threat check error: ${e.message}`);
+          setBecStatus(div, e.message);
+        }
+      });
+    });
+  });
+  div.querySelector('.becReviewCopy')?.addEventListener('click', async () => {
+    const text = div.querySelector('.becReviewText')?.textContent || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      log(`Client ${clientNumber}: BEC review copied.`);
+    } catch (err) {
+      log(`Client ${clientNumber}: could not reach the clipboard. Click the page once, then copy again.`);
+    }
+  });
+  div.querySelector('.containmentBecAll')?.addEventListener('click', () => {
+    div.querySelectorAll('.containmentBecPick').forEach((box) => { box.checked = true; });
+  });
+  div.querySelector('.containmentBecNone')?.addEventListener('click', () => {
+    div.querySelectorAll('.containmentBecPick').forEach((box) => { box.checked = false; });
+  });
+  div.querySelector('.containmentBecRun')?.addEventListener('click', () => {
+    withClientLock(clientNumber, async () => {
+      focusClientLogTab(clientNumber);
+      try {
+        await runBecRemediations(clientNumber, div);
+      } catch (e) {
+        log(`Client ${clientNumber}: BEC remediation error: ${e.message}`);
+        setContainmentStatus(div, e.message, { reveal: true });
+      }
+    });
+  });
+  div.querySelector('.containmentBecCopy')?.addEventListener('click', async () => {
+    const text = div.querySelector('.containmentBecText')?.textContent || '';
+    if (!text) {
+      setContainmentStatus(div, 'Run a review before copying.', { reveal: true });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setContainmentStatus(div, 'BEC review copied.', { reveal: true });
+    } catch (e) {
+      setContainmentStatus(div, 'Could not reach the clipboard. Click the page once, then copy again.', { reveal: true });
+    }
+  });
+  restoreContainmentOutput(div, tenantUiState.get(String(clientNumber)), clientNumber);
 }
 
 function normalizeResponse(value) {
@@ -6147,11 +7160,16 @@ function autoSelectAppRegForExo(div, exoTenantId) {
 
 function renderTenants(session) {
 
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  snapshotOpenContainmentPanels();
+
   tenantsEl.innerHTML = '';
 
   if (!session?.tenants?.length) {
 
     tenantsEl.innerHTML = '<p class="muted">No tenants yet.</p>';
+    pinViewport(scrollX, scrollY);
 
     return;
 
@@ -6182,6 +7200,8 @@ function renderTenants(session) {
     div.dataset.graphAuthenticated = t.graphAuthenticated ? '1' : '0';
     div.dataset.exchangeAuthenticated = t.exchangeAuthenticated ? '1' : '0';
     div.dataset.workerAlive = t.workerAlive === false ? '0' : '1';
+    if (t.exoOrganizationName) div.dataset.exoOrganizationName = t.exoOrganizationName;
+    if (t.graphTenantName) div.dataset.graphTenantName = t.graphTenantName;
     if (t.outputFolder) div.dataset.outputFolder = t.outputFolder;
     if (t.lastResponse) div.dataset.lastResponse = normalizeResponse(t.lastResponse);
     const appRegOptions = appRegistrations.map(a =>
@@ -6258,6 +7278,8 @@ function renderTenants(session) {
       <span class="muted">Graph: ${t.graphAuthenticated ? 'yes' : 'no'}, EXO: ${t.exchangeAuthenticated ? 'yes' : 'no'}${t.workerAlive === false ? ', worker stopped' : ''}${t.reportInProgress ? ', generating…' : ''}${inProgressGraph ? ', graph auth…' : ''}${inProgressExo ? ', exo auth…' : ''}</span>
 
       ${authInfoHtml(t)}
+
+      ${buildBecInvestigatePanelHtml()}
 
       <div class="row">
 
@@ -6363,12 +7385,23 @@ function renderTenants(session) {
 
       <label class="muted" style="font-size:0.85rem;display:block;margin:0.35rem 0 0.15rem">Or paste ticket text (when Manage unavailable)</label>
       <textarea class="ticketPaste" rows="3" placeholder="Paste ticket body…" style="width:100%;font:inherit;margin-bottom:0.35rem"></textarea>
+      <div class="row">
+        <button type="button" class="suggestLogs small">Suggest logs from this ticket</button>
+        <button type="button" class="suggestMoreLogs small" ${t.outputFolder ? '' : 'disabled'}>Ask if more logs are needed</button>
+        <button type="button" class="writeMemberberry small">Write notes</button>
+      </div>
+      <div class="logPlan" style="display:none;margin:0.35rem 0 0.6rem">
+        <pre class="logPlanText" style="white-space:pre-wrap;background:#f6f8fa;padding:0.6rem;border-radius:6px;margin:0.35rem 0"></pre>
+        <button type="button" class="applyLogPlan primary small" disabled>Apply this plan</button>
+      </div>
 
       ${buildSecurityIntegrationsPanelHtml()}
 
       ${buildCurateLogsPanelHtml(Boolean(t.outputFolder))}
 
       ${buildCaCatalogPanelHtml()}
+
+      ${buildEmailTriagePanelHtml()}
 
       <div>
 
@@ -6452,8 +7485,20 @@ function renderTenants(session) {
 
     wireContainmentPanel(div, t.clientNumber);
     wireCaCatalogPanel(div, t.clientNumber);
+    wireEmailTriagePanel(div, t.clientNumber);
 
     div.querySelector('.fetchTicket')?.addEventListener('click', () => fetchManageTicket(t.clientNumber, div));
+    div.querySelector('.suggestLogs')?.addEventListener('click', () => suggestLogsFromTicket(t.clientNumber, div).catch((e) => log(`Client ${t.clientNumber}: log plan error: ${e.message}`)));
+    div.querySelector('.suggestMoreLogs')?.addEventListener('click', () => suggestMoreLogs(t.clientNumber, div).catch((e) => log(`Client ${t.clientNumber}: log plan error: ${e.message}`)));
+    div.querySelector('.applyLogPlan')?.addEventListener('click', () => applyLogPlan(t.clientNumber, div));
+    div.querySelectorAll('.writeMemberberry').forEach((btn) => {
+      btn.addEventListener('click', () => writeMemberberryNote(t.clientNumber, div).catch((e) => log(`Client ${t.clientNumber}: Memberberry note error: ${e.message}`)));
+    });
+    div.querySelector('.copyMemberberry')?.addEventListener('click', () => copyBecNote(t.clientNumber, div, '.memberberryText', 'internal note'));
+    div.querySelector('.copyBecClient')?.addEventListener('click', () => copyBecNote(t.clientNumber, div, '.becClientText', 'client email'));
+    div.querySelector('.copyBecIncident')?.addEventListener('click', () => copyBecNote(t.clientNumber, div, '.becIncidentText', 'incident report'));
+    div.querySelector('.storeMbSave')?.addEventListener('click', () => saveMemberberrySuggestion(t.clientNumber, div).catch((e) => log(`Client ${t.clientNumber}: Memberberry save error: ${e.message}`)));
+    div.querySelector('.storeMvSave')?.addEventListener('click', () => saveMemorySuggestion(t.clientNumber, div).catch((e) => log(`Client ${t.clientNumber}: memory vault save error: ${e.message}`)));
 
     div.querySelector('.ticketPaste')?.addEventListener('input', () => {
       div.dataset.ticketContent = div.querySelector('.ticketPaste')?.value || '';
@@ -6492,7 +7537,10 @@ function renderTenants(session) {
     wireSecurityIntegrationsPanel(div, t.clientNumber);
     wireCurateLogsPanel(div, t.clientNumber);
     applyTenantSummary(details, t, div);
-    details.addEventListener('toggle', () => setTenantCollapsed(t.clientNumber, !details.open));
+    details.addEventListener('toggle', (e) => {
+      if (e.target !== details) return;
+      setTenantCollapsed(t.clientNumber, !details.open);
+    });
     const removeBtn = summary.querySelector('.removeTenant');
     removeBtn?.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -6509,6 +7557,8 @@ function renderTenants(session) {
     tenantsEl.appendChild(details);
 
   }
+
+  pinViewport(scrollX, scrollY);
 
 }
 
@@ -7181,6 +8231,28 @@ function fillInvestigateFolderSelect(div, t) {
   if (btn) btn.disabled = folders.length === 0;
 }
 
+function tenantInvestigateWindow(div) {
+  if (!div) return null;
+  if (getTenantRelativeUnit(div) === 'custom') {
+    const start = div.querySelector('.dateStart')?.value || '';
+    const end = div.querySelector('.dateEnd')?.value || '';
+    if (!start || !end) return null;
+    return { start, end };
+  }
+  const { start, end } = resolveRelativeWindow(getTenantRelativeAmount(div), getTenantRelativeUnit(div));
+  return { start: toDateTimeLocalValue(start), end: toDateTimeLocalValue(end) };
+}
+
+function investigateLogsSearchParams(clientNumber, div, path) {
+  const q = new URLSearchParams({ path, client: String(clientNumber) });
+  const users = getSelectedContainmentUsers(div);
+  if (users.length === 1) q.set('address', users[0]);
+  const range = tenantInvestigateWindow(div);
+  if (range?.start) q.set('from', range.start);
+  if (range?.end) q.set('to', range.end);
+  return q;
+}
+
 function openInvestigateLogs(clientNumber, div) {
   const sel = div.querySelector('.investigateFolderSelect');
   const path = (sel?.value || div.dataset.outputFolder || '').trim();
@@ -7188,7 +8260,7 @@ function openInvestigateLogs(clientNumber, div) {
     log(`Client ${clientNumber}: no report folder to investigate.`);
     return;
   }
-  const q = new URLSearchParams({ path, client: String(clientNumber) });
+  const q = investigateLogsSearchParams(clientNumber, div, path);
   window.location.href = `investigate.html?${q}`;
 }
 
@@ -7290,6 +8362,250 @@ function buildGenerateReportsCommand(clientNumber, div, ticketNumber, ticketCont
 
   return appendTicketAndDateRange(cmd, ticketNumber, ticketContent, dateStart, dateEnd);
 
+}
+
+function logPlanLabel(key) {
+  for (const group of REPORT_EXPORT_GROUPS) {
+    const item = group.items.find((row) => row.key === key);
+    if (item) return item.label;
+  }
+  return key;
+}
+
+function renderLogPlan(div, plan) {
+  const wrap = div.querySelector('.logPlan');
+  const pre = div.querySelector('.logPlanText');
+  const apply = div.querySelector('.applyLogPlan');
+  if (!wrap || !pre || !apply) return;
+  const logs = asArray(plan && (plan.logs || plan.Logs));
+  const days = plan && (plan.days || plan.Days);
+  const note = (plan && (plan.note || plan.Note)) || '';
+  const more = plan && (plan.more === true || plan.More === true);
+  const lines = [];
+  if (!logs.length || (plan.phase === 'followup' && !more)) {
+    lines.push(note || 'No extra logs suggested.');
+    apply.disabled = true;
+  } else {
+    lines.push(`${days} day${days === 1 ? '' : 's'}`);
+    logs.forEach((key) => lines.push(logPlanLabel(key)));
+    if (note) lines.push(note);
+    apply.disabled = false;
+  }
+  pre.textContent = lines.join('\n');
+  wrap.style.display = 'block';
+  div.dataset.logPlan = JSON.stringify({ days, logs, phase: plan.phase || 'initial' });
+  renderStoreSuggestions(div, plan);
+}
+
+async function requestLogPlan(clientNumber, div, phase) {
+  let ticket = (div.querySelector('.ticketPaste')?.value || '').trim() || div.dataset.ticketContent || '';
+  const ticketId = (div.querySelector('.ticketInput')?.value || '').trim();
+  if (!ticket && ticketId) {
+    await fetchManageTicket(clientNumber, div);
+    ticket = (div.querySelector('.ticketPaste')?.value || '').trim() || div.dataset.ticketContent || '';
+  }
+  if (!ticket) {
+    log(`Client ${clientNumber}: paste a ticket or enter a ticket # first.`);
+    return null;
+  }
+  const body = { ticket, phase };
+  if (phase === 'followup') {
+    const folder = div.dataset.outputFolder || tenantUiState.get(String(clientNumber))?.outputFolder || '';
+    if (!folder) {
+      log(`Client ${clientNumber}: generate a report pack before asking for more logs.`);
+      return null;
+    }
+    body.folder = folder;
+  }
+  log(`Client ${clientNumber}: asking for a log plan…`);
+  const data = await api('/api/triage/log-plan', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }, 120000);
+  return data.result || null;
+}
+
+async function suggestLogsFromTicket(clientNumber, div) {
+  const plan = await requestLogPlan(clientNumber, div, 'initial');
+  if (!plan) return;
+  renderLogPlan(div, plan);
+  log(`Client ${clientNumber}: log plan ready (${asArray(plan.logs).length} log(s), ${plan.days} day(s)).`);
+}
+
+async function suggestMoreLogs(clientNumber, div) {
+  const plan = await requestLogPlan(clientNumber, div, 'followup');
+  if (!plan) return;
+  renderLogPlan(div, plan);
+  const extra = asArray(plan.logs).length;
+  log(`Client ${clientNumber}: ${plan.more && extra ? `${extra} more log(s) suggested.` : 'No extra logs suggested.'}`);
+}
+
+function renderStoreSuggestions(div, result) {
+  const wrap = div.querySelector('.storeSuggestions');
+  if (!wrap || !result) return;
+  const client = String(result.storeClient || result.StoreClient || '').trim();
+  const note = String(result.storeNote || result.StoreNote || '').trim();
+  const memory = String(result.storeMemory || result.StoreMemory || '').trim();
+  if (!client && !note && !memory) return;
+  const clientBox = wrap.querySelector('.storeMbClient');
+  const noteBox = wrap.querySelector('.storeMbNote');
+  const memoryBox = wrap.querySelector('.storeMvNote');
+  if (client && clientBox) clientBox.value = client;
+  else if (!clientBox?.value && note) {
+    const guessed = getTenantCompanyName(div, div.closest('details.tenant')?.dataset?.client);
+    if (clientBox && guessed) clientBox.value = guessed;
+  }
+  if (note && noteBox) noteBox.value = note;
+  if (memory && memoryBox) memoryBox.value = memory;
+  wrap.style.display = 'block';
+}
+
+function renderMemberberryNote(div, result) {
+  const wrap = div.querySelector('.becNotes');
+  const internal = div.querySelector('.memberberryText');
+  const client = div.querySelector('.becClientText');
+  const incident = div.querySelector('.becIncidentText');
+  const refs = div.querySelector('.memberberryRefs');
+  if (internal) internal.textContent = (result && (result.internalText || result.text)) || '';
+  if (client) client.textContent = (result && result.clientText) || '';
+  let incidentText = (result && result.incidentText) || '';
+  const blastText = blastRecipientSection(div);
+  if (blastText && !/DELIVERED BLAST RECIPIENTS/i.test(incidentText)) {
+    incidentText = `${incidentText.trim()}\n\n${blastText}`.trim();
+  }
+  if (incident) incident.textContent = incidentText;
+  if (refs) refs.textContent = (result && result.references) || '';
+  const any = Boolean(internal?.textContent || client?.textContent || incident?.textContent);
+  if (wrap) wrap.style.display = any ? 'block' : 'none';
+}
+
+function ticketContactName(div) {
+  const ticket = (div.querySelector('.ticketPaste')?.value || '').trim() || div.dataset.ticketContent || '';
+  const match = ticket.match(/^\s*Contact:\s*(\S.+)$/im);
+  return match ? match[1].trim() : '';
+}
+
+async function writeMemberberryNote(clientNumber, div) {
+  if (div.dataset.becExpanding === '1') {
+    setBecStatus(div, 'Still pulling the logs this investigation needs.');
+    return;
+  }
+  const review = (div.querySelector('.becReviewText')?.textContent || div.querySelector('.containmentBecText')?.textContent || '').trim();
+  if (!review) {
+    log(`Client ${clientNumber}: finish the mailbox review before writing the notes.`);
+    setBecStatus(div, 'Finish the threat check before writing the notes.');
+    return;
+  }
+  const ticket = (div.querySelector('.ticketPaste')?.value || '').trim() || div.dataset.ticketContent || '';
+  const ticketNumber = (div.querySelector('.ticketInput')?.value || '').trim();
+  const company = getTenantCompanyName(div, clientNumber);
+  const contact = ticketContactName(div);
+  const mailbox = div.dataset.becMailbox || (div.querySelector('.becMailbox')?.value || '').trim();
+  setBecStatus(div, 'Writing the internal note, client email, and incident report…');
+  log(`Client ${clientNumber}: writing the internal note, client email, and incident report…`);
+  const data = await api('/api/triage/memberberry-note', {
+    method: 'POST',
+    body: JSON.stringify({
+      review,
+      ticket,
+      ticketNumber,
+      company,
+      contact,
+      audience: 'all',
+      actions: becActionsTaken(div, mailbox),
+    }),
+  }, 360000);
+  renderMemberberryNote(div, data.result || {});
+  div.querySelector('.becNotes')?.scrollIntoView({ block: 'nearest' });
+  renderStoreSuggestions(div, data.result || {});
+  setBecStatus(div, 'Notes ready.');
+  log(`Client ${clientNumber}: internal note, client email, and incident report ready.`);
+}
+
+function setStoreStatus(div, text) {
+  const el = div.querySelector('.storeSuggestStatus');
+  if (el) el.textContent = text || '';
+}
+
+async function saveMemberberrySuggestion(clientNumber, div) {
+  const client = (div.querySelector('.storeMbClient')?.value || '').trim();
+  const note = (div.querySelector('.storeMbNote')?.value || '').trim();
+  if (!client || !note) {
+    setStoreStatus(div, 'Enter the client name and the note before adding it.');
+    return;
+  }
+  setStoreStatus(div, 'Adding the note to Memberberry…');
+  const data = await api('/api/triage/memberberry-save', {
+    method: 'POST',
+    body: JSON.stringify({ client, note }),
+  }, 30000);
+  const savedName = (data.result && (data.result.client || data.result.Client)) || client;
+  setStoreStatus(div, `Added to Memberberry for ${savedName}.`);
+  log(`Client ${clientNumber}: Memberberry note added for ${savedName}.`);
+}
+
+async function saveMemorySuggestion(clientNumber, div) {
+  const text = (div.querySelector('.storeMvNote')?.value || '').trim();
+  if (!text) {
+    setStoreStatus(div, 'Enter the memory before adding it.');
+    return;
+  }
+  setStoreStatus(div, 'Adding the note to memory vault…');
+  const data = await api('/api/triage/memory-save', {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  }, 60000);
+  const duplicate = data.result && (data.result.duplicate === true || data.result.Duplicate === true);
+  setStoreStatus(div, duplicate ? 'That memory was already in the soc space.' : 'Added to the soc space in memory vault.');
+  log(`Client ${clientNumber}: ${duplicate ? 'memory vault already had that note.' : 'memory vault note added.'}`);
+}
+
+async function copyBecNote(clientNumber, div, selector, label) {
+  const text = div.querySelector(selector)?.textContent || '';
+  if (!text) {
+    log(`Client ${clientNumber}: write the ${label} before copying it.`);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    log(`Client ${clientNumber}: ${label} copied.`);
+  } catch (err) {
+    log(`Client ${clientNumber}: could not reach the clipboard. Click the page once, then copy again.`);
+  }
+}
+
+function applyLogPlan(clientNumber, div) {
+  let plan = null;
+  try { plan = JSON.parse(div.dataset.logPlan || ''); } catch { plan = null; }
+  const logs = asArray(plan && plan.logs);
+  const days = Math.max(1, Math.min(90, parseInt(plan && plan.days, 10) || 1));
+  if (!logs.length) {
+    log(`Client ${clientNumber}: there is no log plan to apply.`);
+    return;
+  }
+  const modeSel = div.querySelector('.tenantReportExportMode');
+  const customBody = div.querySelector('.tenantReportExportsCustom');
+  if (modeSel) {
+    modeSel.value = 'custom';
+    modeSel.dispatchEvent(new Event('change'));
+  }
+  const selections = {};
+  for (const group of REPORT_EXPORT_GROUPS) {
+    for (const item of group.items) selections[item.key] = logs.includes(item.key);
+  }
+  selections.MessageTraceDaysBack = days;
+  selections.SignInLogsDaysBack = days;
+  applyReportSelectionsToContainer(customBody, selections);
+  const unit = div.querySelector('.relUnit');
+  const amount = div.querySelector('.relAmount');
+  if (unit) unit.value = 'days';
+  if (amount) amount.value = String(days);
+  updateTenantTimeframeUi(div);
+  applyTenantRelativeWindow(div);
+  const details = div.querySelector('details.tenantReportExports');
+  if (details) details.open = true;
+  saveTenantUiState(clientNumber, div);
+  log(`Client ${clientNumber}: applied ${logs.length} log(s) for ${days} day(s). Generate Reports uses this selection.`);
 }
 
 async function fetchManageTicket(clientNumber, div) {

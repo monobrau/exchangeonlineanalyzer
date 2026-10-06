@@ -168,8 +168,14 @@ function Get-RemediationGraphUser {
     if (-not (Get-Command Invoke-GraphRestRequest -ErrorAction SilentlyContinue)) {
         throw 'Invoke-GraphRestRequest is not available. Import ExportUtils in the worker.'
     }
+    $key = $UserPrincipalName.Trim().ToLowerInvariant()
+    if (-not $script:RemediationUserCache) { $script:RemediationUserCache = @{} }
+    $hit = $script:RemediationUserCache[$key]
+    if ($hit -and $hit.At -gt (Get-Date).AddMinutes(-2)) { return $hit.User }
     $enc = [Uri]::EscapeDataString($UserPrincipalName.Trim())
-    return Invoke-GraphRestRequest -Uri "https://graph.microsoft.com/v1.0/users/$enc`?`$select=id,userPrincipalName,displayName,accountEnabled"
+    $user = Invoke-GraphRestRequest -Uri "https://graph.microsoft.com/v1.0/users/$enc`?`$select=id,userPrincipalName,displayName,accountEnabled"
+    $script:RemediationUserCache[$key] = @{ At = Get-Date; User = $user }
+    return $user
 }
 
 function Invoke-RemediationRevokeSessions {
@@ -498,6 +504,7 @@ function Remove-RemediationDevices {
 }
 
 function Get-RemediationDirectoryApps {
+    param([int]$Top = 0)
     $msft = 'f8cdef31-a31e-4b4a-93e4-5f571e91255a'
     $tenantId = ''
     try {
@@ -506,7 +513,18 @@ function Get-RemediationDirectoryApps {
     } catch {}
     $rows = [System.Collections.ArrayList]::new()
     try {
-        $apps = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/applications?$select=id,appId,displayName,createdDateTime,signInAudience,publisherDomain')
+        $appSelect = 'id,appId,displayName,createdDateTime,signInAudience,publisherDomain'
+        if ($Top -gt 0) {
+            $ordered = "https://graph.microsoft.com/v1.0/applications?`$select=$appSelect&`$top=$Top&`$orderby=createdDateTime desc"
+            try {
+                $resp = Invoke-GraphRestRequest -Uri $ordered
+                $apps = @($resp.value | Where-Object { $_ })
+            } catch {
+                $apps = @(Invoke-GraphRestPaged -Uri "https://graph.microsoft.com/v1.0/applications?`$select=$appSelect" -Maximum $Top)
+            }
+        } else {
+            $apps = Invoke-GraphRestPaged -Uri "https://graph.microsoft.com/v1.0/applications?`$select=$appSelect"
+        }
         foreach ($app in $apps) {
             [void]$rows.Add([pscustomobject]@{
                 Kind        = 'AppRegistration'
@@ -523,7 +541,27 @@ function Get-RemediationDirectoryApps {
         throw
     }
     try {
-        $sps = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$select=id,appId,displayName,createdDateTime,appOwnerOrganizationId,servicePrincipalType,accountEnabled,publisherName&$filter=servicePrincipalType eq ''Application''')
+        $spSelect = 'id,appId,displayName,createdDateTime,appOwnerOrganizationId,servicePrincipalType,accountEnabled,publisherName'
+        $spFilter = "servicePrincipalType eq 'Application'"
+        if ($Top -gt 0) {
+            $spFilter = "servicePrincipalType eq 'Application' and appOwnerOrganizationId ne '$msft'"
+            if ($tenantId) { $spFilter = "$spFilter and appOwnerOrganizationId ne '$tenantId'" }
+            $ordered = "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=$spSelect&`$filter=$spFilter&`$top=$Top&`$orderby=createdDateTime desc"
+            try {
+                $resp = Invoke-GraphRestRequest -Uri $ordered
+                $sps = @($resp.value | Where-Object { $_ })
+            } catch {
+                try {
+                    $resp = Invoke-GraphRestRequest -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=$spSelect&`$filter=$spFilter&`$top=$Top"
+                    $sps = @($resp.value | Where-Object { $_ })
+                } catch {
+                    $broad = "servicePrincipalType eq 'Application'"
+                    $sps = @(Invoke-GraphRestPaged -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=$spSelect&`$filter=$broad" -Maximum 400)
+                }
+            }
+        } else {
+            $sps = Invoke-GraphRestPaged -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=$spSelect&`$filter=$spFilter"
+        }
         foreach ($sp in $sps) {
             $owner = [string]$sp.appOwnerOrganizationId
             if ($owner -eq $msft) { continue }
@@ -1085,6 +1123,53 @@ function Get-RemediationGraphErrorText {
     return $msg
 }
 
+function Test-RemediationGraphTokenExpiring {
+    param([string]$Token, [int]$MarginMinutes = 5)
+    $parts = $Token.Split('.')
+    if ($parts.Count -lt 2) { return $false }
+    try {
+        $payload = $parts[1].Replace('-', '+').Replace('_', '/')
+        switch ($payload.Length % 4) { 2 { $payload += '==' } 3 { $payload += '=' } }
+        $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
+        if (-not $claims.exp) { return $false }
+        $expires = [DateTimeOffset]::FromUnixTimeSeconds([int64]$claims.exp).UtcDateTime
+        return ($expires -le [DateTime]::UtcNow.AddMinutes($MarginMinutes))
+    } catch {
+        return $false
+    }
+}
+
+function Restore-RemediationGraphToken {
+    # The worker restores the token only when Set-GraphRestBearerToken exists in its session.
+    # If ExportUtils was unloaded, load it globally again and fetch a fresh app-only token.
+    if (-not (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+        $exportUtils = Join-Path $PSScriptRoot 'ExportUtils.psm1'
+        if (Test-Path -LiteralPath $exportUtils) {
+            Import-Module $exportUtils -Global -DisableNameChecking -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not (Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue)) { return }
+    if ((Test-GraphRestBearerToken) -and -not (Test-RemediationGraphTokenExpiring ([string](Get-GraphRestBearerToken)))) { return }
+    if (-not (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+        $appMod = Join-Path $PSScriptRoot 'GraphAppCredential.psm1'
+        if (Test-Path -LiteralPath $appMod) {
+            Import-Module $appMod -Global -DisableNameChecking -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) { return }
+    if (-not (Get-Command Get-ConnectionInformation -ErrorAction SilentlyContinue)) { return }
+    $tenantId = ''
+    try {
+        $conn = @(Get-ConnectionInformation -ErrorAction Stop | Where-Object { $_.State -eq 'Connected' -and $_.TenantID }) | Select-Object -First 1
+        if ($conn) { $tenantId = [string]$conn.TenantID }
+    } catch {}
+    if (-not $tenantId) { return }
+    try {
+        $fresh = Get-GraphAppTokenFromWCM -TenantId $tenantId
+        if ($fresh) { Set-GraphRestBearerToken -Token ([string]$fresh) }
+    } catch {}
+}
+
 function Invoke-RemediationWorkerCommand {
     [CmdletBinding()]
     param(
@@ -1097,8 +1182,9 @@ function Invoke-RemediationWorkerCommand {
         [bool]$ExchangeAuthenticated
     )
     $tenantLabel = if ($TenantName) { $TenantName } elseif ($CompanyName) { $CompanyName } else { "Client$ClientNumber" }
+    if ($GraphAuthenticated) { Restore-RemediationGraphToken }
     $caps = $null
-    $needsGraph = $Command -match '^REMEDIATE_(REVOKE_SESSIONS|BLOCK|UNBLOCK|SIGNIN_STATUS|RESET_PASSWORD|LIST_AUTH_METHODS|DELETE_AUTH_METHODS|LIST_DEVICES|DELETE_DEVICES|LIST_APPS|DELETE_APPS|LIST_OAUTH_GRANTS|DELETE_OAUTH_GRANTS|REREGISTER_MFA|LIST_INTUNE|WIPE_INTUNE|RETIRE_INTUNE|LIST_ROLES|DELETE_ROLES|LIST_APP_CREDS|DELETE_APP_CREDS)'
+    $needsGraph = $Command -match '^REMEDIATE_(REVOKE_SESSIONS|BLOCK|UNBLOCK|SIGNIN_STATUS|RESET_PASSWORD|LIST_AUTH_METHODS|DELETE_AUTH_METHODS|LIST_DEVICES|DELETE_DEVICES|LIST_APPS|DELETE_APPS|LIST_OAUTH_GRANTS|DELETE_OAUTH_GRANTS|REREGISTER_MFA|LIST_INTUNE|WIPE_INTUNE|RETIRE_INTUNE|LIST_ROLES|DELETE_ROLES|LIST_APP_CREDS|DELETE_APP_CREDS|HUNTER_GRAPH)'
     $needsExo = $Command -match '^REMEDIATE_(RESTRICTED_EMAIL_STATUS|UNRESTRICT_EMAIL|LIST_INBOX_RULES|DELETE_INBOX_RULES|MAILBOX_STATUS|SET_FORWARDING|CLEAR_FORWARDING|REMOVE_FORWARDING|ADD_DELEGATION|REMOVE_DELEGATION|LIST_TRANSPORT_RULES|DELETE_TRANSPORT_RULES|LIST_CONNECTORS|DELETE_CONNECTORS|LIST_MOBILE_DEVICES|DELETE_MOBILE_DEVICES|LIST_FOLDER_PERMS|DELETE_FOLDER_PERMS|GET_AUTOREPLY|DISABLE_AUTOREPLY|LIST_ORG_FORWARD|SET_ORG_FORWARD|LIST_JUNK|DELETE_JUNK|LIST_JOURNAL|DELETE_JOURNAL|GET_MAILBOX_HOLD|SET_MAILBOX_HOLD|LIST_ELSEWHERE|DELETE_ELSEWHERE)'
     if ($needsGraph -and -not $GraphAuthenticated) {
         return "REMEDIATE_FAILED:Graph authentication not completed"
@@ -1553,6 +1639,74 @@ function Invoke-RemediationWorkerCommand {
             return "REMEDIATE_CONNECTORS:$payload"
         }
 
+        if ($Command -match '^REMEDIATE_HUNTER_LISTS') {
+            $hunterUser = ''
+            if ($Command -match '\|USER:([^|]+)') { $hunterUser = $Matches[1].Trim() }
+            if (-not $hunterUser) { return 'REMEDIATE_FAILED:Missing mailbox' }
+            $listErrors = @{}
+            $rules = @()
+            $users = @()
+            $mobile = @()
+            $transport = @()
+            $connectors = @()
+            try { $rules = @(Get-RemediationInboxRules -Mailbox $hunterUser) } catch { $listErrors.rules = $_.Exception.Message }
+            try { $users = @(Get-RemediationMailboxAccess -UserPrincipalNames @($hunterUser)) } catch { $listErrors.mailbox = $_.Exception.Message }
+            try { $mobile = @(Get-RemediationMobileDevices -UserPrincipalNames @($hunterUser)) } catch { $listErrors.mobile = $_.Exception.Message }
+            try { $transport = @(Get-RemediationTransportRules) } catch { $listErrors.transport = $_.Exception.Message }
+            try { $connectors = @(Get-RemediationConnectors) } catch { $listErrors.connectors = $_.Exception.Message }
+            $payload = @{
+                Rules      = @($rules)
+                Users      = @($users)
+                Devices    = @($mobile)
+                Transport  = @($transport)
+                Connectors = @($connectors)
+                Errors     = $listErrors
+            } | ConvertTo-Json -Compress -Depth 6
+            return "REMEDIATE_HUNTER_LISTS:$payload"
+        }
+
+        if ($Command -match '^REMEDIATE_HUNTER_GRAPH') {
+            $hunterUser = ''
+            if ($Command -match '\|USER:([^|]+)') { $hunterUser = $Matches[1].Trim() }
+            if (-not $hunterUser) { return 'REMEDIATE_FAILED:Missing mailbox' }
+            $packed = @(Invoke-RemediationHunterGraphPack -User $hunterUser)
+            $byKind = @{}
+            foreach ($item in $packed) { $byKind[[string]$item.Kind] = $item }
+            foreach ($pair in @(
+                @{ Kind = 'auth'; Action = 'list-auth-methods'; Noun = 'method' },
+                @{ Kind = 'devices'; Action = 'list-devices'; Noun = 'device' },
+                @{ Kind = 'apps'; Action = 'list-apps'; Noun = 'app' }
+            )) {
+                $item = $byKind[$pair.Kind]
+                $err = if ($item) { [string]$item.Error } else { 'missing' }
+                $count = if ($item) { @($item.Rows).Count } else { 0 }
+                $result = if ($err) { 'failed' } else { 'success' }
+                $detail = if ($err) { $err } else { "$count $($pair.Noun)(s)" }
+                Write-RemediationAuditCsv -Folder $AuditFolder -Tenant $tenantLabel -ClientNumber $ClientNumber -Upn $(if ($pair.Kind -eq 'apps') { '' } else { $hunterUser }) -Action $pair.Action -Result $result -Detail $detail
+            }
+            $payload = @{
+                Methods = @(if ($byKind.auth) { $byKind.auth.Rows })
+                Devices = @(if ($byKind.devices) { $byKind.devices.Rows })
+                Grants  = @(if ($byKind.oauth) { $byKind.oauth.Rows })
+                Intune  = @(if ($byKind.intune) { $byKind.intune.Rows })
+                Roles   = @(if ($byKind.roles) { $byKind.roles.Rows })
+                Apps    = @(if ($byKind.apps) { $byKind.apps.Rows })
+                Errors  = @{
+                    auth    = $(if ($byKind.auth) { [string]$byKind.auth.Error })
+                    devices = $(if ($byKind.devices) { [string]$byKind.devices.Error })
+                    oauth   = $(if ($byKind.oauth) { [string]$byKind.oauth.Error })
+                    intune  = $(if ($byKind.intune) { [string]$byKind.intune.Error })
+                    roles   = $(if ($byKind.roles) { [string]$byKind.roles.Error })
+                    apps    = $(if ($byKind.apps) { [string]$byKind.apps.Error })
+                }
+            } | ConvertTo-Json -Compress -Depth 6
+            return "REMEDIATE_HUNTER_GRAPH:$payload"
+        }
+
+        if ($Command -match '^REMEDIATE_BEC_AUDIT') {
+            return (Get-RemediationBecAudit -Command $Command -GraphAuthenticated $GraphAuthenticated -ExchangeAuthenticated $ExchangeAuthenticated)
+        }
+
         $extended = Invoke-RemediationExtendedCommand -Command $Command -Capabilities $caps -AuditFolder $AuditFolder -TenantLabel $tenantLabel -ClientNumber $ClientNumber
         if ($null -ne $extended) { return $extended }
 
@@ -1563,10 +1717,952 @@ function Invoke-RemediationWorkerCommand {
     }
 }
 
+function Test-RemediationLogLicenseLimit {
+    param([string]$Message)
+    return [string]$Message -match '(?i)licen[cs]|premium|retention|more than \d+ days|within the last \d+|older than \d+|only available for the last|maximum retention|start date .{0,80}(past|ago|retention|days)|start time .{0,80}(past|ago|within|days)'
+}
+
+function Get-RemediationShorterLogDays {
+    param([int]$Days)
+    foreach ($step in @(60, 30, 21, 14, 7)) {
+        if ($step -lt $Days) { return $step }
+    }
+    return 0
+}
+
+function Get-RemediationBecAuditClip {
+    param([string]$Text, [int]$Max = 120)
+    $text = [string]$Text
+    if ($text.Length -gt $Max) { return $text.Substring(0, $Max) }
+    return $text
+}
+
+function Test-RemediationBecAuditPriority {
+    param($Row)
+    $op = [string]$Row.Operations
+    if (-not $op) { $op = [string]$Row.Operation }
+    $rt = [string]$Row.RecordType
+    if ($rt -match 'ComplianceDLP|DlpEndpoint|ThreatIntelligence|SecurityCompliance') { return $true }
+    if ($rt -match 'SharePointSharing|SharePointFile|OneDrive') { return $true }
+    if ($op -match 'InboxRule|Forwarding|Set-Mailbox|MailboxPermission|SendAs|SendOnBehalf|MailItemsAccessed|FileDownloaded|FileSyncDownloaded|AnonymousLink|SharingSet|SecureLink|CompanyLink|SoftDelete|HardDelete|MoveToDeletedItems|FileCopied|FileUploaded|Consent to application|Add service principal|Add member to role|Add app role|Reset user password|Disable Strong Authentication') { return $true }
+    return $false
+}
+
+function ConvertTo-RemediationBecAuditRow {
+    param($Row)
+    $op = [string]$Row.Operations
+    if (-not $op) { $op = [string]$Row.Operation }
+    $target = [string]$Row.ObjectId
+    if (-not $target -and $Row.AuditData) {
+        try {
+            $event = if ($Row.AuditData -is [string]) { $Row.AuditData | ConvertFrom-Json -ErrorAction Stop } else { $Row.AuditData }
+            if ($event.ObjectId) { $target = [string]$event.ObjectId }
+            elseif ($event.SourceFileName) { $target = [string]$event.SourceFileName }
+            elseif ($event.FileName) { $target = [string]$event.FileName }
+        } catch { }
+    }
+    return [pscustomobject]@{
+        Created    = [string]$Row.CreationDate
+        RecordType = [string]$Row.RecordType
+        Operation  = $op
+        User       = [string]$Row.UserIds
+        Target     = (Get-RemediationBecAuditClip $target)
+    }
+}
+
+function Get-RemediationBecAuditLogSet {
+    param([string]$Command)
+    if ($Command -notmatch '\|LOGS:([^|]+)') { return $null }
+    $set = @{}
+    foreach ($part in ($Matches[1] -split ',')) {
+        $key = $part.Trim().ToLowerInvariant()
+        if ($key -in @('trace', 'ual', 'sharing', 'files', 'dlp', 'alerts', 'signins', 'apps')) {
+            $set[$key] = $true
+        }
+    }
+    if ($set.Count -eq 0) { return $null }
+    return $set
+}
+
+function Start-RemediationGraphGets {
+    param([Parameter(Mandatory = $true)][hashtable]$Requests)
+    $token = Get-GraphRestBearerToken
+    if ([string]::IsNullOrWhiteSpace($token)) { throw 'Graph REST bearer token is not set.' }
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds(90)
+    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $token)
+    $client.DefaultRequestHeaders.Accept.ParseAdd('application/json')
+    [void]$client.DefaultRequestHeaders.TryAddWithoutValidation('ConsistencyLevel', 'eventual')
+    $tasks = @{}
+    foreach ($name in @($Requests.Keys)) {
+        $tasks[$name] = $client.GetAsync([string]$Requests[$name])
+    }
+    return ,@{ Client = $client; Tasks = $tasks }
+}
+
+function Complete-RemediationGraphGets {
+    param($Batch)
+    $results = @{}
+    try {
+        $pending = New-Object System.Collections.Generic.List[System.Threading.Tasks.Task]
+        foreach ($name in @($Batch.Tasks.Keys)) { [void]$pending.Add($Batch.Tasks[$name]) }
+        if ($pending.Count -gt 0) {
+            try {
+                [void][System.Threading.Tasks.Task]::WaitAll($pending.ToArray(), [TimeSpan]::FromSeconds(95))
+            } catch {
+                # A failed request is recorded on that task below.
+            }
+        }
+        foreach ($name in @($Batch.Tasks.Keys)) {
+            $task = $Batch.Tasks[$name]
+            if (-not $task.IsCompleted) {
+                $results[$name] = @{ Ok = $false; Error = 'Graph request timed out.'; Json = $null }
+                continue
+            }
+            if ($task.IsFaulted) {
+                $results[$name] = @{ Ok = $false; Error = $task.Exception.GetBaseException().Message; Json = $null }
+                continue
+            }
+            $response = $task.Result
+            $read = $response.Content.ReadAsStringAsync()
+            [void]$read.Wait()
+            $body = [string]$read.Result
+            $code = [int]$response.StatusCode
+            if ($code -ge 400) {
+                if ($body.Length -gt 300) { $body = $body.Substring(0, 300) }
+                $results[$name] = @{ Ok = $false; Error = "$code $body"; Json = $null }
+                continue
+            }
+            $json = $null
+            if ($body) { $json = $body | ConvertFrom-Json }
+            $results[$name] = @{ Ok = $true; Error = ''; Json = $json }
+        }
+    } finally {
+        if ($Batch.Client) { $Batch.Client.Dispose() }
+    }
+    return ,$results
+}
+
+function Invoke-RemediationHunterGraphPack {
+    param([Parameter(Mandatory = $true)][string]$User)
+    if ([string]::IsNullOrWhiteSpace((Get-GraphRestBearerToken))) { throw 'Graph REST bearer token is not set.' }
+    $calls = [ordered]@{
+        auth    = { @(Get-RemediationAuthMethods -UserPrincipalNames @($User)) }
+        devices = { @(Get-RemediationUserDevices -UserPrincipalNames @($User)) }
+        oauth   = { @(Get-RemediationOAuthGrants -UserPrincipalNames @($User)) }
+        intune  = { @(Get-RemediationIntuneDevices -UserPrincipalNames @($User)) }
+        roles   = { @(Get-RemediationDirectoryRoles -UserPrincipalNames @($User)) }
+        apps    = { @(Get-RemediationDirectoryApps -Top 200) }
+    }
+    $packed = foreach ($kind in @($calls.Keys)) {
+        $rows = @()
+        $err = ''
+        try { $rows = & $calls[$kind] }
+        catch {
+            $err = $_.Exception.Message
+            if ($_.Exception.InnerException) { $err = $_.Exception.InnerException.Message }
+        }
+        [pscustomobject]@{ Kind = $kind; Error = $err; Rows = @($rows) }
+    }
+    return @($packed)
+}
+
+function ConvertTo-RemediationReportedPlainText {
+    param([string]$Html)
+    $text = [string]$Html
+    if ($text.Length -gt 20000) { $text = $text.Substring(0, 20000) }
+    $text = [regex]::Replace($text, '(?is)<script\b.*?</script>', ' ')
+    $text = [regex]::Replace($text, '(?is)<style\b.*?</style>', ' ')
+    $text = [regex]::Replace($text, '(?i)<br\s*/?>', "`n")
+    $text = [regex]::Replace($text, '(?i)</p>', "`n")
+    $text = [regex]::Replace($text, '(?s)<[^>]+>', ' ')
+    $text = [System.Net.WebUtility]::HtmlDecode($text)
+    $text = [regex]::Replace($text, '[ \t]+', ' ')
+    $text = [regex]::Replace($text, '(\r?\n[ \t]*){2,}', "`n")
+    return $text.Trim()
+}
+
+function Get-RemediationReportedLinks {
+    param([string]$Html, [string]$Plain)
+    $links = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    $add = {
+        param([string]$Raw)
+        $link = [System.Net.WebUtility]::HtmlDecode([string]$Raw).Trim().TrimEnd('.,);]')
+        if ($link -notmatch '^(?i)https?://') { return }
+        if ($link.Length -gt 140) { $link = $link.Substring(0, 140) }
+        $key = $link.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { return }
+        $seen[$key] = $true
+        [void]$links.Add($link)
+    }
+    foreach ($hit in [regex]::Matches([string]$Html, '(?i)(?:href|src)\s*=\s*"([^"]+)"')) { if ($links.Count -ge 8) { break }; & $add $hit.Groups[1].Value }
+    if ($links.Count -lt 8) {
+        foreach ($hit in [regex]::Matches([string]$Html, "(?i)(?:href|src)\s*=\s*'([^']+)'")) { if ($links.Count -ge 8) { break }; & $add $hit.Groups[1].Value }
+    }
+    if ($links.Count -lt 8) {
+        foreach ($hit in [regex]::Matches([string]$Plain, 'https?://[^\s<>"'']+')) { if ($links.Count -ge 8) { break }; & $add $hit.Value }
+    }
+    return @($links.ToArray())
+}
+
+function Get-RemediationReportedMessages {
+    param(
+        [Parameter(Mandatory = $true)][string]$User,
+        [Parameter(Mandatory = $true)][string[]]$Senders,
+        [datetime]$Start,
+        [datetime]$End,
+        [string]$SubjectHint = ''
+    )
+    $encUser = [Uri]::EscapeDataString($User.Trim())
+    $select = 'id,subject,from,replyTo,receivedDateTime,internetMessageHeaders,bodyPreview,hasAttachments,body'
+    $found = New-Object System.Collections.Generic.List[object]
+    $hint = [string]$SubjectHint
+    foreach ($sender in @($Senders | Select-Object -Unique -First 3)) {
+        $addr = [string]$sender
+        if ($addr -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { continue }
+        $search = [Uri]::EscapeDataString(('"{0}"' -f ('from:' + $addr)))
+        $uri = "https://graph.microsoft.com/v1.0/users/$encUser/messages?`$search=$search&`$top=6&`$select=$select"
+        try {
+            $page = Invoke-GraphRestRequest -Uri $uri -Headers @{ ConsistencyLevel = 'eventual' }
+        } catch {
+            $detail = $_.Exception.Message
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = [string]$_.ErrorDetails.Message }
+            if ($detail -match '403|ErrorAccessDenied|Authorization_RequestDenied|Access is denied') {
+                throw 'Graph refused to read the mailbox. The signed-in app needs Mail.Read.'
+            }
+            throw $detail
+        }
+        foreach ($msg in @($page.value)) {
+            if (-not $msg) { continue }
+            $received = [datetimeoffset]::MinValue
+            $receivedText = [string]$msg.receivedDateTime
+            if ($receivedText -and -not [datetimeoffset]::TryParse($receivedText, [ref]$received)) { continue }
+            if ($received -ne [datetimeoffset]::MinValue) {
+                $utc = $received.UtcDateTime
+                if ($utc -lt $Start.AddHours(-2) -or $utc -gt $End.AddHours(2)) { continue }
+            }
+            $fromAddr = ''
+            $fromName = ''
+            if ($msg.from -and $msg.from.emailAddress) {
+                $fromAddr = [string]$msg.from.emailAddress.address
+                $fromName = [string]$msg.from.emailAddress.name
+            }
+            $replyTo = @()
+            foreach ($who in @($msg.replyTo)) {
+                if ($who.emailAddress -and $who.emailAddress.address) { $replyTo += [string]$who.emailAddress.address }
+            }
+            $headerMap = @{}
+            foreach ($header in @($msg.internetMessageHeaders)) {
+                $name = [string]$header.name
+                if ($name -notmatch '^(?i)(from|reply-to|return-path|authentication-results|x-forefront-antispam-report)$') { continue }
+                $key = $name.ToLowerInvariant()
+                if (-not $headerMap.ContainsKey($key)) { $headerMap[$key] = [string]$header.value }
+            }
+            $auth = [string]$headerMap['authentication-results']
+            $front = [string]$headerMap['x-forefront-antispam-report']
+            $authBits = New-Object System.Collections.Generic.List[string]
+            foreach ($name in @('spf', 'dkim', 'dmarc', 'compauth')) {
+                $hit = [regex]::Match($auth, ('(?i)\b{0}=([a-z]+)' -f $name))
+                if ($hit.Success) { [void]$authBits.Add(('{0}={1}' -f $name, $hit.Groups[1].Value.ToLowerInvariant())) }
+            }
+            foreach ($name in @('SCL', 'CAT', 'CTRY', 'CIP')) {
+                $hit = [regex]::Match($front, ('(?i)\b{0}:([^;]+)' -f $name))
+                if ($hit.Success) { [void]$authBits.Add(('{0}:{1}' -f $name, $hit.Groups[1].Value.Trim())) }
+            }
+            $rawBody = ''
+            if ($msg.body -and $msg.body.content) { $rawBody = [string]$msg.body.content }
+            $plain = ''
+            if ($rawBody) { $plain = ConvertTo-RemediationReportedPlainText $rawBody }
+            if (-not $plain) { $plain = [string]$msg.bodyPreview }
+            $visible = [regex]::Replace($plain, "[\u200B-\u200D\uFEFF\u2060\u180E]", '').Trim()
+            $links = @(Get-RemediationReportedLinks -Html $rawBody -Plain $plain)
+            $files = New-Object System.Collections.Generic.List[string]
+            if ($msg.hasAttachments -and $msg.id) {
+                $encId = [Uri]::EscapeDataString([string]$msg.id)
+                try {
+                    $attached = Invoke-GraphRestRequest -Uri "https://graph.microsoft.com/v1.0/users/$encUser/messages/$encId/attachments?`$select=name,contentType,size"
+                    foreach ($file in @($attached.value)) {
+                        if (-not $file -or -not $file.name) { continue }
+                        $size = ''
+                        if ($null -ne $file.size) { $size = [string]$file.size }
+                        [void]$files.Add(('{0} {1}' -f [string]$file.name, $size).Trim())
+                        if ($files.Count -ge 8) { break }
+                    }
+                } catch {
+                    [void]$files.Add('attachment list failed')
+                }
+            }
+            $preview = $visible
+            if (-not $preview -and $plain) { $preview = 'No visible text. The body is zero-width characters.' }
+            elseif ($preview.Length -gt 400) { $preview = $preview.Substring(0, 400) }
+            $subject = [string]$msg.subject
+            $boost = 0
+            if ($hint -and $subject -match [regex]::Escape($hint)) { $boost = 1 }
+            [void]$found.Add([pscustomobject]@{
+                Boost    = $boost
+                Received = $receivedText
+                From     = $fromAddr
+                FromName = (Get-RemediationBecAuditClip $fromName 80)
+                ReplyTo  = (($replyTo | Select-Object -Unique) -join ', ')
+                Subject  = (Get-RemediationBecAuditClip $subject 120)
+                Auth     = (Get-RemediationBecAuditClip (($authBits -join ' ')) 240)
+                Links    = @($links.ToArray())
+                Files    = @($files.ToArray())
+                Preview  = $preview
+            })
+        }
+    }
+    $picked = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @($found | Sort-Object Boost -Descending)) {
+        if ($picked.Count -ge 3) { break }
+        [void]$picked.Add([pscustomobject]@{
+            Received = $row.Received
+            From     = $row.From
+            FromName = $row.FromName
+            ReplyTo  = $row.ReplyTo
+            Subject  = $row.Subject
+            Auth     = $row.Auth
+            Links    = $row.Links
+            Files    = $row.Files
+            Preview  = $row.Preview
+        })
+    }
+    return @($picked.ToArray())
+}
+
+function Get-RemediationBecAudit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [bool]$GraphAuthenticated,
+        [bool]$ExchangeAuthenticated
+    )
+    $notes = New-Object System.Collections.ArrayList
+    $user = ''
+    if ($Command -match '\|USER:([^|]+)') { $user = $Matches[1].Trim() }
+    if (-not $user) { return 'REMEDIATE_FAILED:Missing mailbox' }
+    $leadSenders = @()
+    if ($Command -match '\|FROM:([^|]+)') {
+        $leadSenders = @($Matches[1].Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ -match '^[^@\s]+@[^@\s]+\.[^@\s]+$' } | Select-Object -Unique -First 3)
+    }
+    $subjectHint = ''
+    if ($Command -match '\|SUBJECT:([^|]+)') { $subjectHint = $Matches[1].Trim() }
+    $start = (Get-Date).ToUniversalTime().AddDays(-2)
+    $end = (Get-Date).ToUniversalTime()
+    if ($Command -match '\|START:([^|]+)') {
+        $parsed = [datetime]::MinValue
+        if ([datetime]::TryParse($Matches[1].Trim(), [ref]$parsed)) { $start = $parsed.ToUniversalTime() }
+    }
+    if ($Command -match '\|END:([^|]+)') {
+        $parsedEnd = [datetime]::MinValue
+        if ([datetime]::TryParse($Matches[1].Trim(), [ref]$parsedEnd)) { $end = $parsedEnd.ToUniversalTime() }
+    }
+    if ($end -lt $start) { $end = (Get-Date).ToUniversalTime() }
+    $days = [int][Math]::Ceiling(($end - $start).TotalDays)
+    if ($days -gt 90) {
+        $start = $end.AddDays(-90)
+        $days = 90
+        [void]$notes.Add('Lookback was capped at 90 days. Unified audit retention is often 90 days, and longer only when the tenant has extended audit.')
+    }
+    $only = Get-RemediationBecAuditLogSet -Command $Command
+    $wantLog = {
+        param([string]$Name)
+        if ($null -eq $only) { return $true }
+        return [bool]$only.ContainsKey($Name)
+    }
+    $pulledStart = $start.ToLocalTime().ToString('yyyy-MM-dd h:mm tt')
+    $pulledEnd = $end.ToLocalTime().ToString('yyyy-MM-dd h:mm tt')
+    $pulledZone = 'local time'
+    try {
+        $tzInfo = [TimeZoneInfo]::Local
+        $zoneName = if ($tzInfo.IsDaylightSavingTime($end.ToLocalTime())) { $tzInfo.DaylightName } else { $tzInfo.StandardName }
+        if ($zoneName) { $pulledZone = $zoneName }
+    } catch {}
+    if ($null -eq $only) {
+        [void]$notes.Add(('Pulled {0} through {1} ({2}, {3} days). Message trace uses the tenant API limit (legacy about 10 days, V2 about 90). Unified audit stops where the license retention stops.' -f $pulledStart, $pulledEnd, $pulledZone, $days))
+    } else {
+        $onlyNames = @($only.Keys | Sort-Object) -join ', '
+        [void]$notes.Add(('Pulled {0} through {1} ({2}, {3} days) for {4} only. Other logs stay on the earlier window.' -f $pulledStart, $pulledEnd, $pulledZone, $days, $onlyNames))
+    }
+
+    $trace = New-Object System.Collections.ArrayList
+    $ual = New-Object System.Collections.ArrayList
+    $dlp = New-Object System.Collections.ArrayList
+    $files = New-Object System.Collections.ArrayList
+    $sharing = New-Object System.Collections.ArrayList
+    $alerts = New-Object System.Collections.ArrayList
+    $signIns = New-Object System.Collections.ArrayList
+    $apps = New-Object System.Collections.ArrayList
+    $blasts = New-Object System.Collections.ArrayList
+    $reported = New-Object System.Collections.ArrayList
+    $posture = $null
+    $recordTypes = @(
+        'ExchangeAdmin', 'ExchangeItem', 'ExchangeItemGroup', 'AzureActiveDirectory',
+        'SharePointFileOperation', 'SharePointSharingOperation', 'OneDrive',
+        'ComplianceDLPExchange', 'ComplianceDLPSharePoint', 'ComplianceDLPEndpoint',
+        'ThreatIntelligence', 'SecurityComplianceAlerts'
+    )
+    if ($null -ne $only) {
+        $pickedTypes = New-Object System.Collections.Generic.List[string]
+        if ($only.ContainsKey('ual')) {
+            foreach ($t in @('ExchangeAdmin', 'ExchangeItem', 'ExchangeItemGroup', 'AzureActiveDirectory', 'ThreatIntelligence', 'SecurityComplianceAlerts')) {
+                [void]$pickedTypes.Add($t)
+            }
+        }
+        if ($only.ContainsKey('sharing') -or $only.ContainsKey('files')) {
+            foreach ($t in @('SharePointFileOperation', 'SharePointSharingOperation', 'OneDrive')) {
+                [void]$pickedTypes.Add($t)
+            }
+        }
+        if ($only.ContainsKey('dlp')) {
+            foreach ($t in @('ComplianceDLPExchange', 'ComplianceDLPSharePoint', 'ComplianceDLPEndpoint')) {
+                [void]$pickedTypes.Add($t)
+            }
+        }
+        $recordTypes = $pickedTypes.ToArray()
+    }
+    $sharingCap = 25
+    if ($null -ne $only -and $only.ContainsKey('sharing')) { $sharingCap = 60 }
+
+    $graphBatch = $null
+    $mfaJob = $null
+    $graphTokenMissing = $false
+    $needGraph = ($null -eq $only) -or (& $wantLog 'signins') -or (& $wantLog 'alerts') -or (& $wantLog 'apps')
+    if ($GraphAuthenticated -and $needGraph) {
+        $graphToken = ''
+        if (Get-Command Get-GraphRestBearerToken -ErrorAction SilentlyContinue) { $graphToken = [string](Get-GraphRestBearerToken) }
+        if ([string]::IsNullOrWhiteSpace($graphToken)) {
+            $graphTokenMissing = $true
+            [void]$notes.Add('Graph auth was present, but the bearer token was not set, so MFA posture, sign-ins, security alerts, and new app registrations were not pulled.')
+        } else {
+            $graphUris = @{}
+            $startZ = $start.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $endZ = $end.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $safeUser = $user.Replace("'", "''")
+            $signUserId = ''
+            $signByUserId = $false
+            if (& $wantLog 'signins') {
+                try {
+                    $graphUser = Get-MgUserCompat -UserId $user -Property id
+                    if ($graphUser.id) { $signUserId = [string]$graphUser.id }
+                    elseif ($graphUser.Id) { $signUserId = [string]$graphUser.Id }
+                } catch {
+                    [void]$notes.Add(('Sign-in user id lookup failed: {0}' -f $_.Exception.Message))
+                }
+                if ($signUserId) {
+                    $signByUserId = $true
+                    $filter = "createdDateTime ge $startZ and createdDateTime le $endZ and userId eq '$signUserId'"
+                } else {
+                    $filter = "userPrincipalName eq '$safeUser' and createdDateTime ge $startZ and createdDateTime le $endZ"
+                }
+                # Without an explicit event type Graph returns interactive sign-ins only; token refreshes from mail clients are non-interactive.
+                $filter = "$filter and signInEventTypes/any(t: t eq 'interactiveUser' or t eq 'nonInteractiveUser')"
+                $graphUris.signins = 'https://graph.microsoft.com/beta/auditLogs/signIns?$top=500&$filter=' + [Uri]::EscapeDataString($filter)
+            }
+            if (& $wantLog 'apps') {
+                $filter = "createdDateTime ge $startZ"
+                $graphUris.apps = 'https://graph.microsoft.com/v1.0/applications?$top=20&$select=displayName,appId,createdDateTime&$filter=' + [Uri]::EscapeDataString($filter)
+            }
+            if (& $wantLog 'alerts') {
+                $filter = "createdDateTime ge $startZ"
+                $graphUris.alerts = 'https://graph.microsoft.com/v1.0/security/alerts?$top=50&$filter=' + [Uri]::EscapeDataString($filter)
+            }
+            if ($graphUris.Count -gt 0) {
+                try { $graphBatch = Start-RemediationGraphGets -Requests $graphUris }
+                catch { [void]$notes.Add(('Graph log pull failed to start: {0}' -f $_.Exception.Message)) }
+            }
+            if ($null -eq $only -and (Get-Command Get-MfaCoverageReport -ErrorAction SilentlyContinue)) {
+                Import-Module ThreadJob -ErrorAction SilentlyContinue
+                if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
+                    $exportUtils = Join-Path $PSScriptRoot 'ExportUtils.psm1'
+                    try {
+                        $mfaJob = Start-ThreadJob -ScriptBlock {
+                            param($ExportUtils, $Token, $Mailbox)
+                            Import-Module $ExportUtils -DisableNameChecking -ErrorAction Stop
+                            Set-GraphRestBearerToken -Token $Token
+                            Get-MfaCoverageReport -SelectedUsers @($Mailbox)
+                        } -ArgumentList $exportUtils, $graphToken, $user
+                    } catch {
+                        $mfaJob = $null
+                    }
+                }
+            }
+        }
+    }
+
+    if ($null -eq $only -and $leadSenders.Count -gt 0) {
+        if (-not $GraphAuthenticated -or $graphTokenMissing) {
+            [void]$notes.Add(('Reported message from {0} was not opened. Graph auth was not available.' -f ($leadSenders -join ', ')))
+        } else {
+            try {
+                $opened = @(Get-RemediationReportedMessages -User $user -Senders $leadSenders -Start $start -End $end -SubjectHint $subjectHint)
+                foreach ($row in $opened) { if ($row) { [void]$reported.Add($row) } }
+                if ($reported.Count -eq 0) {
+                    [void]$notes.Add(('No message from {0} was found in this mailbox for this window.' -f ($leadSenders -join ', ')))
+                } else {
+                    [void]$notes.Add(('Opened {0} reported message(s) from the mailbox.' -f $reported.Count))
+                }
+            } catch {
+                [void]$notes.Add(('Reported message was not opened: {0}' -f $_.Exception.Message))
+            }
+        }
+    }
+
+    if (-not $ExchangeAuthenticated) {
+        [void]$notes.Add('Exchange auth was not available, so inbox state, message trace, and unified audit were not pulled.')
+    } else {
+        if (-not (Get-Command Get-ExchangeMessageTrace -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'ExportUtils.psm1'))) {
+            Import-Module (Join-Path $PSScriptRoot 'ExportUtils.psm1') -Global -DisableNameChecking -ErrorAction SilentlyContinue
+        }
+        $traceReady = (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue) -or (Get-Command Get-MessageTrace -ErrorAction SilentlyContinue)
+        if ((& $wantLog 'trace') -and (Get-Command Get-ExchangeMessageTrace -ErrorAction SilentlyContinue)) {
+            try {
+                $traceArgs = @{
+                    StartDate = $start
+                    EndDate = $end
+                    SelectedUsers = @($user)
+                }
+                $traceCmd = Get-Command Get-ExchangeMessageTrace -ErrorAction SilentlyContinue
+                if ($traceCmd -and $traceCmd.Parameters.ContainsKey('NoGraph')) { $traceArgs.NoGraph = $true }
+                $rows = Get-ExchangeMessageTrace @traceArgs
+                if ($null -eq $rows) { $rows = @() }
+                $large = New-Object System.Collections.Generic.List[object]
+                $blastGroups = @{}
+                foreach ($row in $rows) {
+                    if (-not $row) { continue }
+                    $subject = Get-RemediationBecAuditClip ([string]$row.Subject) 80
+                    $sizeText = ''
+                    $sizeBytes = 0L
+                    $rawSize = $row.Size
+                    if ($null -ne $rawSize -and [string]$rawSize -match '^\d+$') {
+                        $sizeBytes = [int64]$rawSize
+                        $sizeText = [string]$sizeBytes
+                    }
+                    $item = [pscustomobject]@{
+                        Received  = [string]$row.Received
+                        Sender    = [string]$row.SenderAddress
+                        Recipient = [string]$row.RecipientAddress
+                        Status    = [string]$row.Status
+                        Subject   = $subject
+                        Size      = $sizeText
+                    }
+                    if ($trace.Count -lt 40) {
+                        [void]$trace.Add($item)
+                    } elseif ($sizeBytes -ge 5242880 -and $large.Count -lt 8) {
+                        [void]$large.Add($item)
+                    }
+                    $senderAddr = [string]$row.SenderAddress
+                    $recipAddr = [string]$row.RecipientAddress
+                    $statusText = [string]$row.Status
+                    $mailboxKey = $user.Trim().ToLowerInvariant()
+                    if ($senderAddr.Trim().ToLowerInvariant() -eq $mailboxKey -and $statusText -match '^(?i)delivered\b' -and $recipAddr.Trim() -and $recipAddr.Trim().ToLowerInvariant() -ne $mailboxKey) {
+                        $groupKey = ([string]$row.Subject).Trim().ToLowerInvariant()
+                        if (-not $blastGroups.ContainsKey($groupKey)) {
+                            $blastGroups[$groupKey] = [pscustomobject]@{
+                                Subject    = $(if ($subject.Trim()) { $subject.Trim() } else { '(no subject)' })
+                                Received   = [string]$row.Received
+                                Recipients = New-Object System.Collections.ArrayList
+                                Seen       = @{}
+                            }
+                        }
+                        $bucket = $blastGroups[$groupKey]
+                        $addrKey = $recipAddr.Trim().ToLowerInvariant()
+                        if (-not $bucket.Seen.ContainsKey($addrKey) -and $bucket.Recipients.Count -lt 2000) {
+                            $bucket.Seen[$addrKey] = $true
+                            [void]$bucket.Recipients.Add($recipAddr.Trim())
+                        }
+                    }
+                }
+                foreach ($item in $large) { [void]$trace.Add($item) }
+                foreach ($bucket in $blastGroups.Values) {
+                    if ($bucket.Recipients.Count -ge 5) {
+                        [void]$blasts.Add([pscustomobject]@{
+                            Subject    = [string]$bucket.Subject
+                            Received   = [string]$bucket.Received
+                            Count      = [int]$bucket.Recipients.Count
+                            Recipients = $bucket.Recipients
+                        })
+                    }
+                }
+                if ($rows.Count -gt 40) {
+                    $extra = if ($large.Count) { " $([int]$large.Count) larger message(s) of at least 5 MB were kept past that cap." } else { '' }
+                    [void]$notes.Add(('Message trace was capped at 40 rows for the review.{0}' -f $extra))
+                }
+            } catch {
+                [void]$notes.Add(('Message trace failed: {0}' -f $_.Exception.Message))
+            }
+        } elseif (& $wantLog 'trace') {
+            $traceNote = if ($traceReady) {
+                'Message trace was not pulled. The Exchange session is signed in, but the trace helper did not load. Run the threat check again.'
+            } else {
+                'Message trace was not pulled. Get-MessageTraceV2 is not in this Exchange session. Re-run Exchange Auth.'
+            }
+            [void]$notes.Add($traceNote)
+        }
+        $auditReady = Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue
+        $needAudit = (& $wantLog 'ual') -or (& $wantLog 'sharing') -or (& $wantLog 'files') -or (& $wantLog 'dlp')
+        if ($needAudit -and $auditReady -and (Get-Command Get-UnifiedAuditLogs -ErrorAction SilentlyContinue)) {
+            $ualDays = $days
+            $ualStart = $start
+            $ualTries = 0
+            $ualShortened = $false
+            $rows = @()
+            $licenseHit = @()
+            while ($ualTries -lt 6) {
+                $ualTries++
+                $searchErrors = New-Object System.Collections.Generic.List[string]
+                try {
+                    $ualArgs = @{
+                        StartDate = $ualStart
+                        EndDate = $end
+                        SelectedUsers = @($user)
+                        RecordTypes = $recordTypes
+                        IncludeExchangeItemAggregated = $false
+                    }
+                    $ualCmd = Get-Command Get-UnifiedAuditLogs -ErrorAction SilentlyContinue
+                    if ($ualCmd -and $ualCmd.Parameters.ContainsKey('SearchErrors')) {
+                        $ualArgs.SearchErrors = $searchErrors
+                    }
+                    # Get-UnifiedAuditLogs returns ,ArrayList; @() around the call would keep it as one row.
+                    $ualRaw = Get-UnifiedAuditLogs @ualArgs
+                    $rows = @($ualRaw)
+                } catch {
+                    $searchErrors.Add([string]$_.Exception.Message)
+                    $rows = @()
+                }
+                $licenseHit = @($searchErrors | Where-Object { Test-RemediationLogLicenseLimit $_ } | Select-Object -First 1)
+                if ($licenseHit.Count -gt 0 -and @($rows).Count -eq 0) {
+                    $shorter = Get-RemediationShorterLogDays -Days $ualDays
+                    if ($shorter -gt 0) {
+                        [void]$notes.Add(('{0}-day unified audit was refused by the license. Trying {1} days.' -f $ualDays, $shorter))
+                        $ualDays = $shorter
+                        $ualStart = $end.AddDays(-$shorter)
+                        $ualShortened = $true
+                        continue
+                    }
+                    [void]$notes.Add(('Unified audit failed: {0}' -f $licenseHit[0]))
+                    $rows = @()
+                } elseif (@($rows).Count -eq 0 -and $searchErrors.Count -gt 0) {
+                    [void]$notes.Add(('Unified audit failed: {0}' -f $searchErrors[0]))
+                }
+                break
+            }
+            if ($ualShortened -and $licenseHit.Count -eq 0) {
+                [void]$notes.Add(('Unified audit used {0} days because a longer window was refused by the license. Do not ask for that longer unified audit window again.' -f $ualDays))
+            }
+            try {
+                if ($null -eq $rows) { $rows = @() }
+                $priority = New-Object System.Collections.Generic.List[object]
+                $other = New-Object System.Collections.Generic.List[object]
+                foreach ($row in $rows) {
+                    if (-not $row) { continue }
+                    $item = ConvertTo-RemediationBecAuditRow $row
+                    if (-not $item.Operation) { continue }
+                    $rt = [string]$item.RecordType
+                    $takeSharing = (& $wantLog 'sharing')
+                    $takeFiles = (& $wantLog 'files')
+                    $takeDlp = (& $wantLog 'dlp')
+                    $takeUal = (& $wantLog 'ual')
+                    if ($takeSharing -and $rt -match 'SharePointSharing|OneDrive' -and $sharing.Count -lt $sharingCap) {
+                        [void]$sharing.Add($item)
+                    } elseif ($takeFiles -and $rt -match 'SharePointFile' -and $files.Count -lt 15) {
+                        [void]$files.Add($item)
+                    }
+                    if ($takeDlp -and $rt -match 'ComplianceDLP|DlpEndpoint' -and $dlp.Count -lt 15) {
+                        $policy = ''
+                        if ($row.AuditData) {
+                            try {
+                                $event = if ($row.AuditData -is [string]) { $row.AuditData | ConvertFrom-Json -ErrorAction Stop } else { $row.AuditData }
+                                if ($event.PolicyDetails) {
+                                    $pd = @($event.PolicyDetails)[0]
+                                    if ($pd.PolicyName) { $policy = [string]$pd.PolicyName }
+                                }
+                            } catch { }
+                        }
+                        [void]$dlp.Add([pscustomobject]@{
+                            Created   = $item.Created
+                            Operation = $item.Operation
+                            Policy    = (Get-RemediationBecAuditClip $policy 80)
+                            Target    = $item.Target
+                            User      = $item.User
+                        })
+                    }
+                    if ($takeUal -and (Test-RemediationBecAuditPriority $row) -and $priority.Count -lt 25) {
+                        [void]$priority.Add($item)
+                    } elseif ($takeUal -and $other.Count -lt 20) {
+                        [void]$other.Add($item)
+                    }
+                }
+                foreach ($item in $priority) { if ($ual.Count -lt 40) { [void]$ual.Add($item) } }
+                foreach ($item in $other) { if ($ual.Count -lt 40) { [void]$ual.Add($item) } }
+                if ($rows.Count -gt 40) { [void]$notes.Add('Unified audit was capped at 40 rows, keeping DLP, sharing, download, and mailbox-change events ahead of routine mail activity. Exchange item aggregates were not included.') }
+                if ($null -eq $only) {
+                    [void]$notes.Add('Also pulled for this mailbox: DLP audit (Exchange, SharePoint, endpoint), SharePoint and OneDrive file and sharing operations, and threat or compliance alerts in unified audit.')
+                }
+            } catch {
+                [void]$notes.Add(('Unified audit failed: {0}' -f $_.Exception.Message))
+            }
+        } elseif ($needAudit) {
+            $auditNote = if ($auditReady) {
+                'Unified audit was not pulled. The Exchange session is signed in, but the audit helper did not load. Run the threat check again.'
+            } else {
+                'Unified audit was not pulled. Search-UnifiedAuditLog is not in this Exchange session. Re-run Exchange Auth.'
+            }
+            [void]$notes.Add($auditNote)
+        }
+    }
+
+    if (-not $GraphAuthenticated) {
+        if ($needGraph) {
+            [void]$notes.Add('Graph auth was not available, so MFA posture, sign-ins, security alerts, and new app registrations were not pulled.')
+        }
+    } else {
+        $got = @{}
+        if ($graphBatch) {
+            try { $got = Complete-RemediationGraphGets -Batch $graphBatch }
+            catch { [void]$notes.Add(('Graph log pull failed: {0}' -f $_.Exception.Message)) }
+            $graphBatch = $null
+        }
+        if ($mfaJob) {
+            try {
+                $finished = Wait-Job -Job $mfaJob -Timeout 120
+                if (-not $finished) {
+                    Stop-Job -Job $mfaJob -ErrorAction SilentlyContinue
+                    throw 'MFA posture timed out.'
+                }
+                $report = Receive-Job -Job $mfaJob -ErrorAction Stop
+                $one = @($report.Users) | Select-Object -First 1
+                $posture = [pscustomobject]@{
+                    perUser          = if ($one) { [string]$one.PerUserMfaEnabled } else { '' }
+                    securityDefaults = [string]$report.SecurityDefaultsEnabled
+                    caRequiresMfa    = if ($one) { [string]$one.CARequiresMfa } else { [string]$report.CAPoliciesRequireMfa }
+                    covered          = if ($one) { [string]$one.MfaCovered } else { '' }
+                }
+            } catch {
+                [void]$notes.Add(('MFA posture failed: {0}' -f $_.Exception.Message))
+            } finally {
+                Remove-Job -Job $mfaJob -Force -ErrorAction SilentlyContinue
+                $mfaJob = $null
+            }
+        } elseif (-not $graphTokenMissing -and $null -eq $only -and (Get-Command Get-MfaCoverageReport -ErrorAction SilentlyContinue)) {
+            try {
+                $report = Get-MfaCoverageReport -SelectedUsers @($user)
+                $one = @($report.Users) | Select-Object -First 1
+                $posture = [pscustomobject]@{
+                    perUser          = if ($one) { [string]$one.PerUserMfaEnabled } else { '' }
+                    securityDefaults = [string]$report.SecurityDefaultsEnabled
+                    caRequiresMfa    = if ($one) { [string]$one.CARequiresMfa } else { [string]$report.CAPoliciesRequireMfa }
+                    covered          = if ($one) { [string]$one.MfaCovered } else { '' }
+                }
+            } catch {
+                [void]$notes.Add(('MFA posture failed: {0}' -f $_.Exception.Message))
+            }
+        }
+        if ($got.ContainsKey('signins') -and -not $got.signins.Ok -and (Test-RemediationLogLicenseLimit ([string]$got.signins.Error))) {
+            $signDays = $days
+            $signTries = 0
+            while ($signTries -lt 5) {
+                $signTries++
+                $shorter = Get-RemediationShorterLogDays -Days $signDays
+                if ($shorter -lt 1) {
+                    if ($signByUserId) {
+                        $got.signins.Error = 'Sign-in logs for this window were refused by the tenant license. A shorter window will not change that. Do not ask for sign-ins again.'
+                    }
+                    break
+                }
+                [void]$notes.Add(('{0}-day sign-in log was refused by the license. Trying {1} days.' -f $signDays, $shorter))
+                $signStart = $end.AddDays(-$shorter).ToString('yyyy-MM-ddTHH:mm:ssZ')
+                $signEnd = $end.ToString('yyyy-MM-ddTHH:mm:ssZ')
+                if ($signByUserId -and $signUserId) {
+                    $signFilter = "createdDateTime ge $signStart and createdDateTime le $signEnd and userId eq '$signUserId'"
+                } else {
+                    $safeSignUser = $user.Replace("'", "''")
+                    $signFilter = "userPrincipalName eq '$safeSignUser' and createdDateTime ge $signStart and createdDateTime le $signEnd"
+                }
+                $signFilter = "$signFilter and signInEventTypes/any(t: t eq 'interactiveUser' or t eq 'nonInteractiveUser')"
+                $signUri = 'https://graph.microsoft.com/beta/auditLogs/signIns?$top=500&$filter=' + [Uri]::EscapeDataString($signFilter)
+                try {
+                    $signPageRetry = Invoke-GraphRestRequest -Uri $signUri -Headers @{ ConsistencyLevel = 'eventual' }
+                    $got.signins = @{ Ok = $true; Error = ''; Json = $signPageRetry }
+                    [void]$notes.Add(('Sign-in log used {0} days because a longer window was refused by the license. Do not ask for that longer sign-in window again.' -f $shorter))
+                    break
+                } catch {
+                    $detail = $_.Exception.Message
+                    if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = [string]$_.ErrorDetails.Message }
+                    $got.signins = @{ Ok = $false; Error = $detail; Json = $null }
+                    if (-not (Test-RemediationLogLicenseLimit $detail)) { break }
+                    $signDays = $shorter
+                }
+            }
+        }
+        foreach ($pair in @(
+            @{ Key = 'signins'; Label = 'Sign-in log' },
+            @{ Key = 'apps'; Label = 'App registration search' },
+            @{ Key = 'alerts'; Label = 'Security alerts' }
+        )) {
+            if (-not $got.ContainsKey($pair.Key)) { continue }
+            $page = $got[$pair.Key]
+            if (-not $page.Ok) {
+                [void]$notes.Add(('{0} failed: {1}' -f $pair.Label, $page.Error))
+            }
+        }
+        $signPage = $null
+        if ($got.ContainsKey('signins') -and $got.signins.Ok) { $signPage = $got.signins.Json }
+        $signRows = New-Object System.Collections.Generic.List[object]
+        if ($signPage) {
+            foreach ($row in @($signPage.value)) { if ($row) { [void]$signRows.Add($row) } }
+            # Filtered sign-in queries often return empty pages that still carry a nextLink.
+            $signNext = [string]$signPage.'@odata.nextLink'
+            $signPages = 1
+            while ($signNext -and $signRows.Count -lt 2000 -and $signPages -lt 20) {
+                $signPages++
+                try {
+                    $more = Invoke-GraphRestRequest -Uri $signNext -Headers @{ ConsistencyLevel = 'eventual' }
+                } catch {
+                    [void]$notes.Add(('Sign-in log paging stopped: {0}' -f $_.Exception.Message))
+                    break
+                }
+                foreach ($row in @($more.value)) { if ($row) { [void]$signRows.Add($row) } }
+                $signNext = [string]$more.'@odata.nextLink'
+            }
+            if ($signRows.Count -eq 0) {
+                $signHow = if ($signByUserId) { 'user id' } else { 'user principal name' }
+                [void]$notes.Add(('Graph returned no sign-ins for this mailbox (by {0}) in this window after {1} page(s).' -f $signHow, $signPages))
+            }
+        }
+        $interactive = New-Object System.Collections.Generic.List[object]
+        $interactiveTotal = 0
+        $quietGroups = [ordered]@{}
+        foreach ($row in $signRows) {
+            if (-not $row) { continue }
+            $status = ''
+            if ($row.status -and $row.status.errorCode -ne $null) { $status = [string]$row.status.errorCode }
+            $where = ''
+            if ($row.location) {
+                $where = (@($row.location.city, $row.location.state, $row.location.countryOrRegion) | Where-Object { $_ }) -join ', '
+            }
+            $isQuiet = (@($row.signInEventTypes) -contains 'nonInteractiveUser') -or ($row.isInteractive -eq $false)
+            if (-not $isQuiet) {
+                $interactiveTotal++
+                if ($interactive.Count -lt 25) {
+                    [void]$interactive.Add([pscustomobject]@{
+                        Created  = [string]$row.createdDateTime
+                        Ip       = [string]$row.ipAddress
+                        Location = [string]$where
+                        App      = [string]$row.appDisplayName
+                        Result   = $status
+                        Kind     = 'interactive'
+                    })
+                }
+                continue
+            }
+            # Rows arrive newest first, so the first row of a group is its last-seen time.
+            $key = '{0}|{1}|{2}' -f $row.ipAddress, $row.appDisplayName, $status
+            if ($quietGroups.Contains($key)) {
+                $group = $quietGroups[$key]
+                $group.Count++
+                $group.FirstSeen = [string]$row.createdDateTime
+            } else {
+                $quietGroups[$key] = [pscustomobject]@{
+                    Created   = [string]$row.createdDateTime
+                    Ip        = [string]$row.ipAddress
+                    Location  = [string]$where
+                    App       = [string]$row.appDisplayName
+                    Result    = $status
+                    Kind      = 'non-interactive'
+                    Count     = 1
+                    FirstSeen = [string]$row.createdDateTime
+                }
+            }
+        }
+        $quietShown = @($quietGroups.Values | Select-Object -First 12)
+        foreach ($group in $quietShown) { [void]$signIns.Add($group) }
+        foreach ($row in $interactive) {
+            if ($signIns.Count -ge 25) { break }
+            [void]$signIns.Add($row)
+        }
+        if ($signRows.Count -gt 0 -and -not $signNext) {
+            $oldest = $null
+            foreach ($row in $signRows) {
+                $stamp = [datetime]::MinValue
+                if ($row.createdDateTime -is [datetime]) {
+                    $stamp = $row.createdDateTime.ToUniversalTime()
+                    if ($null -eq $oldest -or $stamp -lt $oldest) { $oldest = $stamp }
+                } elseif ([datetime]::TryParse([string]$row.createdDateTime, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$stamp)) {
+                    if ($null -eq $oldest -or $stamp -lt $oldest) { $oldest = $stamp }
+                }
+            }
+            if ($oldest -and ($oldest - $start).TotalDays -gt 2) {
+                [void]$notes.Add(('Sign-ins only reach back to {0:yyyy-MM-dd} UTC although the window started {1:yyyy-MM-dd}. That is all the sign-in history the tenant keeps (about 7 days without a premium license). A longer window will not return more sign-ins. Do not ask for more sign-in history.' -f $oldest, $start))
+            }
+        }
+        if ($signRows.Count -gt 0) {
+            [void]$notes.Add(('Sign-ins pulled: {0} interactive, {1} non-interactive in {2} IP/app group(s). Non-interactive sign-ins are token refreshes from apps already signed in.' -f $interactiveTotal, ($signRows.Count - $interactiveTotal), $quietGroups.Count))
+        }
+        $appPage = $null
+        if ($got.ContainsKey('apps') -and $got.apps.Ok) { $appPage = $got.apps.Json }
+        foreach ($row in @($appPage.value)) {
+            if ($apps.Count -ge 20) { break }
+            if (-not $row) { continue }
+            [void]$apps.Add([pscustomobject]@{
+                DisplayName = [string]$row.displayName
+                Created     = [string]$row.createdDateTime
+            })
+        }
+        if ($got.ContainsKey('alerts') -and $got.alerts.Ok) {
+            $want = $user.ToLowerInvariant()
+            $alertRows = @()
+            if ($got.alerts.Json -and $got.alerts.Json.value) { $alertRows = @($got.alerts.Json.value) }
+            foreach ($row in $alertRows) {
+                if ($alerts.Count -ge 15) { break }
+                if (-not $row) { continue }
+                $names = New-Object System.Collections.Generic.List[string]
+                foreach ($state in @($row.userStates)) {
+                    $upn = [string]$state.userPrincipalName
+                    if ($upn) { [void]$names.Add($upn.ToLowerInvariant()) }
+                }
+                $title = [string]$row.title
+                $matched = $names -contains $want -or ($title -and $title.ToLowerInvariant().Contains($want))
+                if (-not $matched) { continue }
+                [void]$alerts.Add([pscustomobject]@{
+                    Created  = [string]$row.createdDateTime
+                    Title    = (Get-RemediationBecAuditClip $title 120)
+                    Severity = [string]$row.severity
+                    Category = [string]$row.category
+                    Status   = [string]$row.status
+                })
+            }
+            [void]$notes.Add('Security alerts are the newest 50 in the window, then kept only when they name this mailbox.')
+        }
+    }
+    if ($null -eq $only) {
+        [void]$notes.Add('Not pulled unless a later pass needs them: folder permissions, junk trusted senders, transport rules, org auto-forward, rights on other mailboxes, Teams activity, and Exchange item aggregates.')
+    }
+    $payload = @{
+        Days         = $days
+        StartUtc     = $start.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        EndUtc       = $end.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        MfaPosture   = $posture
+        MessageTrace = $trace
+        ReportedMessages = @($reported.ToArray())
+        Ual          = $ual
+        Dlp          = $dlp
+        Files        = $files
+        Sharing      = $sharing
+        Alerts       = $alerts
+        SignIns      = $signIns
+        Apps         = $apps
+        Blasts       = $blasts
+        PullNotes    = $notes
+    } | ConvertTo-Json -Compress -Depth 6
+    return "REMEDIATE_BEC:$payload"
+}
+
 . (Join-Path $PSScriptRoot 'RemediationExtended.ps1')
 
 Export-ModuleMember -Function Get-GraphContainmentCapabilities, Get-RemediationGraphUser
 Export-ModuleMember -Function Test-RemediationGraphAlreadyGone, Test-RemediationIntuneUnavailable
+Export-ModuleMember -Function Test-RemediationLogLicenseLimit, Get-RemediationShorterLogDays
 Export-ModuleMember -Function Convert-RemediationDateToText, Get-RemediationObjectDateText
 Export-ModuleMember -Function Invoke-RemediationRevokeSessions, Invoke-RemediationSetAccountEnabled, Invoke-RemediationResetPassword
 Export-ModuleMember -Function Get-RemediationAuthMethods, Remove-RemediationAuthMethods

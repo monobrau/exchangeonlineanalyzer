@@ -36,6 +36,8 @@
     select.investigateFolderSelect { max-width: 16rem; font-size: 0.82rem; }
 
     pre { background: #0d1117; color: #c9d1d9; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: 220px; font-size: 0.82rem; }
+    pre.copyBlock { background: #fff; color: #1a1a1a; border: 1px solid #0969da; border-left: 4px solid #0969da; max-height: 36rem; white-space: pre-wrap; }
+    .becInvestigate { margin: 0.75rem 0; padding: 0.65rem 0.75rem; border: 1px solid #0969da; border-radius: 8px; background: #fff; }
 
     .tenant { border-top: 1px solid #eaeef2; padding-top: 0.75rem; margin-top: 0.75rem; }
 
@@ -323,6 +325,7 @@
     <button class="primary" id="btnNewSession">New session</button>
     <button type="button" id="btnOpenSessionTemp" class="small">View session files</button>
     <button type="button" id="btnInvestigatePacks" class="small" onclick="location.href='investigate.html'">Investigate past reports</button>
+    <button type="button" id="btnThreatHunter" class="small" onclick="window.open('hunter.html','eoaThreatHunter','width='+screen.availWidth+',height='+screen.availHeight)">Threat hunter</button>
 
     <span id="sessionInfo" class="muted"></span>
 

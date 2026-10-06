@@ -129,7 +129,8 @@ function Invoke-GraphRestPaged {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Uri,
-        [hashtable]$Headers = @{}
+        [hashtable]$Headers = @{},
+        [int]$Maximum = 0
     )
     $all = [System.Collections.ArrayList]::new()
     $next = $Uri
@@ -139,8 +140,12 @@ function Invoke-GraphRestPaged {
         elseif ($resp -and $resp.'@odata.nextLink') { }
         elseif ($resp -and $resp.id) { [void]$all.Add($resp) }
         $next = $resp.'@odata.nextLink'
+        if ($Maximum -gt 0 -and $all.Count -ge $Maximum) {
+            while ($all.Count -gt $Maximum) { $all.RemoveAt($all.Count - 1) }
+            break
+        }
     }
-    return @($all)
+    return ,$all
 }
 
 function Invoke-MgGraphRequestCompat {
@@ -3872,6 +3877,7 @@ function Invoke-EoaMessageTraceV2Paged {
         [Parameter(Mandatory = $true)][DateTime]$WinEnd,
         [string]$SenderAddress = $null,
         [string]$RecipientAddress = $null,
+        [string]$Subject = $null,
         [string[]]$Status = @(),
         [string]$Label = '',
         [string]$StatusFile = $null,
@@ -3907,6 +3913,7 @@ function Invoke-EoaMessageTraceV2Paged {
         if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
         if ($SenderAddress) { $params.SenderAddress = $SenderAddress }
         if ($RecipientAddress) { $params.RecipientAddress = $RecipientAddress }
+        if ($Subject) { $params.Subject = $Subject }
         $statusFilter = Get-EoaMessageTraceStatusFilterValue -Status $Status
         if ($statusFilter) { $params.Status = $statusFilter }
 
@@ -3958,7 +3965,7 @@ function Invoke-EoaMessageTraceV2Paged {
                 $childRounds = 0
                 foreach ($w in $splitWindows) {
                     $child = Invoke-EoaMessageTraceV2Paged -V2Command $V2Command -WinStart $w.Start -WinEnd $w.End `
-                        -SenderAddress $SenderAddress -RecipientAddress $RecipientAddress -Status $Status `
+                        -SenderAddress $SenderAddress -RecipientAddress $RecipientAddress -Subject $Subject -Status $Status `
                         -Label $Label -StatusFile $StatusFile -MaxRounds $MaxRounds -Depth ($Depth + 1)
                     $childRounds += [int]$child.RoundCount
                     foreach ($item in @($child.Rows)) {
@@ -4072,7 +4079,9 @@ function Get-ExchangeMessageTrace {
         [Parameter(Mandatory=$false)]
         [string[]]$Status = @(),
         [Parameter(Mandatory=$false)]
-        [string]$StatusFile = $null
+        [string]$StatusFile = $null,
+        [Parameter(Mandatory=$false)]
+        [switch]$NoGraph
     )
 
     try {
@@ -4120,7 +4129,7 @@ function Get-ExchangeMessageTrace {
         $useGraph = $false
         $canUseLegacy = $false
         if (-not $hasV2) {
-            if (Test-GraphMessageTraceAvailable -StatusFile $StatusFile) {
+            if ((-not $NoGraph) -and (Test-GraphMessageTraceAvailable -StatusFile $StatusFile)) {
                 $useGraph = $true
             } elseif (Get-Command Get-MessageTrace -ErrorAction SilentlyContinue) {
                 # Government clouds expose neither the V2 cmdlets nor the Graph endpoint but still
@@ -4128,7 +4137,7 @@ function Get-ExchangeMessageTrace {
                 # the days it can reach instead of nothing.
                 $canUseLegacy = $true
             } else {
-                $graphErr = if ($global:EOA_GraphMessageTraceError) { $global:EOA_GraphMessageTraceError } else { 'not attempted' }
+                $graphErr = if ($NoGraph) { 'Exchange only' } elseif ($global:EOA_GraphMessageTraceError) { $global:EOA_GraphMessageTraceError } else { 'not attempted' }
                 $skipMsg = "Message trace skipped: neither Get-MessageTraceV2 nor legacy Get-MessageTrace is exported in this Exchange session. Graph messageTraces failed ($graphErr). Re-run Exchange Auth; if the cmdlets are still missing, this tenant does not expose a message trace API."
                 Write-Warning $skipMsg
                 Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
@@ -5411,7 +5420,11 @@ function Get-UnifiedAuditLogs {
         [Parameter(Mandatory=$false)]
         [array]$RecordTypes = $null,
         [Parameter(Mandatory=$false)]
-        [bool]$IncludeExchangeItemAggregated = $false
+        [bool]$IncludeExchangeItemAggregated = $false,
+
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$SearchErrors = $null
     )
 
     try {
@@ -5562,6 +5575,7 @@ function Get-UnifiedAuditLogs {
                         }
                     } catch {
                         Write-Warning "Failed to get unified audit logs for $upn$recordTypeLabel : $($_.Exception.Message)"
+                        if ($null -ne $SearchErrors) { [void]$SearchErrors.Add([string]$_.Exception.Message) }
                         if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: Failed to get unified audit logs for $upn$recordTypeLabel : $($_.Exception.Message)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
                     }
                 }

@@ -12,6 +12,7 @@ function global:Fake-GetMessageTraceV2 {
         $ResultSize = 1000,
         $SenderAddress,
         $RecipientAddress,
+        $Subject,
         $Status,
         $ErrorAction
     )
@@ -22,6 +23,7 @@ function global:Fake-GetMessageTraceV2 {
         ResultSize               = $ResultSize
         SenderAddress            = $SenderAddress
         RecipientAddress         = $RecipientAddress
+        Subject                  = $Subject
         Status                   = $Status
     })
 
@@ -52,6 +54,7 @@ function global:Fake-GetMessageTraceV2 {
         }
         if ($SenderAddress -and $r.SenderAddress -ne $SenderAddress) { continue }
         if ($RecipientAddress -and $r.RecipientAddress -ne $RecipientAddress) { continue }
+        if ($Subject -and [string]$r.Subject -ne $Subject) { continue }
         [void]$keep.Add($r)
     }
     $sorted = @($keep | Sort-Object @{ Expression = { $_.Received }; Descending = $true }, @{ Expression = { $_.RecipientAddress }; Descending = $false })
@@ -233,5 +236,33 @@ Describe 'MessageTrace V2 paging' {
         InModuleScope ExportUtils {
             Test-EoaMessageTraceStatusNeedsTenDayWindow -Status @('Quarantined', 'Failed')
         } | Should -Be $true
+    }
+
+    It 'forwards Subject to Get-MessageTraceV2' {
+        $global:EoaMtTestRows = @(
+            [pscustomobject]@{
+                Received         = $script:WinEnd.AddHours(-1)
+                RecipientAddress = 'bob@contoso.com'
+                SenderAddress    = 'alice@fabrikam.com'
+                MessageTraceId   = 'sub-1'
+                MessageId        = '<sub-1@contoso.com>'
+                Subject          = 'Invoice past due'
+            },
+            [pscustomobject]@{
+                Received         = $script:WinEnd.AddHours(-2)
+                RecipientAddress = 'bob@contoso.com'
+                SenderAddress    = 'alice@fabrikam.com'
+                MessageTraceId   = 'sub-2'
+                MessageId        = '<sub-2@contoso.com>'
+                Subject          = 'other'
+            }
+        )
+        $page = InModuleScope ExportUtils -Parameters @{ Cmd = $script:V2Cmd; WinStart = $script:WinStart; WinEnd = $script:WinEnd } {
+            $script:EOA_MessageTraceCallCount = 0
+            Invoke-EoaMessageTraceV2Paged -V2Command $Cmd -WinStart $WinStart -WinEnd $WinEnd -Subject 'Invoice past due' -Label '2026-08-31'
+        }
+        $page.Rows.Count | Should -Be 1
+        $page.Rows[0].Subject | Should -Be 'Invoice past due'
+        $global:EoaMtTestCalls[0].Subject | Should -Be 'Invoice past due'
     }
 }

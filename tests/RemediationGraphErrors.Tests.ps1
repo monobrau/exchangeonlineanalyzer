@@ -23,6 +23,16 @@ Response status code does not indicate success: 404 (Not Found).
         Test-RemediationGraphAlreadyGone $text | Should -Be $false
     }
 
+    It 'steps a refused log window down to two weeks, then a week' {
+        Test-RemediationLogLicenseLimit 'The start date is older than the maximum retention. Audit (Premium) is required.' | Should -Be $true
+        Test-RemediationLogLicenseLimit 'Tenant does not have a premium license' | Should -Be $true
+        Test-RemediationLogLicenseLimit 'Unified audit cmdlet was not loaded.' | Should -Be $false
+        Get-RemediationShorterLogDays -Days 30 | Should -Be 21
+        Get-RemediationShorterLogDays -Days 21 | Should -Be 14
+        Get-RemediationShorterLogDays -Days 14 | Should -Be 7
+        Get-RemediationShorterLogDays -Days 7 | Should -Be 0
+    }
+
     It 'detects Intune not licensed on the tenant' {
         $text = @'
 Response status code does not indicate success: 400 (Bad Request).

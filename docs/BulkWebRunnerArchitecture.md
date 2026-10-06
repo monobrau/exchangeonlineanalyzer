@@ -49,6 +49,7 @@ Reuse these assets as-is or with thin wrappers:
 | `Modules/ExportUtils.psm1` | Report generation |
 | `Modules/GraphAppCredential.psm1` | WCM read/write, app create, export/import `.eoa-creds` |
 | `Modules/ExchangeOnline.psm1` | `Connect-ExchangeOnlineWithDefaults` |
+| `Modules/EmailTriage.psm1` | Read-only email triage. Config uses ORCA and DomainHealthChecker. |
 | `Start-NewGraphInboxRulesApp.ps1` | Interactive Create / Update Graph App scopes admin flow |
 
 ## Worker command protocol (existing)
@@ -105,6 +106,12 @@ The WinForms GUI already talks to workers via temp-dir file IPC. The web runner 
 | `REMEDIATE_LIST_TRANSPORT_RULES` / `REMEDIATE_DELETE_TRANSPORT_RULES\|RULES:[...]` | Tenant transport rules |
 | `REMEDIATE_LIST_CONNECTORS` / `REMEDIATE_DELETE_CONNECTORS\|CONNECTORS:[...]` | Inbound/outbound connectors |
 | `GENERATE_REPORTS\|...` | Run export |
+| `TRIAGE_QUARANTINE\|DAYS:n\|FREEMAIL:0\|1\|HEADER_TOPN:n\|SENDER_DOMAIN:\|WINDOW:n\|FOLDER:` | Quarantine pull plus parsed headers for the top N |
+| `TRIAGE_DELIVERY\|...` | Message trace, leg merge, and trace detail |
+| `TRIAGE_IMPERSONATION\|...` | VIP subject matches, including spoofed internal senders |
+| `TRIAGE_CONFIG\|...` | ORCA JSON, DomainHealthChecker, NS/SOA, and the custom checks. Fails with an install hint if ORCA or DomainHealthChecker is missing. |
+| `TRIAGE_ALL\|...` | All of the pulls above |
+| `TRIAGE_APPLY\|FOLDER:\|IDS:` | Apply selected triage actions. The worker runs only the fixed Exchange cmdlets for those ids (block, allow and release, outbound spam, external tags, transport-rule exceptions, tenant allow removal, connector filtering). DNS and unlicensed Defender items return Manual. |
 | `GRAPH_DISCONNECT` | Clear Graph session |
 | `CANCEL_AUTH` | Reset auth state |
 | `EXIT` | Stop worker |
@@ -131,6 +138,9 @@ The WinForms GUI already talks to workers via temp-dir file IPC. The web runner 
 | `REMEDIATE_APPS:...` | App registration / enterprise app JSON |
 | `REMEDIATE_OAUTH:` / `REMEDIATE_MOBILE:` / `REMEDIATE_FOLDERS:` / `REMEDIATE_AUTOREPLY:` / `REMEDIATE_ORGFWD:` / `REMEDIATE_JUNK:` / `REMEDIATE_JOURNAL:` / `REMEDIATE_HOLD:` / `REMEDIATE_ELSEWHERE:` / `REMEDIATE_ROLES:` / `REMEDIATE_INTUNE:` / `REMEDIATE_APPCREDS:` / `REMEDIATE_FLOWS:` | Extra containment list/delete JSON |
 | `REMEDIATE_FAILED:...` | Containment failed |
+| `TRIAGE_STARTED` | Email triage command accepted |
+| `TRIAGE_QUARANTINE:` / `TRIAGE_DELIVERY:` / `TRIAGE_IMPERSONATION:` / `TRIAGE_CONFIG:` / `TRIAGE_ALL:` | Pack path and counts |
+| `TRIAGE_FAILED:...` | Triage failed, including missing ORCA or DomainHealthChecker |
 
 ## Auth parity mapping
 
@@ -178,6 +188,11 @@ Implemented in `web-runner/Start-BulkWebRunner.ps1` + `web-runner/Modules/BulkRu
 | `POST` | `/api/tenants/{n}/containment-pack` | Write per-user containment zips + `Remediation.csv` (account-change log) |
 | `POST` | `/api/tenants/{n}/copy-containment-zips` | Copy `Containment_*.zip` and merge `Remediation.csv` into a new report folder |
 | `GET` | `/api/app-registrations` | WCM tenant list for dropdown |
+| `GET` | `/api/triage/packs` | List `Triage_*` packs under Documents |
+| `GET` | `/api/triage/result?folder=` | Classified rows, ORCA summary, custom findings, ticket and client text |
+| `POST` | `/api/triage/override` | Save a verdict override without changing the original CSVs |
+| `GET`/`POST` | `/api/triage/notes?client=` | Gitignored per-client triage notes |
+| `GET` | `/api/triage/file?folder=&name=` | Download a pack file (`actions.ps1`, CSV, HTML, ORCA JSON) |
 | `POST` | `/api/manage/ticket` | Fetch ConnectWise Manage service ticket text (`{ "ticketId": "1873776" }`) |
 | `GET` | `/` | Static web UI |
 

@@ -249,6 +249,9 @@ try {
     Write-Host "Importing Conditional Access catalog module..." -ForegroundColor Gray
     $caCatalogMod = Join-Path $ScriptRoot "Modules\ConditionalAccessCatalog.psm1"
     if (Test-Path $caCatalogMod) { Import-Module $caCatalogMod -Force -ErrorAction SilentlyContinue }
+    Write-Host "Importing Email triage module..." -ForegroundColor Gray
+    $emailTriageMod = Join-Path $ScriptRoot "Modules\EmailTriage.psm1"
+    if (Test-Path $emailTriageMod) { Import-Module $emailTriageMod -Force -ErrorAction SilentlyContinue }
     Write-Status "Modules imported successfully"
     Write-Host "All modules imported successfully" -ForegroundColor Green
     Write-Host ""
@@ -959,6 +962,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     
                     # Perform user search - minimal API calls to avoid extra auth prompts
                     $allFoundUsers = [System.Collections.ArrayList]::new()
+                    $script:validateUsersLookupError = ''
                     foreach ($searchTerm in $searchTerms) {
                         Write-Host "  Searching for users matching: '$searchTerm'" -ForegroundColor Gray
                         $users = @()
@@ -969,6 +973,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                                     $u = Get-MgUser -UserId $searchTerm.Trim() -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
                                     if ($u) { $users = @($u); Write-Host "    Found via direct UPN lookup" -ForegroundColor Gray }
                                 } catch {
+                                    $script:validateUsersLookupError = $_.Exception.Message
                                     Write-Host "    Direct UPN lookup failed: $($_.Exception.Message)" -ForegroundColor DarkGray
                                 }
                             }
@@ -1006,6 +1011,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                                     $users = @($all | Where-Object { ($_.DisplayName -and $_.DisplayName -like "*$term*") -or ($_.UserPrincipalName -and $_.UserPrincipalName -like "*$term*") })
                                     if ($users.Count -gt 0) { Write-Host "    Found $($users.Count) user(s) via client-side search" -ForegroundColor Gray }
                                 } catch {
+                                    if (-not $script:validateUsersLookupError) { $script:validateUsersLookupError = $_.Exception.Message }
                                     Write-Host "    Client-side fallback failed: $($_.Exception.Message)" -ForegroundColor DarkGray
                                 }
                             }
@@ -1033,15 +1039,23 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         } | ConvertTo-Json -Compress
                         Write-CommandResponse "VALIDATE_USERS_SUCCESS:$responseJson"
                     } else {
-                        Write-Host "Validation completed: No users found matching search terms" -ForegroundColor Yellow
-                        Write-Status "Validation completed: No users found matching search terms"
-                        $responseJson = @{
-                            Success = $false
-                            UserCount = 0
-                            Users = @()
-                            Message = "No users found matching the search terms"
-                        } | ConvertTo-Json -Compress
-                        Write-CommandResponse "VALIDATE_USERS_SUCCESS:$responseJson"
+                        $lookupError = [string]$script:validateUsersLookupError
+                        $authFailed = $lookupError -match 'Invalid token|token lifetime|InvalidAuthenticationToken|Lifetime validation failed|401|Unauthorized|Authorization_RequestDenied|compact token'
+                        if ($authFailed) {
+                            Write-Host "Validation failed: Graph token was rejected. $lookupError" -ForegroundColor Red
+                            Write-Status "Validation failed: Graph token was rejected. Sign in with Graph Auth again. $lookupError"
+                            Write-CommandResponse "VALIDATE_USERS_FAILED:Graph token was rejected. Sign in with Graph Auth again. $lookupError"
+                        } else {
+                            Write-Host "Validation completed: No users found matching search terms" -ForegroundColor Yellow
+                            Write-Status "Validation completed: No users found matching search terms"
+                            $responseJson = @{
+                                Success = $false
+                                UserCount = 0
+                                Users = @()
+                                Message = "No users found matching the search terms"
+                            } | ConvertTo-Json -Compress
+                            Write-CommandResponse "VALIDATE_USERS_SUCCESS:$responseJson"
+                        }
                     }
                 } catch {
                     Write-Host "ERROR: User validation failed - $($_.Exception.Message)" -ForegroundColor Red
@@ -1059,10 +1073,8 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Status "Remediation command received"
                 Write-CommandResponse "REMEDIATE_STARTED"
-                if (-not (Get-Command Invoke-RemediationWorkerCommand -ErrorAction SilentlyContinue)) {
-                    $remediationMod = Join-Path $ScriptRoot "Modules\Remediation.psm1"
-                    if (Test-Path $remediationMod) { Import-Module $remediationMod -Force -ErrorAction SilentlyContinue }
-                }
+                $remediationMod = Join-Path $ScriptRoot "Modules\Remediation.psm1"
+                if (Test-Path $remediationMod) { Import-Module $remediationMod -Force -ErrorAction SilentlyContinue }
                 if (-not (Get-Command Invoke-RemediationWorkerCommand -ErrorAction SilentlyContinue)) {
                     Write-CommandResponse "REMEDIATE_FAILED:Remediation module is not loaded"
                     continue
@@ -1144,6 +1156,37 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
+            } elseif ($command -match "^TRIAGE_") {
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "EMAIL TRIAGE COMMAND" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Email triage command received"
+                Write-CommandResponse "TRIAGE_STARTED"
+                if (-not $exchangeAuthenticated) {
+                    Write-CommandResponse "TRIAGE_FAILED:Exchange authentication not completed"
+                    continue
+                }
+                $emailTriageMod = Join-Path $ScriptRoot "Modules\EmailTriage.psm1"
+                if ((Test-Path $emailTriageMod) -and -not (Get-Command Invoke-TriageWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Import-Module $emailTriageMod -Force -ErrorAction SilentlyContinue
+                }
+                if (-not (Get-Command Invoke-TriageWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Write-CommandResponse "TRIAGE_FAILED:Email triage module is not loaded"
+                    continue
+                }
+                try {
+                    $resp = Invoke-TriageWorkerCommand -Command $command -CompanyName $CompanyName -ClientNumber $ClientNumber -ScriptRoot $ScriptRoot
+                    $respText = [string]$resp
+                    if ($respText) { Write-Status $respText }
+                    Write-CommandResponse $respText
+                } catch {
+                    Write-Status "ERROR: Email triage failed - $($_.Exception.Message)"
+                    Write-CommandResponse "TRIAGE_FAILED:$($_.Exception.Message)"
+                }
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+
             } elseif ($command -match "^GENERATE_REPORTS") {
                 # Reload effective tenant selections written by web runner (overrides session defaults)
                 if ($command -match '\|ReportSelectionsFile:([^|]+)') {
@@ -1272,7 +1315,8 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         
                         # Validate search terms using Graph API
                         $allFoundUsers = [System.Collections.ArrayList]::new()
-                        foreach ($searchTerm in $searchTerms) {
+                        $script:validateUsersLookupError = ''
+                    foreach ($searchTerm in $searchTerms) {
                             Write-Host "  Searching for users matching: '$searchTerm'" -ForegroundColor Gray
                             $users = @()
                             try {

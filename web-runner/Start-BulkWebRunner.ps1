@@ -120,6 +120,28 @@ function Get-StaticFilePath {
     return $null
 }
 
+function Resolve-TriageWebFolder {
+    param([string]$Folder)
+    if ([string]::IsNullOrWhiteSpace($Folder)) { throw 'Missing folder' }
+    $resolved = [System.IO.Path]::GetFullPath($Folder)
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    $root = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $docs 'ExchangeOnlineAnalyzer') 'SecurityInvestigation'))
+    if (-not $resolved.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Triage folder must be under Documents\ExchangeOnlineAnalyzer\SecurityInvestigation'
+    }
+    if ((Split-Path $resolved -Leaf) -notmatch '^Triage_') { throw 'Not a triage pack folder' }
+    if (-not (Test-Path -LiteralPath $resolved)) { throw "Folder not found: $resolved" }
+    return $resolved
+}
+
+function Get-TriageRequestQueryValue {
+    param($RequestUrl, [string]$Name)
+    if (-not $RequestUrl -or [string]::IsNullOrWhiteSpace($RequestUrl.Query)) { return '' }
+    $pattern = '[?&]' + [regex]::Escape($Name) + '=([^&]*)'
+    if ($RequestUrl.Query -match $pattern) { return [System.Net.WebUtility]::UrlDecode($Matches[1]) }
+    return ''
+}
+
 function Handle-ApiRequest {
     param(
         [string]$Method,
@@ -316,6 +338,114 @@ function Handle-ApiRequest {
             return @{ ok = $true; result = $result }
         }
         throw "Unknown investigate route: $Path"
+    }
+
+    if ($Path -like '/api/triage/*') {
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\EmailTriage.psm1') -Force -ErrorAction Stop
+        $notesRoot = Join-Path $script:ProjectRoot 'ClientNotes'
+        $aiSettingsPath = Join-Path $script:ProjectRoot 'web-runner\ai-review.settings.json'
+        if ($Method -eq 'GET' -and $Path -eq '/api/triage/ai-settings') {
+            return @{ ok = $true; result = (Get-TriageAiSettings -Path $aiSettingsPath) }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/ai-settings') {
+            $saved = Set-TriageAiSettings -Path $aiSettingsPath -Provider ([string]$Body.provider) -Model ([string]$Body.model) -ApiKey ([string]$Body.apiKey)
+            return @{ ok = $true; result = $saved }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/bec-review') {
+            if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.mailbox)) { throw 'Missing mailbox' }
+            return @{ ok = $true; result = (Invoke-TriageBecReview -SettingsPath $aiSettingsPath -Facts $Body) }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/log-plan') {
+            if (-not $Body) { throw 'Missing ticket' }
+            $phase = [string]$Body.phase
+            if ($phase -ne 'followup') { $phase = 'initial' }
+            return @{ ok = $true; result = (Invoke-TriageLogPlan -SettingsPath $aiSettingsPath -Ticket ([string]$Body.ticket) -Phase $phase -Folder ([string]$Body.folder)) }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/memberberry-note') {
+            if (-not $Body) { throw 'Finish a review before writing the ticket note.' }
+            $audience = [string]$Body.audience
+            if ([string]::IsNullOrWhiteSpace($audience)) { $audience = 'all' }
+            return @{ ok = $true; result = (Invoke-TriageMemberberryNote -SettingsPath $aiSettingsPath -Review ([string]$Body.review) -Ticket ([string]$Body.ticket) -TicketNumber ([string]$Body.ticketNumber) -Company ([string]$Body.company) -Contact ([string]$Body.contact) -Audience $audience -Actions $Body.actions -Revision ([string]$Body.revision) -CurrentDrafts ([string]$Body.currentDrafts)) }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/memberberry-save') {
+            if (-not $Body) { throw 'Enter the note to add before saving.' }
+            $saved = Add-TriageMemberberryClientNote -Client ([string]$Body.client) -Note ([string]$Body.note)
+            return @{ ok = $true; result = $saved }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/memory-save') {
+            if (-not $Body) { throw 'Enter the memory to add before saving.' }
+            $saved = Add-TriageMemoryVaultNote -Text ([string]$Body.text) -Space 'soc'
+            return @{ ok = $true; result = $saved }
+        }
+        if ($Method -eq 'GET' -and $Path -eq '/api/triage/packs') {
+            return @{ ok = $true; result = @(Get-TriagePacks) }
+        }
+        if ($Method -eq 'GET' -and $Path -eq '/api/triage/notes') {
+            $client = Get-TriageRequestQueryValue -RequestUrl $RequestUrl -Name 'client'
+            if ([string]::IsNullOrWhiteSpace($client)) { throw 'Missing client' }
+            return @{ ok = $true; result = (Get-TriageClientNotes -NotesRoot $notesRoot -Client $client) }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/notes') {
+            if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.client)) { throw 'Missing client' }
+            $saved = Set-TriageClientNotes -NotesRoot $notesRoot -Client ([string]$Body.client) -Notes $Body
+            return @{ ok = $true; result = $saved }
+        }
+        $folder = ''
+        if ($Method -eq 'GET') { $folder = Get-TriageRequestQueryValue -RequestUrl $RequestUrl -Name 'folder' }
+        elseif ($Body) { $folder = [string]$Body.folder }
+        $folder = Resolve-TriageWebFolder -Folder $folder
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/ai-review') {
+            $client = ''
+            if ($Body -and $Body.client) { $client = [string]$Body.client }
+            $vips = @()
+            $extra = @()
+            if ($client) {
+                $notes = Get-TriageClientNotes -NotesRoot $notesRoot -Client $client
+                $vips = @($notes.vips)
+                $extra = @($notes.extraFreemail)
+            }
+            $company = Split-Path (Split-Path $folder -Parent) -Leaf
+            $view = Get-TriagePackView -Folder $folder -VipNames $vips -InternalDomains @() -ExtraFreemail $extra -Company $company -Limit 80
+            $review = Invoke-TriageAiReview -SettingsPath $aiSettingsPath -View $view
+            return @{ ok = $true; result = $review }
+        }
+        if ($Method -eq 'GET' -and $Path -eq '/api/triage/file') {
+            $name = Get-TriageRequestQueryValue -RequestUrl $RequestUrl -Name 'name'
+            $file = Get-TriagePackFileContent -Folder $folder -Name $name
+            return @{ ok = $true; result = $file }
+        }
+        if ($Method -eq 'POST' -and $Path -eq '/api/triage/override') {
+            if (-not $Body -or [string]::IsNullOrWhiteSpace([string]$Body.rowKey)) { throw 'Missing rowKey' }
+            Set-TriageVerdictOverride -Folder $folder -RowKey ([string]$Body.rowKey) -Verdict ([string]$Body.verdict) | Out-Null
+        }
+        if ($Method -eq 'GET' -and $Path -eq '/api/triage/result' -or ($Method -eq 'POST' -and $Path -eq '/api/triage/override')) {
+            $client = ''
+            if ($Method -eq 'GET') { $client = Get-TriageRequestQueryValue -RequestUrl $RequestUrl -Name 'client' }
+            elseif ($Body -and $Body.client) { $client = [string]$Body.client }
+            $vips = @()
+            $extra = @()
+            if ($client) {
+                $notes = Get-TriageClientNotes -NotesRoot $notesRoot -Client $client
+                $vips = @($notes.vips)
+                $extra = @($notes.extraFreemail)
+            }
+            $company = Split-Path (Split-Path $folder -Parent) -Leaf
+            $limit = 500
+            $limitToken = $null
+            $verdict = ''
+            if ($Method -eq 'GET') {
+                $limitToken = Get-TriageRequestQueryValue -RequestUrl $RequestUrl -Name 'limit'
+                $verdict = Get-TriageRequestQueryValue -RequestUrl $RequestUrl -Name 'verdict'
+            }
+            elseif ($Body) {
+                if ($Body.limit) { $limitToken = [string]$Body.limit }
+                if ($Body.verdictFilter) { $verdict = [string]$Body.verdictFilter }
+            }
+            if ($limitToken) { $limit = [int]$limitToken }
+            $view = Get-TriagePackView -Folder $folder -VipNames $vips -InternalDomains @() -ExtraFreemail $extra -Company $company -Limit $limit -Verdict $verdict
+            return @{ ok = $true; result = $view }
+        }
+        throw "Unknown triage route: $Path"
     }
 
     if ($Method -eq 'POST' -and $Path -eq '/api/ticket/extract-emails') {
@@ -740,14 +870,57 @@ function Handle-ApiRequest {
             $securityStack = Get-SecurityStackFromTicket -TicketContent $fetched.TicketContent -Summary $fetched.Summary
         }
         return @{
-            success       = $true
-            ticketId      = $fetched.TicketId
-            summary       = $fetched.Summary
-            companyName   = $fetched.CompanyName
-            ticketNumbers = @($fetched.TicketNumbers)
-            ticketContent = $fetched.TicketContent
-            contentLength = $fetched.FilteredLength
-            securityStack = $securityStack
+            success          = $true
+            ticketId         = $fetched.TicketId
+            summary          = $fetched.Summary
+            companyName      = $fetched.CompanyName
+            contactName      = $fetched.ContactName
+            statusName       = $fetched.StatusName
+            contactEmail     = $fetched.ContactEmail
+            automaticEmailCc = $fetched.AutomaticEmailCc
+            emailContact     = [bool]$fetched.EmailContact
+            emailCc          = [bool]$fetched.EmailCc
+            ticketNumbers    = @($fetched.TicketNumbers)
+            ticketContent    = $fetched.TicketContent
+            contentLength    = $fetched.FilteredLength
+            securityStack    = $securityStack
+        }
+    }
+
+    if ($Method -eq 'GET' -and $Path -eq '/api/manage/security-tickets') {
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\Settings.psm1') -Force -ErrorAction SilentlyContinue
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\ConnectWiseManage.psm1') -Force -ErrorAction Stop
+        $catalog = Get-ConnectWiseManageHunterCatalog
+        $tickets = @(Get-ConnectWiseManageSecurityQueue)
+        return @{
+            ok      = $true
+            catalog = @{
+                boardId          = $catalog.BoardId
+                boardName        = $catalog.BoardName
+                memberIdentifier = $catalog.MemberIdentifier
+                memberName       = $catalog.MemberName
+                statuses         = @($catalog.Statuses | ForEach-Object { @{ key = $_.Key; id = $_.Id; name = $_.Name } })
+                workTypes        = @($catalog.WorkTypes | ForEach-Object { @{ key = $_.Key; id = $_.Id; name = $_.Name; billableOption = $_.BillableOption } })
+            }
+            tickets = $tickets
+        }
+    }
+
+    if ($Method -eq 'POST' -and $Path -eq '/api/manage/hunter-post') {
+        if (-not $Body) { throw 'Missing note request.' }
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\Settings.psm1') -Force -ErrorAction SilentlyContinue
+        Import-Module (Join-Path $script:ProjectRoot 'Modules\ConnectWiseManage.psm1') -Force -ErrorAction Stop
+        $posted = Send-ConnectWiseManageHunterPost -Request $Body
+        return @{
+            ok               = [bool]$posted.ok
+            ticketId         = $posted.ticketId
+            memberIdentifier = $posted.memberIdentifier
+            statusName       = $posted.statusName
+            statusUpdated    = [bool]$posted.statusUpdated
+            notes            = $posted.notes
+            timeEntryId      = $posted.timeEntryId
+            completed        = @($posted.completed)
+            errors           = @($posted.errors)
         }
     }
 
@@ -1284,7 +1457,7 @@ try {
             if ($path.StartsWith('/api/')) {
                 $body = Read-RequestBody -Request $request
                 $result = Handle-ApiRequest -Method $request.HttpMethod -Path $path -Body $body -RequestUrl $request.Url -IsLocal:$request.IsLocal
-                $jsonDepth = if ($path -like '/api/curate/*' -or $path -like '/api/investigate/*') { 12 } else { 8 }
+                $jsonDepth = if ($path -like '/api/curate/*' -or $path -like '/api/investigate/*' -or $path -like '/api/triage/*') { 12 } else { 8 }
                 Write-JsonResponse -Response $response -Body $result -Depth $jsonDepth
                 if ($script:ShutdownRequested) {
                     Write-Host "Shutdown requested - stopping listener." -ForegroundColor Yellow

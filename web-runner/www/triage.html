@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EOA Email triage</title>
+  <style>
+    :root { font-family: Segoe UI, system-ui, sans-serif; color: #1a1a1a; background: #f4f6f8; }
+    body { margin: 0; padding: 1rem 1.25rem 2rem; }
+    h1 { margin: 0; font-size: 1.25rem; }
+    h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+    a { color: #0969da; }
+    .muted { color: #57606a; font-size: 0.88rem; }
+    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 0.85rem; }
+    button { margin: 0.15rem 0.3rem 0.15rem 0; padding: 0.4rem 0.75rem; cursor: pointer; border-radius: 6px; border: 1px solid #8c959f; background: #f6f8fa; }
+    button.primary { background: #0969da; color: #fff; border-color: #0969da; }
+    button.small { padding: 0.25rem 0.55rem; font-size: 0.82rem; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    input[type="text"], input[type="number"], input[type="password"], select, textarea { padding: 0.3rem 0.4rem; font: inherit; border: 1px solid #d0d7de; border-radius: 6px; }
+    textarea { width: 100%; min-height: 8rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.45rem 0.85rem; align-items: center; margin-bottom: 0.4rem; }
+    .tabs { display: flex; gap: 0.25rem; margin-bottom: 0.45rem; flex-wrap: wrap; }
+    .tabs button.active { background: #0969da; color: #fff; border-color: #0969da; }
+    table.data { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    table.data th, table.data td { text-align: left; padding: 0.3rem 0.45rem; border-bottom: 1px solid #eaeef2; vertical-align: top; overflow-wrap: anywhere; }
+    table.data tr.selected { background: #ddf4ff; }
+    table.data th.sortable { cursor: pointer; }
+    table.data .check { width: 1.6rem; }
+    #tab-actions h2 { margin-top: 1rem; }
+    .sev-High, .sev-Critical, .sev-VeryHigh { color: #cf222e; }
+    .sev-Medium { color: #9a6700; }
+    .sev-Info, .sev-Low { color: #57606a; }
+    .banner { padding: 0.45rem 0.6rem; border-radius: 6px; background: #ddf4ff; margin-bottom: 0.6rem; }
+    .warn { background: #fff8c5; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    pre.copy { white-space: pre-wrap; background: #f6f8fa; padding: 0.6rem; border-radius: 6px; }
+    summary { cursor: pointer; }
+    #aiReview { margin-top: 0.6rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="row">
+      <a href="index.html">&larr; Back to web runner</a>
+      <h1>Email security triage</h1>
+      <span id="clientLabel" class="muted"></span>
+    </div>
+    <div class="row">
+      <label>Pack
+        <select id="packSelect"></select>
+      </label>
+      <button type="button" id="btnLoad" class="primary">Load</button>
+    </div>
+    <div id="status" class="muted" role="status"></div>
+    <div id="warning" class="banner warn" hidden></div>
+  </div>
+  <details class="card" id="aiCard">
+    <summary>AI review <span id="aiSummary" class="muted">off</span></summary>
+    <p class="muted">Local rules miss lookalike senders and mixed cases. ChatGPT, Claude, or Hatz AI reviews the verdicts, evidence, and config findings already on this page. Hatz AI lists every model on your key, not only ChatGPT. The API key stays in a file on this PC. Raw headers are not sent. Only checked rows are sent. Noise and Legit start unchecked. The same non-malicious message sent 3 or more times is left out, and so is a sender with 5 or more messages when none of them are marked malicious. Check a row to send it anyway.</p>
+    <p class="muted" id="aiSendCount"></p>
+    <div class="row">
+      <label>Provider
+        <select id="aiProvider">
+          <option value="">Off</option>
+          <option value="chatgpt">ChatGPT</option>
+          <option value="claude">Claude</option>
+          <option value="hatz">Hatz AI</option>
+        </select>
+      </label>
+      <label>Model
+        <select id="aiModel"></select>
+      </label>
+      <label>API key
+        <input id="aiKey" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved key" />
+      </label>
+      <span id="aiKeyHint" class="muted"></span>
+      <button type="button" id="btnSaveAi" class="small">Save</button>
+      <button type="button" id="btnAiReview" class="primary small" disabled>Review this pack</button>
+    </div>
+    <div id="aiReviewWrap" hidden>
+      <button type="button" id="btnCopyAi" class="small">Copy review</button>
+      <label>Ticket #
+        <input id="memberberryTicket" type="text" placeholder="1839334" style="width:8rem" />
+      </label>
+      <button type="button" id="btnMemberberry" class="small">Write Memberberry note</button>
+      <pre class="copy" id="aiReview"></pre>
+      <div id="memberberryWrap" hidden>
+        <p class="muted" id="memberberryRefs"></p>
+        <button type="button" id="btnCopyMemberberry" class="small">Copy note</button>
+        <pre class="copy" id="memberberryNote"></pre>
+      </div>
+    </div>
+  </details>
+  <div class="card">
+    <div class="tabs" id="tabs">
+      <button type="button" data-tab="triage" class="active">Triage</button>
+      <button type="button" data-tab="actions">Actions</button>
+      <button type="button" data-tab="delivery">Delivery</button>
+      <button type="button" data-tab="impersonation">Impersonation</button>
+      <button type="button" data-tab="config">Config</button>
+      <button type="button" data-tab="outputs">Outputs</button>
+      <button type="button" data-tab="notes">Client notes</button>
+    </div>
+    <section id="tab-triage" class="panel active">
+      <div class="row">
+        <label>Verdict
+          <select id="verdictFilter">
+            <option value="" selected>All</option>
+            <option>Malicious</option>
+            <option>Legit</option>
+            <option>Noise</option>
+            <option>Unknown</option>
+          </select>
+        </label>
+        <input id="textFilter" type="text" placeholder="Sender, subject, evidence" />
+        <button type="button" id="btnAiDropVisible" class="small">Drop visible from AI</button>
+        <button type="button" id="btnAiSendVisible" class="small">Send visible to AI</button>
+        <button type="button" id="btnCopyHeaders" class="small" disabled>Copy raw headers</button>
+        <a href="https://mha.azurewebsites.net/" target="_blank" rel="noopener">Message Header Analyzer</a>
+      </div>
+      <table class="data" id="triageTable"><thead><tr>
+        <th class="check">AI</th><th>Verdict</th><th>Sender</th><th>Subject</th><th>Layer</th><th>Evidence</th><th>Override</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+    <section id="tab-actions" class="panel">
+      <p class="muted" id="actionHelp">Select the rows you want. Apply runs them in this client's Exchange session. Copy PowerShell is always there for the same commands, and it is the only path for DNS and for changes that need Defender for Office 365 when that license was not detected.</p>
+      <div data-kind="Block">
+        <h2>Phishing that reached a mailbox</h2>
+        <p class="muted">Delivered mail with a freemail credential lure, a freemail payment-change, impersonation, or a Defender threat stamp. Phone-system voicemail and known signature services are left out. A block is the sender address, and it does not expire.</p>
+        <div class="row">
+          <button type="button" class="small" data-act="all">All</button>
+          <button type="button" class="small" data-act="none">None</button>
+          <input type="text" data-filter placeholder="Filter" />
+          <button type="button" class="small" data-act="apply">Apply selected</button>
+          <button type="button" class="small" data-act="copy">Copy PowerShell</button>
+        </div>
+        <table class="data"><thead><tr>
+          <th class="check"><input type="checkbox" data-act="visible" aria-label="Select visible" /></th>
+          <th class="sortable" data-sort="Title">Sender</th>
+          <th class="sortable" data-sort="Detail">Why</th>
+          <th class="sortable" data-sort="Apply">How</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div data-kind="Allow">
+        <h2>Legitimate mail still held</h2>
+        <p class="muted">Quarantine from your own domains, a reply you already marked Legit, or mail that passed SPF, DKIM, and DMARC. Allow lasts 30 days, and the held copy is released.</p>
+        <div class="row">
+          <button type="button" class="small" data-act="all">All</button>
+          <button type="button" class="small" data-act="none">None</button>
+          <input type="text" data-filter placeholder="Filter" />
+          <button type="button" class="small" data-act="apply">Apply selected</button>
+          <button type="button" class="small" data-act="copy">Copy PowerShell</button>
+        </div>
+        <table class="data"><thead><tr>
+          <th class="check"><input type="checkbox" data-act="visible" aria-label="Select visible" /></th>
+          <th class="sortable" data-sort="Title">Sender</th>
+          <th class="sortable" data-sort="Detail">Why</th>
+          <th class="sortable" data-sort="Apply">How</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div data-kind="Config">
+        <h2>Configuration</h2>
+        <p class="muted">Suggestions follow the license ORCA detected. Defender for Office 365 items stay as PowerShell when that service was not detected. DNS records are always copy-only.</p>
+        <div class="row">
+          <button type="button" class="small" data-act="all">All</button>
+          <button type="button" class="small" data-act="none">None</button>
+          <input type="text" data-filter placeholder="Filter" />
+          <button type="button" class="small" data-act="apply">Apply selected</button>
+          <button type="button" class="small" data-act="copy">Copy PowerShell</button>
+        </div>
+        <table class="data"><thead><tr>
+          <th class="check"><input type="checkbox" data-act="visible" aria-label="Select visible" /></th>
+          <th class="sortable" data-sort="Title">Change</th>
+          <th class="sortable" data-sort="Detail">Why</th>
+          <th class="sortable" data-sort="License">License</th>
+          <th class="sortable" data-sort="Apply">How</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+    <section id="tab-delivery" class="panel">
+      <p class="muted">Quarantine messages that also reached a mailbox, and delivered mail with a credential lure, a payment-change subject, or an exec name.</p>
+      <table class="data" id="deliveryTable"><thead><tr>
+        <th>Sender</th><th>Recipient</th><th>Subject</th><th>Outcome</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+    <section id="tab-impersonation" class="panel">
+      <table class="data" id="impersonationTable"><thead><tr>
+        <th>Category</th><th>Sender</th><th>Subject</th><th>Verdict</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+    <section id="tab-config" class="panel">
+      <div id="orcaService" class="banner"></div>
+      <div id="orcaGroups"></div>
+      <h2>Custom checks</h2>
+      <div id="customFindings"></div>
+    </section>
+    <section id="tab-outputs" class="panel">
+      <div class="row">
+        <button type="button" id="btnCopyTicket" class="small">Copy ticket note</button>
+        <button type="button" id="btnCopyEmail" class="small">Copy client email</button>
+        <button type="button" class="small" data-file="actions.ps1">Download actions.ps1</button>
+        <button type="button" class="small" data-file="Triage.csv">Download CSV</button>
+        <button type="button" class="small" data-file="Report.html">Download HTML</button>
+      </div>
+      <h2>Ticket note</h2>
+      <pre class="copy" id="ticketNote"></pre>
+      <h2>Client email</h2>
+      <pre class="copy" id="clientEmail"></pre>
+    </section>
+    <section id="tab-notes" class="panel">
+      <div class="row"><label>VIPs <input id="noteVips" type="text" placeholder="Jane Doe, Alex Kim" /></label></div>
+      <div class="row"><label>Filter vendor <input id="noteVendor" type="text" placeholder="Proofpoint" /></label></div>
+      <div class="row"><label>Contacts <input id="noteContacts" type="text" placeholder="it@contoso.com" /></label></div>
+      <div class="row"><label>DNS host <input id="noteDns" type="text" /></label></div>
+      <div class="row"><label>Extra freemail domains <input id="noteFree" type="text" placeholder="notes.example" /></label></div>
+      <button type="button" id="btnSaveNotes" class="primary">Save notes</button>
+    </section>
+  </div>
+  <script src="triage.js"></script>
+</body>
+</html>
