@@ -1,14 +1,88 @@
 function Test-ExternalForwarding {
     <#
     .SYNOPSIS
-        Tests if inbox rule forwards/redirects to external domains or has suspicious actions.
-    .PARAMETER Rule
-        Inbox rule object to analyze
+        Tests if recipient addresses include external (non-organizational) domains.
+    .DESCRIPTION
+        Restored original function signature for backward compatibility.
+        Use Test-InboxRuleRisk for comprehensive rule risk evaluation.
+    .PARAMETER RecipientAddresses
+        Array of recipient addresses to check
     .PARAMETER InternalDomains
-        List of organization domains
-    .OUTPUTS
-        @{ IsExternal = $bool; ForwardingType = $string; Recipients = @(); IsSuspicious = $bool; SuspiciousReasons = @() }
+        Array of internal/organizational domains
     #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [array]$RecipientAddresses,
+        [Parameter(Mandatory=$true)]
+        [array]$InternalDomains
+    )
+    
+    if ($null -eq $RecipientAddresses -or $RecipientAddresses.Count -eq 0) { 
+        return $false 
+    }
+    
+    foreach ($recipient in $RecipientAddresses) {
+        $emailAddress = $null
+        
+        if ($recipient -is [string]) { 
+            $emailAddress = $recipient 
+        }
+        elseif ($recipient.PropertyNames -contains 'Address') { 
+            $emailAddress = $recipient.Address 
+        } 
+        elseif ($recipient.PropertyNames -contains 'EmailAddress') { 
+            $emailAddress = $recipient.EmailAddress 
+        }
+        
+        if (-not [string]::IsNullOrWhiteSpace($emailAddress)) {
+            # Parse email using regex to handle SMTP: prefix and EX:/o= internal recipients
+            $parsedEmail = $null
+            
+            # Handle SMTP: prefix
+            if ($emailAddress -match 'SMTP:([^\]]+)') {
+                $parsedEmail = $matches[1]
+            }
+            # Handle EX:/o= (Exchange internal format) - treat as internal
+            elseif ($emailAddress -match '^EX:/o=') {
+                continue # Internal recipient
+            }
+            # Plain email address
+            elseif ($emailAddress -match '@') {
+                $parsedEmail = $emailAddress
+            }
+            
+            if ($parsedEmail -and $parsedEmail -match '@') {
+                try {
+                    $domain = ($parsedEmail -split '@')[1].ToLowerInvariant()
+                    if ($domain -notin $InternalDomains) { 
+                        Write-Verbose "External domain detected: $domain"
+                        return $true 
+                    }
+                } catch { 
+                    Write-Verbose "Could not parse domain from: $parsedEmail" 
+                }
+            }
+        }
+    }
+    
+    return $false
+}
+
+function Test-InboxRuleRisk {
+    <#
+    .SYNOPSIS
+        Evaluates inbox rule risk using scoring-based heuristics.
+    .DESCRIPTION
+        Analyzes inbox rules for suspicious patterns with risk scoring instead of blanket flagging.
+        Handles SMTP: prefixed addresses and EX:/o= internal recipients.
+    .PARAMETER Rule
+        The inbox rule object to evaluate
+    .PARAMETER InternalDomains
+        Array of internal/organizational domains
+    .OUTPUTS
+        PSCustomObject with IsExternal, IsSuspicious, RiskScore, RiskLevel, Recipients, ForwardingType, SuspiciousReasons
+    #>
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
         $Rule,
@@ -16,15 +90,17 @@ function Test-ExternalForwarding {
         [array]$InternalDomains
     )
     
-    $result = @{
+    $result = [PSCustomObject]@{
         IsExternal = $false
-        ForwardingType = "None"
-        Recipients = @()
         IsSuspicious = $false
+        RiskScore = 0
+        RiskLevel = "Low"
+        Recipients = @()
+        ForwardingType = $null
         SuspiciousReasons = [System.Collections.ArrayList]::new()
     }
     
-    # Check all forwarding/redirecting properties
+    # Check forwarding/redirect properties
     $recipientProperties = @(
         @{ Name = 'ForwardTo'; Type = 'Forward' },
         @{ Name = 'ForwardAsAttachmentTo'; Type = 'ForwardAsAttachment' },
@@ -35,15 +111,11 @@ function Test-ExternalForwarding {
         $recipients = $Rule.($prop.Name)
         if ($null -eq $recipients -or $recipients.Count -eq 0) { continue }
         
-        $externalRecipients = @()
-        
         foreach ($recipient in $recipients) {
             $emailAddress = $null
+            
             if ($recipient -is [string]) { 
                 $emailAddress = $recipient 
-            }
-            elseif ($recipient -is [Microsoft.Exchange.Data.SmtpAddress]) { 
-                $emailAddress = $recipient.ToString() 
             }
             elseif ($recipient.PropertyNames -contains 'Address') { 
                 $emailAddress = $recipient.Address 
@@ -53,48 +125,110 @@ function Test-ExternalForwarding {
             }
             
             if (-not [string]::IsNullOrWhiteSpace($emailAddress)) {
-                try {
-                    $domain = ($emailAddress -split '@')[1].ToLowerInvariant()
-                    if ($domain -notin $InternalDomains) {
-                        $externalRecipients += $emailAddress
-                        $result.IsExternal = $true
-                        $result.ForwardingType = $prop.Type
-                        [void]$result.SuspiciousReasons.Add("$($prop.Type) to external domain: $emailAddress")
-                    }
+                # Parse email using regex to handle SMTP: and EX:/o= formats
+                $parsedEmail = $null
+                
+                # Handle SMTP:address format
+                if ($emailAddress -match 'SMTP:([^\]]+)') {
+                    $parsedEmail = $matches[1]
+                }
+                # Handle EX:/o=ExchangeLegacyDN (internal recipient)
+                elseif ($emailAddress -match '^EX:/o=') {
+                    Write-Verbose "Internal Exchange recipient: $emailAddress"
                     $result.Recipients += $emailAddress
-                } catch { 
-                    Write-Verbose "Could not parse domain from: $emailAddress" 
+                    continue # Internal, skip domain check
+                }
+                # Plain email
+                elseif ($emailAddress -match '@') {
+                    $parsedEmail = $emailAddress
+                }
+                
+                if ($parsedEmail -and $parsedEmail -match '@') {
+                    try {
+                        $domain = ($parsedEmail -split '@')[1].ToLowerInvariant()
+                        $result.Recipients += $parsedEmail
+                        
+                        if ($domain -notin $InternalDomains) {
+                            $result.IsExternal = $true
+                            $result.ForwardingType = $prop.Type
+                            $result.RiskScore += 4
+                            [void]$result.SuspiciousReasons.Add("$($prop.Type) to external domain: $parsedEmail")
+                        }
+                    } catch { 
+                        Write-Verbose "Could not parse domain from: $parsedEmail" 
+                    }
+                } else {
+                    # Could not parse email, add to recipients anyway
+                    $result.Recipients += $emailAddress
                 }
             }
         }
     }
     
-    # Check for suspicious delete actions
+    # Scoring: Check for delete actions
     if ($Rule.DeleteMessage -eq $true) {
-        $result.IsSuspicious = $true
-        [void]$result.SuspiciousReasons.Add("Rule deletes messages")
-    }
-    
-    # Check for suspicious move-to-hidden-folder actions
-    if ($Rule.MoveToFolder) {
-        $folderPath = $Rule.MoveToFolder.ToString()
-        # Flag if moving to RSS, Junk, Deleted Items, or folders with suspicious names
-        if ($folderPath -match "\\RSS|\\Junk|\\Deleted|\\Archive|\\Conversation History" -or
-            $folderPath -match "[^\x20-\x7E]" -or # Non-printable characters
-            $folderPath -match "^\s+$") { # Whitespace-only names
-            $result.IsSuspicious = $true
-            [void]$result.SuspiciousReasons.Add("Moves to suspicious folder: $folderPath")
+        # Plain delete is low risk (score +1) unless combined with other factors
+        $result.RiskScore += 1
+        
+        # Delete + keyword condition = higher risk (evidence hiding)
+        if ($Rule.SubjectOrBodyContainsWords -or $Rule.FromAddressContainsWords) {
+            $result.RiskScore += 3
+            [void]$result.SuspiciousReasons.Add("Deletes messages matching specific patterns (possible evidence hiding)")
+        } else {
+            [void]$result.SuspiciousReasons.Add("Deletes messages (low risk alone)")
         }
     }
     
-    # Check for combination of suspicious conditions (delete AND condition)
-    if ($Rule.DeleteMessage -and ($Rule.SubjectOrBodyContainsWords -or $Rule.FromAddressContainsWords)) {
-        [void]$result.SuspiciousReasons.Add("Deletes messages matching specific patterns (evidence hiding)")
+    # Scoring: Check for move-to-folder actions
+    if ($Rule.MoveToFolder) {
+        $folderPath = $Rule.MoveToFolder.ToString()
+        $folderName = $folderPath -replace '.*\\', '' # Get last segment
+        
+        # High-risk folder names
+        $highRiskFolders = @('RSS Subscriptions', 'RSS Feeds', 'Conversation History')
+        $isHighRiskFolder = $false
+        foreach ($folder in $highRiskFolders) {
+            if ($folderPath -like "*$folder*") {
+                $isHighRiskFolder = $true
+                break
+            }
+        }
+        
+        # Check for non-printable or suspicious characters in folder name
+        $hasNonPrintable = $folderName -match "[^\x20-\x7E]"
+        $isWhitespaceOnly = $folderName -match "^\s+$"
+        
+        # Scoring for suspicious folder moves
+        if ($isHighRiskFolder -and ($Rule.SubjectOrBodyContainsWords -or $Rule.FromAddressContainsWords)) {
+            # RSS/Conversation History + keyword = high risk (score +4)
+            $result.RiskScore += 4
+            [void]$result.SuspiciousReasons.Add("Moves matching messages to rarely-checked folder: $folderPath")
+        } elseif ($hasNonPrintable -or $isWhitespaceOnly) {
+            # Non-printable folder name = high risk (score +4)
+            $result.RiskScore += 4
+            [void]$result.SuspiciousReasons.Add("Moves to folder with suspicious name: $folderPath")
+        } elseif ($folderPath -match "\\Archive|\\Junk|\\Deleted Items") {
+            # Archive/Junk/Deleted = medium risk (score +2)
+            $result.RiskScore += 2
+            [void]$result.SuspiciousReasons.Add("Moves to cleanup folder: $folderPath")
+        } else {
+            # Plain move to normal folder = low risk (score +1)
+            $result.RiskScore += 1
+            [void]$result.SuspiciousReasons.Add("Moves messages to: $folderPath")
+        }
     }
     
-    # Mark as suspicious if any suspicious reasons found
-    if ($result.SuspiciousReasons.Count -gt 0) {
+    # Determine overall risk level and suspicious flag
+    # Score >= 5: High risk (suspicious)
+    # Score 3-4: Medium risk
+    # Score < 3: Low risk
+    if ($result.RiskScore -ge 5) {
         $result.IsSuspicious = $true
+        $result.RiskLevel = "High"
+    } elseif ($result.RiskScore -ge 3) {
+        $result.RiskLevel = "Medium"
+    } else {
+        $result.RiskLevel = "Low"
     }
     
     return $result
@@ -112,14 +246,30 @@ function Test-ExternalForwardingLegacy {
     foreach ($recipient in $RecipientAddresses) {
         $emailAddress = $null
         if ($recipient -is [string]) { $emailAddress = $recipient }
-        elseif ($recipient -is [Microsoft.Exchange.Data.SmtpAddress]) { $emailAddress = $recipient.ToString() }
         elseif ($recipient.PropertyNames -contains 'Address') { $emailAddress = $recipient.Address } 
         elseif ($recipient.PropertyNames -contains 'EmailAddress') { $emailAddress = $recipient.EmailAddress } 
         if (-not [string]::IsNullOrWhiteSpace($emailAddress)) {
-            try {
-                $domain = ($emailAddress -split '@')[1].ToLowerInvariant()
-                if ($domain -notin $InternalDomains) { Write-Verbose "External domain: $domain"; return $true }
-            } catch { Write-Warning "Could not parse domain: $emailAddress" }
+            # Parse email using regex to handle SMTP: and EX:/o=
+            $parsedEmail = $null
+            if ($emailAddress -match 'SMTP:([^\]]+)') {
+                $parsedEmail = $matches[1]
+            } elseif ($emailAddress -match '^EX:/o=') {
+                continue # Internal
+            } elseif ($emailAddress -match '@') {
+                $parsedEmail = $emailAddress
+            }
+            
+            if ($parsedEmail -and $parsedEmail -match '@') {
+                try {
+                    $domain = ($parsedEmail -split '@')[1].ToLowerInvariant()
+                    if ($domain -notin $InternalDomains) { 
+                        Write-Verbose "External domain: $domain"
+                        return $true 
+                    }
+                } catch { 
+                    Write-Verbose "Could not parse domain: $parsedEmail" 
+                }
+            }
         }
     }
     return $false
@@ -321,13 +471,15 @@ function Analyze-MailboxPermissions {
 function Analyze-MailboxRulesEnhanced {
     <#
     .SYNOPSIS
-        Analyzes mailbox rules with improved hidden rule detection.
+        Analyzes mailbox rules with improved hidden rule detection and risk scoring.
     #>
     param(
         [Parameter(Mandatory=$true)]
         [array]$Rules,
         [Parameter(Mandatory=$true)]
-        [array]$BaseSuspiciousKeywords
+        [array]$BaseSuspiciousKeywords,
+        [Parameter(Mandatory=$true)]
+        [array]$InternalDomains
     )
     
     $totalRules = $Rules.Count
@@ -382,11 +534,10 @@ function Analyze-MailboxRulesEnhanced {
                     }
                 }
                 
-                # Check for external forwarding in hidden rules
+                # Check for external forwarding or suspicious actions using risk scoring
                 if (-not $isSuspiciousHidden) {
-                    # Use enhanced Test-ExternalForwarding that checks ForwardTo, RedirectTo, ForwardAsAttachmentTo
-                    $fwdTest = Test-ExternalForwarding -Rule $rule -InternalDomains @('dummy.local')
-                    if ($fwdTest.IsExternal -or $fwdTest.IsSuspicious) {
+                    $riskTest = Test-InboxRuleRisk -Rule $rule -InternalDomains $InternalDomains
+                    if ($riskTest.IsExternal -or $riskTest.IsSuspicious) {
                         $isSuspiciousHidden = $true
                     }
                 }
@@ -415,25 +566,27 @@ function Analyze-MailboxRulesEnhanced {
             }
         }
         
-        # Count suspicious rules (visible rules with suspicious characteristics)
-        if ($isSuspiciousVisible) {
-            $suspiciousVisibleCount++
-        }
-        
-        # Check for external forwarding or suspicious actions
-        $fwdTest = Test-ExternalForwarding -Rule $rule -InternalDomains @('dummy.local')
-        if ($fwdTest.IsExternal) {
+        # Check for external forwarding or suspicious actions using risk scoring
+        $riskTest = Test-InboxRuleRisk -Rule $rule -InternalDomains $InternalDomains
+        if ($riskTest.IsExternal) {
             $hasExternalForwarding = $true
         }
-        if ($fwdTest.IsSuspicious) {
+        
+        # Count suspicious rules based on risk score (only high-risk rules)
+        if ($riskTest.RiskScore -ge 5 -or $riskTest.IsSuspicious) {
             if ($rule.IsHidden) {
                 # Already counted in suspicious hidden if applicable
             } else {
-                # Count as suspicious visible rule
+                # Count as suspicious visible rule (only once)
                 if (-not $isSuspiciousVisible) {
                     $suspiciousVisibleCount++
                 }
             }
+        }
+        
+        # Count suspicious visible rules with keyword/symbol patterns
+        if ($isSuspiciousVisible -and -not $rule.IsHidden) {
+            $suspiciousVisibleCount++
         }
     }
     
@@ -445,4 +598,4 @@ function Analyze-MailboxRulesEnhanced {
     }
 }
 
-Export-ModuleMember -Function Test-ExternalForwarding,Test-ExternalForwardingLegacy,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains,Get-MailboxDelegatesAndPermissions,Analyze-MailboxRulesEnhanced 
+Export-ModuleMember -Function Test-ExternalForwarding,Test-InboxRuleRisk,Test-ExternalForwardingLegacy,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains,Get-MailboxDelegatesAndPermissions,Analyze-MailboxRulesEnhanced 

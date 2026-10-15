@@ -175,7 +175,9 @@ function Load-MailboxesOptimized {
                         $null
                     }
                     if ($rules) {
-                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
+                        # Pass detected domains if available, otherwise fallback
+                        $domainsToUse = if ($detectedDomains -and $detectedDomains.Count -gt 0) { $detectedDomains } else { @() }
+                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords -InternalDomains $domainsToUse
                         $rulesCount = $analysis.TotalRules.ToString()
                         $hiddenRules = $analysis.SuspiciousHidden.ToString()
                         $suspiciousRules = $analysis.SuspiciousVisible.ToString()
@@ -3488,7 +3490,9 @@ function Filter-ExchangeGrid {
             try {
                 $rules = Get-InboxRule -Mailbox $mbx.UserPrincipalName -IncludeHidden -ErrorAction SilentlyContinue
                 if ($rules) {
-                    $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
+                    # Pass detected domains if available
+                    $domainsToUse = if ($detectedDomains -and $detectedDomains.Count -gt 0) { $detectedDomains } else { @() }
+                    $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords -InternalDomains $domainsToUse
                     $rulesCount = $analysis.TotalRules.ToString()
                     $hiddenRules = $analysis.SuspiciousHidden.ToString()
                     $suspiciousRules = $analysis.SuspiciousVisible.ToString()
@@ -5168,7 +5172,9 @@ $searchMailboxesButton.add_Click({
                 try {
                     $rules = Get-InboxRule -Mailbox $mbx.UserPrincipalName -IncludeHidden -ErrorAction SilentlyContinue
                     if ($rules) {
-                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
+                        # Pass detected domains if available, otherwise fallback
+                        $domainsToUse = if ($detectedDomains -and $detectedDomains.Count -gt 0) { $detectedDomains } else { @() }
+                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords -InternalDomains $domainsToUse
                         $rulesCount = $analysis.TotalRules.ToString()
                         $hiddenRules = $analysis.SuspiciousHidden.ToString()
                         $suspiciousRules = $analysis.SuspiciousVisible.ToString()
@@ -5580,7 +5586,9 @@ $analyzeSelectedButton.add_Click({
                         $null
                     }
                     if ($rules) {
-                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
+                        # Pass detected domains if available
+                        $domainsToUse = if ($detectedDomains -and $detectedDomains.Count -gt 0) { $detectedDomains } else { @() }
+                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords -InternalDomains $domainsToUse
                         $userMailboxGrid.Rows[$rowIndex].Cells["TotalRules"].Value = $analysis.TotalRules.ToString()
                         $userMailboxGrid.Rows[$rowIndex].Cells["HiddenRules"].Value = $analysis.SuspiciousHidden.ToString()
                         $userMailboxGrid.Rows[$rowIndex].Cells["SuspiciousRules"].Value = $analysis.SuspiciousVisible.ToString()
