@@ -8,7 +8,9 @@
 
 ## Executive Summary
 
-This security tool analyzes Exchange Online and Entra ID for malicious activity. A comprehensive review identified **15 critical/high priority issues** and **12 medium/low priority issues**. **7 critical fixes** were implemented in this PR, focusing on credential security, detection coverage gaps, and error handling. The remaining 20 issues require more extensive testing or architectural changes.
+This security tool analyzes Exchange Online and Entra ID for malicious activity. A comprehensive review identified **15 critical/high priority issues** and **12 medium/low priority issues**. **11 critical/high fixes** were implemented in this PR (4 additional critical issues resolved in second commit), focusing on credential security, detection coverage gaps, pagination, and error handling. The remaining 16 issues require more extensive testing or architectural changes.
+
+**Latest Update (Commit 2):** Added mailbox permission detection, enhanced inbox rule analysis (RedirectTo/delete rules), fixed Graph API pagination gaps, and removed cmdkey security vulnerability.
 
 ---
 
@@ -21,6 +23,47 @@ This security tool analyzes Exchange Online and Entra ID for malicious activity.
 - `[Array]::Clear($pwdBytes, 0, $pwdBytes.Length)` after password derivation
 - `[Array]::Clear($key, 0, $key.Length)` after encryption/decryption
 - Added zeroing on both success and error paths
+
+### ✅ CRITICAL - Mailbox Permission Change Detection (SecurityAnalysis.psm1)
+**Issue:** No detection of mailbox permission changes (FullAccess, SendAs, SendOnBehalf, folder permissions)  
+**Risk:** Attackers grant themselves access to mailboxes undetected  
+**Fix:** Added `Get-MailboxPermissionChanges` function
+- Monitors unified audit logs for Add-MailboxPermission, Add-RecipientPermission, Set-Mailbox
+- Detects FullAccess, SendAs, SendOnBehalf permission grants
+- Flags folder permissions (Owner/Editor rights)
+- Identifies grants to external principals or service/admin accounts
+- **Requires Live Testing:** Audit log queries need verification with real permission changes
+
+### ✅ CRITICAL - Inbox Rule RedirectTo Detection (MailboxAnalysis.psm1)
+**Issue:** Detection only checked ForwardTo, missed RedirectTo and other forwarding methods  
+**Risk:** Attackers use RedirectTo (harder to detect) or delete rules to hide evidence  
+**Fix:** Enhanced `Test-ExternalForwarding` function
+- Now checks ForwardTo, RedirectTo, ForwardAsAttachmentTo
+- Detects delete rules (DeleteMessage = true)
+- Flags moves to suspicious folders (RSS, Junk, hidden folders with special characters)
+- Identifies evidence-hiding patterns (delete + specific conditions)
+- Backward compatible: Added `Test-ExternalForwardingLegacy` wrapper
+- **Requires Live Testing:** Rule actions need verification with real inbox rules
+
+### ✅ CRITICAL - Graph API Pagination Gaps (ExportUtils.psm1, SecurityAnalysis.psm1)
+**Issue:** Some Graph calls lacked `-All` parameter or @odata.nextLink handling  
+**Risk:** Missing data when results exceed first page (>999 records)  
+**Fix:** Added pagination everywhere
+- Added `-All` to `Get-MgIdentityRiskDetection` (risk detection history)
+- Added `-All` to `Get-MgOauth2PermissionGrant` (OAuth consents)
+- Added @odata.nextLink loop to CA policies retrieval (line 146-157)
+- Added @odata.nextLink loop to authentication methods (line 203-215)
+- **Requires Live Testing:** Verify with tenants having >999 users, audit records, or risk detections
+
+### ✅ CRITICAL - cmdkey Secret Exposure Removed (GraphAppCredential.psm1)
+**Issue:** Fallback to cmdkey.exe exposed secrets in process arguments  
+**Risk:** Secrets visible via Process Explorer, tasklist, or process dumps  
+**Fix:** Removed unsafe cmdkey fallback path
+- Now requires CredentialManager module or native CredWrite P/Invoke
+- Clear error message guides users to install secure alternative
+- Prevents accidental secret exposure during app registration
+- **Breaking Change:** cmdkey fallback no longer available (security by design)
+- **Mitigation:** Users must install CredentialManager or use Windows PowerShell 5.1
 
 ### ✅ HIGH - OAuth Consent Detection Gap (SecurityAnalysis.psm1)
 **Issue:** No detection of user-level OAuth consents (phishing vector)  
@@ -61,48 +104,17 @@ This security tool analyzes Exchange Online and Entra ID for malicious activity.
 
 ## Critical Issues NOT Fixed (Require Testing)
 
-### 🔴 CRITICAL - No Mailbox Permission Change Detection
-**File:** N/A (feature gap)  
-**Issue:** Tool doesn't detect when mailbox permissions are added/modified  
-**Attack Vector:** Attackers grant themselves FullAccess to mailboxes  
-**Recommended Fix:**
-```powershell
-function Get-MailboxPermissionChanges {
-    param([int]$DaysBack = 30)
-    # Query audit logs for:
-    # - Add-MailboxPermission activities
-    # - Set-Mailbox -GrantSendOnBehalfTo
-    # - Add-MailboxFolderPermission (calendar/inbox sharing)
-    $filter = "activityDateTime ge $startIso and (activityDisplayName eq 'Add-MailboxPermission' or activityDisplayName eq 'Set-Mailbox')"
-    Get-MgAuditLogDirectoryAudit -Filter $filter -All
-}
-```
-**Cannot Verify Without:** Live Exchange Online tenant
+### ❌ REMOVED - Mailbox Permission Change Detection
+**RESOLVED IN THIS PR - See above**
 
-### 🔴 CRITICAL - Inbox Rule Forwarding Detection Incomplete
-**File:** `Modules/ExportUtils.psm1:2616`, `Modules/MailboxAnalysis.psm1`  
-**Issue:** Detection only checks `ForwardTo`/`ForwardAsAttachmentTo`, misses `RedirectTo`  
-**Recommended Fix:**
-```powershell
-# In rule analysis, also check:
-$isForwardingExternal = $rule.RedirectTo -and (Test-ExternalRecipients $rule.RedirectTo $orgDomains)
-```
-**Cannot Verify Without:** Test inbox rules with RedirectTo
+### ❌ REMOVED - Inbox Rule RedirectTo Detection
+**RESOLVED IN THIS PR - See above**
 
-### 🔴 CRITICAL - Graph API Pagination Not Handled Universally
-**File:** `Modules/ExportUtils.psm1` (multiple locations)  
-**Issue:** Some Graph calls lack `-All` parameter, limiting results to first page  
-**Example:** Lines 192, 220, 306, 312, etc.  
-**Risk:** Missing audit logs, users, or permissions data  
-**Fix:** Audit all `Get-Mg*` cmdlets; add `-All` where missing  
-**Cannot Verify Without:** Tenant with >999 users/audit records
+### ❌ REMOVED - Graph API Pagination
+**RESOLVED IN THIS PR - See above**
 
-### 🔴 CRITICAL - cmdkey.exe Credential Exposure
-**File:** `Modules/GraphAppCredential.psm1:484`  
-**Issue:** Fallback to cmdkey exposes secrets in process arguments  
-**Mitigation:** Code already warns user and tries native P/Invoke first  
-**Recommended:** Block cmdkey path entirely in PowerShell 7+  
-**Cannot Verify Without:** Testing credential save in pwsh without CredentialManager
+### ❌ REMOVED - cmdkey Credential Exposure
+**RESOLVED IN THIS PR - See above**
 
 ---
 
@@ -121,9 +133,10 @@ $isForwardingExternal = $rule.RedirectTo -and (Test-ExternalRecipients $rule.Red
 
 ### 🟠 HIGH - No Detection of Send-As Permission Changes
 **File:** N/A (feature gap)  
-**Issue:** Missing detection for SendAs/SendOnBehalf permission grants  
-**Risk:** Attackers send email as executives  
-**Recommended:** Query `Get-RecipientPermission` changes in audit logs
+**Issue:** ~~Missing detection for SendAs/SendOnBehalf permission grants~~  
+**Status:** ✅ **PARTIALLY RESOLVED** - `Get-MailboxPermissionChanges` now detects SendAs (Add-RecipientPermission) and SendOnBehalf (Set-Mailbox) grants  
+**Remaining Work:** Could enhance with dedicated `Get-RecipientPermission` baseline comparison  
+**Risk Reduced:** High → Medium (detection exists but could be more comprehensive)
 
 ### 🟠 HIGH - Transport Rule Malicious Pattern Detection Weak
 **File:** `Modules/ReportAnalysis.psm1:848`  
@@ -305,18 +318,18 @@ The **7 fixes in this PR** address the most critical credential security issues 
 
 | Attack Vector | Current Detection | Implemented Fix | Remaining Gap |
 |---------------|-------------------|-----------------|---------------|
-| Malicious inbox rules | ✅ Yes | ➕ RedirectTo missing | Add RedirectTo check |
-| External forwarding | ✅ Yes | - | None |
-| Hidden rules | ⚠️ Partial | - | EWS-level hiding |
+| Malicious inbox rules | ✅ Yes | ✅ RedirectTo/Delete added | None |
+| External forwarding | ✅ Yes | ✅ All methods covered | None |
+| Hidden rules | ⚠️ Partial | ✅ Enhanced | EWS-level hiding |
 | OAuth consent grants | ❌ No | ✅ Added | None |
 | MFA/auth changes | ❌ No | ✅ Added | None |
-| Mailbox permissions | ❌ No | - | Need full function |
-| SendAs permissions | ❌ No | - | Need full function |
+| Mailbox permissions | ❌ No | ✅ Added | None |
+| SendAs permissions | ❌ No | ✅ Added (in mailbox perms) | Baseline comparison |
 | Suspicious sign-ins | ❌ No | - | Need full function |
 | Transport rules | ⚠️ Exists only | - | Need content analysis |
-| App registrations | ✅ Yes | ➕ OAuth grants | Secret expiration |
-| Conditional Access | ✅ Yes | - | Change tracking |
-| Risky users | ✅ Yes | - | None |
+| App registrations | ✅ Yes | ✅ OAuth grants added | Secret expiration |
+| Conditional Access | ✅ Yes | ✅ Pagination fixed | Change tracking |
+| Risky users | ✅ Yes | ✅ Pagination fixed | None |
 
 **Legend:** ✅ Full coverage | ⚠️ Partial | ❌ Missing | ➕ Improved in PR
 
