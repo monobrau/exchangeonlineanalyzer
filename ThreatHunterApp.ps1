@@ -48,28 +48,32 @@ function New-ResizablePanel {
 
 function New-ScrollableTextBox {
     param(
-        [int]$Top = 30,
-        [int]$Left = 5,
-        [int]$Width = 590,
-        [int]$Height = 300,
-        [bool]$ReadOnly = $false,
-        [string]$Text = ""
+        [bool]$ReadOnly = $false
     )
     
     $textBox = New-Object System.Windows.Forms.TextBox
     $textBox.Multiline = $true
-    $textBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
-    $textBox.Location = New-Object System.Drawing.Point($Left, $Top)
-    $textBox.Size = New-Object System.Drawing.Size($Width, $Height)
+    $textBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $textBox.WordWrap = $true
+    $textBox.Dock = [System.Windows.Forms.DockStyle]::Fill
     $textBox.ReadOnly = $ReadOnly
-    $textBox.Text = $Text
     $textBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $textBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor 
-                      [System.Windows.Forms.AnchorStyles]::Bottom -bor 
-                      [System.Windows.Forms.AnchorStyles]::Left -bor 
-                      [System.Windows.Forms.AnchorStyles]::Right
-    
     return $textBox
+}
+
+function Add-LabeledFillBox {
+    param($Panel, $Title, $ReadOnly)
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Title
+    $label.Dock = [System.Windows.Forms.DockStyle]::Top
+    $label.Height = 28
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+    $label.Padding = New-Object System.Windows.Forms.Padding(8, 6, 0, 0)
+    $box = New-ScrollableTextBox -ReadOnly $ReadOnly
+    # Top is added first so it claims its strip before Fill takes the rest.
+    $Panel.Controls.Add($label)
+    $Panel.Controls.Add($box)
+    return $box
 }
 
 function Show-StatusMessage {
@@ -115,9 +119,26 @@ function OnLoadTicket {
         }
         
         $script:CurrentTicket = $ticket
+        $notes = @(Get-CWTicketNotes -TicketNumber $ticket.id)
+        $noteText = New-Object System.Text.StringBuilder
+        foreach ($note in $notes) {
+            if ([string]::IsNullOrWhiteSpace($note.text)) { continue }
+            $kind = if ($note.internalAnalysisFlag) { 'Internal' } else { 'Detail' }
+            [void]$noteText.AppendLine("")
+            [void]$noteText.AppendLine("[$kind note]")
+            [void]$noteText.AppendLine([string]$note.text)
+        }
+
+        $memberId = [string]$script:Settings.ConnectWiseMemberIdentifier
+        if (-not [string]::IsNullOrWhiteSpace($memberId)) {
+            $ownerResult = Set-CWTicketOwner -TicketNumber $ticket.id -MemberIdentifier $memberId
+            if ($ownerResult) { $ticket = $ownerResult }
+        }
+        $statusResult = Set-CWTicketStatus -TicketNumber $ticket.id -StatusName 'In Progress'
+        if ($statusResult) { $ticket = $statusResult }
+        $script:CurrentTicket = $ticket
         
-        # Display ticket in UI
-        $ticketText = @"
+        $script:TicketTextBox.Text = @"
 Ticket #$($ticket.id): $($ticket.summary)
 Company: $($ticket.company.name)
 Status: $($ticket.status.name)
@@ -127,15 +148,21 @@ Owner: $($ticket.owner.name)
 
 Description:
 $($ticket.initialDescription)
+$($noteText.ToString())
 "@
+        $script:TicketContentForAI = (($ticket.initialDescription + "`n" + $noteText.ToString())).Trim()
+        if ([string]::IsNullOrWhiteSpace($script:TicketContentForAI)) {
+            $script:TicketContentForAI = [string]$ticket.summary
+        }
         
-        $script:TicketTextBox.Text = $ticketText
-        $script:TicketContentForAI = $ticket.initialDescription
-        
-        # Enable investigation button
+        if ($statusResult) {
+            $ticket = $statusResult
+            Show-StatusMessage -Message "Loaded ticket #$ticketNum and set it to In Progress" -StatusLabel $script:StatusLabel
+        } else {
+            Show-StatusMessage -Message "Loaded ticket #$ticketNum. Status was not changed; confirm the board has a status named In Progress." -StatusLabel $script:StatusLabel
+        }
+        $script:CurrentTicket = $ticket
         $script:InvestigateButton.Enabled = $true
-        
-        Show-StatusMessage -Message "✓ Loaded ticket #$ticketNum" -StatusLabel $script:StatusLabel
         
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Error loading ticket: $($_.Exception.Message)", "Error", 
@@ -204,7 +231,7 @@ function OnNewTicket {
         $txtOwner = New-Object System.Windows.Forms.TextBox
         $txtOwner.Location = New-Object System.Drawing.Point(150, 383)
         $txtOwner.Size = New-Object System.Drawing.Size(200, 20)
-        $txtOwner.Text = $script:Settings.InvestigatorName
+        $txtOwner.Text = [string]$script:Settings.ConnectWiseMemberIdentifier
         $form.Controls.Add($txtOwner)
         
         # Buttons
@@ -306,46 +333,59 @@ function OnInvestigate {
         
         Show-StatusMessage -Message "🔍 AI investigation in progress..." -StatusLabel $script:StatusLabel
         
-        # Get Memberberry instructions if available
         $memberberryInstructions = ""
-        if ($script:CurrentTicket -and $script:CurrentTicket.company) {
-            $companyName = $script:CurrentTicket.company.name
-            
-            # Try to compile Memberberry instructions
-            if (Get-Command Invoke-MemberberryCompile -ErrorAction SilentlyContinue) {
-                try {
-                    $mbPath = Invoke-MemberberryCompile -Client $companyName
-                    if ($mbPath -and (Test-Path $mbPath)) {
-                        $memberberryInstructions = Get-Content -Path $mbPath -Raw
+        $ticketForAi = $script:TicketContentForAI
+        $companyName = ""
+        if ($script:CurrentTicket -and $script:CurrentTicket.company) { $companyName = [string]$script:CurrentTicket.company.name }
+        if (Get-Command Invoke-MemberberryCleanTicket -ErrorAction SilentlyContinue) {
+            try { $ticketForAi = Invoke-MemberberryCleanTicket -TicketContent $ticketForAi } catch {}
+        }
+        if (Get-Command Invoke-MemberberryExtractCompany -ErrorAction SilentlyContinue -and [string]::IsNullOrWhiteSpace($companyName)) {
+            try { $companyName = Invoke-MemberberryExtractCompany -TicketContent $ticketForAi } catch {}
+        }
+        $alertType = ""
+        if (Get-Command Invoke-MemberberryDetectAlertType -ErrorAction SilentlyContinue) {
+            try { $alertType = Invoke-MemberberryDetectAlertType -TicketContent $ticketForAi } catch {}
+        }
+        if (Get-Command Invoke-MemberberryCompile -ErrorAction SilentlyContinue) {
+            try {
+                $compileParams = @{}
+                if ($companyName) { $compileParams.Client = $companyName }
+                if ($alertType) { $compileParams.AlertType = $alertType }
+                $mbPath = Invoke-MemberberryCompile @compileParams
+                if ($mbPath -and (Test-Path $mbPath)) {
+                    $memberberryInstructions = Get-Content -Path $mbPath -Raw
+                    if ($memberberryInstructions.Length -gt 6000) {
+                        $memberberryInstructions = $memberberryInstructions.Substring(0, 6000) + "`n[Memberberry instructions truncated.]"
                     }
-                } catch {
-                    Write-Warning "Could not load Memberberry instructions: $_"
                 }
+            } catch {
+                Write-Warning "Could not load Memberberry instructions: $_"
             }
         }
         
-        # Status update callback
         $statusCallback = {
             param($message)
             $script:EvidenceTextBox.AppendText("$message`r`n")
-            $script:EvidenceTextBox.Refresh()
+            $script:EvidenceTextBox.SelectionStart = $script:EvidenceTextBox.TextLength
+            $script:EvidenceTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
         }
         
-        # Stream chunk callback for draft reply
+        # Narration goes to the evidence pane. The draft is set from the parsed client reply after the run.
         $streamCallback = {
             param($chunk)
-            $script:DraftTextBox.AppendText($chunk)
-            $script:DraftTextBox.Refresh()
+            $script:EvidenceTextBox.AppendText($chunk)
             [System.Windows.Forms.Application]::DoEvents()
         }
         
-        # Start investigation
+        $model = [string]$script:Settings.ClaudeModel
         $investigation = Start-AIInvestigation `
-            -TicketContent $script:TicketContentForAI `
-            -CompanyName ($script:CurrentTicket.company.name) `
+            -TicketContent $ticketForAi `
+            -CompanyName $companyName `
             -MemberberryInstructions $memberberryInstructions `
             -ApiKey $script:Settings.ClaudeApiKey `
+            -Model $model `
             -OnStatusUpdate $statusCallback `
             -OnStreamChunk $streamCallback `
             -MaxIterations 10
@@ -374,11 +414,7 @@ STATISTICS:
 - Duration: $([math]::Round($investigation.Stats.TotalDuration, 1))s
 "@
         
-        # Draft is already streamed to DraftTextBox
-        # If not streamed, set it here
-        if ([string]::IsNullOrWhiteSpace($script:DraftTextBox.Text)) {
-            $script:DraftTextBox.Text = $investigation.ClientReply
-        }
+        $script:DraftTextBox.Text = [string]$investigation.ClientReply
         
         # Enable editing and approval
         $script:DraftTextBox.ReadOnly = $false
@@ -412,13 +448,28 @@ function OnRevise {
     )
     
     if ([string]::IsNullOrWhiteSpace($context)) { return }
-    
-    # TODO: Call AI again with the additional context
-    # For now, just append a note
-    $script:DraftTextBox.AppendText("`r`n`r`n[Revision requested: $context]`r`n`r`n")
-    
-    [System.Windows.Forms.MessageBox]::Show("AI draft revision not yet implemented. Please edit manually.", "Info", 
-        [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    if ([string]::IsNullOrWhiteSpace($script:Settings.ClaudeApiKey)) {
+        [System.Windows.Forms.MessageBox]::Show("Claude API key not configured.", "Missing API Key", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+
+    try {
+        $script:ReviseButton.Enabled = $false
+        $script:EvidenceTextBox.AppendText("`r`nRevising draft...`r`n")
+        $revised = Update-AIClientDraft `
+            -ApiKey $script:Settings.ClaudeApiKey `
+            -CurrentDraft $script:DraftTextBox.Text `
+            -Clarification $context `
+            -Model ([string]$script:Settings.ClaudeModel)
+        if (-not [string]::IsNullOrWhiteSpace($revised)) {
+            $script:DraftTextBox.Text = $revised
+            Show-StatusMessage -Message "Draft revised. Nothing has been posted." -StatusLabel $script:StatusLabel
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Revision failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        $script:ReviseButton.Enabled = $true
+    }
 }
 
 function OnApprove {
@@ -592,105 +643,149 @@ $(
     }
 }
 
+function Read-MaskedSecret {
+    param([string]$Title, [string]$Prompt)
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = $Title
+    $dialog.Size = New-Object System.Drawing.Size(460, 170)
+    $dialog.StartPosition = 'CenterParent'
+    $dialog.FormBorderStyle = 'FixedDialog'
+    $dialog.MaximizeBox = $false
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Prompt
+    $label.Location = New-Object System.Drawing.Point(12, 15)
+    $label.Size = New-Object System.Drawing.Size(420, 32)
+    $box = New-Object System.Windows.Forms.TextBox
+    $box.Location = New-Object System.Drawing.Point(12, 50)
+    $box.Size = New-Object System.Drawing.Size(420, 24)
+    $box.UseSystemPasswordChar = $true
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'OK'
+    $ok.DialogResult = 'OK'
+    $ok.Location = New-Object System.Drawing.Point(250, 90)
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = 'Cancel'
+    $cancel.DialogResult = 'Cancel'
+    $cancel.Location = New-Object System.Drawing.Point(340, 90)
+    $dialog.Controls.AddRange(@($label, $box, $ok, $cancel))
+    $dialog.AcceptButton = $ok
+    $dialog.CancelButton = $cancel
+    if ($dialog.ShowDialog() -ne 'OK' -or [string]::IsNullOrEmpty($box.Text)) { return $null }
+    return (ConvertTo-SecureString -String $box.Text -AsPlainText -Force)
+}
+
 function OnSettings {
     param($sender, $e)
-    
-    # Show settings dialog
-    $settingsForm = New-Object System.Windows.Forms.Form
-    $settingsForm.Text = "Settings"
-    $settingsForm.Size = New-Object System.Drawing.Size(700, 600)
-    $settingsForm.StartPosition = "CenterParent"
-    $settingsForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-    $settingsForm.MaximizeBox = $false
-    
-    # Tabs
-    $tabControl = New-Object System.Windows.Forms.TabControl
-    $tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $settingsForm.Controls.Add($tabControl)
-    
-    # ConnectWise tab
-    $cwTab = New-Object System.Windows.Forms.TabPage
-    $cwTab.Text = "ConnectWise"
-    $tabControl.Controls.Add($cwTab)
-    
-    # AI tab
-    $aiTab = New-Object System.Windows.Forms.TabPage
-    $aiTab.Text = "AI Settings"
-    $tabControl.Controls.Add($aiTab)
-    
-    # Memberberry tab
-    $mbTab = New-Object System.Windows.Forms.TabPage
-    $mbTab.Text = "Memberberry"
-    $tabControl.Controls.Add($mbTab)
-    
-    # TODO: Build settings UI
-    # For now, just show a message
-    $lblPlaceholder = New-Object System.Windows.Forms.Label
-    $lblPlaceholder.Text = "Settings UI: Configure CW credentials, AI API keys, Memberberry path, etc.`n`nUse existing Settings.psm1 functions to save/load."
-    $lblPlaceholder.Location = New-Object System.Drawing.Point(20, 20)
-    $lblPlaceholder.Size = New-Object System.Drawing.Size(600, 100)
-    $cwTab.Controls.Add($lblPlaceholder)
-    
-    # Buttons
-    $btnSave = New-Object System.Windows.Forms.Button
-    $btnSave.Text = "Save"
-    $btnSave.Location = New-Object System.Drawing.Point(500, 520)
-    $btnSave.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    $settingsForm.Controls.Add($btnSave)
-    
-    $btnCancelSettings = New-Object System.Windows.Forms.Button
-    $btnCancelSettings.Text = "Cancel"
-    $btnCancelSettings.Location = New-Object System.Drawing.Point(590, 520)
-    $btnCancelSettings.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    $settingsForm.Controls.Add($btnCancelSettings)
-    
-    $settingsForm.ShowDialog() | Out-Null
+    $settings = $script:Settings
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Threat Hunter Settings'
+    $form.Size = New-Object System.Drawing.Size(640, 460)
+    $form.StartPosition = 'CenterParent'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+
+    $fields = @(
+        @{ Name = 'ClaudeApiKey'; Label = 'Claude API key'; Secret = $true },
+        @{ Name = 'ClaudeModel'; Label = 'Claude model'; Secret = $false },
+        @{ Name = 'ConnectWiseCompanyID'; Label = 'ConnectWise company id'; Secret = $false },
+        @{ Name = 'ConnectWiseClientId'; Label = 'ConnectWise integrator client id'; Secret = $false },
+        @{ Name = 'ConnectWiseMemberIdentifier'; Label = 'ConnectWise member identifier'; Secret = $false },
+        @{ Name = 'ConnectWiseBaseUrl'; Label = 'ConnectWise base URL'; Secret = $false },
+        @{ Name = 'MemberberryPath'; Label = 'Memberberry path'; Secret = $false }
+    )
+    $boxes = @{}
+    $y = 16
+    foreach ($field in $fields) {
+        $label = New-Object System.Windows.Forms.Label
+        $label.Text = $field.Label
+        $label.Location = New-Object System.Drawing.Point(12, $y)
+        $label.Size = New-Object System.Drawing.Size(250, 22)
+        $box = New-Object System.Windows.Forms.TextBox
+        $box.Location = New-Object System.Drawing.Point(270, ($y - 2))
+        $box.Size = New-Object System.Drawing.Size(340, 24)
+        $box.Text = [string]$settings.($field.Name)
+        if ($field.Secret) { $box.UseSystemPasswordChar = $true }
+        $form.Controls.Add($label)
+        $form.Controls.Add($box)
+        $boxes[$field.Name] = $box
+        $y += 36
+    }
+    $publicLabel = New-Object System.Windows.Forms.Label
+    $publicLabel.Text = 'CW API public key (saved to Credential Manager)'
+    $publicLabel.Location = New-Object System.Drawing.Point(12, $y)
+    $publicLabel.Size = New-Object System.Drawing.Size(250, 36)
+    $publicBox = New-Object System.Windows.Forms.TextBox
+    $publicBox.Location = New-Object System.Drawing.Point(270, $y)
+    $publicBox.Size = New-Object System.Drawing.Size(340, 24)
+    $y += 40
+    $privateLabel = New-Object System.Windows.Forms.Label
+    $privateLabel.Text = 'CW API private key (leave blank to keep saved key)'
+    $privateLabel.Location = New-Object System.Drawing.Point(12, $y)
+    $privateLabel.Size = New-Object System.Drawing.Size(250, 36)
+    $privateBox = New-Object System.Windows.Forms.TextBox
+    $privateBox.Location = New-Object System.Drawing.Point(270, $y)
+    $privateBox.Size = New-Object System.Drawing.Size(340, 24)
+    $privateBox.UseSystemPasswordChar = $true
+    $form.Controls.AddRange(@($publicLabel, $publicBox, $privateLabel, $privateBox))
+
+    $save = New-Object System.Windows.Forms.Button
+    $save.Text = 'Save'
+    $save.DialogResult = 'OK'
+    $save.Location = New-Object System.Drawing.Point(420, 380)
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = 'Cancel'
+    $cancel.DialogResult = 'Cancel'
+    $cancel.Location = New-Object System.Drawing.Point(510, 380)
+    $form.Controls.AddRange(@($save, $cancel))
+    $form.AcceptButton = $save
+    $form.CancelButton = $cancel
+    if ($form.ShowDialog() -ne 'OK') { return }
+
+    foreach ($field in $fields) {
+        $settings.($field.Name) = $boxes[$field.Name].Text.Trim()
+    }
+    $script:Settings = $settings
+    Save-AppSettings -Settings $settings | Out-Null
+
+    if (-not [string]::IsNullOrWhiteSpace($publicBox.Text) -and -not [string]::IsNullOrWhiteSpace($privateBox.Text)) {
+        $secret = ConvertTo-SecureString -String $privateBox.Text -AsPlainText -Force
+        Save-CWCredential -CompanyID $settings.ConnectWiseCompanyID -PublicKey $publicBox.Text.Trim() -PrivateKey $secret -ClientId $settings.ConnectWiseClientId -BaseUrl $settings.ConnectWiseBaseUrl | Out-Null
+    }
+    Show-StatusMessage -Message 'Settings saved.' -StatusLabel $script:StatusLabel
 }
 
 function ConnectToConnectWise {
-    # Try to load saved credentials
-    $cwCompany = [Microsoft.VisualBasic.Interaction]::InputBox("Enter ConnectWise Company ID:", "ConnectWise Login", "")
-    if ([string]::IsNullOrWhiteSpace($cwCompany)) { return $false }
-    
-    $cwCred = Get-CWCredential -CompanyID $cwCompany
-    
-    if ($cwCred) {
-        # Use saved credentials
-        $connected = Connect-ConnectWise `
-            -CompanyID $cwCred.CompanyID `
-            -PublicKey $cwCred.PublicKey `
-            -PrivateKey $cwCred.PrivateKey `
-            -BaseUrl $cwCred.BaseUrl
-        
-        return $connected
-    } else {
-        # Prompt for credentials
-        $cwPublic = [Microsoft.VisualBasic.Interaction]::InputBox("Enter API Public Key:", "ConnectWise Login", "")
-        if ([string]::IsNullOrWhiteSpace($cwPublic)) { return $false }
-        
-        $cwPrivate = Read-Host "Enter API Private Key" -AsSecureString
-        
-        $connected = Connect-ConnectWise `
-            -CompanyID $cwCompany `
-            -PublicKey $cwPublic `
-            -PrivateKey $cwPrivate
-        
-        if ($connected) {
-            # Offer to save credentials
-            $save = [System.Windows.Forms.MessageBox]::Show(
-                "Save ConnectWise credentials to Windows Credential Manager?",
-                "Save Credentials",
-                [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                [System.Windows.Forms.MessageBoxIcon]::Question
-            )
-            
-            if ($save -eq [System.Windows.Forms.DialogResult]::Yes) {
-                Save-CWCredential -CompanyID $cwCompany -PublicKey $cwPublic -PrivateKey $cwPrivate | Out-Null
-            }
-        }
-        
-        return $connected
+    $company = [string]$script:Settings.ConnectWiseCompanyID
+    $clientId = [string]$script:Settings.ConnectWiseClientId
+    $baseUrl = [string]$script:Settings.ConnectWiseBaseUrl
+    if ([string]::IsNullOrWhiteSpace($baseUrl)) { $baseUrl = 'https://api-na.myconnectwise.net' }
+    if ([string]::IsNullOrWhiteSpace($company)) {
+        $company = [Microsoft.VisualBasic.Interaction]::InputBox('Enter ConnectWise company id:', 'ConnectWise Login', '')
     }
+    if ([string]::IsNullOrWhiteSpace($company)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($clientId)) {
+        [System.Windows.Forms.MessageBox]::Show('Set the ConnectWise integrator client id in Settings. That value comes from the ConnectWise Developer Network and is not the API public key.', 'ConnectWise', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return $false
+    }
+
+    $cwCred = Get-CWCredential -CompanyID $company
+    if ($cwCred -and [string]::IsNullOrWhiteSpace($cwCred.ClientId)) { $cwCred.ClientId = $clientId }
+    if ($cwCred -and $cwCred.PrivateKey -and $cwCred.PublicKey) {
+        return [bool](Connect-ConnectWise -CompanyID $cwCred.CompanyID -PublicKey $cwCred.PublicKey -PrivateKey $cwCred.PrivateKey -ClientId $cwCred.ClientId -BaseUrl $(if ($cwCred.BaseUrl) { $cwCred.BaseUrl } else { $baseUrl }))
+    }
+
+    $cwPublic = [Microsoft.VisualBasic.Interaction]::InputBox('Enter API public key:', 'ConnectWise Login', '')
+    if ([string]::IsNullOrWhiteSpace($cwPublic)) { return $false }
+    $cwPrivate = Read-MaskedSecret -Title 'ConnectWise' -Prompt 'Enter the API private key'
+    if (-not $cwPrivate) { return $false }
+    $connected = Connect-ConnectWise -CompanyID $company -PublicKey $cwPublic -PrivateKey $cwPrivate -ClientId $clientId -BaseUrl $baseUrl
+    if ($connected) {
+        $save = [System.Windows.Forms.MessageBox]::Show('Save ConnectWise credentials to Windows Credential Manager?', 'Save Credentials', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($save -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Save-CWCredential -CompanyID $company -PublicKey $cwPublic -PrivateKey $cwPrivate -ClientId $clientId -BaseUrl $baseUrl | Out-Null
+        }
+    }
+    return [bool]$connected
 }
 
 #endregion
@@ -739,98 +834,78 @@ function Show-ThreatHunterApp {
     $btnSettings.Add_Click({ OnSettings $this $_ })
     $toolbar.Controls.Add($btnSettings)
     
-    # Main split container (left/right)
-    $mainSplit = New-Object System.Windows.Forms.SplitContainer
-    $mainSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $mainSplit.Orientation = [System.Windows.Forms.Orientation]::Vertical
-    $mainSplit.SplitterDistance = 600
-    $mainSplit.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-    $form.Controls.Add($mainSplit)
-    
-    # Left side split (ticket top, evidence bottom)
-    $leftSplit = New-Object System.Windows.Forms.SplitContainer
-    $leftSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $leftSplit.Orientation = [System.Windows.Forms.Orientation]::Horizontal
-    $leftSplit.SplitterDistance = 300
-    $leftSplit.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-    $mainSplit.Panel1.Controls.Add($leftSplit)
-    
-    # Ticket Info Panel (top left)
-    $ticketPanel = New-Object System.Windows.Forms.Panel
-    $ticketPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $leftSplit.Panel1.Controls.Add($ticketPanel)
-    
-    $lblTicket = New-Object System.Windows.Forms.Label
-    $lblTicket.Text = "📋 Ticket Information"
-    $lblTicket.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-    $lblTicket.Location = New-Object System.Drawing.Point(10, 10)
-    $lblTicket.AutoSize = $true
-    $ticketPanel.Controls.Add($lblTicket)
-    
-    $script:TicketTextBox = New-ScrollableTextBox -Top 40 -Left 10 -Width 570 -Height 250 -ReadOnly $true
-    $ticketPanel.Controls.Add($script:TicketTextBox)
-    
-    # Evidence Panel (bottom left)
-    $evidencePanel = New-Object System.Windows.Forms.Panel
-    $evidencePanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $leftSplit.Panel2.Controls.Add($evidencePanel)
-    
-    $lblEvidence = New-Object System.Windows.Forms.Label
-    $lblEvidence.Text = "🔎 Investigation Evidence"
-    $lblEvidence.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-    $lblEvidence.Location = New-Object System.Drawing.Point(10, 10)
-    $lblEvidence.AutoSize = $true
-    $evidencePanel.Controls.Add($lblEvidence)
-    
-    $script:EvidenceTextBox = New-ScrollableTextBox -Top 40 -Left 10 -Width 570 -Height 450 -ReadOnly $true
-    $evidencePanel.Controls.Add($script:EvidenceTextBox)
-    
-    # Right side split (verdict top, draft bottom)
-    $rightSplit = New-Object System.Windows.Forms.SplitContainer
-    $rightSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $rightSplit.Orientation = [System.Windows.Forms.Orientation]::Horizontal
-    $rightSplit.SplitterDistance = 250
-    $rightSplit.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-    $mainSplit.Panel2.Controls.Add($rightSplit)
-    
-    # Verdict Panel (top right)
-    $verdictPanel = New-Object System.Windows.Forms.Panel
-    $verdictPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $rightSplit.Panel1.Controls.Add($verdictPanel)
-    
-    $lblVerdict = New-Object System.Windows.Forms.Label
-    $lblVerdict.Text = "⚖️ AI Verdict"
-    $lblVerdict.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-    $lblVerdict.Location = New-Object System.Drawing.Point(10, 10)
-    $lblVerdict.AutoSize = $true
-    $verdictPanel.Controls.Add($lblVerdict)
-    
-    $script:VerdictTextBox = New-ScrollableTextBox -Top 40 -Left 10 -Width 740 -Height 190 -ReadOnly $true
-    $script:VerdictTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $verdictPanel.Controls.Add($script:VerdictTextBox)
-    
-    # Draft Reply Panel (bottom right)
-    $draftPanel = New-Object System.Windows.Forms.Panel
-    $draftPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $rightSplit.Panel2.Controls.Add($draftPanel)
-    
-    $lblDraft = New-Object System.Windows.Forms.Label
-    $lblDraft.Text = "✍️ Draft Client Reply (Editable)"
-    $lblDraft.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-    $lblDraft.Location = New-Object System.Drawing.Point(10, 10)
-    $lblDraft.AutoSize = $true
-    $draftPanel.Controls.Add($lblDraft)
-    
-    $script:DraftTextBox = New-ScrollableTextBox -Top 40 -Left 10 -Width 740 -Height 390 -ReadOnly $false
-    $script:DraftTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    $draftPanel.Controls.Add($script:DraftTextBox)
-    
-    # Bottom control panel
+    # Edge bars are added before the Fill split so they keep their strips.
     $controlPanel = New-Object System.Windows.Forms.Panel
     $controlPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
     $controlPanel.Height = 70
     $controlPanel.BackColor = [System.Drawing.Color]::WhiteSmoke
     $form.Controls.Add($controlPanel)
+
+    $mainSplit = New-Object System.Windows.Forms.SplitContainer
+    $mainSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $mainSplit.Orientation = [System.Windows.Forms.Orientation]::Vertical
+    $mainSplit.Panel1MinSize = 120
+    $mainSplit.Panel2MinSize = 120
+    $mainSplit.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    
+    $leftSplit = New-Object System.Windows.Forms.SplitContainer
+    $leftSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $leftSplit.Orientation = [System.Windows.Forms.Orientation]::Horizontal
+    $leftSplit.Panel1MinSize = 80
+    $leftSplit.Panel2MinSize = 80
+    $leftSplit.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $mainSplit.Panel1.Controls.Add($leftSplit)
+    
+    $ticketPanel = New-Object System.Windows.Forms.Panel
+    $ticketPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $leftSplit.Panel1.Controls.Add($ticketPanel)
+    $script:TicketTextBox = Add-LabeledFillBox -Panel $ticketPanel -Title "Ticket Information" -ReadOnly $true
+    
+    $evidencePanel = New-Object System.Windows.Forms.Panel
+    $evidencePanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $leftSplit.Panel2.Controls.Add($evidencePanel)
+    $script:EvidenceTextBox = Add-LabeledFillBox -Panel $evidencePanel -Title "Investigation Evidence" -ReadOnly $true
+    
+    $rightSplit = New-Object System.Windows.Forms.SplitContainer
+    $rightSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $rightSplit.Orientation = [System.Windows.Forms.Orientation]::Horizontal
+    $rightSplit.Panel1MinSize = 80
+    $rightSplit.Panel2MinSize = 80
+    $rightSplit.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $mainSplit.Panel2.Controls.Add($rightSplit)
+    
+    $verdictPanel = New-Object System.Windows.Forms.Panel
+    $verdictPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $rightSplit.Panel1.Controls.Add($verdictPanel)
+    $script:VerdictTextBox = Add-LabeledFillBox -Panel $verdictPanel -Title "AI Verdict" -ReadOnly $true
+    $script:VerdictTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    
+    $draftPanel = New-Object System.Windows.Forms.Panel
+    $draftPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $rightSplit.Panel2.Controls.Add($draftPanel)
+    $script:DraftTextBox = Add-LabeledFillBox -Panel $draftPanel -Title "Draft Client Reply (editable, not posted)" -ReadOnly $false
+    $script:DraftTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+
+    $form.Controls.Add($mainSplit)
+    $script:MainSplit = $mainSplit
+    $script:LeftSplit = $leftSplit
+    $script:RightSplit = $rightSplit
+    $form.Add_Shown({
+        foreach ($pair in @(
+            @{ Split = $script:MainSplit; Desired = 640 },
+            @{ Split = $script:LeftSplit; Desired = 260 },
+            @{ Split = $script:RightSplit; Desired = 200 }
+        )) {
+            $split = $pair.Split
+            $limit = if ($split.Orientation -eq [System.Windows.Forms.Orientation]::Vertical) { $split.Width } else { $split.Height }
+            $max = $limit - $split.Panel2MinSize - $split.SplitterWidth
+            $min = $split.Panel1MinSize
+            if ($max -gt $min) {
+                $distance = [Math]::Max($min, [Math]::Min([int]$pair.Desired, $max))
+                $split.SplitterDistance = $distance
+            }
+        }
+    })
     
     $script:InvestigateButton = New-Object System.Windows.Forms.Button
     $script:InvestigateButton.Text = "🔍 Start Investigation"

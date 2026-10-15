@@ -38,7 +38,7 @@ The Threat Hunter is an AI-driven security investigation tool that automates the
 ### 🤖 **AI Investigation Engine**
 - **Function calling** - AI requests data via tools: `get_signin_logs`, `get_inbox_rules`, `get_audit_logs`, etc.
 - **Iterative investigation** - AI can request more data if initial findings inconclusive (typically 3-7 tool calls)
-- **Safety limits**: Max 10 iterations, 5-minute timeout, 50K tokens per investigation
+- **Safety limits**: Max 10 iterations and a 5-minute deadline. Tool results are trimmed before they go back to the model.
 - **Tool execution with rate limiting** - Respects Exchange/Graph throttling automatically
 
 ### 📊 **Investigation Workflow**
@@ -72,7 +72,7 @@ The Threat Hunter is an AI-driven security investigation tool that automates the
 
 1. **Claude API Key** (Anthropic) - https://console.anthropic.com/
    - Used for AI investigation and draft generation
-   - Recommended model: `claude-3-5-sonnet-20241022`
+   - Default model: `claude-sonnet-5-5` (override with Settings → Claude model)
    - Cost: ~$3 per 1M input tokens, ~$15 per 1M output tokens
    - Typical investigation: 5,000-20,000 tokens (~$0.05-$0.30)
 
@@ -202,7 +202,7 @@ The Threat Hunter is an AI-driven security investigation tool that automates the
 
 #### Parallel Data Gathering
 
-The AI investigation engine automatically parallelizes independent data pulls:
+Graph and Exchange connections belong to the current PowerShell session, so tool calls in one turn run one after another in that session. Repeating a call with the same arguments uses the investigation cache instead of hitting the API again.
 
 ```powershell
 # These execute concurrently when AI requests them in same iteration:

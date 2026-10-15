@@ -4,6 +4,46 @@
 # Module-level variables for connection state
 $script:CWSession = $null
 
+function ConvertTo-ConnectWiseJson {
+    param($Value, [int]$Depth = 20)
+    if ($Depth -lt 0) { return '"…"' }
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [bool]) { if ($Value) { return 'true' } else { return 'false' } }
+    if ($Value -is [datetime]) { return ('"' + $Value.ToUniversalTime().ToString('o') + '"') }
+    if ($Value -is [string]) {
+        $escaped = $Value.Replace('\', '\\').Replace('"', '\"').Replace("`r", '\r').Replace("`n", '\n').Replace("`t", '\t')
+        return '"' + $escaped + '"'
+    }
+    if ($Value -is [byte] -or $Value -is [int16] -or $Value -is [int] -or $Value -is [int64] -or $Value -is [decimal] -or $Value -is [double] -or $Value -is [single]) {
+        return ([string]([System.Convert]::ToString($Value, [cultureinfo]::InvariantCulture)))
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        foreach ($key in @($Value.Keys)) {
+            $parts.Add(((ConvertTo-ConnectWiseJson ([string]$key)) + ':' + (ConvertTo-ConnectWiseJson $Value[$key] ($Depth - 1))))
+        }
+        return '{' + ($parts -join ',') + '}'
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        foreach ($item in $Value) { $parts.Add((ConvertTo-ConnectWiseJson $item ($Depth - 1))) }
+        return '[' + ($parts -join ',') + ']'
+    }
+    if ($Value.PSObject.Properties.Count -gt 0) {
+        $hash = @{}
+        foreach ($prop in $Value.PSObject.Properties) { $hash[$prop.Name] = $prop.Value }
+        return ConvertTo-ConnectWiseJson $hash ($Depth - 1)
+    }
+    return (ConvertTo-ConnectWiseJson ([string]$Value))
+}
+
+function Get-PlainTextFromSecureString {
+    param([securestring]$Secure)
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
 <#
 .SYNOPSIS
     Connects to ConnectWise Manage REST API
@@ -13,9 +53,11 @@ $script:CWSession = $null
 .PARAMETER CompanyID
     ConnectWise company identifier (e.g., "yourcompany")
 .PARAMETER PublicKey
-    API public key (ClientID)
+    API member public key
 .PARAMETER PrivateKey
-    API private key (SecureString)
+    API member private key (SecureString)
+.PARAMETER ClientId
+    Integrator client id from the ConnectWise Developer Network. This is not the API public key.
 .PARAMETER BaseUrl
     ConnectWise API base URL (default: https://api-na.myconnectwise.net)
 .EXAMPLE
@@ -33,30 +75,30 @@ function Connect-ConnectWise {
         
         [Parameter(Mandatory=$true)]
         [securestring]$PrivateKey,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ClientId,
         
         [Parameter(Mandatory=$false)]
         [string]$BaseUrl = "https://api-na.myconnectwise.net"
     )
     
+    if ([string]::IsNullOrWhiteSpace($ClientId)) {
+        throw "ConnectWise ClientId is required. Use the integrator client id from the ConnectWise Developer Network."
+    }
+
     try {
-        # Convert SecureString to plain text for API (REST requires it)
-        $privateKeyPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($PrivateKey)
-        )
+        $privateKeyPlain = Get-PlainTextFromSecureString -Secure $PrivateKey
         
-        # Build Basic Auth header: Base64(CompanyID+PublicKey:PrivateKey)
+        # Basic auth is base64(company+publicKey:privateKey). clientId is a separate header.
         $authString = "$CompanyID+$PublicKey`:$privateKeyPlain"
         $authBytes = [System.Text.Encoding]::UTF8.GetBytes($authString)
         $authBase64 = [System.Convert]::ToBase64String($authBytes)
-        
-        # Clear plaintext private key from memory
         $privateKeyPlain = $null
-        [System.GC]::Collect()
         
-        # Build headers
         $headers = @{
             'Authorization' = "Basic $authBase64"
-            'clientId' = [guid]::NewGuid().ToString()  # Required by CW API
+            'clientId' = $ClientId
             'Content-Type' = 'application/json'
             'Accept' = 'application/json'
         }
@@ -152,8 +194,9 @@ function Invoke-CWRequest {
             ErrorAction = 'Stop'
         }
         
-        if ($Body) {
-            $params['Body'] = ($Body | ConvertTo-Json -Depth 10 -Compress)
+        if ($null -ne $Body) {
+            # Do not pipe the body. A one-element patch array would be unwrapped into a single object.
+            $params['Body'] = ConvertTo-ConnectWiseJson $Body
         }
         
         # Make request
@@ -297,12 +340,23 @@ function Set-CWTicketStatus {
     )
     
     try {
-        # PATCH operation to update status
+        $ticket = Get-CWTicket -TicketNumber $TicketNumber
+        if (-not $ticket -or -not $ticket.board.id) {
+            throw "Ticket $TicketNumber has no board id, so its status cannot be changed."
+        }
+        $statuses = @(Invoke-CWRequest -Endpoint "service/boards/$($ticket.board.id)/statuses" -Method Get)
+        $match = $statuses | Where-Object { $_.name -eq $StatusName } | Select-Object -First 1
+        if (-not $match) {
+            $available = ($statuses | ForEach-Object { $_.name }) -join ', '
+            throw "Status '$StatusName' is not on board '$($ticket.board.name)'. Available: $available"
+        }
+
+        # JSON Patch requires a JSON array and a JSON pointer. Manage updates status by id.
         $patchBody = @(
             @{
-                op = "replace"
-                path = "status/name"
-                value = $StatusName
+                op = 'replace'
+                path = '/status/id'
+                value = [int]$match.id
             }
         )
         
@@ -337,11 +391,17 @@ function Set-CWTicketOwner {
     )
     
     try {
+        $safeId = ($MemberIdentifier -replace '"', '')
+        $condition = [uri]::EscapeDataString(('identifier="{0}"' -f $safeId))
+        $members = @(Invoke-CWRequest -Endpoint "system/members?conditions=$condition" -Method Get)
+        $member = $members | Where-Object { $_.identifier -eq $MemberIdentifier } | Select-Object -First 1
+        if (-not $member) { throw "ConnectWise member '$MemberIdentifier' was not found." }
+
         $patchBody = @(
             @{
-                op = "replace"
-                path = "owner/identifier"
-                value = $MemberIdentifier
+                op = 'replace'
+                path = '/owner/id'
+                value = [int]$member.id
             }
         )
         
@@ -420,8 +480,9 @@ function Get-CWBoardStatuses {
     )
     
     try {
-        # Get board first
-        $boards = Invoke-CWRequest -Endpoint "service/boards?conditions=name='$BoardName'" -Method Get
+        $safeName = ($BoardName -replace '"', '')
+        $condition = [uri]::EscapeDataString(('name="{0}"' -f $safeName))
+        $boards = @(Invoke-CWRequest -Endpoint "service/boards?conditions=$condition" -Method Get)
         if (-not $boards -or $boards.Count -eq 0) {
             Write-Error "Board not found: $BoardName"
             return @()
@@ -451,6 +512,20 @@ function Get-CWBoardStatuses {
 .PARAMETER BaseUrl
     API base URL (optional)
 #>
+function Get-CWTicketNotes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [int]$TicketNumber
+    )
+    try {
+        return @(Invoke-CWRequest -Endpoint "service/tickets/$TicketNumber/notes?pageSize=200" -Method Get)
+    } catch {
+        Write-Warning "Could not load notes for ticket $TicketNumber : $_"
+        return @()
+    }
+}
+
 function Save-CWCredential {
     [CmdletBinding()]
     param(
@@ -462,31 +537,26 @@ function Save-CWCredential {
         
         [Parameter(Mandatory=$true)]
         [securestring]$PrivateKey,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ClientId,
         
         [Parameter(Mandatory=$false)]
         [string]$BaseUrl = "https://api-na.myconnectwise.net"
     )
     
     try {
-        # Use CredentialManager module or native CredWrite
-        # Target name: "ConnectWise_<CompanyID>"
         $targetName = "ConnectWise_$CompanyID"
+        $privateKeyPlain = Get-PlainTextFromSecureString -Secure $PrivateKey
         
-        # Store as JSON: { "CompanyID": "...", "PublicKey": "...", "PrivateKey": "...", "BaseUrl": "..." }
-        $privateKeyPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($PrivateKey)
-        )
-        
-        $credJson = @{
+        $credJson = ConvertTo-ConnectWiseJson @{
             CompanyID = $CompanyID
             PublicKey = $PublicKey
             PrivateKey = $privateKeyPlain
+            ClientId = $ClientId
             BaseUrl = $BaseUrl
-        } | ConvertTo-Json -Compress
-        
-        # Clear plaintext
+        }
         $privateKeyPlain = $null
-        [System.GC]::Collect()
         
         # Try CredentialManager module first
         if (Get-Command New-StoredCredential -ErrorAction SilentlyContinue) {
@@ -546,6 +616,7 @@ function Get-CWCredential {
                 CompanyID = $credJson.CompanyID
                 PublicKey = $credJson.PublicKey
                 PrivateKey = $privateKeySecure
+                ClientId = $credJson.ClientId
                 BaseUrl = $credJson.BaseUrl
             }
         } else {
@@ -565,7 +636,9 @@ Export-ModuleMember -Function @(
     'Disconnect-ConnectWise',
     'Get-ConnectWiseStatus',
     'Get-CWTicket',
+    'Get-CWTicketNotes',
     'New-CWTicket',
+    'ConvertTo-ConnectWiseJson',
     'Set-CWTicketStatus',
     'Set-CWTicketOwner',
     'Add-CWTicketNote',

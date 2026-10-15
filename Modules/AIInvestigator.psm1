@@ -23,6 +23,180 @@ $script:InvestigationStats = @{
     CacheHits = 0
     TotalDuration = 0
 }
+$script:DefaultClaudeModel = 'claude-sonnet-5-5'
+
+function ConvertTo-StableJson {
+    param($Value, [int]$Depth = 20)
+    if ($Depth -lt 0) { return '"…"' }
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [bool]) { if ($Value) { return 'true' } else { return 'false' } }
+    if ($Value -is [datetime]) { return ('"' + $Value.ToUniversalTime().ToString('o') + '"') }
+    if ($Value -is [string]) {
+        $escaped = $Value.Replace('\', '\\').Replace('"', '\"').Replace("`r", '\r').Replace("`n", '\n').Replace("`t", '\t')
+        return '"' + $escaped + '"'
+    }
+    if ($Value -is [byte] -or $Value -is [int16] -or $Value -is [int] -or $Value -is [int64] -or $Value -is [decimal] -or $Value -is [double] -or $Value -is [single]) {
+        return ([string]([System.Convert]::ToString($Value, [cultureinfo]::InvariantCulture)))
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        foreach ($key in @($Value.Keys)) {
+            $parts.Add(((ConvertTo-StableJson ([string]$key)) + ':' + (ConvertTo-StableJson $Value[$key] ($Depth - 1))))
+        }
+        return '{' + ($parts -join ',') + '}'
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        foreach ($item in $Value) { $parts.Add((ConvertTo-StableJson $item ($Depth - 1))) }
+        return '[' + ($parts -join ',') + ']'
+    }
+    $hash = @{}
+    $wrote = $false
+    foreach ($prop in $Value.PSObject.Properties) {
+        if ($prop.MemberType -eq 'NoteProperty' -or $prop.MemberType -eq 'Property') {
+            $hash[$prop.Name] = $prop.Value
+            $wrote = $true
+        }
+    }
+    if ($wrote) { return ConvertTo-StableJson $hash ($Depth - 1) }
+    return (ConvertTo-StableJson ([string]$Value))
+}
+
+function ConvertTo-HashtableDeep {
+    param($InputObject)
+    if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [string] -or $InputObject -is [ValueType]) { return $InputObject }
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $hash = @{}
+        foreach ($key in @($InputObject.Keys)) { $hash[$key] = ConvertTo-HashtableDeep $InputObject[$key] }
+        return $hash
+    }
+    if ($InputObject -is [System.Collections.IEnumerable]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $InputObject) { $items.Add((ConvertTo-HashtableDeep $item)) }
+        return ,$items.ToArray()
+    }
+    $hash = @{}
+    $wrote = $false
+    foreach ($prop in $InputObject.PSObject.Properties) {
+        if ($prop.MemberType -eq 'NoteProperty' -or $prop.MemberType -eq 'Property') {
+            $hash[$prop.Name] = ConvertTo-HashtableDeep $prop.Value
+            $wrote = $true
+        }
+    }
+    if ($wrote) { return $hash }
+    return $InputObject
+}
+
+function New-ClaudeStreamAssembler {
+    return @{
+        Blocks = @{}
+        Order = New-Object System.Collections.Generic.List[int]
+        StopReason = $null
+        Usage = @{}
+        Error = $null
+        LastTextDelta = ''
+    }
+}
+
+function Add-ClaudeStreamEvent {
+    param($State, $Event)
+    if ($null -eq $Event) { return }
+    switch ([string]$Event.type) {
+        'content_block_start' {
+            $index = [int]$Event.index
+            $block = $Event.content_block
+            $State.Blocks[$index] = @{
+                type = [string]$block.type
+                text = [string]$block.text
+                id = [string]$block.id
+                name = [string]$block.name
+                partial_json = ''
+                input = $null
+            }
+            if (-not $State.Order.Contains($index)) { [void]$State.Order.Add($index) }
+        }
+        'content_block_delta' {
+            $index = [int]$Event.index
+            $entry = $State.Blocks[$index]
+            if (-not $entry) { return }
+            $deltaType = [string]$Event.delta.type
+            if ($deltaType -eq 'text_delta') {
+                $piece = [string]$Event.delta.text
+                $entry.text += $piece
+                $State.LastTextDelta = $piece
+            } elseif ($deltaType -eq 'input_json_delta') {
+                $entry.partial_json += [string]$Event.delta.partial_json
+            }
+        }
+        'content_block_stop' {
+            $index = [int]$Event.index
+            $entry = $State.Blocks[$index]
+            if ($entry -and $entry.type -eq 'tool_use') {
+                if ([string]::IsNullOrWhiteSpace($entry.partial_json)) {
+                    $entry.input = @{}
+                } else {
+                    try {
+                        $entry.input = ConvertTo-HashtableDeep ($entry.partial_json | ConvertFrom-Json)
+                        if ($entry.input -isnot [hashtable]) { $entry.input = @{} }
+                    } catch {
+                        $entry.input = @{ Error = $_.Exception.Message }
+                    }
+                }
+            }
+        }
+        'message_delta' {
+            if ($Event.delta.stop_reason) { $State.StopReason = [string]$Event.delta.stop_reason }
+            if ($Event.usage) { $State.Usage = $Event.usage }
+        }
+        'error' {
+            $State.Error = [string]$Event.error.message
+        }
+    }
+}
+
+function Get-ClaudeStreamContent {
+    param($State)
+    $content = New-Object System.Collections.Generic.List[object]
+    foreach ($index in @($State.Order)) {
+        $entry = $State.Blocks[$index]
+        if ($entry.type -eq 'text') {
+            $content.Add(@{ type = 'text'; text = [string]$entry.text })
+        } elseif ($entry.type -eq 'tool_use') {
+            $content.Add(@{ type = 'tool_use'; id = [string]$entry.id; name = [string]$entry.name; input = $entry.input })
+        }
+    }
+    # A bare array is unwrapped by PowerShell. Keep the blocks on a property.
+    return [pscustomobject]@{ Items = $content.ToArray() }
+}
+
+function Get-InvestigationReplyText {
+    param([string]$Text)
+    $result = @{
+        Verdict = 'Unknown'
+        Confidence = 'Unknown'
+        Summary = ''
+        ClientReply = $Text
+    }
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $result }
+    if ($Text -match '(?m)^VERDICT:\s*(.+)$') { $result.Verdict = $Matches[1].Trim() }
+    if ($Text -match '(?m)^CONFIDENCE:\s*(.+)$') { $result.Confidence = $Matches[1].Trim() }
+    if ($Text -match '(?m)^SUMMARY:\s*(.+)$') { $result.Summary = $Matches[1].Trim() }
+    if ($Text -match '(?s)CLIENT REPLY:\s*(.+)$') { $result.ClientReply = $Matches[1].Trim() }
+    return $result
+}
+
+function Get-ToolInt {
+    param($Parameters, [string]$Name, [int]$Default, [int]$Minimum = 1, [int]$Maximum = 30)
+    if ($null -eq $Parameters -or -not $Parameters.ContainsKey($Name) -or $null -eq $Parameters[$Name] -or "$($Parameters[$Name])" -eq '') {
+        return $Default
+    }
+    $number = 0
+    if (-not [int]::TryParse([string]$Parameters[$Name], [ref]$number)) { return $Default }
+    if ($number -lt $Minimum) { return $Minimum }
+    if ($number -gt $Maximum) { return $Maximum }
+    return $number
+}
 
 <#
 .SYNOPSIS
@@ -149,6 +323,20 @@ function Get-AIToolDefinitions {
             }
         },
         @{
+            name = "get_mfa_status"
+            description = "Gets MFA methods and whether Security Defaults or Conditional Access require MFA for one user."
+            parameters = @{
+                type = "object"
+                properties = @{
+                    user_principal = @{
+                        type = "string"
+                        description = "User principal name"
+                    }
+                }
+                required = @("user_principal")
+            }
+        },
+        @{
             name = "search_message_trace"
             description = "Searches Exchange message trace logs for sent/received emails matching criteria."
             parameters = @{
@@ -164,7 +352,7 @@ function Get-AIToolDefinitions {
                     }
                     days_back = @{
                         type = "integer"
-                        description = "Days to search (max 10)"
+                        description = "Days to search (max 10). Provide a sender or a recipient."
                         default = 7
                     }
                 }
@@ -186,7 +374,7 @@ function Invoke-AITool {
         [string]$ToolName,
         
         [Parameter(Mandatory=$false)]
-        [hashtable]$Parameters = @{},
+        [object]$Parameters = @{},
         
         [Parameter(Mandatory=$false)]
         [switch]$UseCache = $true
@@ -196,10 +384,13 @@ function Invoke-AITool {
     $startTime = Get-Date
     
     try {
-        # Generate cache key
-        $cacheKey = "$ToolName|$($Parameters | ConvertTo-Json -Compress)"
+        if ($Parameters -isnot [hashtable]) {
+            $Parameters = ConvertTo-HashtableDeep $Parameters
+        }
+        if ($Parameters -isnot [hashtable]) { $Parameters = @{} }
+
+        $cacheKey = "$ToolName|$(ConvertTo-StableJson $Parameters)"
         
-        # Check cache
         if ($UseCache -and $script:InvestigationCache.ContainsKey($cacheKey)) {
             $script:InvestigationStats.CacheHits++
             Write-Host "  [Cache Hit] $ToolName" -ForegroundColor DarkGray
@@ -207,58 +398,83 @@ function Invoke-AITool {
         }
         
         Write-Host "  [Executing] $ToolName..." -ForegroundColor Cyan
+
+        $graphTools = @('get_signin_logs','get_user_details','get_audit_logs','get_oauth_permissions','get_device_compliance','get_mfa_status')
+        $exchangeTools = @('get_inbox_rules','get_mailbox_permissions','search_message_trace')
+        if ($graphTools -contains $ToolName) {
+            $graphContext = $null
+            if (Get-Command Get-MgContext -ErrorAction SilentlyContinue) {
+                $graphContext = Get-MgContext -ErrorAction SilentlyContinue
+            }
+            if (-not $graphContext) {
+                return @{ Error = 'Not connected to Microsoft Graph. Run Connect-MgGraph before investigating.' }
+            }
+        }
+        if ($exchangeTools -contains $ToolName -and -not (Get-Command Get-InboxRule -ErrorAction SilentlyContinue) -and $ToolName -eq 'get_inbox_rules') {
+            return @{ Error = 'Exchange Online is not loaded. Run Connect-ExchangeOnline before investigating.' }
+        }
         
-        # Map tool to PowerShell function
         $result = switch ($ToolName) {
             "get_signin_logs" {
-                $upns = $Parameters['user_principals']
-                $days = if ($Parameters['days_back']) { $Parameters['days_back'] } else { 7 }
+                $upns = @($Parameters['user_principals'])
+                $days = Get-ToolInt -Parameters $Parameters -Name 'days_back' -Default 7 -Maximum 30
                 Get-EntraSignInLogs -UserPrincipalNames $upns -Days $days
             }
             
             "get_inbox_rules" {
-                $upns = $Parameters['mailbox_upns']
+                $upns = @($Parameters['mailbox_upns'])
                 $allRules = @()
                 foreach ($upn in $upns) {
+                    if ([string]::IsNullOrWhiteSpace($upn)) { continue }
                     try {
-                        $rules = Get-InboxRule -Mailbox $upn -ErrorAction SilentlyContinue
-                        if ($rules) {
-                            $allRules += $rules
+                        $rules = @(Get-InboxRule -Mailbox $upn -ErrorAction Stop)
+                        foreach ($rule in $rules) {
+                            $allRules += [pscustomobject]@{
+                                Mailbox = $upn
+                                Name = $rule.Name
+                                Enabled = $rule.Enabled
+                                Priority = $rule.Priority
+                                From = ($rule.From -join '; ')
+                                SubjectContainsWords = ($rule.SubjectContainsWords -join '; ')
+                                ForwardTo = ($rule.ForwardTo -join '; ')
+                                RedirectTo = ($rule.RedirectTo -join '; ')
+                                ForwardAsAttachmentTo = ($rule.ForwardAsAttachmentTo -join '; ')
+                                DeleteMessage = $rule.DeleteMessage
+                                MoveToFolder = $rule.MoveToFolder
+                                StopProcessingRules = $rule.StopProcessingRules
+                                Description = $rule.Description
+                            }
                         }
                     } catch {
-                        Write-Warning "Could not get inbox rules for $upn : $_"
+                        $allRules += @{ Mailbox = $upn; Error = $_.Exception.Message }
                     }
                 }
                 $allRules
             }
             
             "get_user_details" {
-                $upn = $Parameters['user_principal']
-                Get-EntraUserDetailsAndRoles -UserPrincipalName $upn
+                Get-EntraUserDetailsAndRoles -UserPrincipalName $Parameters['user_principal']
             }
             
             "get_audit_logs" {
-                $upn = $Parameters['user_principal']
-                $days = if ($Parameters['days_back']) { $Parameters['days_back'] } else { 7 }
-                Get-EntraUserAuditLogs -UserPrincipalName $upn -Days $days
+                $days = Get-ToolInt -Parameters $Parameters -Name 'days_back' -Default 7 -Maximum 30
+                Get-EntraUserAuditLogs -UserPrincipalName $Parameters['user_principal'] -Days $days
             }
             
             "get_mailbox_permissions" {
-                $days = if ($Parameters['days_back']) { $Parameters['days_back'] } else { 7 }
-                $targets = $Parameters['target_mailboxes']
-                if (Get-Command Get-MailboxPermissionChanges -ErrorAction SilentlyContinue) {
-                    if ($targets) {
-                        Get-MailboxPermissionChanges -DaysBack $days -TargetMailboxes $targets
-                    } else {
-                        Get-MailboxPermissionChanges -DaysBack $days
-                    }
-                } else {
+                $days = Get-ToolInt -Parameters $Parameters -Name 'days_back' -Default 7 -Maximum 30
+                $targets = @($Parameters['target_mailboxes'] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if (-not (Get-Command Get-MailboxPermissionChanges -ErrorAction SilentlyContinue)) {
                     @{ Error = "Mailbox permission tracking not available" }
+                } elseif ($targets.Count -gt 0) {
+                    Get-MailboxPermissionChanges -DaysBack $days -SelectedUsers $targets
+                } else {
+                    Get-MailboxPermissionChanges -DaysBack $days
                 }
             }
             
             "get_oauth_permissions" {
-                $days = if ($Parameters['days_back']) { $Parameters['days_back'] } else { 30 }
+                $days = Get-ToolInt -Parameters $Parameters -Name 'days_back' -Default 30 -Maximum 90
                 if (Get-Command Get-OAuthPermissionGrants -ErrorAction SilentlyContinue) {
                     Get-OAuthPermissionGrants -DaysBack $days
                 } else {
@@ -267,29 +483,41 @@ function Invoke-AITool {
             }
             
             "get_device_compliance" {
-                $upns = $Parameters['user_principals']
+                $upns = @($Parameters['user_principals'])
                 if (Get-Command Get-IntuneDeviceRecords -ErrorAction SilentlyContinue) {
                     Get-IntuneDeviceRecords -UserPrincipalNames $upns
                 } else {
                     @{ Error = "Device compliance tracking not available (requires Intune)" }
                 }
             }
+
+            "get_mfa_status" {
+                Get-EntraUserMfaStatus -UserPrincipalName $Parameters['user_principal']
+            }
             
             "search_message_trace" {
-                $sender = $Parameters['sender']
-                $recipient = $Parameters['recipient']
-                $days = if ($Parameters['days_back']) { $Parameters['days_back'] } else { 7 }
-                
-                $traceParams = @{}
-                if ($sender) { $traceParams['SenderAddress'] = $sender }
-                if ($recipient) { $traceParams['RecipientAddress'] = $recipient }
-                $traceParams['StartDate'] = (Get-Date).AddDays(-$days)
-                $traceParams['EndDate'] = Get-Date
-                
-                try {
-                    Get-MessageTrace @traceParams -ErrorAction SilentlyContinue
-                } catch {
-                    @{ Error = "Message trace failed: $_" }
+                $sender = [string]$Parameters['sender']
+                $recipient = [string]$Parameters['recipient']
+                $days = Get-ToolInt -Parameters $Parameters -Name 'days_back' -Default 7 -Maximum 10
+                if ([string]::IsNullOrWhiteSpace($sender) -and [string]::IsNullOrWhiteSpace($recipient)) {
+                    @{ Error = 'Message trace needs a sender or a recipient.' }
+                } else {
+                    $traceParams = @{
+                        StartDate = (Get-Date).AddDays(-$days)
+                        EndDate = Get-Date
+                        PageSize = 100
+                    }
+                    if ($sender) { $traceParams['SenderAddress'] = $sender }
+                    if ($recipient) { $traceParams['RecipientAddress'] = $recipient }
+                    $pages = @()
+                    for ($page = 1; $page -le 5; $page++) {
+                        $traceParams['Page'] = $page
+                        $batch = @(Get-MessageTrace @traceParams -ErrorAction Stop)
+                        if ($batch.Count -eq 0) { break }
+                        $pages += $batch | Select-Object Received, SenderAddress, RecipientAddress, Subject, Status, FromIP, ToIP, Size
+                        if ($batch.Count -lt 100) { break }
+                    }
+                    $pages
                 }
             }
             
@@ -298,8 +526,8 @@ function Invoke-AITool {
             }
         }
         
-        # Cache result
-        if ($UseCache) {
+        $isError = ($result -is [System.Collections.IDictionary] -and $result.Contains('Error'))
+        if ($UseCache -and -not $isError) {
             $script:InvestigationCache[$cacheKey] = $result
         }
         
@@ -393,7 +621,7 @@ function Invoke-ClaudeInvestigation {
         [int]$MaxTokens = 4096,
         
         [Parameter(Mandatory=$false)]
-        [string]$Model = "claude-3-5-sonnet-20241022"
+        [string]$Model = "claude-sonnet-5-5"
     )
     
     try {
@@ -422,7 +650,7 @@ function Invoke-ClaudeInvestigation {
             'content-type' = 'application/json'
         }
         
-        $jsonBody = $requestBody | ConvertTo-Json -Depth 10 -Compress
+        $jsonBody = ConvertTo-StableJson $requestBody
         
         if ($OnStreamChunk) {
             # Streaming mode
@@ -481,54 +709,33 @@ function Invoke-ClaudeStreaming {
         $stream = $response.GetResponseStream()
         $reader = New-Object System.IO.StreamReader($stream)
         
-        $fullResponse = @{
-            content = @()
-            stop_reason = $null
-            usage = @{}
-        }
-        
-        # Read SSE stream
+        $assembler = New-ClaudeStreamAssembler
         while (-not $reader.EndOfStream) {
             $line = $reader.ReadLine()
-            
-            if ($line.StartsWith("data: ")) {
-                $data = $line.Substring(6)
-                
-                if ($data -eq "[DONE]") {
-                    break
-                }
-                
-                try {
-                    $event = $data | ConvertFrom-Json
-                    
-                    # Handle different event types
-                    if ($event.type -eq "content_block_delta") {
-                        if ($event.delta.type -eq "text_delta") {
-                            $text = $event.delta.text
-                            $fullResponse.content += @{ type = "text"; text = $text }
-                            
-                            # Call chunk callback
-                            if ($OnChunk) {
-                                & $OnChunk $text
-                            }
-                        }
-                    } elseif ($event.type -eq "message_stop") {
-                        $fullResponse.stop_reason = $event.message.stop_reason
-                        break
-                    } elseif ($event.type -eq "message_delta") {
-                        $fullResponse.usage = $event.usage
-                    }
-                } catch {
-                    # Ignore JSON parse errors in stream
-                }
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($line.StartsWith('event:')) { continue }
+            if (-not $line.StartsWith('data:')) { continue }
+
+            $data = $line.Substring(5).Trim()
+            if ($data -eq '[DONE]') { break }
+            $event = $data | ConvertFrom-Json
+            Add-ClaudeStreamEvent -State $assembler -Event $event
+            if ($assembler.LastTextDelta -and $OnChunk -and $event.type -eq 'content_block_delta' -and $event.delta.type -eq 'text_delta') {
+                & $OnChunk $assembler.LastTextDelta
+                $assembler.LastTextDelta = ''
             }
+            if ($assembler.Error) { throw $assembler.Error }
         }
-        
+
         $reader.Close()
         $stream.Close()
         $response.Close()
-        
-        return $fullResponse
+
+        return @{
+            content = @(Get-ClaudeStreamContent -State $assembler).Items
+            stop_reason = $assembler.StopReason
+            usage = $assembler.Usage
+        }
         
     } catch {
         Write-Error "Streaming error: $_"
@@ -558,6 +765,9 @@ function Start-AIInvestigation {
         [string]$ApiKey = "",
         
         [Parameter(Mandatory=$false)]
+        [string]$Model = "",
+        
+        [Parameter(Mandatory=$false)]
         [scriptblock]$OnStatusUpdate = $null,
         
         [Parameter(Mandatory=$false)]
@@ -579,6 +789,8 @@ function Start-AIInvestigation {
     $script:InvestigationCache = @{}
     
     try {
+        if ([string]::IsNullOrWhiteSpace($Model)) { $Model = $script:DefaultClaudeModel }
+
         if ([string]::IsNullOrWhiteSpace($ApiKey)) {
             throw "API key required for AI investigation"
         }
@@ -670,83 +882,73 @@ $MemberberryInstructions
                 -Messages $messages `
                 -Tools $claudeTools `
                 -OnStreamChunk $OnStreamChunk `
+                -Model $Model `
                 -MaxTokens 4096
             
             if (-not $response) {
                 throw "Failed to get AI response"
             }
+            if (((Get-Date) - $script:InvestigationStats.StartTime).TotalMinutes -ge 5) {
+                throw "Investigation stopped after 5 minutes."
+            }
             
-            # Process response
             $hasToolUse = $false
             $textContent = ""
-            $toolResults = @()
+            $toolResults = New-Object System.Collections.Generic.List[object]
+            $assistantContent = New-Object System.Collections.Generic.List[object]
             
-            foreach ($block in $response.content) {
-                if ($block.type -eq "text") {
-                    $textContent += $block.text
-                } elseif ($block.type -eq "tool_use") {
+            foreach ($block in @($response.content)) {
+                $blockType = [string]$block.type
+                if ($blockType -eq "text") {
+                    $textContent += [string]$block.text
+                    $assistantContent.Add(@{ type = 'text'; text = [string]$block.text })
+                } elseif ($blockType -eq "tool_use") {
                     $hasToolUse = $true
-                    $toolName = $block.name
-                    $toolParams = $block.input
-                    $toolId = $block.id
+                    $toolName = [string]$block.name
+                    $toolParams = ConvertTo-HashtableDeep $block.input
+                    if ($toolParams -isnot [hashtable]) { $toolParams = @{} }
+                    $toolId = [string]$block.id
                     
-                    & $updateStatus "  🔧 Calling tool: $toolName"
+                    & $updateStatus "  Calling tool: $toolName"
                     
-                    # Execute tool
+                    # Graph and Exchange sessions cannot be shared across runspaces, so tools in one turn run back to back in this session. The cache skips repeats.
                     $toolResult = Invoke-AITool -ToolName $toolName -Parameters $toolParams
                     
-                    # Record tool call
                     $investigation.ToolCalls += @{
                         Tool = $toolName
                         Parameters = $toolParams
                         Result = $toolResult
                     }
                     
-                    # Convert result to AI-friendly format
                     $resultJson = ConvertTo-AIFriendlyJson -Data $toolResult
-                    
-                    $toolResults += @{
+                    $assistantContent.Add(@{ type = 'tool_use'; id = $toolId; name = $toolName; input = $toolParams })
+                    $toolResults.Add(@{
                         type = "tool_result"
                         tool_use_id = $toolId
                         content = $resultJson
-                    }
+                    })
                 }
             }
             
-            # Add assistant response to messages
             $messages += @{
                 role = "assistant"
-                content = $response.content
+                content = $assistantContent.ToArray()
             }
             
             if ($hasToolUse) {
-                # Add tool results and continue loop
                 $messages += @{
                     role = "user"
-                    content = $toolResults
+                    content = $toolResults.ToArray()
                 }
             } else {
-                # No tool use - AI has made final determination
                 $investigation.Complete = $true
+                $parsed = Get-InvestigationReplyText -Text $textContent
+                $investigation.Verdict = $parsed.Verdict
+                $investigation.Confidence = $parsed.Confidence
+                $investigation.Summary = $parsed.Summary
+                $investigation.ClientReply = $parsed.ClientReply
                 
-                # Parse verdict from response
-                if ($textContent -match "VERDICT:\s*(.+)") {
-                    $investigation.Verdict = $Matches[1].Trim()
-                }
-                if ($textContent -match "CONFIDENCE:\s*(.+)") {
-                    $investigation.Confidence = $Matches[1].Trim()
-                }
-                if ($textContent -match "SUMMARY:\s*(.+)") {
-                    $investigation.Summary = $Matches[1].Trim()
-                }
-                if ($textContent -match "CLIENT REPLY:\s*(.+)") {
-                    $investigation.ClientReply = $Matches[1].Trim()
-                } else {
-                    # Fallback: use entire text as reply
-                    $investigation.ClientReply = $textContent
-                }
-                
-                & $updateStatus "✅ Investigation complete: $($investigation.Verdict) ($($investigation.Confidence) confidence)"
+                & $updateStatus "Investigation complete: $($investigation.Verdict) ($($investigation.Confidence) confidence)"
             }
         }
         
@@ -783,6 +985,40 @@ $MemberberryInstructions
 .SYNOPSIS
     Clears investigation cache
 #>
+function Update-AIClientDraft {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$ApiKey,
+        [Parameter(Mandatory=$true)][string]$CurrentDraft,
+        [Parameter(Mandatory=$true)][string]$Clarification,
+        [Parameter(Mandatory=$false)][string]$MemberberryInstructions = "",
+        [Parameter(Mandatory=$false)][string]$Model = "",
+        [Parameter(Mandatory=$false)][scriptblock]$OnStreamChunk = $null
+    )
+    if ([string]::IsNullOrWhiteSpace($Model)) { $Model = $script:DefaultClaudeModel }
+    $systemPrompt = @"
+You revise a client-facing security ticket reply. Return only the revised reply.
+Keep every claim grounded in the current draft. Apply the owner's clarification.
+Do not add a verdict header.
+
+$MemberberryInstructions
+"@
+    if ($systemPrompt.Length -gt 8000) { $systemPrompt = $systemPrompt.Substring(0, 8000) }
+    $messages = @(
+        @{
+            role = 'user'
+            content = "Current draft:`n$CurrentDraft`n`nOwner clarification:`n$Clarification`n`nWrite the revised reply only."
+        }
+    )
+    $response = Invoke-ClaudeInvestigation -ApiKey $ApiKey -SystemPrompt $systemPrompt -Messages $messages -Model $Model -OnStreamChunk $OnStreamChunk -MaxTokens 2000
+    if (-not $response) { throw 'Failed to revise the draft.' }
+    $text = ''
+    foreach ($block in @($response.content)) {
+        if ([string]$block.type -eq 'text') { $text += [string]$block.text }
+    }
+    return $text.Trim()
+}
+
 function Clear-InvestigationCache {
     $script:InvestigationCache = @{}
     $script:InvestigationStats = @{
@@ -798,5 +1034,12 @@ Export-ModuleMember -Function @(
     'Get-AIToolDefinitions',
     'Invoke-AITool',
     'Start-AIInvestigation',
-    'Clear-InvestigationCache'
+    'Update-AIClientDraft',
+    'Clear-InvestigationCache',
+    'ConvertTo-StableJson',
+    'ConvertTo-HashtableDeep',
+    'New-ClaudeStreamAssembler',
+    'Add-ClaudeStreamEvent',
+    'Get-ClaudeStreamContent',
+    'Get-InvestigationReplyText'
 )
