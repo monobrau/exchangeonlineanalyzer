@@ -565,8 +565,21 @@ Describe 'Email triage BEC review' {
         @($items | ForEach-Object { $_.Id }) | Should -Contain 'remove-forward'
         @($items | ForEach-Object { $_.Id }) | Should -Contain 'remove-delegates'
         @($items | ForEach-Object { $_.Id }) | Should -Contain 'enable-hold'
+        @($items | ForEach-Object { $_.Id }) | Should -Contain 'reset-password'
+        @($items | ForEach-Object { $_.Id }) | Should -Contain 'revoke'
         ($items | Where-Object { $_.Id -eq 'block' }).Checked | Should -BeFalse
+        ($items | Where-Object { $_.Id -eq 'reset-password' }).Checked | Should -BeFalse
+        ($items | Where-Object { $_.Id -eq 'revoke' }).Checked | Should -BeFalse
         ($items | Where-Object { $_.Id -eq 'delete-rules' }).Checked | Should -BeTrue
+        $delegatesOnly = @(Get-TriageBecRemediations -Facts ([pscustomobject]@{
+            mailbox = 'alex@contoso.com'
+            rules = @()
+            forwards = @()
+            delegates = @([pscustomobject]@{ user = 'helper@contoso.com'; right = 'FullAccess' })
+        }))
+        @($delegatesOnly | ForEach-Object { $_.Id }) | Should -Contain 'remove-delegates'
+        @($delegatesOnly | ForEach-Object { $_.Id }) | Should -Not -Contain 'reset-password'
+        @($delegatesOnly | ForEach-Object { $_.Id }) | Should -Not -Contain 'revoke'
         $brief = New-TriageBecReviewBrief -Facts $facts
         $brief | Should -Match 'attacker@evil.example'
         $brief | Should -Match 'helper@contoso.com'
@@ -934,10 +947,41 @@ Operational note: the pack contains the line REMEDIATE_FAILED:Unknown remediatio
         $brief | Should -Match 'Treat the blast as the mailbox owner'
         $brief | Should -Match 'Compromise: unknown'
         $brief | Should -Match 'Do not add facts'
+        $brief | Should -Match 'evidence rules still apply'
+        $brief | Should -Match 'Never conclude true positive'
         $notes = New-TriageMemberberryNoteBrief -Review 'Nothing got in.' -Audience 'client' -Revision 'Do not mention MFA.' -CurrentDrafts 'Client email: please change the password.'
         $notes | Should -Match 'Nothing got in'
         $notes | Should -Match 'Do not mention MFA'
         $notes | Should -Match 'please change the password'
+        $notes | Should -Match 'evidence rules still apply'
+        $notes | Should -Match 'Never conclude true positive'
+        $notes | Should -Not -Match 'always fine'
+        $internalRules = New-TriageMemberberryNoteBrief -Review 'No hidden rules.' -Audience 'internal'
+        $incidentRules = New-TriageMemberberryNoteBrief -Review 'No hidden rules.' -Audience 'incident'
+        $internalRules | Should -Match 'Never recommend or suggest a password reset'
+        $incidentRules | Should -Match 'Never recommend or suggest a password reset'
+        $ask = New-TriageClientEmailBody -Review "The sign-in failed.`nPlease reset the password and revoke their sessions." -Greeting 'Good morning'
+        $ask | Should -Not -Match 'reset the password'
+        $ask | Should -Not -Match 'revoke their sessions'
+        $ask | Should -Match 'The sign-in failed'
+        $kept = New-TriageClientEmailBody -Review "A malicious inbox rule forwarded mail to attacker@evil.example.`nReset the password." -Greeting 'Good morning'
+        $kept | Should -Match 'Reset the password'
+        $reviewPrompt = Get-TriageBecReviewSystemPrompt -ConfirmedIncident $false
+        $reviewPrompt | Should -Match 'VERDICT: ask the client'
+        $reviewPrompt | Should -Match 'follow-up pull is not evidence'
+        $reviewPrompt | Should -Match 'Never conclude true positive'
+        $reviewPrompt | Should -Match 'evidence rules still apply'
+        $reviewPrompt | Should -Not -Match '(?m)^EVIDENCE RULES$'
+        $confirmedPrompt = Get-TriageBecReviewSystemPrompt -ConfirmedIncident $true
+        $confirmedPrompt | Should -Match 'Do not recommend a password reset or session revocation'
+        $moduleText = Get-Content -LiteralPath (Get-Module EmailTriage).Path -Raw
+        $moduleText | Should -Match 'do not suggest a password change, a password reset, signing out everywhere'
+        $moduleText | Should -Not -Match 'a password change is still fine'
+        $moduleText | Should -Not -Match 'Asking the client to change a password is always fine'
+        Get-TriageBecVerdict -Text "VERDICT: ask the client`nAsk whether this was theirs." | Should -Be 'ask the client'
+        Get-TriageBecVerdict -Text "VERDICT: true positive" | Should -Be 'true positive'
+        Test-TriageCompromiseEvidence -Text 'Failed sign-in only.' | Should -BeFalse
+        Test-TriageCompromiseEvidence -Text 'Hidden inbox rule forwarded mail.' | Should -BeTrue
         InModuleScope EmailTriage {
             $split = Split-TriageTechnicianRevision -Review "Nothing got in.`n`n<<<TECHNICIAN_REVISION>>>`nDo not mention MFA.`n`n<<<CURRENT_DRAFTS>>>`nClient email: hello"
             $split.Review | Should -Be 'Nothing got in.'

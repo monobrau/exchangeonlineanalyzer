@@ -2598,9 +2598,16 @@ function ConvertFrom-TriageAiResponse {
     return ''
 }
 
+function Get-TriageEvidenceRules {
+    return @'
+Never conclude true positive without concrete supporting evidence in the pulled data. An alert, a suspicion, a failed sign-in, or an empty result is not that evidence. When the evidence is inconclusive, do not declare a true positive. Ask the client to confirm whether the activity was theirs or authorized. The verdict and the client email should ask the client first.
+Never recommend or suggest a password reset, a password change, or signing the user out everywhere in place of a password reset, unless specific evidence supports compromise. That evidence is a malicious sign-in, a malicious inbox rule, or confirmed credential exposure. Failed attempts alone are not enough. A password found in a breach list is confirmed credential exposure.
+'@.Trim()
+}
+
 function Get-TriageBecVerdict {
     param([string]$Text)
-    $match = [regex]::Match([string]$Text, '(?im)^\s*VERDICT:\s*(true positive|false positive|authorized activity)\b')
+    $match = [regex]::Match([string]$Text, '(?im)^\s*VERDICT:\s*(true positive|false positive|authorized activity|ask the client)\b')
     if (-not $match.Success) { return '' }
     return $match.Groups[1].Value.ToLowerInvariant()
 }
@@ -2811,23 +2818,25 @@ function Get-TriageBecRemediations {
                 Checked = $true
             })
         [void]$items.Add([pscustomobject]@{
-                Id      = 'revoke'
-                Title   = 'Revoke sessions'
-                Detail  = 'Off until you check it. Signs the user out everywhere.'
-                Kind    = 'revoke'
-                Checked = $false
-            })
-        [void]$items.Add([pscustomobject]@{
                 Id      = 'block'
                 Title   = 'Block sign-in'
                 Detail  = 'Off until you check it. The user cannot sign in until you unblock them.'
                 Kind    = 'block'
                 Checked = $false
             })
+    }
+    if ($suspicious.Count -or $forwards.Count) {
+        [void]$items.Add([pscustomobject]@{
+                Id      = 'revoke'
+                Title   = 'Revoke sessions'
+                Detail  = 'Off until you check it. Signs the user out everywhere. Shown because a suspicious inbox rule or mailbox forward is in the pulled data.'
+                Kind    = 'revoke'
+                Checked = $false
+            })
         [void]$items.Add([pscustomobject]@{
                 Id      = 'reset-password'
                 Title   = 'Reset to a random password'
-                Detail  = 'Off until you check it. The new password is not shown. The user sets their own at the reset page.'
+                Detail  = 'Off until you check it. The new password is not shown. The user sets their own at the reset page. Shown because a suspicious inbox rule or mailbox forward is in the pulled data.'
                 Kind    = 'reset-password'
                 Checked = $false
             })
@@ -3381,7 +3390,8 @@ function New-TriageBecReviewBrief {
     if ($revision.Trim()) {
         $prior = [string](Get-TriageProp $Facts @('priorReview', 'PriorReview'))
         [void]$sb.AppendLine('')
-        [void]$sb.AppendLine('Technician revision. Rewrite the review to follow this. Do not add facts that are not already in the pack.')
+        [void]$sb.AppendLine('Technician revision. Rewrite the review to follow this. The evidence rules still apply. Do not add a true positive or a password reset unless the pack already contains the required evidence, or this revision explicitly asks for that wording. Do not add facts that are not already in the pack.')
+        [void]$sb.AppendLine((Get-TriageEvidenceRules))
         if ($prior.Trim()) {
             [void]$sb.AppendLine('Previous review:')
             [void]$sb.AppendLine((Get-TriageClippedText $prior 6000))
@@ -3390,6 +3400,26 @@ function New-TriageBecReviewBrief {
         [void]$sb.AppendLine((Get-TriageClippedText $revision 2000))
     }
     return $sb.ToString().Trim()
+}
+
+function Get-TriageBecReviewSystemPrompt {
+    param([bool]$ConfirmedIncident)
+    $system = @'
+The first line of the reply must be exactly one of these: VERDICT: true positive, VERDICT: false positive, VERDICT: authorized activity, or VERDICT: ask the client. true positive means the pulled data contains concrete evidence of malicious activity. false positive means the alert fired and the activity is not malicious. authorized activity means someone was allowed to do it. VERDICT: ask the client means the pulled data is inconclusive, so ask the client whether the activity was theirs or authorized. Do not use true positive for that case.
+EVIDENCE RULES
+You review one mailbox for malicious activity. Cover business email compromise, data exfiltration, DLP policy violations, and any other malicious activity the facts support. Use only the facts in the pack. If a section is not in the pack, do not say that source was checked and do not say none were found. A ticket may be included as context for what was reported. If no ticket is included, review the mailbox anyway. Memberberry client exceptions in the pack are reference for preferred names, VIP status, known tools, and known false positive patterns. They are not evidence that this incident happened. Do not copy another client's incident into this review. Say whether compromise, exfiltration, a DLP violation, or other malicious activity is supported, not supported, or unknown. Name which of those the facts support. An empty list was checked and had no rows. Say that it was checked. Do not tell anyone to collect unified audit, file sharing, DLP, or sign-in logs. The check downloads those. If the pack says a source was not collected, say that in one sentence. Do not treat a missing source as a clean result. REMEDIATE_FAILED:Unknown remediation command means the audit command did not run. Empty logs from that failure are not an inactive mailbox. Say that those sources were not collected, in one sentence, and do not write an operational note about reconciling the command. If the pack includes a collection gap, those named sources have not been checked for this tenant. Say that, and do not treat them as clean. A reported lead is the event to confirm or deny. While the named sources are absent, say the lead is still unchecked. If the pack includes reported messages opened from the mailbox, that is the suspicious mail itself. Judge that lead from the sender name, reply-to, authentication, links, and attachments in that section. Do not say the message content was not inspected. Links include addresses that were only in a link or image target, not only text the reader would see. A body that says it is zero-width characters has no visible text. Do not call that a tracking message unless a link is listed. Evidence includes inbox rules, forwarding, delegates, transport rules, mail connectors, new app registrations, new MFA methods, devices, Intune devices, OAuth consents, directory roles, message trace including large messages, unified audit including file downloads, sharing, and DLP, security alerts, and sign-ins. River Run Security Investigator is the app this check uses to pull logs. Ignore it. Do not mention it, and do not ask anyone to confirm who created it. If the pack lists an outbound email blast, say the subject and how many recipients were delivered. Do not paste those recipient addresses in the review. Log times in the pack are the technician local time, named in the pack. Write every time in that local time. Do not write UTC, a trailing Z, or a numeric offset. A ticket clock time is already that local time. If a fact the ticket needs is missing and it may be older than this window, that is not a finding. Do not write that the record was outside the window, and do not say you cannot tell who did it because of the window. End with one line, REPULL: <days> <logs>. Days is the smallest lookback that would include the missing event. If you cannot tell how old it is, use 30. Do not ask for more days than the limit stated in the pack. Logs are only the sources that can answer it, separated by commas, from this list: trace, ual, sharing, files, dlp, alerts, signins, apps. A link that was used in the window, when the sharing rows do not show who created that link, needs sharing. Add files only when the file activity itself is missing. Do not ask for trace or signins unless those are the rows that are missing. If this window already answers the ticket, end with REPULL: 0. The check pulls the logs you name and reviews again before the investigation is finished. A follow-up pull is not evidence of a true positive. If those logs are still inconclusive, keep VERDICT: ask the client and ask whether the activity was theirs or authorized. Do not switch to true positive just because the window got longer. If that window still does not contain the event, ask again with a longer look. If the pack says not to ask for another pull, end with REPULL: 0 and you may say the record was not in the logs that were pulled. If a pull note says a longer window was refused by the license, that shorter window is as far as this tenant can go for that log. Do not ask for the refused length again. Review the window that was pulled. Do not invent rules, recipients, files, policies, or incidents that are not in the pack. The reply must be plaintext, not Markdown. Do not use HTML, asterisks for emphasis, hash headings, or code fences. Never use an en dash, an em dash, or a double dash. Use a comma, a colon, parentheses, or a single hyphen. After the review, add a suggestion line only when this investigation showed a concrete pattern worth keeping. Omit a line when you have nothing concrete.
+MEMBERBERRY EXCEPTION SUGGESTION: <client name> - <one sentence for that client's notes>
+MEMORY VAULT: <one sentence the next review should remember>
+If the pack includes a technician revision, rewrite the review to follow it. The evidence rules still apply. Do not add a true positive or a password reset unless the pack already contains the required evidence, or the technician revision explicitly asks for that wording. Do not add facts that are not already in the pack.
+'@
+    $system = $system.Replace('EVIDENCE RULES', (Get-TriageEvidenceRules))
+    if ($ConfirmedIncident) {
+        $system += @'
+
+The ticket already confirms a business email compromise or another security incident. Do not spend the review deciding whether that incident happened. Focus on whether remediation is complete. For inbox rules, forwarding, delegates, OAuth consents, MFA methods, app registrations, and anything the ticket says was already done, say what is still in place and what is already gone. A step is done only when the pack or the ticket says it was done. Before the REPULL line, add one line: REMEDIATION: complete or REMEDIATION: incomplete. Do not recommend a password reset or session revocation unless the pack or the ticket shows a malicious sign-in, a malicious inbox rule, or confirmed credential exposure.
+'@
+    }
+    return $system
 }
 
 function Invoke-TriageBecReview {
@@ -3412,19 +3442,7 @@ function Invoke-TriageBecReview {
     if (-not $model) { $model = Get-TriageAiDefaultModel -Provider $provider }
     $brief = New-TriageBecReviewBrief -Facts $Facts
     $confirmedIncident = Test-TriageConfirmedIncident -Text ([string](Get-TriageProp $Facts @('ticket', 'Ticket')))
-    $system = @'
-The first line of the reply must be exactly one of these: VERDICT: true positive, VERDICT: false positive, or VERDICT: authorized activity. true positive means the facts support malicious activity. false positive means the alert fired and the activity is not malicious. authorized activity means someone was allowed to do it.
-You review one mailbox for malicious activity. Cover business email compromise, data exfiltration, DLP policy violations, and any other malicious activity the facts support. Use only the facts in the pack. If a section is not in the pack, do not say that source was checked and do not say none were found. A ticket may be included as context for what was reported. If no ticket is included, review the mailbox anyway. Memberberry client exceptions in the pack are reference for preferred names, VIP status, known tools, and known false positive patterns. They are not evidence that this incident happened. Do not copy another client's incident into this review. Say whether compromise, exfiltration, a DLP violation, or other malicious activity is supported, not supported, or unknown. Name which of those the facts support. An empty list was checked and had no rows. Say that it was checked. Do not tell anyone to collect unified audit, file sharing, DLP, or sign-in logs. The check downloads those. If the pack says a source was not collected, say that in one sentence. Do not treat a missing source as a clean result. REMEDIATE_FAILED:Unknown remediation command means the audit command did not run. Empty logs from that failure are not an inactive mailbox. Say that those sources were not collected, in one sentence, and do not write an operational note about reconciling the command. If the pack includes a collection gap, those named sources have not been checked for this tenant. Say that, and do not treat them as clean. A reported lead is the event to confirm or deny. While the named sources are absent, say the lead is still unchecked. If the pack includes reported messages opened from the mailbox, that is the suspicious mail itself. Judge that lead from the sender name, reply-to, authentication, links, and attachments in that section. Do not say the message content was not inspected. Links include addresses that were only in a link or image target, not only text the reader would see. A body that says it is zero-width characters has no visible text. Do not call that a tracking message unless a link is listed. Evidence includes inbox rules, forwarding, delegates, transport rules, mail connectors, new app registrations, new MFA methods, devices, Intune devices, OAuth consents, directory roles, message trace including large messages, unified audit including file downloads, sharing, and DLP, security alerts, and sign-ins. River Run Security Investigator is the app this check uses to pull logs. Ignore it. Do not mention it, and do not ask anyone to confirm who created it. If the pack lists an outbound email blast, say the subject and how many recipients were delivered. Do not paste those recipient addresses in the review. Log times in the pack are the technician local time, named in the pack. Write every time in that local time. Do not write UTC, a trailing Z, or a numeric offset. A ticket clock time is already that local time. If a fact the ticket needs is missing and it may be older than this window, that is not a finding. Do not write that the record was outside the window, and do not say you cannot tell who did it because of the window. End with one line, REPULL: <days> <logs>. Days is the smallest lookback that would include the missing event. If you cannot tell how old it is, use 30. Do not ask for more days than the limit stated in the pack. Logs are only the sources that can answer it, separated by commas, from this list: trace, ual, sharing, files, dlp, alerts, signins, apps. A link that was used in the window, when the sharing rows do not show who created that link, needs sharing. Add files only when the file activity itself is missing. Do not ask for trace or signins unless those are the rows that are missing. If this window already answers the ticket, end with REPULL: 0. The check pulls the logs you name and reviews again before the investigation is finished. If that window still does not contain the event, ask again with a longer look. If the pack says not to ask for another pull, end with REPULL: 0 and you may say the record was not in the logs that were pulled. If a pull note says a longer window was refused by the license, that shorter window is as far as this tenant can go for that log. Do not ask for the refused length again. Review the window that was pulled. Do not invent rules, recipients, files, policies, or incidents that are not in the pack. The reply must be plaintext, not Markdown. Do not use HTML, asterisks for emphasis, hash headings, or code fences. Never use an en dash, an em dash, or a double dash. Use a comma, a colon, parentheses, or a single hyphen. After the review, add a suggestion line only when this investigation showed a concrete pattern worth keeping. Omit a line when you have nothing concrete.
-MEMBERBERRY EXCEPTION SUGGESTION: <client name> - <one sentence for that client's notes>
-MEMORY VAULT: <one sentence the next review should remember>
-If the pack includes a technician revision, rewrite the review to follow it. Do not add facts that are not already in the pack.
-'@
-    if ($confirmedIncident) {
-        $system += @'
-
-The ticket already confirms a business email compromise or another security incident. Do not spend the review deciding whether that incident happened. Focus on whether remediation is complete. For inbox rules, forwarding, delegates, OAuth consents, MFA methods, app registrations, and anything the ticket says was already done, say what is still in place and what is already gone. A step is done only when the pack or the ticket says it was done. Before the REPULL line, add one line: REMEDIATION: complete or REMEDIATION: incomplete.
-'@
-    }
+    $system = Get-TriageBecReviewSystemPrompt -ConfirmedIncident $confirmedIncident
     $text = ''
     if ($OnDelta) {
         $streamRequest = Get-TriageAiReviewRequest -Provider $provider -Model $model -ApiKey $key -Brief $brief -SystemPrompt $system -MaxTokens 1600 -Stream
@@ -4367,6 +4385,30 @@ function Remove-TriageOperationalNotes {
     return (($kept -join "`n`n").Trim())
 }
 
+function Test-TriageCompromiseEvidence {
+    param([string]$Text)
+    $t = [string]$Text
+    if ($t -match '(?i)malicious sign-?in|unauthorized sign-?in|attacker signed in') { return $true }
+    if ($t -match '(?i)malicious inbox rule|(hidden|suspicious) inbox rule') { return $true }
+    if ($t -match '(?i)inbox rule.{0,120}(forward|redirect|delet)') { return $true }
+    if ($t -match '(?i)credential exposure|credentials? (were |was )?(exposed|leaked|stolen)|password (was |is )?(found |listed )?(in|on) a (breach|dump)|breached password|password in a breach') { return $true }
+    return $false
+}
+
+function Remove-TriageUngatedCredentialReset {
+    param([string]$Text)
+    $raw = [string]$Text
+    if (Test-TriageCompromiseEvidence -Text $raw) { return $raw.Trim() }
+    $kept = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($raw -split "`r?`n")) {
+        if ($line -match '(?i)\b(reset|change)\b.{0,40}\bpassword\b') { continue }
+        if ($line -match '(?i)\bpassword\b.{0,40}\b(reset|change)\b') { continue }
+        if ($line -match '(?i)session revocation|revoke .{0,30}sessions|sign out everywhere|signing the user out') { continue }
+        [void]$kept.Add($line)
+    }
+    return (($kept -join "`n").Trim())
+}
+
 function New-TriageClientEmailBody {
     param(
         [string]$Review,
@@ -4378,6 +4420,7 @@ function New-TriageClientEmailBody {
     )
     $clean = Remove-TriageOperationalNotes $Review
     $clean = ($clean -replace '(?im)^REPULL:\s*\d+\b.*$', '').Trim()
+    $clean = Remove-TriageUngatedCredentialReset -Text $clean
     if ($clean.Length -gt 1200) { $clean = $clean.Substring(0, 1200).Trim() }
     $name = ''
     if ($GreetingName.Trim()) { $name = $GreetingName.Trim() }
@@ -4430,9 +4473,10 @@ function New-TriageMemberberryNoteBrief {
     else {
         [void]$sb.AppendLine('Write the client email from this finished investigation. The reader is not technical. Use a friendly, everyday tone.')
         [void]$sb.AppendLine('The review below may name logs that failed, were not collected, or were limited. Leave every one of those out of this email: no technical problem, hiccup, missing record, or piece we could not confirm. Base the email only on what was checked, then give the recommendation.')
-        [void]$sb.AppendLine('Asking the client to change a password is always fine when the review supports it, including failed attempts or a password in a breach list. Only ask the client to change MFA when the review shows someone actually got in, such as a successful unauthorized sign-in or a rule, forward, or app added by an attacker. Never suggest stronger MFA or Conditional Access when nothing got in.
+        [void]$sb.AppendLine('Do not ask the client to change or reset a password, and do not suggest signing them out everywhere, unless the investigation outcome shows a malicious sign-in, a malicious inbox rule, or confirmed credential exposure. A password in a breach list is confirmed credential exposure. Failed attempts alone are not. Only ask the client to change MFA when the review shows someone actually got in, such as a successful unauthorized sign-in or a rule, forward, or app added by an attacker. Never suggest stronger MFA or Conditional Access when nothing got in.
 The goal is to close the ticket, not to worry the client. Keep the email short and calm. State the outcome plainly. Do not speculate about what might have happened, do not describe possible risks that were not found, and do not use words like strongly, concerned, worrying, or at risk when nothing got in. Do not offer to walk them through anything or invite more questions beyond the phone number in the signature.')
     }
+    [void]$sb.AppendLine((Get-TriageEvidenceRules))
     if ($TicketNumber.Trim()) { [void]$sb.AppendLine(('Ticket number: {0}' -f $TicketNumber.Trim())) }
     if ($Company.Trim()) { [void]$sb.AppendLine(('Company: {0}' -f $Company.Trim())) }
     if ($Contact.Trim()) {
@@ -4477,7 +4521,8 @@ The goal is to close the ticket, not to worry the client. Keep the email short a
     [void]$sb.AppendLine((Get-TriageClippedText (Remove-TriageOperationalNotes $Review) 8000))
     if ($Revision.Trim()) {
         [void]$sb.AppendLine('')
-        [void]$sb.AppendLine('Technician revision. Rewrite the notes to follow this. It overrides the default tone and recommendations where they conflict. Do not add facts that are not in the investigation outcome.')
+        [void]$sb.AppendLine('Technician revision. Rewrite the notes to follow this. It overrides the default tone where they conflict. The evidence rules still apply unless this revision explicitly asks for other wording. Do not add a true positive or a password reset unless the investigation outcome already contains the required evidence, or this revision explicitly asks for that wording. Do not add facts that are not in the investigation outcome.')
+        [void]$sb.AppendLine((Get-TriageEvidenceRules))
         if ($CurrentDrafts.Trim()) {
             [void]$sb.AppendLine('Current drafts:')
             [void]$sb.AppendLine((Get-TriageClippedText $CurrentDrafts 8000))
@@ -4838,9 +4883,11 @@ Print exactly one Classification line.
 Classification values allowed: True Positive, False Positive, Authorized Activity.
 Use False Positive for a false positive, Authorized Activity for authorized activity, and True Positive when the event is a real security issue.
 If the review begins with VERDICT, the Classification line must use that same choice.
+If that verdict is true positive, copy it only when the investigation outcome contains concrete evidence of malicious activity. If the verdict is ask the client, or the outcome is inconclusive, do not write True Positive. Ask the client to confirm whether the activity was theirs or authorized.
 The first sentence of the body states FALSE POSITIVE, AUTHORIZED ACTIVITY, LOW RISK, MEDIUM RISK, or HIGH RISK.
 Use only the investigation outcome for what happened. Memberberry exceptions and memory vault notes are reference only. Do not invent names, actions, times, or incidents. A remediation step is taken only when it is listed under remediation steps taken. Anything else is recommended, not completed. Do not mention investigation tool errors, command names, REMEDIATE_FAILED, an unknown remediation command, or a recommendation to reconcile a failed command. Those lines are not findings and do not belong in the note, the client email, or the incident report. Every clock time you write is local time on this PC. Use the local time and timezone from the brief. Do not write UTC, a trailing Z, or a numeric offset. If the investigation outcome shows a time in UTC, rewrite it in that local time before it appears in the note, the client email, or the incident report.
 '@
+    $plain = $plain + "`n`n" + (Get-TriageEvidenceRules)
     $systems = @{
         internal = @"
 You write the internal ConnectWise ticket note after an investigation is finished. This note stays on the ticket. It is not the email to the client. Do not greet anyone.
@@ -4867,15 +4914,17 @@ Print exactly one Classification line. That line is for our records. Do not repe
 Classification values allowed: True Positive, False Positive, Authorized Activity.
 Use False Positive for a false positive, Authorized Activity for authorized activity, and True Positive when the event is a real security issue.
 If the review begins with VERDICT, the Classification line must use that same choice.
+If that verdict is true positive, copy it only when the investigation outcome contains concrete evidence of malicious activity. If the verdict is ask the client, or the outcome is inconclusive, do not write True Positive. Ask the client to confirm whether the activity was theirs or authorized.
 Use only the investigation outcome for what happened. Memberberry exceptions and memory vault notes are reference only. Do not invent names, actions, times, or incidents. A step is done only when it is listed under remediation steps taken. Anything else is something we are suggesting, not something we already did. Do not mention investigation tool errors, command names, REMEDIATE_FAILED, an unknown remediation command, or a recommendation to reconcile a failed command. Those lines are not findings and do not belong in the email. Every clock time you write is local time on this PC. Use the local time and timezone from the brief. Do not write UTC, a trailing Z, or a numeric offset. If the investigation outcome shows a time in UTC, rewrite it in that local time before it appears in the email.
 
 Classification: True Positive
 
-Then the email body. Do not write a subject line. This is the message the technician pastes to the client. Start with the greeting line from the brief. Say what we looked into, what it means for them, and what they should do next. LOW detail clients get two or three short sentences. HIGH detail clients may use a few short paragraphs, still in plain language. Use everyday words. Do not write FALSE POSITIVE, TRUE POSITIVE, AUTHORIZED ACTIVITY, LOW RISK, MEDIUM RISK, HIGH RISK, BEC, IOC, remediation, inbox rule, message trace, audit, SPF, DKIM, DMARC, or sign-in. Do not mention a search window, a lookback, or that a record was older than the period that was reviewed. Do not offer to review a longer stretch of time; the check already pulled the history the account keeps. The investigation is finished when this email is written. Do not say we will keep looking, take a closer look, dig deeper, keep working on it, or follow up as we learn more. Do not say some checks did not come through, could not be completed, or were limited by the account or its license; those gaps belong in the internal note, not the client email. State what we found and what we recommend, based on what was checked. If a record was not found, say you could not find it. When you need one of those ideas, say it plainly, for example: we checked the mailbox, we did not find a problem, a setting was sending copies of their mail to another address and we turned that off, please do not use the link in that message, or please give us a call. Do not use the headings ACTION TAKEN or ACTION REQUIRED. If we already did something, say it in a normal sentence, and only when that step is listed under remediation steps taken. If the client still needs to do something because someone actually got in, ask for it kindly, and do not say that nothing else is needed. If nothing got in, a password change is still fine to suggest, but ask for no MFA change, no Conditional Access, and no call to tighten security. The email should close the matter: short, calm, no speculation about risks that were not found, and no offers to walk through anything. If no remediation steps were run, do not say we already fixed it. Close with Thanks, then the technician name from the brief on its own line, then the contact number from the brief on its own line. That number is the River Run Support line. Do not add the company name under the signature. The body must not be empty.
+Then the email body. Do not write a subject line. This is the message the technician pastes to the client. Start with the greeting line from the brief. Say what we looked into, what it means for them, and what they should do next. LOW detail clients get two or three short sentences. HIGH detail clients may use a few short paragraphs, still in plain language. Use everyday words. Do not write FALSE POSITIVE, TRUE POSITIVE, AUTHORIZED ACTIVITY, LOW RISK, MEDIUM RISK, HIGH RISK, BEC, IOC, remediation, inbox rule, message trace, audit, SPF, DKIM, DMARC, or sign-in. Do not mention a search window, a lookback, or that a record was older than the period that was reviewed. Do not offer to review a longer stretch of time; the check already pulled the history the account keeps. The investigation is finished when this email is written. Do not say we will keep looking, take a closer look, dig deeper, keep working on it, or follow up as we learn more. Do not say some checks did not come through, could not be completed, or were limited by the account or its license; those gaps belong in the internal note, not the client email. State what we found and what we recommend, based on what was checked. If a record was not found, say you could not find it. When you need one of those ideas, say it plainly, for example: we checked the mailbox, we did not find a problem, a setting was sending copies of their mail to another address and we turned that off, please do not use the link in that message, or please give us a call. Do not use the headings ACTION TAKEN or ACTION REQUIRED. If we already did something, say it in a normal sentence, and only when that step is listed under remediation steps taken. If the client still needs to do something because someone actually got in, ask for it kindly, and do not say that nothing else is needed. If nothing got in, do not suggest a password change, a password reset, signing out everywhere, an MFA change, Conditional Access, or a call to tighten security. The email should close the matter: short, calm, no speculation about risks that were not found, and no offers to walk through anything. If no remediation steps were run, do not say we already fixed it. Close with Thanks, then the technician name from the brief on its own line, then the contact number from the brief on its own line. That number is the River Run Support line. Do not add the company name under the signature. The body must not be empty.
 
 MEMBERBERRY EXCEPTION SUGGESTION: <client> - <one sentence>
 MEMORY VAULT: <one sentence the next review should remember>
 Omit a line when you have no concrete addition.
+EVIDENCE RULES
 "@
         incident = @"
 You write an incident report for legal, management, and insurance. It is not a client email. Do not greet anyone. If a fact is unknown, write unknown. Do not invent dollar amounts, recipients, or actions. Log times in the investigation are the technician local time named in the brief. Write the timeline in that local time. Do not write UTC, a trailing Z, or a numeric offset.
@@ -4935,6 +4984,7 @@ Close with the technician name from the brief on its own line. Do not add the co
 Do not write the words HATZ-AI. That heading is added after you reply.
 '@
     }
+    $systems.client = $systems.client.Replace('EVIDENCE RULES', (Get-TriageEvidenceRules))
     $texts = @{ internal = ''; client = ''; incident = ''; alert = '' }
     $notes = @{}
     $storeClient = ''
@@ -5053,4 +5103,4 @@ The ticket already confirms this incident. Do not re-argue whether it happened. 
     }
 }
 
-Export-ModuleMember -Function Get-TriageFreemailDomains, Get-TriageLayer, Get-TriageHeaderText, ConvertFrom-TriageMessageHeader, Get-TriageClassification, Get-TriageImpersonationMatch, Merge-TriageTraceLegs, ConvertTo-TriageUtc, Get-TriageLocalZoneLabel, ConvertTo-TriagePresentedTime, Get-TriageDnsHost, Test-TriageMxPointsAtEop, Test-TriageConfigFindings, Get-TriageOrcaSummary, Get-TriageBlockTarget, New-TriageActionScript, New-TriageTicketNote, New-TriageClientEmail, Get-TriageCommandToken, Test-TriageConfigModuleInstalled, Update-TriagePackOutputs, Get-TriagePackView, Set-TriageVerdictOverride, Get-TriagePacks, Get-TriageClientNotes, Set-TriageClientNotes, Get-TriagePackFileContent, Invoke-TriageWorkerCommand, ConvertTo-TriageRows, Get-TriageRemediationItems, Invoke-TriageRemediation, Get-TriageAiSettings, Set-TriageAiSettings, New-TriageAiReviewBrief, Get-TriageAiReviewRequest, ConvertFrom-TriageAiResponse, ConvertTo-TriageAiPlainText, Invoke-TriageAiReview, Get-TriageBecRemediations, New-TriageBecReviewBrief, Invoke-TriageBecReview, Get-TriageBecWindow, ConvertFrom-TriageBecRepull, ConvertFrom-TriageBecRepullLogs, Get-TriageBecFollowUpPlan, Test-TriageConfirmedIncident, ConvertFrom-TriageStoreSuggestions, Add-TriageMemberberryClientNote, Add-TriageMemoryVaultNote, ConvertFrom-TriageLogPlanText, New-TriageLogPlanBrief, Get-TriageLogFolderInventory, Test-TriageLogReportFolder, Invoke-TriageLogPlan, Get-TriageTicketCompany, Get-TriageTicketContact, Get-TriageMemberberrySettings, ConvertTo-TriageMemberberryClientBrief, Find-TriageMemberberryClient, ConvertFrom-TriageMemoryVaultText, New-TriageMemberberryNoteBrief, ConvertFrom-TriageMemberberryNote, Invoke-TriageMemberberryNote, Remove-TriageOperationalNotes, New-TriageClientEmailBody, Compress-TriageAlertLogs, Add-TriageAlertReviewBanner, New-TriageAlertReviewBrief, Get-TriageMemberberryGlobalRecord, ConvertTo-TriageMemberberryExceptionBrief, Get-TriageBecVerdict, ConvertFrom-TriageAiStreamDelta
+Export-ModuleMember -Function Get-TriageFreemailDomains, Get-TriageLayer, Get-TriageHeaderText, ConvertFrom-TriageMessageHeader, Get-TriageClassification, Get-TriageImpersonationMatch, Merge-TriageTraceLegs, ConvertTo-TriageUtc, Get-TriageLocalZoneLabel, ConvertTo-TriagePresentedTime, Get-TriageDnsHost, Test-TriageMxPointsAtEop, Test-TriageConfigFindings, Get-TriageOrcaSummary, Get-TriageBlockTarget, New-TriageActionScript, New-TriageTicketNote, New-TriageClientEmail, Get-TriageCommandToken, Test-TriageConfigModuleInstalled, Update-TriagePackOutputs, Get-TriagePackView, Set-TriageVerdictOverride, Get-TriagePacks, Get-TriageClientNotes, Set-TriageClientNotes, Get-TriagePackFileContent, Invoke-TriageWorkerCommand, ConvertTo-TriageRows, Get-TriageRemediationItems, Invoke-TriageRemediation, Get-TriageAiSettings, Set-TriageAiSettings, New-TriageAiReviewBrief, Get-TriageAiReviewRequest, ConvertFrom-TriageAiResponse, ConvertTo-TriageAiPlainText, Invoke-TriageAiReview, Get-TriageBecRemediations, New-TriageBecReviewBrief, Invoke-TriageBecReview, Get-TriageBecWindow, ConvertFrom-TriageBecRepull, ConvertFrom-TriageBecRepullLogs, Get-TriageBecFollowUpPlan, Test-TriageConfirmedIncident, ConvertFrom-TriageStoreSuggestions, Add-TriageMemberberryClientNote, Add-TriageMemoryVaultNote, ConvertFrom-TriageLogPlanText, New-TriageLogPlanBrief, Get-TriageLogFolderInventory, Test-TriageLogReportFolder, Invoke-TriageLogPlan, Get-TriageTicketCompany, Get-TriageTicketContact, Get-TriageMemberberrySettings, ConvertTo-TriageMemberberryClientBrief, Find-TriageMemberberryClient, ConvertFrom-TriageMemoryVaultText, New-TriageMemberberryNoteBrief, ConvertFrom-TriageMemberberryNote, Invoke-TriageMemberberryNote, Remove-TriageOperationalNotes, New-TriageClientEmailBody, Compress-TriageAlertLogs, Add-TriageAlertReviewBanner, New-TriageAlertReviewBrief, Get-TriageMemberberryGlobalRecord, ConvertTo-TriageMemberberryExceptionBrief, Get-TriageBecVerdict, Get-TriageEvidenceRules, Get-TriageBecReviewSystemPrompt, Test-TriageCompromiseEvidence, Remove-TriageUngatedCredentialReset, ConvertFrom-TriageAiStreamDelta
