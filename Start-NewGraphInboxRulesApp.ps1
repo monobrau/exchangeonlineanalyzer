@@ -10,7 +10,8 @@
 param(
     [switch]$SaveToWCM = $false,
     [string]$TenantId = $null,
-    [switch]$UseDeviceCode = $false
+    [switch]$UseDeviceCode = $false,
+    [switch]$UpdateExisting = $false
 )
 
 $ErrorActionPreference = 'Stop'

@@ -12,7 +12,7 @@ function Invoke-MgGraphRequestWithRetry {
     )
     for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
         try {
-            return (Invoke-MgGraphRequest -Method $Method -Uri $Uri -ErrorAction Stop)
+            return (Invoke-MgGraphRequestCompat -Method $Method -Uri $Uri -ErrorAction Stop)
         } catch {
             $is429 = $_.Exception.Message -like "*429*" -or $_.Exception.Message -like "*throttle*" -or $_.Exception.Message -like "*TooManyRequests*"
             if (-not $is429 -or $attempt -gt $MaxRetries) { throw }
@@ -44,7 +44,193 @@ function Get-CurrentTenantId {
         $org = Get-OrganizationConfig -ErrorAction SilentlyContinue
         if ($org -and $org.ExternalDirectoryOrganizationId) { return $org.ExternalDirectoryOrganizationId }
     } catch {}
+    try {
+        $bearer = Get-GraphRestBearerToken
+        if ($bearer) {
+            $jwt = Get-EoaJwtPayload -Token $bearer
+            if ($jwt -and $jwt.tid) { return [string]$jwt.tid }
+        }
+    } catch {}
     return $null
+}
+
+# Resolve a closed UTC window. Prefer explicit Start/End; otherwise DaysBack ending at now.
+function Get-ExportUtcDateWindow {
+    param(
+        [int]$DaysBack = 10,
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [DateTime]$EndDate = [DateTime]::MinValue
+    )
+    $hasRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+    if ($hasRange) {
+        $startUtc = $StartDate.ToUniversalTime()
+        $endUtc = $EndDate.ToUniversalTime()
+        $startLocal = $StartDate
+        $endLocal = $EndDate
+    } else {
+        $endUtc = (Get-Date).ToUniversalTime()
+        $startUtc = $endUtc.AddDays(-[Math]::Max(1, $DaysBack))
+        $startLocal = $startUtc.ToLocalTime()
+        $endLocal = $endUtc.ToLocalTime()
+    }
+    return [pscustomobject]@{
+        StartUtc   = $startUtc
+        EndUtc     = $endUtc
+        StartLocal = $startLocal
+        EndLocal   = $endLocal
+        StartIso   = $startUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        EndIso     = $endUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        DaysSpan   = [Math]::Max(1, [int][Math]::Ceiling(($endUtc - $startUtc).TotalDays))
+    }
+}
+
+# Graph REST for bulk web worker (EXO + Graph SDK in one process breaks Microsoft.Graph.Authentication).
+$script:GraphRestBearerToken = $null
+
+function Set-GraphRestBearerToken {
+    param([string]$Token)
+    $script:GraphRestBearerToken = $Token
+}
+
+function Clear-GraphRestBearerToken {
+    $script:GraphRestBearerToken = $null
+}
+
+function Test-GraphRestBearerToken {
+    return -not [string]::IsNullOrWhiteSpace($script:GraphRestBearerToken)
+}
+
+function Get-GraphRestBearerToken {
+    return $script:GraphRestBearerToken
+}
+
+function Test-GraphSessionAvailable {
+    if (Test-GraphRestBearerToken) { return $true }
+    try { return ($null -ne (Get-MgContext -ErrorAction SilentlyContinue)) } catch { return $false }
+}
+
+function Invoke-GraphRestRequest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [string]$Method = 'GET',
+        [hashtable]$Headers = @{},
+        [string]$Body
+    )
+    if (-not (Test-GraphRestBearerToken)) { throw 'Graph REST bearer token is not set.' }
+    $h = @{ Authorization = "Bearer $($script:GraphRestBearerToken)"; Accept = 'application/json' }
+    foreach ($k in $Headers.Keys) { $h[$k] = $Headers[$k] }
+    $params = @{ Uri = $Uri; Method = $Method; Headers = $h; ErrorAction = 'Stop' }
+    if ($Body) { $params.Body = $Body; $params.ContentType = 'application/json' }
+    Invoke-RestMethod @params
+}
+
+function Invoke-GraphRestPaged {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [hashtable]$Headers = @{},
+        [int]$Maximum = 0
+    )
+    $all = [System.Collections.ArrayList]::new()
+    $next = $Uri
+    while ($next) {
+        $resp = Invoke-GraphRestRequest -Uri $next -Headers $Headers
+        if ($resp.value) { foreach ($v in @($resp.value)) { [void]$all.Add($v) } }
+        elseif ($resp -and $resp.'@odata.nextLink') { }
+        elseif ($resp -and $resp.id) { [void]$all.Add($resp) }
+        $next = $resp.'@odata.nextLink'
+        if ($Maximum -gt 0 -and $all.Count -ge $Maximum) {
+            while ($all.Count -gt $Maximum) { $all.RemoveAt($all.Count - 1) }
+            break
+        }
+    }
+    return ,$all
+}
+
+function Invoke-MgGraphRequestCompat {
+    param(
+        [string]$Method = 'GET',
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [hashtable]$Headers = @{},
+        [string]$OutputFilePath
+    )
+    if (Test-GraphRestBearerToken) {
+        $h = @{}
+        foreach ($k in $Headers.Keys) { $h[$k] = $Headers[$k] }
+        if ($OutputFilePath) {
+            $baseH = @{ Authorization = "Bearer $($script:GraphRestBearerToken)" }
+            foreach ($k in $h.Keys) { $baseH[$k] = $h[$k] }
+            Invoke-WebRequest -Uri $Uri -Method $Method -Headers $baseH -OutFile $OutputFilePath -UseBasicParsing | Out-Null
+            return $null
+        }
+        return Invoke-GraphRestRequest -Uri $Uri -Method $Method -Headers $h
+    }
+    if ($OutputFilePath) {
+        return Invoke-MgGraphRequest -Method $Method -Uri $Uri -Headers $Headers -OutputFilePath $OutputFilePath -ErrorAction Stop
+    }
+    return Invoke-MgGraphRequest -Method $Method -Uri $Uri -Headers $Headers -ErrorAction Stop
+}
+
+function Get-MgUserCompat {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$UserId,
+        [string]$Property
+    )
+    if (Test-GraphRestBearerToken) {
+        $select = if ($Property) { '?$select=' + ($Property -replace '\s', '') } else { '' }
+        $enc = [Uri]::EscapeDataString($UserId)
+        return Invoke-GraphRestRequest -Uri "https://graph.microsoft.com/v1.0/users/$enc$select"
+    }
+    if ($Property) { return Get-MgUser -UserId $UserId -Property $Property -ErrorAction Stop }
+    return Get-MgUser -UserId $UserId -ErrorAction Stop
+}
+
+function Connect-MgGraphForReportSession {
+    <#
+    .SYNOPSIS
+        Ensures Microsoft Graph is connected for report collection (WCM app-only or existing session).
+    .NOTES
+        Does not use Connect-MgGraph -AccessToken (UserProvidedTokenCredential fails on Graph 2.37+).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$GraphAccessToken
+    )
+    if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) {
+        Set-GraphRestBearerToken -Token $GraphAccessToken
+        return $true
+    }
+    try {
+        $ctx = Get-MgContext -ErrorAction SilentlyContinue
+        if ($ctx -and ($ctx.Account -or $ctx.ClientId -or $ctx.AuthType -eq 'AppOnly')) {
+            return $true
+        }
+    } catch {}
+
+    $tid = $TenantId
+    if (-not $tid) { $tid = Get-CurrentTenantId }
+    if (-not $tid) { return $false }
+
+    $graphAppMod = Join-Path $PSScriptRoot 'GraphAppCredential.psm1'
+    if (-not (Test-Path $graphAppMod)) { return $false }
+    Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
+    if (-not (Get-Command Connect-MgGraphWithWcmApp -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        if (-not (Get-Module Microsoft.Graph.Authentication -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+        }
+        Connect-MgGraphWithWcmApp -TenantId $tid -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Warning "Connect-MgGraphWithWcmApp failed: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 # POC: Get Graph access token from current MgGraph context for token passing (avoids extra auth prompts in runspaces)
@@ -56,6 +242,10 @@ function Get-GraphAccessToken {
     $log = { param($msg) if ($DiagnosticCallback) { & $DiagnosticCallback $msg } }
     $token = $null
     $method = $null
+
+    if (Test-GraphRestBearerToken) {
+        return $script:GraphRestBearerToken
+    }
 
     # Method 1: Direct AccessToken property (some SDK versions)
     try {
@@ -85,10 +275,10 @@ function Get-GraphAccessToken {
         }
     }
 
-    # Method 3: Extract from Invoke-MgGraphRequest HttpResponseMessage (GitHub #2023 workaround)
+    # Method 3: Extract from Invoke-MgGraphRequestCompat HttpResponseMessage (GitHub #2023 workaround)
     if (-not $token) {
         try {
-            $resp = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/v1.0/me' -Method GET -OutputType HttpResponseMessage -ErrorAction Stop
+            $resp = Invoke-MgGraphRequestCompat -Uri 'https://graph.microsoft.com/v1.0/me' -Method GET -OutputType HttpResponseMessage -ErrorAction Stop
             if ($resp -and $resp.RequestMessage -and $resp.RequestMessage.Headers -and $resp.RequestMessage.Headers.Authorization) {
                 $param = $resp.RequestMessage.Headers.Authorization.Parameter
                 if ($param -and $param.Length -gt 10) {
@@ -139,23 +329,31 @@ function Get-MfaCoverageReport {
         # 1) Security Defaults status (authoritative)
         $secDefaultsEnabled = $false
         try {
-            $secDefaults = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction Stop
+            $secDefaults = Invoke-MgGraphRequestCompat -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' -ErrorAction Stop
             if ($secDefaults -and $secDefaults.isEnabled -ne $null) { $secDefaultsEnabled = [bool]$secDefaults.isEnabled }
         } catch {}
 
         # 2) Conditional Access policies requiring MFA (tenant-wide set)
         $caPolicies = @()
+        $caPoliciesFetched = $false
+        $caPoliciesFetchError = $null
         try {
             $uri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999'
             do {
-                $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-                if ($resp.value) { 
-                    $caPolicies += $resp.value 
+                $resp = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -ErrorAction Stop
+                $caPoliciesFetched = $true
+                if ($resp.value) {
+                    $caPolicies += @($resp.value)
                 }
-                $uri = $resp.'@odata.nextLink'
+                elseif ($caPolicies.Count -eq 0 -and $resp -is [System.Collections.IEnumerable] -and -not ($resp -is [string])) {
+                    $caPolicies += @($resp)
+                }
+                $uri = $null
+                if ($resp) { $uri = $resp.'@odata.nextLink' }
             } while ($uri)
         } catch {
-            Write-Verbose "Could not retrieve CA policies: $($_.Exception.Message)"
+            $caPoliciesFetchError = $_.Exception.Message
+            Write-Warning "Could not load Conditional Access policies for MFA coverage: $caPoliciesFetchError"
         }
 
         # Filter enabled policies that require MFA
@@ -207,13 +405,14 @@ function Get-MfaCoverageReport {
                     $methodsUri = "https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id
                     $allMethods = @()
                     do {
-                        $methods = Invoke-MgGraphRequest -Method GET -Uri $methodsUri -ErrorAction SilentlyContinue
-                        if ($methods.value) {
-                            $allMethods += $methods.value
+                        $methods = Invoke-MgGraphRequestCompat -Method GET -Uri $methodsUri -ErrorAction SilentlyContinue
+                        if ($methods -and $methods.value) {
+                            $allMethods += @($methods.value)
                         }
-                        $methodsUri = $methods.'@odata.nextLink'
+                        $methodsUri = $null
+                        if ($methods) { $methodsUri = $methods.'@odata.nextLink' }
                     } while ($methodsUri)
-                    
+
                     foreach ($m in $allMethods) {
                         $otype = $m.'@odata.type'
                         if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
@@ -223,7 +422,8 @@ function Get-MfaCoverageReport {
                             $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod' -or
                             $otype -eq '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod' -or
                             $otype -eq '#microsoft.graph.externalAuthenticationMethod') {
-                            $directMfa = $true; break
+                            $directMfa = $true
+                            break
                         }
                     }
                 } catch {}
@@ -243,46 +443,58 @@ function Get-MfaCoverageReport {
                     }
                 } catch {}
 
-                $userCaRequiresMfa = $false
-                foreach ($p in $mfaPolicies) {
-                    $conds = $p.conditions
-                    if (-not $conds) { continue }
-                    $usersCond = $conds.users
-                    $incAll = $false
-                    $incUser = $false
-                    $excluded = $false
+                # When CA policies could not be loaded, do not report False — that implies "checked, no MFA CA".
+                $userCaRequiresMfa = $null
+                if ($caPoliciesFetched) {
+                    $userCaRequiresMfa = $false
+                    foreach ($p in $mfaPolicies) {
+                        $conds = $p.conditions
+                        if (-not $conds) { continue }
+                        $usersCond = $conds.users
+                        $incAll = $false
+                        $incUser = $false
+                        $excluded = $false
 
-                    if ($usersCond) {
-                        # Include
-                        if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
-                        if (-not $incUser -and $usersCond.includeGroups) { foreach ($groupId in @($usersCond.includeGroups)) { if ($userGroups -contains $groupId) { $incUser = $true; break } } }
-                        if (-not $incUser -and $usersCond.includeRoles) { foreach ($roleId in @($usersCond.includeRoles)) { if ($userRoles -contains $roleId) { $incUser = $true; break } } }
+                        if ($usersCond) {
+                            # Include
+                            if ($usersCond.includeUsers -and ($usersCond.includeUsers -contains 'All' -or $usersCond.includeUsers -contains $u.Id)) { $incAll = $usersCond.includeUsers -contains 'All'; if (-not $incAll) { $incUser = $true } }
+                            if (-not $incUser -and $usersCond.includeGroups) { foreach ($groupId in @($usersCond.includeGroups)) { if ($userGroups -contains $groupId) { $incUser = $true; break } } }
+                            if (-not $incUser -and $usersCond.includeRoles) { foreach ($roleId in @($usersCond.includeRoles)) { if ($userRoles -contains $roleId) { $incUser = $true; break } } }
 
-                        # Exclude
-                        if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
-                        if ($usersCond.excludeGroups) { foreach ($groupId in @($usersCond.excludeGroups)) { if ($userGroups -contains $groupId) { $excluded = $true; break } } }
-                        if ($usersCond.excludeRoles) { foreach ($roleId in @($usersCond.excludeRoles)) { if ($userRoles -contains $roleId) { $excluded = $true; break } } }
+                            # Exclude
+                            if ($usersCond.excludeUsers -and ($usersCond.excludeUsers -contains $u.Id)) { $excluded = $true }
+                            if ($usersCond.excludeGroups) { foreach ($groupId in @($usersCond.excludeGroups)) { if ($userGroups -contains $groupId) { $excluded = $true; break } } }
+                            if ($usersCond.excludeRoles) { foreach ($roleId in @($usersCond.excludeRoles)) { if ($userRoles -contains $roleId) { $excluded = $true; break } } }
+                        }
+
+                        $applies = ($incAll -or $incUser)
+                        if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
                     }
-
-                    $applies = ($incAll -or $incUser)
-                    if ($applies -and -not $excluded) { $userCaRequiresMfa = $true; break }
                 }
 
-                # MFA covered if any form applies. Security Defaults supersedes per-user (tenant-wide).
-                $covered = ($directMfa -or $secDefaultsEnabled -or $userCaRequiresMfa)
+                # MFA covered if any known control applies. Unknown CA is not treated as "not required".
+                $covered = ($directMfa -or $secDefaultsEnabled -or ($userCaRequiresMfa -eq $true))
                 [void]$users.Add([pscustomobject]@{
-                    DisplayName        = $u.displayName
-                    UserPrincipalName  = $u.userPrincipalName
-                    PerUserMfaEnabled  = $directMfa
-                    SecurityDefaults   = $secDefaultsEnabled
-                    CARequiresMfa      = $userCaRequiresMfa
-                    MfaCovered         = $covered
+                    DisplayName          = $u.displayName
+                    UserPrincipalName    = $u.userPrincipalName
+                    PerUserMfaEnabled    = $directMfa
+                    SecurityDefaults     = $secDefaultsEnabled
+                    CARequiresMfa        = if ($null -eq $userCaRequiresMfa) { 'Unknown' } else { $userCaRequiresMfa }
+                    CAPoliciesFetched    = $caPoliciesFetched
+                    MfaCovered           = $covered
+                    MfaCoveredIncomplete = (-not $caPoliciesFetched)
                 })
             }
         } catch {}
 
-        $tenantLevelCaMfa = ($mfaPolicies.Count -gt 0)
-        return @{ SecurityDefaultsEnabled = $secDefaultsEnabled; CAPoliciesRequireMfa = $tenantLevelCaMfa; Users = $users }
+        $tenantLevelCaMfa = if ($caPoliciesFetched) { ($mfaPolicies.Count -gt 0) } else { $null }
+        return @{
+            SecurityDefaultsEnabled = $secDefaultsEnabled
+            CAPoliciesRequireMfa    = $tenantLevelCaMfa
+            CAPoliciesFetched       = $caPoliciesFetched
+            CAPoliciesFetchError    = $caPoliciesFetchError
+            Users                   = $users
+        }
     } catch {
         Write-Error "Get-MfaCoverageReport failed: $($_.Exception.Message)"; return @{ SecurityDefaultsEnabled=$false; CAPoliciesRequireMfa=$false; Users=@() }
     }
@@ -458,20 +670,12 @@ function Invoke-IndependentGraphCollectorsParallel {
     $exportUtilsPath = Join-Path $PSScriptRoot 'ExportUtils.psm1'
     $securityAnalysisPath = Join-Path $PSScriptRoot "SecurityAnalysis.psm1"
     $collectorScript = {
-        param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath, $UseDateRange, $StartDate, $EndDate, $GraphAccessToken)
-        # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
+        param($CollectorName, $DaysBack, $SelectedUsers, $ExportUtilsPath, $SecurityAnalysisPath, $UseDateRange, $StartDate, $EndDate, $GraphTenantId, $GraphAccessToken)
         Import-Module $ExportUtilsPath -Force -ErrorAction Stop
-        # Match main Graph runspace: use passed token when present (bulk worker + StatusFile) to avoid extra auth
         if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) {
-            try {
-                $secToken = ConvertTo-SecureString $GraphAccessToken -AsPlainText -Force
-                Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop | Out-Null
-            } catch {
-                Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
-            } finally {
-                $GraphAccessToken = $null
-                [System.GC]::Collect()
-            }
+            $null = Connect-MgGraphForReportSession -TenantId $GraphTenantId -GraphAccessToken $GraphAccessToken
+        } elseif ($GraphTenantId -and -not [string]::IsNullOrWhiteSpace($GraphTenantId)) {
+            $null = Connect-MgGraphForReportSession -TenantId $GraphTenantId
         } else {
             Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
         }
@@ -484,6 +688,7 @@ function Invoke-IndependentGraphCollectorsParallel {
             'OneDriveActivity' { return Get-OneDriveActivityLogs @dateArgs -SelectedUsers $SelectedUsers }
             'TeamsActivity' { return Get-TeamsActivityLogs @dateArgs -SelectedUsers $SelectedUsers }
             'SharePointSharing' { return Get-SharePointSharingLinks -SelectedUsers $SelectedUsers }
+            'SharePointFileSharingLinks' { return Get-SharePointFileSharingLinks -SelectedUsers $SelectedUsers }
             'SecurityAlerts' { return Get-SecurityAlerts @dateArgs -SelectedUsers $SelectedUsers }
             'SecurityIncidents' { return Get-SecurityIncidents @dateArgs }
             'MfaCoverage' { return Get-MfaCoverageReport -SelectedUsers $SelectedUsers }
@@ -495,10 +700,13 @@ function Invoke-IndependentGraphCollectorsParallel {
     if ($Params.IncludeAuditLogs) { [void]$collectorNames.Add('AuditLogs') }
     if ($Params.IncludeConditionalAccessPolicies -and (Test-Path $securityAnalysisPath)) { [void]$collectorNames.Add('CAPolicies') }
     if ($Params.IncludeAppRegistrations -and (Test-Path $securityAnalysisPath)) { [void]$collectorNames.Add('AppRegistrations') }
-    if ($Params.IncludeSharePointActivity) { [void]$collectorNames.Add('SharePointActivity') }
-    if ($Params.IncludeOneDriveActivity) { [void]$collectorNames.Add('OneDriveActivity') }
+    # SP/OD UAL subsets are skipped when full UAL is also requested (avoids ~2x duplicate CSV materialization).
+    $skipSpOdDup = ($Params.IncludeUnifiedAuditLogs -eq $true)
+    if ($Params.IncludeSharePointActivity -and -not $skipSpOdDup) { [void]$collectorNames.Add('SharePointActivity') }
+    if ($Params.IncludeOneDriveActivity -and -not $skipSpOdDup) { [void]$collectorNames.Add('OneDriveActivity') }
     if ($Params.IncludeTeamsActivity) { [void]$collectorNames.Add('TeamsActivity') }
     if ($Params.IncludeSharePointSharing) { [void]$collectorNames.Add('SharePointSharing') }
+    if ($Params.IncludeSharePointFileSharingLinks) { [void]$collectorNames.Add('SharePointFileSharingLinks') }
     if ($Params.IncludeSecurityAlerts) { [void]$collectorNames.Add('SecurityAlerts') }
     if ($Params.IncludeSecurityIncidents) { [void]$collectorNames.Add('SecurityIncidents') }
     if ($Params.IncludeMfaCoverage) { [void]$collectorNames.Add('MfaCoverage'); [void]$collectorNames.Add('UserSecurityGroups') }
@@ -514,8 +722,9 @@ function Invoke-IndependentGraphCollectorsParallel {
     foreach ($name in $collectorNames) {
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
-        $tok = if ($Params.ContainsKey('GraphAccessToken')) { $Params.GraphAccessToken } else { $null }
-        $null = $ps.AddScript($collectorScript).AddArgument($name).AddArgument($Params.DaysBack).AddArgument($Params.SelectedUsers).AddArgument($exportUtilsPath).AddArgument($securityAnalysisPath).AddArgument(($Params.UseDateRange -eq $true)).AddArgument($Params.StartDate).AddArgument($Params.EndDate).AddArgument($tok)
+        $tok = if ($Params.ContainsKey('GraphTenantId')) { $Params.GraphTenantId } else { $null }
+        $accessTok = if ($Params.ContainsKey('GraphAccessToken')) { $Params.GraphAccessToken } else { $null }
+        $null = $ps.AddScript($collectorScript).AddArgument($name).AddArgument($Params.DaysBack).AddArgument($Params.SelectedUsers).AddArgument($exportUtilsPath).AddArgument($securityAnalysisPath).AddArgument(($Params.UseDateRange -eq $true)).AddArgument($Params.StartDate).AddArgument($Params.EndDate).AddArgument($tok).AddArgument($accessTok)
         $jobs.Add(@{ Name = $name; PowerShell = $ps; Handle = $ps.BeginInvoke() }) | Out-Null
     }
     foreach ($j in $jobs) {
@@ -530,6 +739,7 @@ function Invoke-IndependentGraphCollectorsParallel {
                 'OneDriveActivity' { $r.OneDriveActivity = $val }
                 'TeamsActivity' { $r.TeamsActivity = $val }
                 'SharePointSharing' { $r.SharePointSharing = $val }
+                'SharePointFileSharingLinks' { $r.SharePointFileSharingLinks = $val }
                 'SecurityAlerts' { $r.SecurityAlerts = $val }
                 'SecurityIncidents' { $r.SecurityIncidents = $val }
                 'MfaCoverage' { $r.MfaCoverage = $val }
@@ -568,6 +778,8 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeMailboxForwarding = $true,
         [Parameter(Mandatory=$false)]
+        [bool]$IncludeMailboxForwardingTenantHunt = $false,
+        [Parameter(Mandatory=$false)]
         [bool]$IncludeAuditLogs = $true,
         [Parameter(Mandatory=$false)]
         [bool]$IncludeConditionalAccessPolicies = $true,
@@ -583,6 +795,8 @@ function New-SecurityInvestigationReport {
         [int]$SignInLogsDaysBack = 7,
         [Parameter(Mandatory=$false)]
         [int]$MessageTraceDaysBack = 10,
+        [Parameter(Mandatory=$false)]
+        [string[]]$MessageTraceStatuses = @(),
         [Parameter(Mandatory=$false)]
         [DateTime]$StartDate = [DateTime]::MinValue,
         [Parameter(Mandatory=$false)]
@@ -606,7 +820,21 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [bool]$IncludeSecurityIncidents = $true,
         [Parameter(Mandatory=$false)]
+        [bool]$IncludeAnonymousSharePointSharing = $false,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeSharePointFileSharingLinks = $false,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeDLPViolations = $false,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeSharePointOneDriveFileActions = $false,
+        [Parameter(Mandatory=$false)]
         [bool]$IncludeUnifiedAuditLogs = $true,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeExchangeItemAggregated = $false,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeUnifiedAuditLogRawAuditData = $false,
+        [Parameter(Mandatory=$false)]
+        [bool]$ExcludeUalNoiseOperations = $true,
         [Parameter(Mandatory=$false)]
         [array]$UnifiedAuditLogRecordTypes = $null,
         [Parameter(Mandatory=$false)]
@@ -618,7 +846,9 @@ function New-SecurityInvestigationReport {
         [Parameter(Mandatory=$false)]
         [switch]$NoParallel = $false,
         [Parameter(Mandatory=$false)]
-        [string]$GraphAccessToken = $null
+        [string]$GraphAccessToken = $null,
+        [Parameter(Mandatory=$false)]
+        [string]$GraphTenantId = $null
     )
 
     try {
@@ -639,14 +869,19 @@ function New-SecurityInvestigationReport {
     $report.Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $report.Investigator = $InvestigatorName
     $report.Company = $CompanyName
-    # Timing standard: All date-range exports use start = (now - DaysBack) and end = run time (now).
-    # When StartDate/EndDate provided, use them for date-filterable reports; otherwise compute from DaysBack.
+    Clear-UnifiedAuditLogPullCache
+    # Closed window for all time-based collectors. DaysBack only seeds Start/End when missing.
     if (-not $PSBoundParameters.ContainsKey('DaysBack')) { $DaysBack = 10 }
     $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-    if ($useDateRange) {
-        $effectiveDaysBack = [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays))
+    if (-not $useDateRange) {
+        $EndDate = Get-Date
+        $StartDate = $EndDate.AddDays(-[Math]::Max(1, $DaysBack))
+        $useDateRange = $true
     }
-    $report.DaysAnalyzed = if ($useDateRange) { $effectiveDaysBack } else { $DaysBack }
+    $effectiveDaysBack = [Math]::Max(1, [int][Math]::Ceiling(($EndDate - $StartDate).TotalDays))
+    $report.DaysAnalyzed = $effectiveDaysBack
+    $report.StartDate = $StartDate
+    $report.EndDate = $EndDate
     $report.DataSources = @("Exchange Online", "Microsoft Graph", "Entra ID")
     $report.FilePaths = @{}
     $report.TicketNumbers = $TicketNumbers
@@ -691,8 +926,13 @@ function New-SecurityInvestigationReport {
     $exchangeConnected = $false
     try {
         # Lightweight call; succeeds only when connected to EXO
-        Get-OrganizationConfig -ErrorAction Stop | Out-Null
+        $orgCfg = Get-OrganizationConfig -ErrorAction Stop
         $exchangeConnected = $true
+        # Backfill report company when caller left the default placeholder
+        if (([string]::IsNullOrWhiteSpace($report.Company) -or $report.Company -eq 'Organization') -and $orgCfg) {
+            if ($orgCfg.DisplayName) { $report.Company = [string]$orgCfg.DisplayName }
+            elseif ($orgCfg.Name) { $report.Company = [string]$orgCfg.Name }
+        }
     } catch {
         # Fallback to UI flag if present
         if (Get-Variable -Name currentExchangeConnection -Scope Script -ErrorAction SilentlyContinue) {
@@ -724,6 +964,7 @@ function New-SecurityInvestigationReport {
                 $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tenantId -FailureVariable wcmFail
                 if ($wcmToken) {
                     $GraphAccessToken = $wcmToken
+                    if (-not $GraphTenantId) { $GraphTenantId = $tenantId }
                     $graphConnected = $true
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Using Graph app credentials from Windows Credential Manager" -Level Info -Component ExportUtils }
                 }
@@ -736,6 +977,22 @@ function New-SecurityInvestigationReport {
     }
     # Token passed from caller (e.g. GUI WCM lookup) counts as Graph connected
     if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) { $graphConnected = $true }
+    if (-not $GraphAccessToken -and $GraphTenantId -and -not [string]::IsNullOrWhiteSpace($GraphTenantId)) {
+        $graphAppMod = Join-Path $PSScriptRoot 'GraphAppCredential.psm1'
+        if (Test-Path $graphAppMod) {
+            try {
+                Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
+                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $GraphTenantId
+                if ($wcmToken) {
+                    $GraphAccessToken = $wcmToken
+                    $graphConnected = $true
+                }
+            } catch {}
+        }
+    }
+    if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) {
+        Set-GraphRestBearerToken -Token $GraphAccessToken
+    }
 
     if (-not $exchangeConnected) {
         Write-Warning "Exchange Online connection required for complete analysis"
@@ -757,7 +1014,7 @@ function New-SecurityInvestigationReport {
     }
 
     # Collect data - parallel when GUI context; or when worker has Graph token (token passing avoids extra auth prompts)
-    $hasTokenForParallel = $GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)
+    $hasTokenForParallel = ($GraphTenantId -and -not [string]::IsNullOrWhiteSpace($GraphTenantId)) -or ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken))
     $useParallelCollection = $exchangeConnected -and $graphConnected -and (
         ($MainForm -and $StatusLabel -and -not $NoParallel -and -not $StatusFile) -or
         ($hasTokenForParallel -and $StatusFile -and -not $NoParallel)
@@ -771,6 +1028,7 @@ function New-SecurityInvestigationReport {
             $params = @{
                 DaysBack = $DaysBack
                 MessageTraceDaysBack = $MessageTraceDaysBack
+                MessageTraceStatuses = $MessageTraceStatuses
                 SignInLogsDaysBack = $SignInLogsDaysBack
                 StartDate = $StartDate
                 EndDate = $EndDate
@@ -782,7 +1040,9 @@ function New-SecurityInvestigationReport {
                 IncludeTransportRules = $IncludeTransportRules
                 IncludeMailFlowConnectors = $IncludeMailFlowConnectors
                 IncludeMailboxForwarding = $IncludeMailboxForwarding
+                IncludeMailboxForwardingTenantHunt = $IncludeMailboxForwardingTenantHunt
                 IncludeUnifiedAuditLogs = $IncludeUnifiedAuditLogs
+                IncludeExchangeItemAggregated = $IncludeExchangeItemAggregated
                 UnifiedAuditLogRecordTypes = $UnifiedAuditLogRecordTypes
                 IncludeAuditLogs = $IncludeAuditLogs
                 IncludeSignInLogs = $IncludeSignInLogs
@@ -794,12 +1054,17 @@ function New-SecurityInvestigationReport {
                 IncludeOneDriveActivity = $IncludeOneDriveActivity
                 IncludeTeamsActivity = $IncludeTeamsActivity
                 IncludeSharePointSharing = $IncludeSharePointSharing
+                IncludeAnonymousSharePointSharing = $IncludeAnonymousSharePointSharing
+                IncludeSharePointFileSharingLinks = $IncludeSharePointFileSharingLinks
+                IncludeDLPViolations = $IncludeDLPViolations
+                IncludeSharePointOneDriveFileActions = $IncludeSharePointOneDriveFileActions
                 IncludeSecurityAlerts = $IncludeSecurityAlerts
                 IncludeSecurityIncidents = $IncludeSecurityIncidents
                 SessionId = $SessionId
                 CompanyName = $CompanyName
                 TicketNumbers = $TicketNumbers
                 StatusFile = $StatusFile
+                GraphTenantId = $GraphTenantId
                 GraphAccessToken = $GraphAccessToken
             }
 
@@ -812,7 +1077,7 @@ function New-SecurityInvestigationReport {
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'ExchangeRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
-                $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
+                $writeStatus = { param($m) Write-ExportStatusLine -StatusFile $Params.StatusFile -Message $m }
                 # Reuse cached Exchange connection if available (EXO v2 token cache)
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: connecting..." -Level Info -Component ExchangeRS }
                 try { & $writeStatus "Exchange runspace: connecting..." } catch {}
@@ -821,7 +1086,7 @@ function New-SecurityInvestigationReport {
                 if ($Params.IncludeMessageTrace) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting message trace..." -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: collecting message trace..." } catch {}
-                    $r.MessageTrace = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-ExchangeMessageTrace -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers }
+                    $r.MessageTrace = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-ExchangeMessageTrace -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -Status $Params.MessageTraceStatuses -StatusFile $Params.StatusFile } else { Get-ExchangeMessageTrace -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -Status $Params.MessageTraceStatuses -StatusFile $Params.StatusFile }
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: message trace done ($($r.MessageTrace.Count) entries)" } catch {}
                 }
@@ -849,15 +1114,17 @@ function New-SecurityInvestigationReport {
                 if ($Params.IncludeMailboxForwarding) {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting mailbox forwarding..." -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: collecting mailbox forwarding..." } catch {}
-                    $r.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $Params.SelectedUsers
+                    $r.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $Params.SelectedUsers -IncludeTenantWideDelegateHunt:($Params.IncludeMailboxForwardingTenantHunt -eq $true)
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: mailbox forwarding done ($($r.MailboxForwarding.Count) mailboxes)" -Level Info -Component ExchangeRS }
                     try { & $writeStatus "Exchange runspace: mailbox forwarding done ($($r.MailboxForwarding.Count) mailboxes)" } catch {}
                 }
+                # Graph runspace cannot reuse this cache — only prefetch Exchange-thread UAL consumers.
+                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $Params.StartDate -EndDate $Params.EndDate -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -UseDateRange:($Params.UseDateRange -eq $true) -IncludeUnifiedAuditLogs:($Params.IncludeUnifiedAuditLogs -eq $true) -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) -UnifiedAuditLogRecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:($Params.IncludeSharePointOneDriveFileActions -eq $true) -IncludeAnonymousSharePointSharing:($Params.IncludeAnonymousSharePointSharing -eq $true) -IncludeDLPViolations:($Params.IncludeDLPViolations -eq $true)
                 if ($Params.IncludeUnifiedAuditLogs) {
                     try {
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting unified audit logs..." -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: collecting unified audit logs... (this may take 10+ minutes)" } catch {}
-                        $r.UnifiedAuditLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-UnifiedAuditLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $Params.MessageTraceDaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes }
+                        $r.UnifiedAuditLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-UnifiedAuditLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) } else { Get-UnifiedAuditLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) }
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" -Level Info -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: unified audit logs done ($($r.UnifiedAuditLogs.Count) entries)" } catch {}
                     }
@@ -865,6 +1132,43 @@ function New-SecurityInvestigationReport {
                         $r.UnifiedAuditLogs = @(); $r.UnifiedAuditLogsError = $_.Exception.Message
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: unified audit logs failed - $($_.Exception.Message)" -Level Warning -Component ExchangeRS }
                         try { & $writeStatus "Exchange runspace: unified audit logs failed - $($_.Exception.Message)" } catch {}
+                    }
+                }
+                if ($Params.IncludeSharePointOneDriveFileActions) {
+                    try {
+                        $fileActionTypes = @('SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation', 'OneDrive')
+                        try { & $writeStatus "Exchange runspace: collecting SharePoint/OneDrive file actions..." } catch {}
+                        $r.SharePointOneDriveFileActions = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) {
+                            Get-UnifiedAuditLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $fileActionTypes
+                        } else {
+                            Get-UnifiedAuditLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -RecordTypes $fileActionTypes
+                        }
+                    } catch {
+                        $r.SharePointOneDriveFileActions = @(); $r.SharePointOneDriveFileActionsError = $_.Exception.Message
+                    }
+                }
+                if ($Params.IncludeAnonymousSharePointSharing) {
+                    try {
+                        try { & $writeStatus "Exchange runspace: collecting anonymous SharePoint sharing..." } catch {}
+                        $r.AnonymousSharePointSharing = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) {
+                            Get-AnonymousSharePointSharing -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers
+                        } else {
+                            Get-AnonymousSharePointSharing -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers
+                        }
+                    } catch {
+                        $r.AnonymousSharePointSharing = @(); $r.AnonymousSharePointSharingError = $_.Exception.Message
+                    }
+                }
+                if ($Params.IncludeDLPViolations) {
+                    try {
+                        try { & $writeStatus "Exchange runspace: collecting DLP violations..." } catch {}
+                        $r.DLPViolations = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) {
+                            Get-DLPViolations -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers
+                        } else {
+                            Get-DLPViolations -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers
+                        }
+                    } catch {
+                        $r.DLPViolations = @(); $r.DLPViolationsError = $_.Exception.Message
                     }
                 }
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: complete" -Level Info -Component ExchangeRS }
@@ -877,22 +1181,22 @@ function New-SecurityInvestigationReport {
                 # Import ExportUtils module in this runspace (modules from parent session are not available in runspaces)
                 Import-Module $ExportUtilsPath -Force -ErrorAction Stop
                 try { Initialize-Logger -MinLevel Info -ConsoleOutput $false -Component 'GraphRS' -SessionId $Params.SessionId -CompanyName $Params.CompanyName -TicketNumbers $Params.TicketNumbers | Out-Null } catch {}
-                $writeStatus = { param($m) if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 } }
+                $writeStatus = { param($m) Write-ExportStatusLine -StatusFile $Params.StatusFile -Message $m }
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: connecting..." -Level Info -Component GraphRS }
                 try { & $writeStatus "Graph runspace: connecting..." } catch {}
-                # POC: Use token passing when available to avoid extra auth prompts
                 if ($Params.GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($Params.GraphAccessToken)) {
+                    $null = Connect-MgGraphForReportSession -TenantId $Params.GraphTenantId -GraphAccessToken $Params.GraphAccessToken
+                } elseif ($Params.GraphTenantId -and -not [string]::IsNullOrWhiteSpace($Params.GraphTenantId)) {
                     try {
-                        $secToken = ConvertTo-SecureString $Params.GraphAccessToken -AsPlainText -Force
-                        Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop | Out-Null
-                        if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Graph runspace: connected via token (no auth prompt)" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 }
+                        $connected = Connect-MgGraphForReportSession -TenantId $Params.GraphTenantId
+                        if ($connected) {
+                            Write-ExportStatusLine -StatusFile $Params.StatusFile -Message 'Graph runspace: connected via WCM app credentials'
+                        } elseif (-not $connected) {
+                            Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
+                        }
                     } catch {
-                        if ($Params.StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Graph runspace: token failed ($($_.Exception.Message)), falling back to Connect-MgGraph" | Out-File -FilePath $Params.StatusFile -Append -Encoding UTF8 }
+                        Write-ExportStatusLine -StatusFile $Params.StatusFile -Message "Graph runspace: WCM connect failed ($($_.Exception.Message)), falling back to Connect-MgGraph"
                         Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
-                    } finally {
-                        # Clear token from memory (security)
-                        $Params.GraphAccessToken = $null
-                        [System.GC]::Collect()
                     }
                 } else {
                     Connect-MgGraph -NoWelcome -ErrorAction SilentlyContinue | Out-Null
@@ -943,6 +1247,7 @@ function New-SecurityInvestigationReport {
                 if ($Params.IncludeOneDriveActivity) { try { $r.OneDriveActivity = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-OneDriveActivityLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-OneDriveActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } } catch { $r.OneDriveActivity = @(); $r.OneDriveActivityError = $_.Exception.Message } }
                 if ($Params.IncludeTeamsActivity) { try { $r.TeamsActivity = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-TeamsActivityLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-TeamsActivityLogs -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } } catch { $r.TeamsActivity = @(); $r.TeamsActivityError = $_.Exception.Message } }
                 if ($Params.IncludeSharePointSharing) { try { $r.SharePointSharing = Get-SharePointSharingLinks -SelectedUsers $Params.SelectedUsers } catch { $r.SharePointSharing = @(); $r.SharePointSharingError = $_.Exception.Message } }
+                if ($Params.IncludeSharePointFileSharingLinks) { try { $r.SharePointFileSharingLinks = Get-SharePointFileSharingLinks -SelectedUsers $Params.SelectedUsers } catch { $r.SharePointFileSharingLinks = @(); $r.SharePointFileSharingLinksError = $_.Exception.Message } }
                 if ($Params.IncludeSecurityAlerts) { try { $r.SecurityAlerts = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-SecurityAlerts -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-SecurityAlerts -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers } } catch { $r.SecurityAlerts = @(); $r.SecurityAlertsError = $_.Exception.Message } }
                 if ($Params.IncludeSecurityIncidents) { try { $r.SecurityIncidents = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-SecurityIncidents -StartDate $Params.StartDate -EndDate $Params.EndDate } else { Get-SecurityIncidents -DaysBack $Params.DaysBack } } catch { $r.SecurityIncidents = @(); $r.SecurityIncidentsError = $_.Exception.Message } }
                 if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: complete" -Level Info -Component GraphRS }
@@ -952,9 +1257,11 @@ function New-SecurityInvestigationReport {
 
             $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
             $iss.ImportPSModule((Join-Path $PSScriptRoot 'ExportUtils.psm1'))
+            $graphAppModPath = Join-Path $PSScriptRoot 'GraphAppCredential.psm1'
+            if (Test-Path $graphAppModPath) { $iss.ImportPSModule($graphAppModPath) }
             $loggingPath = Join-Path $PSScriptRoot 'Logging.psm1'
             if (Test-Path $loggingPath) { $iss.ImportPSModule($loggingPath) }
-            foreach ($mod in @('ExchangeOnlineManagement', 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Reports')) {
+            foreach ($mod in @('ExchangeOnlineManagement')) {
                 try { $iss.ImportPSModule($mod) } catch { }
             }
 
@@ -978,13 +1285,52 @@ function New-SecurityInvestigationReport {
                 $graphHandle = $graphPs.BeginInvoke()
 
                 # Exchange in main thread (reuses existing session)
-                $writeStatus = { param($m) if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 } }
-                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers } }
-                if ($IncludeInboxRules) { try { & $writeStatus "Exchange (main): collecting inbox rules..." } catch {}; $exchangeResult.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential $true }
+                $writeStatus = { param($m) Write-ExportStatusLine -StatusFile $StatusFile -Message $m }
+                if ($IncludeMessageTrace) { try { & $writeStatus "Exchange (main): collecting message trace..." } catch {}; $exchangeResult.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile } }
+                if ($IncludeInboxRules) { try { & $writeStatus "Exchange (main): collecting inbox rules..." } catch {}; $exchangeResult.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential $true -StatusFile $StatusFile }
                 if ($IncludeTransportRules) { $exchangeResult.TransportRules = Get-ExchangeTransportRules }
                 if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
-                if ($IncludeMailboxForwarding) { $exchangeResult.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers }
-                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes } } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
+                if ($IncludeMailboxForwarding) { $exchangeResult.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers -IncludeTenantWideDelegateHunt:$IncludeMailboxForwardingTenantHunt }
+                # Hybrid: Graph collectors run in another runspace — prefetch only Exchange UAL consumers.
+                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations
+                if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated } else { Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated } } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
+                if ($IncludeSharePointOneDriveFileActions) {
+                    try {
+                        $fileActionTypes = @('SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation', 'OneDrive')
+                        $exchangeResult.SharePointOneDriveFileActions = if ($useDateRange -and $StartDate -and $EndDate) {
+                            Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $fileActionTypes
+                        } else {
+                            Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $fileActionTypes
+                        }
+                    } catch {
+                        $exchangeResult.SharePointOneDriveFileActions = @()
+                        $exchangeResult.SharePointOneDriveFileActionsError = $_.Exception.Message
+                    }
+                }
+                if ($IncludeAnonymousSharePointSharing) {
+                    try {
+                        $exchangeResult.AnonymousSharePointSharing = if ($useDateRange -and $StartDate -and $EndDate) {
+                            Get-AnonymousSharePointSharing -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers
+                        } else {
+                            Get-AnonymousSharePointSharing -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                        }
+                    } catch {
+                        $exchangeResult.AnonymousSharePointSharing = @()
+                        $exchangeResult.AnonymousSharePointSharingError = $_.Exception.Message
+                    }
+                }
+                if ($IncludeDLPViolations) {
+                    try {
+                        $exchangeResult.DLPViolations = if ($useDateRange -and $StartDate -and $EndDate) {
+                            Get-DLPViolations -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers
+                        } else {
+                            Get-DLPViolations -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                        }
+                    } catch {
+                        $exchangeResult.DLPViolations = @()
+                        $exchangeResult.DLPViolationsError = $_.Exception.Message
+                    }
+                }
                 try { & $writeStatus "Exchange (main): complete" } catch {}
 
                 $graphResultRaw = $graphPs.EndInvoke($graphHandle)
@@ -1054,13 +1400,17 @@ function New-SecurityInvestigationReport {
     if ($exchangeConnected) {
         try {
             if ($IncludeMessageTrace) {
-                $statusMsg = "Collecting message trace data (last $MessageTraceDaysBack days)... This may take several minutes."
+                $statusMsg = if ($useDateRange) {
+                    "Collecting message trace data ($($StartDate.ToString('yyyy-MM-dd')) to $($EndDate.ToString('yyyy-MM-dd')))... This may take several minutes."
+                } else {
+                    "Collecting message trace data (last $MessageTraceDaysBack days)... This may take several minutes."
+                }
                 if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                 Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers }
-                Write-Host "Collected $($report.MessageTrace.Count) message trace entries" -ForegroundColor Green
+                $report.MessageTrace = if ($useDateRange -and $StartDate -and $EndDate) { Get-ExchangeMessageTrace -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile } else { Get-ExchangeMessageTrace -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -Status $MessageTraceStatuses -StatusFile $StatusFile }
+                if ($ProgressCallback) { try { & $ProgressCallback "Collected $($report.MessageTrace.Count) message trace entries" } catch {} }
                 Invoke-DoEventsSafe
             }
 
@@ -1070,7 +1420,7 @@ function New-SecurityInvestigationReport {
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                 Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential:(-not $MainForm -or -not $StatusLabel)
+                $report.InboxRules = Get-ExchangeInboxRules -SelectedUsers $SelectedUsers -ForceSequential:(-not $MainForm -or -not $StatusLabel) -StatusFile $StatusFile
                 Write-Host "Collected $($report.InboxRules.Count) inbox rules" -ForegroundColor Green
                 Invoke-DoEventsSafe
             }
@@ -1103,38 +1453,141 @@ function New-SecurityInvestigationReport {
                 if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                 Invoke-DoEventsSafe
                 Write-Host $statusMsg -ForegroundColor Cyan
-                $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers
+                $report.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers -IncludeTenantWideDelegateHunt:$IncludeMailboxForwardingTenantHunt
                 Write-Host "Collected mailbox forwarding data for $($report.MailboxForwarding.Count) mailboxes" -ForegroundColor Green
                 Invoke-DoEventsSafe
             }
 
+            Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations -IncludeSharePointActivity:$IncludeSharePointActivity -IncludeOneDriveActivity:$IncludeOneDriveActivity -IncludeTeamsActivity:$IncludeTeamsActivity
+
             if ($IncludeUnifiedAuditLogs) {
                 try {
-                    $statusMsg = "Collecting unified audit logs (last $MessageTraceDaysBack days)... This may take several minutes."
+                    $statusMsg = "Collecting unified audit logs... This may take several minutes."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Invoke-DoEventsSafe
                     Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -RecordTypes $UnifiedAuditLogRecordTypes } else { Get-UnifiedAuditLogs -DaysBack $MessageTraceDaysBack -SelectedUsers $SelectedUsers -RecordTypes $UnifiedAuditLogRecordTypes }
-                    Write-Host "Collected $($report.UnifiedAuditLogs.Count) unified audit log entries" -ForegroundColor Green
+                    $report.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) {
+                        Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
+                    } else {
+                        Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
+                    }
+                    if ($null -eq $report.UnifiedAuditLogs) { $report.UnifiedAuditLogs = [System.Collections.ArrayList]::new() }
+                    # Do not use @($list).Count — on List[object] PowerShell throws "Argument types do not match".
+                    $ualCount = $report.UnifiedAuditLogs.Count
+                    $statusMsg = "Collected $ualCount unified audit log entries"
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                    Write-Host $statusMsg -ForegroundColor Green
                     Invoke-DoEventsSafe
                 } catch {
                     if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
                         Write-Warning "Insufficient permissions to read unified audit logs. Requires 'View-Only Audit Logs' role."
-                        $report.UnifiedAuditLogs = @()
+                        $report.UnifiedAuditLogs = [System.Collections.ArrayList]::new()
                         $report.UnifiedAuditLogsError = "Permission denied - requires View-Only Audit Logs role"
                     } else {
                         Write-Warning "Failed to collect unified audit logs: $($_.Exception.Message)"
-                        $report.UnifiedAuditLogs = @()
+                        $report.UnifiedAuditLogs = [System.Collections.ArrayList]::new()
                         $report.UnifiedAuditLogsError = $_.Exception.Message
                     }
                 }
             } else {
-                $report.UnifiedAuditLogs = @()
+                $report.UnifiedAuditLogs = [System.Collections.ArrayList]::new()
+            }
+
+            # When full UAL is already collected, FileActions/SP/OD are RecordType subsets — skip re-materializing ~3x CSVs.
+            $report.UalCoversSpOdFileActions = $IncludeUnifiedAuditLogs -and $report.UnifiedAuditLogs -and $report.UnifiedAuditLogs.Count -gt 0
+
+            if ($IncludeSharePointOneDriveFileActions) {
+                if ($report.UalCoversSpOdFileActions) {
+                    $report.SharePointOneDriveFileActions = @()
+                    $report.SharePointOneDriveFileActionsSkippedReason = 'Skipped duplicate export: covered by UnifiedAuditLogs (SharePointFileOperation/SharePoint/SharePointSharingOperation/OneDrive RecordTypes). Filter that CSV instead.'
+                    Write-Host $report.SharePointOneDriveFileActionsSkippedReason -ForegroundColor DarkCyan
+                    if ($ProgressCallback) { try { & $ProgressCallback 'Skipping SharePoint/OneDrive file actions CSV (covered by Unified Audit Logs)' } catch {} }
+                } else {
+                    try {
+                        $statusMsg = "Collecting SharePoint/OneDrive file actions (unified audit)..."
+                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                        if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                        Invoke-DoEventsSafe
+                        Write-Host $statusMsg -ForegroundColor Cyan
+                        $fileActionTypes = @('SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation', 'OneDrive')
+                        $report.SharePointOneDriveFileActions = if ($useDateRange -and $StartDate -and $EndDate) {
+                            Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -RecordTypes $fileActionTypes
+                        } else {
+                            Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -RecordTypes $fileActionTypes
+                        }
+                        Write-Host "Collected $($report.SharePointOneDriveFileActions.Count) SharePoint/OneDrive file action entries" -ForegroundColor Green
+                        Invoke-DoEventsSafe
+                    } catch {
+                        Write-Warning "Failed to collect SharePoint/OneDrive file actions: $($_.Exception.Message)"
+                        $report.SharePointOneDriveFileActions = @()
+                        $report.SharePointOneDriveFileActionsError = $_.Exception.Message
+                    }
+                }
+            } else {
+                $report.SharePointOneDriveFileActions = @()
+            }
+
+            if ($IncludeAnonymousSharePointSharing) {
+                try {
+                    $statusMsg = "Collecting anonymous SharePoint sharing events (unified audit)..."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                    Invoke-DoEventsSafe
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.AnonymousSharePointSharing = if ($useDateRange -and $StartDate -and $EndDate) {
+                        Get-AnonymousSharePointSharing -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers
+                    } else {
+                        Get-AnonymousSharePointSharing -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    }
+                    Write-Host "Collected $($report.AnonymousSharePointSharing.Count) anonymous SharePoint sharing events" -ForegroundColor Green
+                } catch {
+                    Write-Warning "Failed to collect anonymous SharePoint sharing: $($_.Exception.Message)"
+                    $report.AnonymousSharePointSharing = @()
+                    $report.AnonymousSharePointSharingError = $_.Exception.Message
+                }
+            } else {
+                $report.AnonymousSharePointSharing = @()
+            }
+
+            if ($IncludeDLPViolations) {
+                try {
+                    $statusMsg = "Collecting DLP violations (unified audit / security alerts)..."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+                    Invoke-DoEventsSafe
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.DLPViolations = if ($useDateRange -and $StartDate -and $EndDate) {
+                        Get-DLPViolations -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers
+                    } else {
+                        Get-DLPViolations -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+                    }
+                    Write-Host "Collected $($report.DLPViolations.Count) DLP violations" -ForegroundColor Green
+                } catch {
+                    Write-Warning "Failed to collect DLP violations: $($_.Exception.Message)"
+                    $report.DLPViolations = @()
+                    $report.DLPViolationsError = $_.Exception.Message
+                }
+            } else {
+                $report.DLPViolations = @()
             }
         } catch {
             Write-Warning "Failed to collect Exchange Online data: $($_.Exception.Message)"
             $report.ExchangeDataError = $_.Exception.Message
+        }
+    } else {
+        if ($IncludeAnonymousSharePointSharing) {
+            $report.AnonymousSharePointSharing = @()
+            $report.AnonymousSharePointSharingError = "Exchange Online not connected. Anonymous SharePoint sharing requires Unified Audit Log."
+        }
+        if ($IncludeDLPViolations) {
+            $report.DLPViolations = @()
+            $report.DLPViolationsError = "Exchange Online not connected. DLP violations require Unified Audit Log (ComplianceDLP*)."
+        }
+        if ($IncludeSharePointOneDriveFileActions) {
+            $report.SharePointOneDriveFileActions = @()
+            $report.SharePointOneDriveFileActionsError = "Exchange Online not connected. SharePoint/OneDrive file actions require Unified Audit Log."
         }
     }
 
@@ -1147,14 +1600,7 @@ function New-SecurityInvestigationReport {
             if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
             Invoke-DoEventsSafe
             Write-Host $statusMsg -ForegroundColor Cyan
-            if ($GraphAccessToken -and -not [string]::IsNullOrWhiteSpace($GraphAccessToken)) {
-                try {
-                    $secToken = ConvertTo-SecureString $GraphAccessToken -AsPlainText -Force
-                    Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop | Out-Null
-                } catch {
-                    Write-Warning "Connect-MgGraph with token failed: $($_.Exception.Message)"
-                }
-            }
+            $null = Connect-MgGraphForReportSession -TenantId $GraphTenantId -GraphAccessToken $GraphAccessToken
             $report.InboxRules = Get-GraphInboxRules -SelectedUsers $SelectedUsers
             if ($null -eq $report.InboxRules) {
                 $report.InboxRules = @()
@@ -1176,11 +1622,16 @@ function New-SecurityInvestigationReport {
 
     # Order: SignInLogs first (required for Intune), then Intune, then independent collectors in parallel
     if ($graphConnected) {
+        $null = Connect-MgGraphForReportSession -TenantId $GraphTenantId -GraphAccessToken $GraphAccessToken
         try {
             # Phase 1: SignInLogs (must complete before Intune)
             if ($IncludeSignInLogs) {
                 try {
-                    $statusMsg = "Collecting sign-in logs (last $SignInLogsDaysBack days)... This may take several minutes."
+                    $statusMsg = if ($useDateRange -and $StartDate -and $EndDate) {
+                        "Collecting sign-in logs ($($StartDate.ToString('yyyy-MM-dd')) to $($EndDate.ToString('yyyy-MM-dd')))... This may take several minutes."
+                    } else {
+                        "Collecting sign-in logs (last $SignInLogsDaysBack days)... This may take several minutes."
+                    }
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
                     if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Invoke-DoEventsSafe
@@ -1188,6 +1639,21 @@ function New-SecurityInvestigationReport {
                     $report.SignInLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-GraphSignInLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers }
                     if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
                         Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
+                        # Surface coverage gaps when Graph returns rows but none near the requested end (quiet period vs truncation).
+                        try {
+                            $requestedEnd = if ($useDateRange -and $EndDate -and $EndDate -ne [DateTime]::MinValue) { $EndDate } else { Get-Date }
+                            $maxSi = $null
+                            foreach ($siRow in @($report.SignInLogs)) {
+                                $dt = $null
+                                try { $dt = [datetime]$siRow.CreatedDateTime } catch {}
+                                if ($dt -and ($null -eq $maxSi -or $dt -gt $maxSi)) { $maxSi = $dt }
+                            }
+                            if ($maxSi -and $requestedEnd -and ($requestedEnd - $maxSi).TotalHours -gt 36) {
+                                $report.SignInLogsCoverageNote = "Latest sign-in in export is $($maxSi.ToString('yyyy-MM-dd HH:mm:ss')); requested end is $($requestedEnd.ToString('yyyy-MM-dd HH:mm:ss')). Often a quiet period for selected users (UAL STS/sign-in RecordTypes may match). Spot-check Entra if unexpected."
+                                Write-Host "  Note: $($report.SignInLogsCoverageNote)" -ForegroundColor Yellow
+                                if ($ProgressCallback) { try { & $ProgressCallback "Sign-in coverage note: latest $($maxSi.ToString('yyyy-MM-dd HH:mm')) vs end $($requestedEnd.ToString('yyyy-MM-dd HH:mm'))" } catch {} }
+                            }
+                        } catch {}
                     }
                     Invoke-DoEventsSafe
                 } catch {
@@ -1283,13 +1749,16 @@ function New-SecurityInvestigationReport {
                 IncludeAuditLogs = $IncludeAuditLogs
                 IncludeConditionalAccessPolicies = $IncludeConditionalAccessPolicies
                 IncludeAppRegistrations = $IncludeAppRegistrations
+                IncludeUnifiedAuditLogs = $IncludeUnifiedAuditLogs
                 IncludeSharePointActivity = $IncludeSharePointActivity
                 IncludeOneDriveActivity = $IncludeOneDriveActivity
                 IncludeTeamsActivity = $IncludeTeamsActivity
                 IncludeSharePointSharing = $IncludeSharePointSharing
+                IncludeSharePointFileSharingLinks = $IncludeSharePointFileSharingLinks
                 IncludeSecurityAlerts = $IncludeSecurityAlerts
                 IncludeSecurityIncidents = $IncludeSecurityIncidents
                 IncludeMfaCoverage = $IncludeMfaCoverage
+                GraphTenantId = $GraphTenantId
                 GraphAccessToken = $GraphAccessToken
             }
             $parallelResults = Invoke-IndependentGraphCollectorsParallel -Params $parallelParams
@@ -1342,9 +1811,16 @@ function New-SecurityInvestigationReport {
     if ($graphConnected -and -not $graphParallelPhaseSucceeded) {
         try {
             if ($IncludeSharePointActivity) {
+                if ($report.UalCoversSpOdFileActions) {
+                    $report.SharePointActivity = @()
+                    $report.SharePointActivitySkippedReason = 'Skipped duplicate export: covered by UnifiedAuditLogs (SharePoint* RecordTypes). Filter that CSV instead.'
+                    Write-Host $report.SharePointActivitySkippedReason -ForegroundColor DarkCyan
+                    if ($ProgressCallback) { try { & $ProgressCallback 'Skipping SharePoint activity CSV (covered by Unified Audit Logs)' } catch {} }
+                } else {
                 try {
                     $statusMsg = "Collecting SharePoint activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Write-Host $statusMsg -ForegroundColor Cyan
                     $report.SharePointActivity = if ($useDateRange -and $StartDate -and $EndDate) { Get-SharePointActivityLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-SharePointActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
                     Write-Host "Collected $($report.SharePointActivity.Count) SharePoint activity entries" -ForegroundColor Green
@@ -1363,14 +1839,22 @@ function New-SecurityInvestigationReport {
                         $report.SharePointActivityError = $_.Exception.Message
                     }
                 }
+                }
             } else {
                 $report.SharePointActivity = @()
             }
 
             if ($IncludeOneDriveActivity) {
+                if ($report.UalCoversSpOdFileActions) {
+                    $report.OneDriveActivity = @()
+                    $report.OneDriveActivitySkippedReason = 'Skipped duplicate export: covered by UnifiedAuditLogs (OneDrive/SharePointFileOperation RecordTypes). Filter that CSV instead.'
+                    Write-Host $report.OneDriveActivitySkippedReason -ForegroundColor DarkCyan
+                    if ($ProgressCallback) { try { & $ProgressCallback 'Skipping OneDrive activity CSV (covered by Unified Audit Logs)' } catch {} }
+                } else {
                 try {
                     $statusMsg = "Collecting OneDrive activity logs (last $DaysBack days)... Requires Reports.Read.All permission."
                     if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
                     Write-Host $statusMsg -ForegroundColor Cyan
                     $report.OneDriveActivity = if ($useDateRange -and $StartDate -and $EndDate) { Get-OneDriveActivityLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-OneDriveActivityLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers }
                     Write-Host "Collected $($report.OneDriveActivity.Count) OneDrive activity entries" -ForegroundColor Green
@@ -1388,6 +1872,7 @@ function New-SecurityInvestigationReport {
                         $report.OneDriveActivity = @()
                         $report.OneDriveActivityError = $_.Exception.Message
                     }
+                }
                 }
             } else {
                 $report.OneDriveActivity = @()
@@ -1433,6 +1918,22 @@ function New-SecurityInvestigationReport {
                 }
             } else {
                 $report.SharePointSharing = @()
+            }
+
+            if ($IncludeSharePointFileSharingLinks) {
+                try {
+                    $statusMsg = "Collecting SharePoint file sharing links..."
+                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+                    Write-Host $statusMsg -ForegroundColor Cyan
+                    $report.SharePointFileSharingLinks = Get-SharePointFileSharingLinks -SelectedUsers $SelectedUsers
+                    Write-Host "Collected $($report.SharePointFileSharingLinks.Count) SharePoint file sharing links" -ForegroundColor Green
+                } catch {
+                    Write-Warning "Failed to collect SharePoint file sharing links: $($_.Exception.Message)"
+                    $report.SharePointFileSharingLinks = @()
+                    $report.SharePointFileSharingLinksError = $_.Exception.Message
+                }
+            } else {
+                $report.SharePointFileSharingLinks = @()
             }
 
             if ($IncludeSecurityAlerts) {
@@ -1489,8 +1990,8 @@ function New-SecurityInvestigationReport {
         } catch {
             Write-Warning "Failed to collect SharePoint/Teams/OneDrive/Security data: $($_.Exception.Message)"
         }
-    } else {
-        # Not connected, set empty arrays and error messages
+    } elseif (-not $graphConnected) {
+        # Graph not connected — do not wipe collectors already filled by parallel Phase 3
         if ($IncludeSharePointActivity) {
             $report.SharePointActivity = @()
             $report.SharePointActivityError = "Microsoft Graph not connected. Cannot collect SharePoint activity logs."
@@ -1506,6 +2007,10 @@ function New-SecurityInvestigationReport {
         if ($IncludeSharePointSharing) {
             $report.SharePointSharing = @()
             $report.SharePointSharingError = "Microsoft Graph not connected. Cannot collect SharePoint sharing links."
+        }
+        if ($IncludeSharePointFileSharingLinks) {
+            $report.SharePointFileSharingLinks = @()
+            $report.SharePointFileSharingLinksError = "Microsoft Graph not connected. Cannot collect SharePoint file sharing links."
         }
         if ($IncludeSecurityAlerts) {
             $report.SecurityAlerts = @()
@@ -1569,6 +2074,8 @@ function New-SecurityInvestigationReport {
     if ($report.OutputFolder) {
         $statusMsg = "Exporting data to CSV files..."
         if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+        if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $statusMsg
         Write-Host $statusMsg -ForegroundColor Cyan
         Write-Host "Output folder: $($report.OutputFolder)" -ForegroundColor Gray
         $exportError = $null
@@ -1610,48 +2117,56 @@ function New-SecurityInvestigationReport {
                 catch { $report.AuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8; $report.FilePaths.AuditLogsJson = $json }
             }
 
-            # Unified Audit Logs (Email Audit Logs) export
+            # Unified Audit Logs — CSV only, slim columns (AuditData is the bulk of file size)
             $csv = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix.csv"
-            $json = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix.json"
             if ($report.UnifiedAuditLogsError) {
-                # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix_Error.txt"
+                # Write error to a text file (${ticketSuffix} required — ${ticketSuffix}_Error is a different variable name in PS)
+                $errorFile = Join-Path $report.OutputFolder "UnifiedAuditLogs${ticketSuffix}_Error.txt"
                 "Error collecting Unified Audit Logs:`n$($report.UnifiedAuditLogsError)`n`nNote: Unified audit logs require Exchange Online connection and 'View-Only Audit Logs' role." | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.UnifiedAuditLogsError = $errorFile
-                Write-Host "Unified audit log collection failed - see UnifiedAuditLogs$ticketSuffix_Error.txt" -ForegroundColor Yellow
+                Write-Host "Unified audit log collection failed - see UnifiedAuditLogs${ticketSuffix}_Error.txt" -ForegroundColor Yellow
             } elseif ($report.UnifiedAuditLogs -and $report.UnifiedAuditLogs.Count -gt 0) {
-                try { 
-                    $report.UnifiedAuditLogs | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                try {
+                    $ualExport = ConvertTo-SlimUnifiedAuditLogExportRows -Rows $report.UnifiedAuditLogs `
+                        -ExcludeNoise:($ExcludeUalNoiseOperations -eq $true) `
+                        -IncludeRawAuditData:($IncludeUnifiedAuditLogRawAuditData -eq $true)
+                    $ualExport | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
                     $report.FilePaths.UnifiedAuditLogsCsv = $csv
-                    Write-Host "Exported $($report.UnifiedAuditLogs.Count) unified audit log entries to UnifiedAuditLogs.csv" -ForegroundColor Green
+                    $dropped = ([int]$report.UnifiedAuditLogs.Count) - ([int]$ualExport.Count)
+                    if ($dropped -gt 0) {
+                        Write-Host "Exported $($ualExport.Count) unified audit log entries to UnifiedAuditLogs.csv (omitted $dropped noisy bind/sync ops; slim columns, CSV only)" -ForegroundColor Green
+                    } else {
+                        Write-Host "Exported $($ualExport.Count) unified audit log entries to UnifiedAuditLogs.csv (slim columns, CSV only)" -ForegroundColor Green
+                    }
                 }
-                catch { 
-                    $report.UnifiedAuditLogs | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
-                    $report.FilePaths.UnifiedAuditLogsJson = $json
-                    Write-Warning "Failed to export unified audit logs to CSV, exported to JSON instead"
+                catch {
+                    Write-Warning "Failed to export unified audit logs to CSV: $($_.Exception.Message)"
+                    $errorFile = Join-Path $report.OutputFolder "UnifiedAuditLogs${ticketSuffix}_Error.txt"
+                    "Error exporting Unified Audit Logs:`n$($_.Exception.Message)" | Out-File -FilePath $errorFile -Encoding utf8
+                    $report.FilePaths.UnifiedAuditLogsError = $errorFile
                 }
-            } elseif ($report.UnifiedAuditLogs -ne $null) {
-                # No error, but also no results - create informational file
-                $infoFile = Join-Path $report.OutputFolder "UnifiedAuditLogs$ticketSuffix_NoResults.txt"
+            } elseif ($IncludeUnifiedAuditLogs) {
+                # Requested but empty/$null (PS unwraps empty collections) — always leave a marker file
+                $infoFile = Join-Path $report.OutputFolder "UnifiedAuditLogs${ticketSuffix}_NoResults.txt"
                 $infoMsg = @"
 Unified Audit Logs Query Completed - No Results Found
 
-Query executed successfully but no audit log entries were found matching the specified criteria.
+Query was requested (IncludeUnifiedAuditLogs=true) but no audit log entries were exported.
 
-Date Range: Last $($report.DaysAnalyzed) days
+Date Range: Last $($report.DaysAnalyzed) days (or explicit Start/End on the job)
 Query Time: $($report.Timestamp)
 
 Possible reasons:
-- No audit log entries exist for the specified time period
-- RecordType filters may have excluded all entries
-- Selected users may not have any audit log activity
-- Audit logging may not be enabled for the queried activities
+- No unified audit entries for the selected users in the window
+- Search-UnifiedAuditLog returned empty (role, licensing, or audit disabled)
+- RecordType filters excluded all entries
+- Empty result was previously dropped before export (fixed: marker always written when requested)
 
-Note: Unified audit logs require Exchange Online connection and 'View-Only Audit Logs' role.
+Note: Requires Exchange Online connection and 'View-Only Audit Logs' (or equivalent) role.
 "@
                 $infoMsg | Out-File -FilePath $infoFile -Encoding utf8
                 $report.FilePaths.UnifiedAuditLogsInfo = $infoFile
-                Write-Host "Unified audit log query completed - no results found (see UnifiedAuditLogs$ticketSuffix_NoResults.txt)" -ForegroundColor Yellow
+                Write-Host "Unified audit log query completed - no results found (see UnifiedAuditLogs${ticketSuffix}_NoResults.txt)" -ForegroundColor Yellow
             }
 
             # Sign-in Logs export
@@ -1668,15 +2183,20 @@ Note: Unified audit logs require Exchange Online connection and 'View-Only Audit
                     $report.FilePaths.SignInLogsJson = $json
                     Write-Warning "Failed to export sign-in logs to CSV, exported to JSON instead"
                 }
+                if ($report.SignInLogsCoverageNote) {
+                    $coverageFile = Join-Path $report.OutputFolder "SignInLogs${ticketSuffix}_CoverageNote.txt"
+                    $report.SignInLogsCoverageNote | Out-File -FilePath $coverageFile -Encoding utf8
+                    $report.FilePaths.SignInLogsCoverageNote = $coverageFile
+                }
             } elseif ($report.SignInLogsError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "SignInLogs${ticketSuffix}_Error.txt"
                 "Error collecting Sign-in Logs:`n$($report.SignInLogsError)`n`nNote: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days of data." | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.SignInLogsError = $errorFile
-                Write-Host "Sign-in log collection failed - see SignInLogs$ticketSuffix_Error.txt" -ForegroundColor Yellow
+                Write-Host "Sign-in log collection failed - see SignInLogs${ticketSuffix}_Error.txt" -ForegroundColor Yellow
             } elseif ($IncludeSignInLogs) {
                 # Requested but no rows and no error (e.g. legitimately empty range) — still emit a marker file so bulk exports show sign-in was attempted
-                $infoFile = Join-Path $report.OutputFolder "SignInLogs$ticketSuffix_NoResults.txt"
+                $infoFile = Join-Path $report.OutputFolder "SignInLogs${ticketSuffix}_NoResults.txt"
                 $infoMsg = @"
 Sign-in Logs Query Completed - No Results Found
 
@@ -1692,7 +2212,7 @@ If you expected data:
 "@
                 $infoMsg | Out-File -FilePath $infoFile -Encoding utf8
                 $report.FilePaths.SignInLogsInfo = $infoFile
-                Write-Host "Sign-in logs: no rows exported (see SignInLogs$ticketSuffix_NoResults.txt)" -ForegroundColor Yellow
+                Write-Host "Sign-in logs: no rows exported (see SignInLogs${ticketSuffix}_NoResults.txt)" -ForegroundColor Yellow
             }
 
             # Intune Device Records export
@@ -1700,10 +2220,10 @@ If you expected data:
             $json = Join-Path $report.OutputFolder "IntuneDevices$ticketSuffix.json"
             if ($report.IntuneDevicesError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "IntuneDevices$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "IntuneDevices${ticketSuffix}_Error.txt"
                 "Error collecting Intune Device Records:`n$($report.IntuneDevicesError)`n`nNote: Intune device records require DeviceManagementManagedDevices.Read.All permission and Intune license." | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.IntuneDevicesError = $errorFile
-                Write-Host "Intune device collection failed - see IntuneDevices$ticketSuffix_Error.txt" -ForegroundColor Yellow
+                Write-Host "Intune device collection failed - see IntuneDevices${ticketSuffix}_Error.txt" -ForegroundColor Yellow
             } elseif ($report.IntuneDevices -and $report.IntuneDevices.Count -gt 0) {
                 try { 
                     $report.IntuneDevices | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
@@ -1715,33 +2235,22 @@ If you expected data:
                     $report.FilePaths.IntuneDevicesJson = $json
                     Write-Warning "Failed to export Intune devices to CSV, exported to JSON instead"
                 }
-            } else {
-                # No devices found and no error - create an empty CSV with headers and note
-                try {
-                    $emptyDevice = [PSCustomObject]@{
-                        DeviceId = $null
-                        DeviceName = $null
-                        UserId = $null
-                        UserPrincipalName = $null
-                        ComplianceState = $null
-                        IsCompliant = $null
-                        LastSyncDateTime = $null
-                        LastCheckInTime = $null
-                        EnrolledDateTime = $null
-                        OperatingSystem = $null
-                        OSVersion = $null
-                        ManagementState = $null
-                        IsManaged = $null
-                        DeviceType = $null
-                        Ownership = $null
-                        CompliancePoliciesJSON = $null
-                    }
-                    $emptyDevice | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
-                    $report.FilePaths.IntuneDevicesCsv = $csv
-                    Write-Host "No Intune device records found - created empty IntuneDevices$ticketSuffix.csv" -ForegroundColor Yellow
-                } catch {
-                    Write-Warning "Could not create Intune devices export file: $($_.Exception.Message)"
-                }
+            } elseif ($IncludeIntuneDevices) {
+                $infoFile = Join-Path $report.OutputFolder "IntuneDevices${ticketSuffix}_NoResults.txt"
+                @"
+Intune Device Records Query Completed - No Results Found
+
+IncludeIntuneDevices=true but no device records were exported (and no exception was recorded).
+
+Possible reasons:
+- No Intune-managed devices for the selected users / tenant
+- DeviceManagementManagedDevices.Read.All consented but Graph returned an empty set
+- Sign-in logs had no device IDs to resolve
+
+Query time: $($report.Timestamp)
+"@ | Out-File -FilePath $infoFile -Encoding utf8
+                $report.FilePaths.IntuneDevicesInfo = $infoFile
+                Write-Host "No Intune device records found - see IntuneDevices${ticketSuffix}_NoResults.txt" -ForegroundColor Yellow
             }
 
             # Conditional Access Policies export
@@ -1785,9 +2294,25 @@ If you expected data:
                 }
             } elseif ($report.CAPoliciesError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies${ticketSuffix}_Error.txt"
                 "Error collecting Conditional Access Policies:`n$($report.CAPoliciesError)" | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.ConditionalAccessPoliciesError = $errorFile
+            } elseif ($IncludeConditionalAccessPolicies) {
+                $infoFile = Join-Path $report.OutputFolder "ConditionalAccessPolicies${ticketSuffix}_NoResults.txt"
+                @"
+Conditional Access Policies Query Completed - No Results Found
+
+IncludeConditionalAccessPolicies=true but no policies were exported (and no exception was recorded).
+
+Possible reasons:
+- Tenant has zero Conditional Access policies
+- Policy.Read.All consented but Graph returned an empty set
+- Azure AD Premium P1+ required for CA in some tenants
+
+Query time: $($report.Timestamp)
+"@ | Out-File -FilePath $infoFile -Encoding utf8
+                $report.FilePaths.ConditionalAccessPoliciesInfo = $infoFile
+                Write-Host "No Conditional Access policies exported - see ConditionalAccessPolicies${ticketSuffix}_NoResults.txt" -ForegroundColor Yellow
             }
 
             # App Registrations export
@@ -1829,17 +2354,37 @@ If you expected data:
                 }
             } elseif ($report.AppRegistrationsError) {
                 # Write error to a text file
-                $errorFile = Join-Path $report.OutputFolder "AppRegistrations$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "AppRegistrations${ticketSuffix}_Error.txt"
                 "Error collecting App Registrations:`n$($report.AppRegistrationsError)" | Out-File -FilePath $errorFile -Encoding utf8
                 $report.FilePaths.AppRegistrationsError = $errorFile
+            } elseif ($IncludeAppRegistrations) {
+                $infoFile = Join-Path $report.OutputFolder "AppRegistrations${ticketSuffix}_NoResults.txt"
+                @"
+App Registrations Query Completed - No Results Found
+
+IncludeAppRegistrations=true but no apps were exported (and no exception was recorded).
+
+Possible reasons:
+- Tenant has zero app registrations (unusual)
+- Application.Read.All consented but Graph returned an empty set
+
+Query time: $($report.Timestamp)
+"@ | Out-File -FilePath $infoFile -Encoding utf8
+                $report.FilePaths.AppRegistrationsInfo = $infoFile
+                Write-Host "No App Registrations exported - see AppRegistrations${ticketSuffix}_NoResults.txt" -ForegroundColor Yellow
             }
 
             # SharePoint Activity export
             $csv = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix.json"
-            if ($report.SharePointActivityError) {
+            if ($report.SharePointActivitySkippedReason) {
+                $skipFile = Join-Path $report.OutputFolder "SharePointActivity${ticketSuffix}_Skipped.txt"
+                $report.SharePointActivitySkippedReason | Out-File -FilePath $skipFile -Encoding utf8
+                $report.FilePaths.SharePointActivitySkipped = $skipFile
+                Write-Host "SharePoint Activity skipped (UAL duplicate) - see Skipped note" -ForegroundColor DarkCyan
+            } elseif ($report.SharePointActivityError) {
                 # Error occurred - write error file
-                $errorFile = Join-Path $report.OutputFolder "SharePointActivity$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "SharePointActivity${ticketSuffix}_Error.txt"
                 $report.SharePointActivityError | Out-File -FilePath $errorFile -Encoding UTF8
                 $report.FilePaths.SharePointActivityError = $errorFile
                 Write-Host "SharePoint Activity collection failed - see error file" -ForegroundColor Yellow
@@ -1874,9 +2419,14 @@ Note: SharePoint activity reports require Reports.Read.All permission and Micros
             # OneDrive Activity export
             $csv = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix.csv"
             $json = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix.json"
-            if ($report.OneDriveActivityError) {
+            if ($report.OneDriveActivitySkippedReason) {
+                $skipFile = Join-Path $report.OutputFolder "OneDriveActivity${ticketSuffix}_Skipped.txt"
+                $report.OneDriveActivitySkippedReason | Out-File -FilePath $skipFile -Encoding utf8
+                $report.FilePaths.OneDriveActivitySkipped = $skipFile
+                Write-Host "OneDrive Activity skipped (UAL duplicate) - see Skipped note" -ForegroundColor DarkCyan
+            } elseif ($report.OneDriveActivityError) {
                 # Error occurred - write error file
-                $errorFile = Join-Path $report.OutputFolder "OneDriveActivity$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "OneDriveActivity${ticketSuffix}_Error.txt"
                 $report.OneDriveActivityError | Out-File -FilePath $errorFile -Encoding UTF8
                 $report.FilePaths.OneDriveActivityError = $errorFile
                 Write-Host "OneDrive Activity collection failed - see error file" -ForegroundColor Yellow
@@ -1913,7 +2463,7 @@ Note: OneDrive activity reports require Reports.Read.All permission and Microsof
             $json = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix.json"
             if ($report.TeamsActivityError) {
                 # Error occurred - write error file
-                $errorFile = Join-Path $report.OutputFolder "TeamsActivity$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "TeamsActivity${ticketSuffix}_Error.txt"
                 $report.TeamsActivityError | Out-File -FilePath $errorFile -Encoding UTF8
                 $report.FilePaths.TeamsActivityError = $errorFile
                 Write-Host "Teams Activity collection failed - see error file" -ForegroundColor Yellow
@@ -1950,7 +2500,7 @@ Note: Teams activity reports require Reports.Read.All permission and Microsoft 3
             $json = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix.json"
             if ($report.SharePointSharingError) {
                 # Error occurred - write error file
-                $errorFile = Join-Path $report.OutputFolder "SharePointSharing$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "SharePointSharing${ticketSuffix}_Error.txt"
                 $report.SharePointSharingError | Out-File -FilePath $errorFile -Encoding UTF8
                 $report.FilePaths.SharePointSharingError = $errorFile
                 Write-Host "SharePoint Sharing collection failed - see error file" -ForegroundColor Yellow
@@ -1987,7 +2537,7 @@ Note: SharePoint sharing links require Sites.Read.All permission. If you expecte
             $json = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix.json"
             if ($report.SecurityAlertsError) {
                 # Error occurred - write error file
-                $errorFile = Join-Path $report.OutputFolder "SecurityAlerts$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "SecurityAlerts${ticketSuffix}_Error.txt"
                 $report.SecurityAlertsError | Out-File -FilePath $errorFile -Encoding UTF8
                 $report.FilePaths.SecurityAlertsError = $errorFile
                 Write-Host "Security Alerts collection failed - see error file" -ForegroundColor Yellow
@@ -2025,7 +2575,7 @@ Note: Security alerts require SecurityAlert.Read.All permission and Microsoft De
             $json = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix.json"
             if ($report.SecurityIncidentsError) {
                 # Error occurred - write error file
-                $errorFile = Join-Path $report.OutputFolder "SecurityIncidents$ticketSuffix_Error.txt"
+                $errorFile = Join-Path $report.OutputFolder "SecurityIncidents${ticketSuffix}_Error.txt"
                 $report.SecurityIncidentsError | Out-File -FilePath $errorFile -Encoding UTF8
                 $report.FilePaths.SecurityIncidentsError = $errorFile
                 Write-Host "Security Incidents collection failed - see error file" -ForegroundColor Yellow
@@ -2054,6 +2604,44 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                     Write-Host "No security incidents found - created empty CSV" -ForegroundColor Gray
                 } catch {
                     Write-Warning "Failed to create empty Security Incidents CSV: $($_.Exception.Message)"
+                }
+            }
+
+            foreach ($extraExport in @(
+                @{ Prop = 'AnonymousSharePointSharing'; File = 'AnonymousSharePointSharing'; Include = $IncludeAnonymousSharePointSharing; Note = 'Requires Exchange Online Unified Audit (View-Only Audit Logs).' },
+                @{ Prop = 'SharePointFileSharingLinks'; File = 'SharePointFileSharingLinks'; Include = $IncludeSharePointFileSharingLinks; Note = 'Requires Sites.Read.All (scoped to selected users OneDrive when users are set).' },
+                @{ Prop = 'DLPViolations'; File = 'DLPViolations'; Include = $IncludeDLPViolations; Note = 'Requires Exchange Online Unified Audit (ComplianceDLP*); Graph SecurityAlert.Read.All optional for alert enrichment.' },
+                @{ Prop = 'SharePointOneDriveFileActions'; File = 'SharePointOneDriveFileActions'; Include = $IncludeSharePointOneDriveFileActions; Note = 'Requires View-Only Audit Logs (Exchange Online).' }
+            )) {
+                $csv = Join-Path $report.OutputFolder "$($extraExport.File)$ticketSuffix.csv"
+                $json = Join-Path $report.OutputFolder "$($extraExport.File)$ticketSuffix.json"
+                $errProp = "$($extraExport.Prop)Error"
+                $skipProp = "$($extraExport.Prop)SkippedReason"
+                $data = $report.($extraExport.Prop)
+                $err = $report.$errProp
+                $skipReason = $report.$skipProp
+                if ($skipReason) {
+                    $skipFile = Join-Path $report.OutputFolder "$($extraExport.File)${ticketSuffix}_Skipped.txt"
+                    $skipReason | Out-File -FilePath $skipFile -Encoding UTF8
+                    $report.FilePaths["$($extraExport.Prop)Skipped"] = $skipFile
+                    Write-Host "$($extraExport.File) skipped (UAL duplicate) - see Skipped note" -ForegroundColor DarkCyan
+                } elseif ($err) {
+                    $errorFile = Join-Path $report.OutputFolder "$($extraExport.File)${ticketSuffix}_Error.txt"
+                    $err | Out-File -FilePath $errorFile -Encoding UTF8
+                    $report.FilePaths["$($extraExport.Prop)Error"] = $errorFile
+                    Write-Host "$($extraExport.File) collection failed - see error file" -ForegroundColor Yellow
+                } elseif ($data -and $data.Count -gt 0) {
+                    try {
+                        $data | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+                        $report.FilePaths["$($extraExport.Prop)Csv"] = $csv
+                        Write-Host "Exported $($data.Count) $($extraExport.File) rows" -ForegroundColor Green
+                    } catch {
+                        $data | ConvertTo-Json -Depth 8 | Out-File -FilePath $json -Encoding utf8
+                        $report.FilePaths["$($extraExport.Prop)Json"] = $json
+                    }
+                } elseif ($extraExport.Include) {
+                    "No $($extraExport.File) data found.`nNote: $($extraExport.Note)" | Out-File -FilePath $csv -Encoding UTF8
+                    $report.FilePaths["$($extraExport.Prop)Csv"] = $csv
                 }
             }
 
@@ -2110,8 +2698,9 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                                 DisplayName = $upn
                                 PerUserMfaEnabled = $false
                                 SecurityDefaults = $false
-                                CARequiresMfa = $false
+                                CARequiresMfa = 'Unknown'
                                 MfaCovered = $false
+                                MfaCoveredIncomplete = $true
                             }
                         }
                     }
@@ -2133,7 +2722,10 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                 } catch {}
 
                 $userExportCount = @($usersToExport).Count
-                $doEntraPerUserDetail = $entraModuleLoaded -and $graphConnected
+                $doEntraPerUserDetail = $false
+                if ($entraModuleLoaded -and -not (Test-GraphRestBearerToken)) {
+                    try { if (Get-MgContext -ErrorAction Stop) { $doEntraPerUserDetail = $true } } catch {}
+                }
                 if ($userExportCount -gt 0) {
                     Write-Host "  User Security Posture: $userExportCount user row(s) to build$(if ($doEntraPerUserDetail) { ' (per-user Entra MFA detail — may take several minutes for full tenant)' } else { '' })" -ForegroundColor Gray
                 }
@@ -2177,6 +2769,7 @@ Note: Security incidents require SecurityIncident.Read.All permission and Micros
                         SecurityDefaults            = $mfaUser.SecurityDefaults
                         CARequiresMfa               = $mfaUser.CARequiresMfa
                         MfaCovered                  = $mfaUser.MfaCovered
+                        MfaCoveredIncomplete        = if ($null -ne $mfaUser.MfaCoveredIncomplete) { $mfaUser.MfaCoveredIncomplete } else { $false }
                         # Per-user detailed MFA status
                         PerUserMfaStatus            = $perUserMfaStatus
                         PerUserMfaDetails           = $perUserMfaDetails
@@ -2237,41 +2830,6 @@ Export phase error (if set): $(if ($exportError) { $exportError.Exception.Messag
                     Write-Warning "Failed to write sign-in export fallback marker: $($_.Exception.Message)"
                 }
             }
-        }
-
-        # Rule-based automated analysis (reduces LLM reliance)
-        try {
-            $reportAnalysisPath = Join-Path $PSScriptRoot 'ReportAnalysis.psm1'
-            if (Test-Path $reportAnalysisPath) {
-                $statusMsg = "Running rule-based analysis..."
-                if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                Write-Host $statusMsg -ForegroundColor Cyan
-                Import-Module $reportAnalysisPath -Force -ErrorAction Stop
-                $analysisResult = Get-ReportFindings -Report $report
-                $report.AutomatedFindings = $analysisResult.Findings
-                $report.RiskScore = $analysisResult.RiskScore
-                $report.AutomatedSummary = $analysisResult.Summary
-                if ($analysisResult.Findings -and $analysisResult.Findings.Count -gt 0) {
-                    $findingsCsv = Join-Path $report.OutputFolder "Findings$ticketSuffix.csv"
-                    $analysisResult.Findings | Export-Csv -Path $findingsCsv -NoTypeInformation -Encoding UTF8
-                    $report.FilePaths.FindingsCsv = $findingsCsv
-                }
-                $findingsJson = Join-Path $report.OutputFolder "Findings$ticketSuffix.json"
-                $jsonObj = @{ Findings = $analysisResult.Findings; RiskScore = $analysisResult.RiskScore; HasUAL = $analysisResult.HasUAL }
-                if ($analysisResult.UserSummaries) {
-                    $usForJson = @{}
-                    foreach ($k in $analysisResult.UserSummaries.Keys) { $usForJson[$k] = $analysisResult.UserSummaries[$k] }
-                    $jsonObj['UserSummaries'] = $usForJson
-                }
-                $jsonObj | ConvertTo-Json -Depth 5 | Out-File -Path $findingsJson -Encoding utf8
-                $report.FilePaths.FindingsJson = $findingsJson
-                $autoSummaryPath = Join-Path $report.OutputFolder "_Automated_Summary$ticketSuffix.txt"
-                $analysisResult.Summary | Out-File -Path $autoSummaryPath -Encoding utf8
-                $report.FilePaths.AutomatedSummaryTxt = $autoSummaryPath
-                Write-Host "Automated analysis: $($analysisResult.Findings.Count) findings, Risk $($analysisResult.RiskScore.Level)" -ForegroundColor Green
-            }
-        } catch {
-            Write-Warning "Rule-based analysis failed: $($_.Exception.Message)"
         }
 
         # Generate Memberberry-Slim package (ticket + exceptions + settings) or fallback to AI readme
@@ -2401,6 +2959,1132 @@ Export phase error (if set): $(if ($exportError) { $exportError.Exception.Messag
     return $report
 }
 
+function Get-ExchangeMessageTraceV2CommandInfo {
+    # Resolve by name first, the same way every other EXO cmdlet is called, so we bind to the
+    # live tmpEXO module. Each Connect-ExchangeOnline creates a new tmpEXO module, and both a
+    # cached CommandInfo and Get-Module -All can hand back a disposed one, which then fails with
+    # "You must call Connect-ExchangeOnline before calling any other cmdlet."
+    $live = Microsoft.PowerShell.Core\Get-Command -Name Get-MessageTraceV2 -ErrorAction SilentlyContinue
+    if ($live -and ($live.Source -like 'tmpEXO_*' -or $live.ModuleName -like 'tmpEXO_*')) {
+        $global:EOA_MessageTraceV2Command = $live
+        return $live
+    }
+    if ($global:EOA_MessageTraceV2Command) { return $global:EOA_MessageTraceV2Command }
+    if (Get-Command Get-ExchangeMessageTraceV2Command -ErrorAction SilentlyContinue) {
+        $cmd = Get-ExchangeMessageTraceV2Command
+        if ($cmd) { return $cmd }
+    }
+    foreach ($mod in @(Get-Module -All -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'tmpEXO_*' })) {
+        if ($mod.ExportedCommands -and $mod.ExportedCommands.ContainsKey('Get-MessageTraceV2')) {
+            return $mod.ExportedCommands['Get-MessageTraceV2']
+        }
+    }
+    return $null
+}
+
+function ConvertTo-EoaMessageTraceRow {
+    param($Row)
+    if (-not $Row) { return $null }
+    $received = $Row.receivedDateTime
+    if (-not $received) { $received = $Row.Received }
+    $sender = $Row.senderAddress
+    if (-not $sender) { $sender = $Row.SenderAddress }
+    $recipient = $Row.recipientAddress
+    if (-not $recipient) { $recipient = $Row.RecipientAddress }
+    $messageId = $Row.messageId
+    if (-not $messageId) { $messageId = $Row.MessageId }
+    $traceId = $Row.id
+    if (-not $traceId) { $traceId = $Row.MessageTraceId }
+    [pscustomobject]@{
+        Received          = $received
+        SenderAddress     = $sender
+        RecipientAddress  = $recipient
+        Subject           = $(if ($Row.subject) { $Row.subject } else { $Row.Subject })
+        Status            = $(if ($Row.status) { $Row.status } else { $Row.Status })
+        ToIP              = $(if ($Row.toIP) { $Row.toIP } else { $Row.ToIP })
+        FromIP            = $(if ($Row.fromIP) { $Row.fromIP } else { $Row.FromIP })
+        Size              = $(if ($null -ne $Row.size) { $Row.size } else { $Row.Size })
+        MessageId         = $messageId
+        MessageTraceId    = $traceId
+    }
+}
+
+function Invoke-GraphMessageTraceQuery {
+    param(
+        [Parameter(Mandatory = $true)][datetime]$StartDate,
+        [Parameter(Mandatory = $true)][datetime]$EndDate,
+        [string]$SenderAddress,
+        [string]$RecipientAddress,
+        [string[]]$Status = @()
+    )
+    $startUtc = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'")
+    $endUtc = $EndDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'")
+    $filters = @(
+        "receivedDateTime ge $startUtc",
+        "receivedDateTime le $endUtc"
+    )
+    if ($SenderAddress) {
+        $filters += "senderAddress eq '$($SenderAddress.Replace("'", "''"))'"
+    }
+    if ($RecipientAddress) {
+        $filters += "recipientAddress eq '$($RecipientAddress.Replace("'", "''"))'"
+    }
+    $statusValues = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    if ($statusValues.Count -eq 1) {
+        $filters += "status eq '$($statusValues[0].Replace("'", "''"))'"
+    } elseif ($statusValues.Count -gt 1) {
+        $ors = @($statusValues | ForEach-Object { "status eq '$($_.Replace("'", "''"))'" })
+        $filters += '(' + ($ors -join ' or ') + ')'
+    }
+    $filter = $filters -join ' and '
+    $uri = "https://graph.microsoft.com/v1.0/admin/exchange/tracing/messageTraces?`$top=1000&`$filter=$([uri]::EscapeDataString($filter))"
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $next = $uri
+    while ($next) {
+        $resp = Invoke-MgGraphRequestCompat -Method GET -Uri $next
+        foreach ($item in @($resp.value)) {
+            $mapped = ConvertTo-EoaMessageTraceRow $item
+            if ($mapped) { [void]$rows.Add($mapped) }
+        }
+        $next = $resp.'@odata.nextLink'
+    }
+    return $rows
+}
+
+function Get-EoaJwtPayload {
+    param([string]$Token)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return $null }
+    $parts = $Token.Split('.')
+    if ($parts.Count -lt 2) { return $null }
+    $p = $parts[1].Replace('-', '+').Replace('_', '/')
+    switch ($p.Length % 4) {
+        2 { $p += '==' }
+        3 { $p += '=' }
+    }
+    try {
+        return ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Invoke-EoaGraphJson {
+    param(
+        [string]$Method = 'GET',
+        [Parameter(Mandatory = $true)][string]$Uri,
+        $Body
+    )
+    $json = $null
+    if ($null -ne $Body) {
+        $json = if ($Body -is [string]) { $Body } else { ($Body | ConvertTo-Json -Depth 10 -Compress) }
+    }
+    if (Test-GraphRestBearerToken) {
+        if ($json) { return Invoke-GraphRestRequest -Method $Method -Uri $Uri -Body $json }
+        return Invoke-GraphRestRequest -Method $Method -Uri $Uri
+    }
+    $params = @{ Method = $Method; Uri = $Uri; ErrorAction = 'Stop' }
+    if ($json) { $params.Body = $json }
+    return Invoke-MgGraphRequest @params
+}
+
+function Enable-GraphMessageTraceAccess {
+    param([string]$StatusFile = $null)
+    $result = [pscustomobject]@{
+        RetryReady = $false
+        Granted    = $false
+        TdpReady   = $false
+        Detail     = $null
+    }
+    $roleId = '89b20d8a-76e2-4057-867b-9961f800b9a4'
+    $roleName = 'ExchangeMessageTrace.Read.All'
+    $graphAppId = '00000003-0000-0000-c000-000000000000'
+    $tdpAppId = '8bd644d1-64a1-4d4b-ae52-2e0cbf64e373'
+
+    $tenantId = Get-CurrentTenantId
+    if (-not $tenantId) {
+        $result.Detail = 'No tenant id (complete Graph Auth or WCM app-only first).'
+        return $result
+    }
+
+    $graphAppMod = Join-Path $PSScriptRoot 'GraphAppCredential.psm1'
+    if (Test-Path $graphAppMod) {
+        Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
+    }
+    $cred = $null
+    if (Get-Command Get-GraphAppCredentialFromWCM -ErrorAction SilentlyContinue) {
+        $cred = Get-GraphAppCredentialFromWCM -TenantId $tenantId
+    }
+    if (-not $cred -or -not $cred.ClientId) {
+        $result.Detail = 'No WCM Graph app credentials for this tenant. Use Update Graph App scopes, then Graph Auth.'
+        return $result
+    }
+
+    $token = $null
+    if (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue) {
+        $token = Get-GraphAppTokenFromWCM -TenantId $tenantId
+    }
+    if (-not $token) {
+        $result.Detail = 'Could not get a WCM app-only token to grant message-trace permission.'
+        return $result
+    }
+    Set-GraphRestBearerToken -Token $token
+
+    $payload = Get-EoaJwtPayload -Token $token
+    $roles = @()
+    if ($payload -and $payload.roles) { $roles = @($payload.roles) }
+    $hasRole = $roles -contains $roleName
+    $canWriteApps = ($roles -contains 'Application.ReadWrite.All')
+    $canAssignRoles = ($roles -contains 'AppRoleAssignment.ReadWrite.All')
+
+    Write-ExportStatusLine -StatusFile $StatusFile -Message "Graph messageTraces 403: ensuring $roleName and Transport Data Platform SP..."
+
+    try {
+        $tdp = Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$tdpAppId'"
+        if (-not $tdp.value -or @($tdp.value).Count -eq 0) {
+            try {
+                $null = Invoke-EoaGraphJson -Method POST -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals' -Body @{ appId = $tdpAppId }
+                $result.TdpReady = $true
+                Write-ExportStatusLine -StatusFile $StatusFile -Message 'Provisioned Transport Data Platform service principal (Graph message trace). Propagation can take a few hours.'
+            } catch {
+                $result.Detail = "Transport Data Platform SP create failed: $($_.Exception.Message)"
+            }
+        } else {
+            $result.TdpReady = $true
+        }
+    } catch {
+        $result.Detail = "Transport Data Platform SP lookup failed: $($_.Exception.Message)"
+    }
+
+    if (-not $hasRole) {
+        if (-not $canWriteApps -or -not $canAssignRoles) {
+            $result.Detail = "WCM token lacks Application.ReadWrite.All / AppRoleAssignment.ReadWrite.All, so $roleName cannot be granted automatically. Use Update Graph App scopes."
+            return $result
+        }
+        try {
+            $apps = Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=appId eq '$($cred.ClientId)'"
+            $app = @($apps.value) | Select-Object -First 1
+            if (-not $app) { throw "WCM app $($cred.ClientId) was not found in this tenant." }
+
+            $payloadAccess = @()
+            $foundGraph = $false
+            foreach ($r in @($app.requiredResourceAccess)) {
+                $rid = [string]$r.resourceAppId
+                if ($rid -eq $graphAppId) {
+                    $foundGraph = $true
+                    $access = @()
+                    $have = $false
+                    foreach ($a in @($r.resourceAccess)) {
+                        $access += @{ id = [string]$a.id; type = [string]$a.type }
+                        if ([string]$a.id -eq $roleId) { $have = $true }
+                    }
+                    if (-not $have) { $access += @{ id = $roleId; type = 'Role' } }
+                    $payloadAccess += @{ resourceAppId = $graphAppId; resourceAccess = $access }
+                } else {
+                    $payloadAccess += @{
+                        resourceAppId  = $rid
+                        resourceAccess = @($r.resourceAccess | ForEach-Object { @{ id = [string]$_.id; type = [string]$_.type } })
+                    }
+                }
+            }
+            if (-not $foundGraph) {
+                $payloadAccess += @{ resourceAppId = $graphAppId; resourceAccess = @(@{ id = $roleId; type = 'Role' }) }
+            }
+            $null = Invoke-EoaGraphJson -Method PATCH -Uri "https://graph.microsoft.com/v1.0/applications/$($app.id)" -Body @{
+                requiredResourceAccess = @($payloadAccess)
+            }
+
+            $graphSp = @((Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$graphAppId'").value) | Select-Object -First 1
+            $appSp = @((Invoke-EoaGraphJson -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$($cred.ClientId)'").value) | Select-Object -First 1
+            if (-not $graphSp -or -not $appSp) { throw 'Could not resolve Graph or River Run service principals for consent.' }
+
+            $already = $false
+            $asnUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments?`$top=999"
+            do {
+                $page = Invoke-EoaGraphJson -Method GET -Uri $asnUri
+                foreach ($a in @($page.value)) {
+                    if ([string]$a.appRoleId -eq $roleId -and [string]$a.resourceId -eq [string]$graphSp.id) { $already = $true }
+                }
+                $asnUri = $page.'@odata.nextLink'
+            } while ($asnUri -and -not $already)
+
+            if (-not $already) {
+                $null = Invoke-EoaGraphJson -Method POST -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments" -Body @{
+                    principalId = $appSp.id
+                    resourceId  = $graphSp.id
+                    appRoleId   = $roleId
+                }
+            }
+            $result.Granted = $true
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Granted $roleName on the WCM Graph app. Requesting a new token..."
+        } catch {
+            $result.Detail = "Could not grant $roleName : $($_.Exception.Message)"
+            return $result
+        }
+    }
+
+    $fresh = Get-GraphAppTokenFromWCM -TenantId $tenantId
+    if ($fresh) {
+        Set-GraphRestBearerToken -Token $fresh
+        $freshPayload = Get-EoaJwtPayload -Token $fresh
+        $freshRoles = @()
+        if ($freshPayload -and $freshPayload.roles) { $freshRoles = @($freshPayload.roles) }
+        if ($freshRoles -contains $roleName) {
+            $result.RetryReady = $true
+            if (-not $result.Detail) { $result.Detail = "Token now includes $roleName." }
+        } else {
+            $result.RetryReady = $true
+            if (-not $result.Detail) { $result.Detail = "New token requested; $roleName may still be propagating." }
+        }
+    } else {
+        if (-not $result.Detail) { $result.Detail = 'Permission grant finished but a new WCM token could not be issued.' }
+    }
+    return $result
+}
+
+function Test-EoaGraphMessageTraceUnsupportedCloud {
+    # Graph /admin/exchange/tracing is commercial-only; GCC returns 403 with this text.
+    param([string]$ErrorText)
+    return ($ErrorText -match 'not currently supported for Microsoft 365 GCC|not supported for Microsoft 365 GCC|GCC tenants')
+}
+
+function Test-GraphMessageTraceAvailable {
+    param([string]$StatusFile = $null)
+    if ($null -ne $global:EOA_GraphMessageTraceOk) {
+        return [bool]$global:EOA_GraphMessageTraceOk
+    }
+    if (-not (Test-GraphSessionAvailable)) {
+        $tid = Get-CurrentTenantId
+        if ($tid -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+            try {
+                $wcmToken = Get-GraphAppTokenFromWCM -TenantId $tid
+                if ($wcmToken) { Set-GraphRestBearerToken -Token $wcmToken }
+            } catch {}
+        }
+    }
+    if (-not (Test-GraphSessionAvailable)) {
+        $global:EOA_GraphMessageTraceOk = $false
+        $global:EOA_GraphMessageTraceError = 'Graph is not connected (no WCM/app-only token and no interactive Graph session).'
+        return $false
+    }
+    $tryQuery = {
+        $end = (Get-Date).ToUniversalTime()
+        $null = Invoke-GraphMessageTraceQuery -StartDate $end.AddMinutes(-30) -EndDate $end
+    }
+    try {
+        & $tryQuery
+        $global:EOA_GraphMessageTraceOk = $true
+        $global:EOA_GraphMessageTraceError = $null
+        return $true
+    } catch {
+        $err = [string]$_.Exception.Message
+        $errBody = ''
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $errBody = [string]$_.ErrorDetails.Message }
+        if (Test-EoaGraphMessageTraceUnsupportedCloud -ErrorText "$err $errBody") {
+            # Government clouds do not host this endpoint, so granting scopes or provisioning
+            # the Transport Data Platform SP cannot ever make it answer. Do neither.
+            $global:EOA_GraphMessageTraceOk = $false
+            $global:EOA_GraphMessageTraceError = 'Graph message trace is not supported in Microsoft 365 Government (GCC/GCC High/DoD) tenants.'
+            $msg = 'Graph messageTraces unavailable: not supported for Microsoft 365 Government (GCC) tenants. Skipping Transport Data Platform provisioning.'
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+            return $false
+        }
+        if ($err -match '401|403|Forbidden|Unauthorized|Authorization_RequestDenied') {
+            $fix = Enable-GraphMessageTraceAccess -StatusFile $StatusFile
+            if ($fix.RetryReady) {
+                try {
+                    & $tryQuery
+                    $global:EOA_GraphMessageTraceOk = $true
+                    $global:EOA_GraphMessageTraceError = $null
+                    return $true
+                } catch {
+                    $err2 = [string]$_.Exception.Message
+                    $global:EOA_GraphMessageTraceOk = $false
+                    $global:EOA_GraphMessageTraceError = "$err2 (after grant: $($fix.Detail))"
+                    return $false
+                }
+            }
+            $global:EOA_GraphMessageTraceOk = $false
+            $global:EOA_GraphMessageTraceError = "$err ($($fix.Detail))"
+            return $false
+        }
+        $global:EOA_GraphMessageTraceOk = $false
+        $global:EOA_GraphMessageTraceError = $err
+        return $false
+    }
+}
+
+function Get-GraphMessageTrace {
+    param(
+        [datetime]$StartDate,
+        [datetime]$EndDate,
+        [array]$SelectedUsers = @(),
+        [string[]]$Status = @(),
+        [string]$StatusFile = $null
+    )
+    $results = New-Object System.Collections.Generic.List[object]
+    $traceCallCount = 0
+    $script:EOA_GraphMessageTraceWindowErrors = 0
+    $cursor = $StartDate
+    $windowDays = 10
+    $selectedUserList = @()
+    foreach ($user in @($SelectedUsers)) {
+        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { $null }
+        if ($upn) { $selectedUserList += $upn }
+    }
+
+    while ($cursor -lt $EndDate) {
+        $winEnd = $cursor.AddDays($windowDays)
+        if ($winEnd -gt $EndDate) { $winEnd = $EndDate }
+        $dayLabel = '{0:yyyy-MM-dd} to {1:yyyy-MM-dd}' -f $cursor, $winEnd
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace (Graph): $dayLabel..."
+        $calls = @()
+        if ($selectedUserList.Count -gt 0) {
+            foreach ($upn in $selectedUserList) {
+                $calls += @{ Sender = $upn; Recipient = $null }
+                $calls += @{ Sender = $null; Recipient = $upn }
+            }
+        } else {
+            $calls += @{ Sender = $null; Recipient = $null }
+        }
+        foreach ($call in $calls) {
+            try {
+                if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }
+                $traceCallCount++
+                foreach ($item in @(Invoke-GraphMessageTraceQuery -StartDate $cursor -EndDate $winEnd -SenderAddress $call.Sender -RecipientAddress $call.Recipient -Status $Status)) {
+                    if ($item) { [void]$results.Add($item) }
+                }
+            } catch {
+                $script:EOA_GraphMessageTraceWindowErrors++
+                $traceErr = "Message trace (Graph) $dayLabel failed: $($_.Exception.Message)"
+                Write-Warning $traceErr
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
+            }
+        }
+        $cursor = $winEnd
+    }
+
+    if ($selectedUserList.Count -gt 0) {
+        $uniqueResults = @()
+        $seenIds = @{}
+        foreach ($item in $results) {
+            if ($item.MessageId) { $uniqueKey = $item.MessageId }
+            elseif ($item.MessageTraceId) { $uniqueKey = "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.MessageTraceId)" }
+            else { $uniqueKey = "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.Subject)_$($item.Received)" }
+            if ($uniqueKey -and -not $seenIds.ContainsKey($uniqueKey)) {
+                $seenIds[$uniqueKey] = $true
+                $uniqueResults += $item
+            }
+        }
+        $uniqueResults = @(Select-EoaMessageTraceByStatus -Rows $uniqueResults -Status $Status)
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($uniqueResults.Count) entries (Graph, filtered users)"
+        return [System.Collections.ArrayList]$uniqueResults
+    }
+
+    $filtered = @(Select-EoaMessageTraceByStatus -Rows $results -Status $Status)
+    Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($filtered.Count) entries (Graph)"
+    return [System.Collections.ArrayList]$filtered
+}
+
+$script:EOA_HistoricalJobPrefix = 'EOA-MT'
+
+function ConvertTo-EoaMessageTraceRowFromHistorical {
+    param($Row)
+    if (-not $Row) { return $null }
+    $n = @{}
+    foreach ($p in $Row.PSObject.Properties) { $n[$p.Name.ToLowerInvariant()] = $p.Value }
+    $get = {
+        param([string[]]$Names)
+        foreach ($name in $Names) {
+            if ($n.ContainsKey($name) -and $null -ne $n[$name] -and $n[$name] -ne '') { return $n[$name] }
+        }
+        return $null
+    }
+    [pscustomobject]@{
+        Received         = & $get @('origin_timestamp_utc', 'origin_timestamp', 'received', 'datetime', 'date_time')
+        SenderAddress    = & $get @('sender_address', 'senderaddress', 'sender', 'from')
+        RecipientAddress = & $get @('recipient_address', 'recipientaddress', 'recipient', 'to')
+        Subject          = & $get @('message_subject', 'subject')
+        Status           = & $get @('recipient_status', 'status', 'delivery_status')
+        ToIP             = & $get @('to_ip', 'toip')
+        FromIP           = & $get @('from_ip', 'fromip')
+        Size             = & $get @('message_size', 'size')
+        MessageId        = & $get @('message_id', 'messageid')
+        MessageTraceId   = & $get @('network_message_id', 'messagetraceid', 'message_trace_id')
+    }
+}
+
+function Get-HistoricalMessageTraceAddressFilters {
+    param([array]$SelectedUsers = @())
+    $recipients = [System.Collections.Generic.List[string]]::new()
+    $senders = [System.Collections.Generic.List[string]]::new()
+    foreach ($user in @($SelectedUsers)) {
+        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { $null }
+        if ($upn) {
+            [void]$recipients.Add($upn)
+            [void]$senders.Add($upn)
+        }
+    }
+    if ($recipients.Count -gt 0) {
+        return [pscustomobject]@{ Recipients = @($recipients); Senders = @($senders) }
+    }
+    $domains = @()
+    try {
+        $domains = @(Get-AcceptedDomain -ErrorAction Stop | Where-Object { $_.DomainName } | ForEach-Object { [string]$_.DomainName })
+    } catch { }
+    foreach ($d in $domains) {
+        if ($d -and $d -notmatch '\*') {
+            [void]$recipients.Add("*@$d")
+            [void]$senders.Add("*@$d")
+        }
+    }
+    return [pscustomobject]@{ Recipients = @($recipients | Select-Object -First 100); Senders = @($senders | Select-Object -First 100) }
+}
+
+function Get-EoaHistoricalSearchPlan {
+    # Exchange rejects a wildcard recipient combined with any other address, and
+    # -SenderAddress does not support wildcards at all, so plan one job per wildcard
+    # domain and drop wildcard senders instead of sending a request that always fails.
+    param(
+        [array]$Recipients = @(),
+        [array]$Senders = @(),
+        [int]$MaxWildcardJobs = 10
+    )
+    $recip = @($Recipients | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $send  = @($Senders    | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+    $wildcardRecipients = @($recip | Where-Object { $_ -match '\*' })
+    $exactRecipients    = @($recip | Where-Object { $_ -notmatch '\*' })
+    $exactSenders       = @($send  | Where-Object { $_ -notmatch '\*' })
+
+    $runWildcards = @($wildcardRecipients | Select-Object -First $MaxWildcardJobs)
+
+    return [pscustomobject]@{
+        ExactRecipients   = $exactRecipients
+        WildcardJobs      = $runWildcards
+        SkippedWildcards  = @($wildcardRecipients | Select-Object -Skip $runWildcards.Count)
+        ExactSenders      = $exactSenders
+        DroppedWildcardSenders = @($send | Where-Object { $_ -match '\*' })
+    }
+}
+
+function Get-EoaHistoricalSearchTitle {
+    # Deterministic title so a re-run recognises its own pending job instead of queueing
+    # a duplicate. Historical searches take hours, so duplicates starve the queue.
+    param(
+        [datetime]$StartDate,
+        [datetime]$EndDate,
+        [string]$Kind,
+        [string]$Address
+    )
+    $slug = ([string]$Address) -replace '[^A-Za-z0-9]', '-'
+    $slug = $slug.Trim('-')
+    if ($slug.Length -gt 24) { $slug = $slug.Substring(0, 24) }
+    return ('{0}_{1:yyyyMMdd}-{2:yyyyMMdd}_{3}_{4}' -f $script:EOA_HistoricalJobPrefix, $StartDate, $EndDate, $Kind, $slug)
+}
+
+function Get-EoaHistoricalSearchJobs {
+    param([int]$MaxAgeDays = 14)
+    if (-not (Get-Command Get-HistoricalSearch -ErrorAction SilentlyContinue)) { return @() }
+    try { $all = @(Get-HistoricalSearch -ErrorAction Stop) } catch { return @() }
+    $cutoff = (Get-Date).AddDays(-$MaxAgeDays)
+    return @($all | Where-Object {
+        ([string]$_.ReportTitle).StartsWith($script:EOA_HistoricalJobPrefix) -and
+        ((-not $_.SubmitDate) -or ([datetime]$_.SubmitDate -ge $cutoff))
+    })
+}
+
+function Import-HistoricalSearchFileUrl {
+    param(
+        [Parameter(Mandatory = $true)][string]$FileUrl,
+        [string]$StatusFile = $null
+    )
+    $tmp = Join-Path $env:TEMP ("EOA_HistoricalMT_{0}.csv" -f [guid]::NewGuid().ToString('N'))
+    try {
+        Invoke-WebRequest -Uri $FileUrl -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+    } catch {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical report URL requires a signed-in browser download: $FileUrl"
+        throw "Historical search finished but the CSV URL could not be downloaded from PowerShell ($($_.Exception.Message)). Open the FileUrl in a browser signed into the tenant, or download it from EAC."
+    }
+    $rows = Import-Csv -Path $tmp -ErrorAction Stop
+    $mapped = [System.Collections.Generic.List[object]]::new()
+    foreach ($row in @($rows)) {
+        $item = ConvertTo-EoaMessageTraceRowFromHistorical $row
+        if ($item -and ($item.SenderAddress -or $item.RecipientAddress -or $item.MessageId)) {
+            [void]$mapped.Add($item)
+        }
+    }
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    return $mapped
+}
+
+function Submit-EoaHistoricalMessageTrace {
+    # Fire-and-forget: historical searches run for hours on Microsoft's queue, so never wait.
+    # Results are picked up by Receive-EoaHistoricalMessageTrace on a later run.
+    param(
+        [datetime]$StartDate,
+        [datetime]$EndDate,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null,
+        [int]$MaxJobs = 8
+    )
+    if (-not (Get-Command Start-HistoricalSearch -ErrorAction SilentlyContinue)) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message 'Historical message trace: Start-HistoricalSearch is not in this session, so the older span cannot be requested.'
+        return [pscustomobject]@{ Submitted = 0; Skipped = 0; Failed = 0 }
+    }
+    $filters = Get-HistoricalMessageTraceAddressFilters -SelectedUsers $SelectedUsers
+    if (-not $filters.Recipients -and -not $filters.Senders) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message 'Historical message trace: no recipient, sender, or accepted domain to search, so nothing was requested.'
+        return [pscustomobject]@{ Submitted = 0; Skipped = 0; Failed = 0 }
+    }
+    $plan = Get-EoaHistoricalSearchPlan -Recipients $filters.Recipients -Senders $filters.Senders
+
+    $specs = [System.Collections.Generic.List[object]]::new()
+    if ($plan.ExactRecipients.Count -gt 0) {
+        [void]$specs.Add([pscustomobject]@{ Kind = 'rcpt'; Addresses = $plan.ExactRecipients; Key = "$($plan.ExactRecipients.Count)-$($plan.ExactRecipients[0])" })
+    }
+    foreach ($wc in @($plan.WildcardJobs)) {
+        [void]$specs.Add([pscustomobject]@{ Kind = 'rcpt'; Addresses = @($wc); Key = $wc })
+    }
+    if ($plan.ExactSenders.Count -gt 0) {
+        [void]$specs.Add([pscustomobject]@{ Kind = 'sndr'; Addresses = $plan.ExactSenders; Key = "$($plan.ExactSenders.Count)-$($plan.ExactSenders[0])" })
+    }
+    if ($plan.SkippedWildcards.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message ("Historical message trace: skipped {0} accepted domain(s) over the per-run job limit: {1}" -f $plan.SkippedWildcards.Count, ($plan.SkippedWildcards -join ', '))
+    }
+    if ($plan.ExactSenders.Count -eq 0 -and $plan.DroppedWildcardSenders.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message 'Historical message trace: no sender search (Start-HistoricalSearch -SenderAddress does not accept wildcards). Select specific users to capture outbound mail.'
+    }
+
+    $existing = @{}
+    foreach ($job in (Get-EoaHistoricalSearchJobs)) {
+        if ($job.Status -notmatch 'Failed|Error|Cancelled') { $existing[[string]$job.ReportTitle] = [string]$job.Status }
+    }
+
+    $submitted = 0; $skipped = 0; $failed = 0
+    foreach ($spec in $specs) {
+        if ($submitted -ge $MaxJobs) {
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: reached the $MaxJobs job submit cap for this run; remaining spans will be requested next run."
+            break
+        }
+        $title = Get-EoaHistoricalSearchTitle -StartDate $StartDate -EndDate $EndDate -Kind $spec.Kind -Address $spec.Key
+        if ($existing.ContainsKey($title)) {
+            $skipped++
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: already queued ($($existing[$title])) for $($spec.Addresses -join ', ') - not resubmitting."
+            continue
+        }
+        try {
+            $p = @{ ReportTitle = $title; ReportType = 'MessageTrace'; StartDate = $StartDate; EndDate = $EndDate; ErrorAction = 'Stop' }
+            if ($spec.Kind -eq 'rcpt') { $p['RecipientAddress'] = $spec.Addresses } else { $p['SenderAddress'] = $spec.Addresses }
+            $job = Start-HistoricalSearch @p
+            $submitted++
+            Write-ExportStatusLine -StatusFile $StatusFile -Message ("Historical message trace requested: {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd}) job {3}" -f ($spec.Addresses -join ', '), $StartDate, $EndDate, $job.JobId)
+        } catch {
+            $failed++
+            $msg = "Historical message trace request failed for $($spec.Addresses -join ', '): $($_.Exception.Message)"
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+        }
+    }
+    if ($submitted -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: $submitted job(s) queued for the older span. These run on Microsoft's queue for hours - re-run Generate later (or use Collect historical trace) to pull the results in."
+    }
+    return [pscustomobject]@{ Submitted = $submitted; Skipped = $skipped; Failed = $failed }
+}
+
+function Receive-EoaHistoricalMessageTrace {
+    # Downloads whatever previously queued historical searches have finished.
+    param(
+        [string]$StatusFile = $null,
+        [int]$MaxJobs = 12
+    )
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $jobs = @(Get-EoaHistoricalSearchJobs)
+    if ($jobs.Count -eq 0) { return $rows }
+
+    $ready = @($jobs | Where-Object { ([string]$_.Status) -match 'Done|Completed' -and $_.FileUrl } | Sort-Object SubmitDate -Descending | Select-Object -First $MaxJobs)
+    $pending = @($jobs | Where-Object { ([string]$_.Status) -match 'NotStarted|InProgress|Queued' })
+
+    if ($ready.Count -eq 0) {
+        if ($pending.Count -gt 0) {
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: $($pending.Count) job(s) still running on Microsoft's queue - nothing to collect yet."
+        }
+        return $rows
+    }
+
+    foreach ($job in $ready) {
+        try {
+            $batch = @(Import-HistoricalSearchFileUrl -FileUrl ([string]$job.FileUrl) -StatusFile $StatusFile)
+            foreach ($item in $batch) { if ($item) { [void]$rows.Add($item) } }
+            Write-ExportStatusLine -StatusFile $StatusFile -Message ("Historical message trace collected: {0} row(s) from {1}" -f $batch.Count, $job.ReportTitle)
+        } catch {
+            $msg = "Historical message trace could not collect $($job.ReportTitle): $($_.Exception.Message)"
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+        }
+    }
+    if ($pending.Count -gt 0) {
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace: $($pending.Count) further job(s) still running - re-run later to add those days."
+    }
+    return $rows
+}
+
+function Export-EoaHistoricalMessageTraceCsv {
+    # Manual collect: pulls whatever historical searches have finished and writes them to CSV
+    # so the older span can be used without waiting for the next Generate.
+    param(
+        [string]$OutputFolder = $null,
+        [string]$StatusFile = $null
+    )
+    if (-not (Get-Command Get-HistoricalSearch -ErrorAction SilentlyContinue)) {
+        throw 'Get-HistoricalSearch is not in this Exchange session. Run Exchange Auth first.'
+    }
+    $jobs = @(Get-EoaHistoricalSearchJobs)
+    $pending = @($jobs | Where-Object { ([string]$_.Status) -match 'NotStarted|InProgress|Queued' })
+    $rows = @(Receive-EoaHistoricalMessageTrace -StatusFile $StatusFile)
+
+    $path = $null
+    if ($rows.Count -gt 0) {
+        if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
+            $tenantName = 'Tenant'
+            try {
+                $org = Get-OrganizationConfig -ErrorAction Stop
+                if ($org.DisplayName) { $tenantName = [string]$org.DisplayName } elseif ($org.Name) { $tenantName = [string]$org.Name }
+            } catch { }
+            $safeTenant = ($tenantName -replace '[\\/:*?"<>|]', '_')
+            $OutputFolder = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation\$safeTenant\HistoricalMessageTrace"
+        }
+        if (-not (Test-Path $OutputFolder)) { $null = New-Item -ItemType Directory -Path $OutputFolder -Force }
+        $path = Join-Path $OutputFolder ("HistoricalMessageTrace_{0}.csv" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        $rows | Export-Csv -Path $path -NoTypeInformation -Encoding UTF8
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Historical message trace exported: $($rows.Count) row(s) -> $path"
+    }
+    return [pscustomobject]@{
+        RowCount    = $rows.Count
+        PendingJobs = $pending.Count
+        TotalJobs   = $jobs.Count
+        CsvPath     = $path
+    }
+}
+
+function Add-EoaHistoricalMessageTraceRows {
+    # Merges any finished historical reports into this run, then queues the span the
+    # synchronous API could not reach.
+    param(
+        [Parameter(Mandatory = $true)]$Results,
+        [datetime]$RequestedStart,
+        [datetime]$ReachableStart,
+        [datetime]$EndDate,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null,
+        [int]$UnreachableDays = 0
+    )
+    if (-not (Get-Command Get-HistoricalSearch -ErrorAction SilentlyContinue)) { return }
+    try {
+        $collected = @(Receive-EoaHistoricalMessageTrace -StatusFile $StatusFile)
+        foreach ($item in $collected) { if ($item) { [void]$Results.Add($item) } }
+    } catch {
+        $msg = "Historical message trace collection failed: $($_.Exception.Message)"
+        Write-Warning $msg
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+    }
+    if ($UnreachableDays -gt 0 -and $RequestedStart -lt $ReachableStart) {
+        try {
+            $null = Submit-EoaHistoricalMessageTrace -StartDate $RequestedStart -EndDate $ReachableStart -SelectedUsers $SelectedUsers -StatusFile $StatusFile
+        } catch {
+            $msg = "Historical message trace request failed: $($_.Exception.Message)"
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+        }
+    }
+}
+
+function Test-ExchangeMessageTraceV2Available {
+    # Only trust a real tmpEXO export. A blind Get-MessageTraceV2 probe can bind to a
+    # same-named local function and report success while returning nothing.
+    return ($null -ne (Get-ExchangeMessageTraceV2CommandInfo))
+}
+
+function Test-ExchangeUserMailboxesPresent {
+    # Tenants licensed for Office apps only (or with mail hosted off Exchange Online) have no
+    # user mailboxes, so message trace has nothing to return. Distinguish that from a failure.
+    if ($null -ne $global:EOA_ExchangeHasUserMailboxes) {
+        return [bool]$global:EOA_ExchangeHasUserMailboxes
+    }
+    if (-not (Get-Command Get-Mailbox -ErrorAction SilentlyContinue)) {
+        return $true
+    }
+    try {
+        $probe = @(Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize 1 -ErrorAction Stop)
+        $global:EOA_ExchangeHasUserMailboxes = ($probe.Count -gt 0)
+    } catch {
+        # Cannot tell (permissions, throttling) - assume mailboxes exist so collection still runs.
+        $global:EOA_ExchangeHasUserMailboxes = $true
+    }
+    return [bool]$global:EOA_ExchangeHasUserMailboxes
+}
+
+function Test-EoaMessageTraceThrottled {
+    param([string]$ErrorText)
+    return ($ErrorText -match 'surpassed the permitted limit|please try again later|throttl|too many request|\b429\b')
+}
+
+function Test-EoaMessageTraceStaleSession {
+    # Raised when the command handle belongs to a tmpEXO module whose connection is gone.
+    param([string]$ErrorText)
+    return ($ErrorText -match 'must call Connect-ExchangeOnline|GetCurrentConnectionContext|session is not valid|no longer valid')
+}
+
+function Invoke-EoaMessageTraceCall {
+    # Get-MessageTraceV2 enforces a rolling query quota. Without backoff, one throttle
+    # response cascades into every remaining day failing in seconds.
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Call,
+        [int]$MaxRetries = 4,
+        [string]$StatusFile = $null,
+        [string]$Label = ''
+    )
+    $attempt = 0
+    while ($true) {
+        try {
+            return (& $Call)
+        } catch {
+            $errText = [string]$_.Exception.Message
+            if ($attempt -ge $MaxRetries -or -not (Test-EoaMessageTraceThrottled -ErrorText $errText)) { throw }
+            $attempt++
+            $wait = [int][Math]::Min(240, 15 * [Math]::Pow(2, $attempt - 1))
+            $suffix = if ($Label) { " ($Label)" } else { '' }
+            $msg = "Message trace throttled$suffix - waiting ${wait}s, retry $attempt of $MaxRetries..."
+            Write-Warning $msg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+            Start-Sleep -Seconds $wait
+        }
+    }
+}
+
+$script:EOA_LegacyMessageTraceLookbackDays = 10
+
+function Invoke-EoaLegacyMessageTracePaged {
+    # Legacy Get-MessageTrace returns a single page per call, so one call silently truncates any
+    # day busier than PageSize. Page until the service hands back a short page.
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Filter,
+        [string]$Label = '',
+        [string]$StatusFile = $null,
+        [int]$PageSize = 5000,
+        [int]$MaxPages = 200
+    )
+    $rows = New-Object System.Collections.Generic.List[object]
+    $page = 1
+    while ($page -le $MaxPages) {
+        $p = @{} + $Filter
+        $p['Page'] = $page
+        $p['PageSize'] = $PageSize
+        $p['ErrorAction'] = 'Stop'
+        $batch = @(Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "$Label page $page" -Call { Get-MessageTrace @p })
+        if ($batch.Count -gt 0) { [void]$rows.AddRange($batch) }
+        if ($batch.Count -lt $PageSize) { break }
+        $page++
+    }
+    return $rows
+}
+
+function Get-EoaMessageTraceV2DedupKey {
+    param($Row)
+    if (-not $Row) { return $null }
+    $recip = [string]$Row.RecipientAddress
+    if ($Row.PSObject.Properties['MessageTraceId'] -and $null -ne $Row.MessageTraceId -and [string]$Row.MessageTraceId -ne '') {
+        return "tid:$($Row.MessageTraceId)|$recip"
+    }
+    $mid = $Row.MessageId
+    if (-not $mid) { $mid = $Row.MessageID }
+    if ($mid) { return "mid:$mid|$recip" }
+    return "fb:$($Row.SenderAddress)|$recip|$($Row.Subject)|$($Row.Received)"
+}
+
+function Get-EoaMessageTraceV2CursorToken {
+    param($Row)
+    if (-not $Row) { return '' }
+    $rec = $Row.Received
+    if ($rec -is [datetime]) { $rec = $rec.ToUniversalTime().ToString('o') }
+    return "$rec|$($Row.RecipientAddress)"
+}
+
+function Get-EoaMessageTraceV2SplitWindows {
+    # Hour slices first, then 15-minute slices, matching UAL's "window still full, split smaller"
+    # idea without bisecting into awkward midpoints.
+    param(
+        [Parameter(Mandatory = $true)][DateTime]$WinStart,
+        [Parameter(Mandatory = $true)][DateTime]$WinEnd
+    )
+    $spanMinutes = ($WinEnd - $WinStart).TotalMinutes
+    if ($spanMinutes -le 15) { return @() }
+    $sliceMinutes = if ($spanMinutes -gt 60) { 60 } else { 15 }
+    $windows = New-Object System.Collections.Generic.List[object]
+    $cursor = $WinStart
+    while ($cursor -lt $WinEnd) {
+        $next = $cursor.AddMinutes($sliceMinutes)
+        if ($next -gt $WinEnd) { $next = $WinEnd }
+        [void]$windows.Add([pscustomobject]@{ Start = $cursor; End = $next })
+        $cursor = $next
+    }
+    if ($windows.Count -le 1) { return @() }
+    return $windows
+}
+
+$script:EOA_MessageTraceStatusValues = @('GettingStatus', 'Failed', 'Pending', 'Delivered', 'Expanded', 'Quarantined', 'FilteredAsSpam')
+
+function Get-EoaNormalizedMessageTraceStatuses {
+    param([string[]]$Status = @())
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($raw in @($Status)) {
+        if ([string]::IsNullOrWhiteSpace([string]$raw)) { continue }
+        foreach ($part in ([string]$raw -split '[,;]')) {
+            $n = $part.Trim()
+            if ([string]::IsNullOrWhiteSpace($n)) { continue }
+            $match = $script:EOA_MessageTraceStatusValues | Where-Object { $_ -eq $n } | Select-Object -First 1
+            if ($match -and -not $seen.ContainsKey($match)) {
+                $seen[$match] = $true
+                [void]$out.Add($match)
+            }
+        }
+    }
+    return @($out)
+}
+
+function Test-EoaMessageTraceStatusNeedsTenDayWindow {
+    param([string[]]$Status = @())
+    $norm = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    return ($norm -contains 'Quarantined' -or $norm -contains 'FilteredAsSpam')
+}
+
+function Get-EoaMessageTraceStatusFilterValue {
+    param([string[]]$Status = @())
+    $norm = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    if ($norm.Count -eq 0) { return $null }
+    return ($norm -join ',')
+}
+
+function Select-EoaMessageTraceByStatus {
+    param(
+        $Rows,
+        [string[]]$Status = @()
+    )
+    $norm = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+    if ($norm.Count -eq 0) { return @($Rows) }
+    $wanted = @{}
+    foreach ($s in $norm) { $wanted[$s.ToLowerInvariant()] = $true }
+    $kept = New-Object System.Collections.ArrayList
+    foreach ($row in @($Rows)) {
+        if (-not $row) { continue }
+        $st = [string]$row.Status
+        if ($st -and $wanted.ContainsKey($st.ToLowerInvariant())) { [void]$kept.Add($row) }
+    }
+    return @($kept)
+}
+
+function Invoke-EoaMessageTraceV2Paged {
+    # Get-MessageTraceV2 has no Page/PageSize. Default ResultSize is 1000, max 5000. Results are
+    # Received descending, then RecipientAddress ascending. Next round must move EndDate to the
+    # last row's Received AND StartingRecipientAddress to its RecipientAddress. Do not filter
+    # remaining rows with RecipientAddress -gt last; that drops the rest of a mail-bomb recipient.
+    param(
+        [Parameter(Mandatory = $true)]$V2Command,
+        [Parameter(Mandatory = $true)][DateTime]$WinStart,
+        [Parameter(Mandatory = $true)][DateTime]$WinEnd,
+        [string]$SenderAddress = $null,
+        [string]$RecipientAddress = $null,
+        [string]$Subject = $null,
+        [string[]]$Status = @(),
+        [string]$Label = '',
+        [string]$StatusFile = $null,
+        [int]$MaxRounds = 200,
+        [int]$Depth = 0
+    )
+    $resultSize = 5000
+    $maxDepth = 6
+    $rows = New-Object System.Collections.ArrayList
+    $seen = @{}
+    $currentEnd = $WinEnd
+    $startRecipient = $null
+    $round = 0
+    $incomplete = $false
+    $incompleteReason = ''
+    $lastPageFull = $false
+    $prevCursor = ''
+    if ($null -eq $script:EOA_MessageTraceCallCount) { $script:EOA_MessageTraceCallCount = 0 }
+
+    while ($round -lt $MaxRounds) {
+        $round++
+        if ($script:EOA_MessageTraceCallCount -gt 0 -and ($script:EOA_MessageTraceCallCount % 9) -eq 0) {
+            Start-Sleep -Seconds 7
+        }
+        $script:EOA_MessageTraceCallCount++
+
+        $params = @{
+            StartDate   = $WinStart
+            EndDate     = $currentEnd
+            ResultSize  = $resultSize
+            ErrorAction = 'Stop'
+        }
+        if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
+        if ($SenderAddress) { $params.SenderAddress = $SenderAddress }
+        if ($RecipientAddress) { $params.RecipientAddress = $RecipientAddress }
+        if ($Subject) { $params.Subject = $Subject }
+        $statusFilter = Get-EoaMessageTraceStatusFilterValue -Status $Status
+        if ($statusFilter) { $params.Status = $statusFilter }
+
+        $raw = Invoke-EoaMessageTraceCall -StatusFile $StatusFile -Label "$Label round $round" -Call { & $V2Command @params }
+        $chunk = New-Object System.Collections.ArrayList
+        foreach ($item in @($raw)) {
+            if ($null -eq $item) { continue }
+            # A short Object[] page can arrive as one pipeline object; flatten one level.
+            if ($item -is [System.Array] -and $item -isnot [string]) {
+                foreach ($inner in $item) { if ($null -ne $inner) { [void]$chunk.Add($inner) } }
+            } else {
+                [void]$chunk.Add($item)
+            }
+        }
+        foreach ($item in $chunk) {
+            $key = Get-EoaMessageTraceV2DedupKey -Row $item
+            if ($key -and $seen.ContainsKey($key)) { continue }
+            if ($key) { $seen[$key] = $true }
+            [void]$rows.Add($item)
+        }
+
+        $stat = "Message trace: $Label round $round, $($rows.Count) rows..."
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $stat
+        if ($round -eq 1 -or ($round % 5) -eq 0) {
+            Write-Host $stat -ForegroundColor Gray
+        }
+
+        if ($chunk.Count -lt $resultSize) {
+            $lastPageFull = $false
+            break
+        }
+
+        $lastPageFull = $true
+        $last = $chunk[-1]
+        $uniformOverflow = ($chunk[0].Received -eq $last.Received -and [string]$chunk[0].RecipientAddress -eq [string]$last.RecipientAddress)
+        $newCursor = Get-EoaMessageTraceV2CursorToken -Row $last
+        $cursorStalled = ($prevCursor -and $newCursor -eq $prevCursor) -or $uniformOverflow
+        if ($cursorStalled) {
+            $splitWindows = @()
+            if ($Depth -lt $maxDepth) {
+                $splitWindows = @(Get-EoaMessageTraceV2SplitWindows -WinStart $WinStart -WinEnd $WinEnd)
+            }
+            if ($splitWindows.Count -gt 0) {
+                $warn = "Message trace cursor stalled for $Label (same Received and RecipientAddress); splitting window..."
+                Write-Warning $warn
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
+                $merged = New-Object System.Collections.ArrayList
+                $mergedSeen = @{}
+                $childRounds = 0
+                foreach ($w in $splitWindows) {
+                    $child = Invoke-EoaMessageTraceV2Paged -V2Command $V2Command -WinStart $w.Start -WinEnd $w.End `
+                        -SenderAddress $SenderAddress -RecipientAddress $RecipientAddress -Subject $Subject -Status $Status `
+                        -Label $Label -StatusFile $StatusFile -MaxRounds $MaxRounds -Depth ($Depth + 1)
+                    $childRounds += [int]$child.RoundCount
+                    foreach ($item in @($child.Rows)) {
+                        if (-not $item) { continue }
+                        $key = Get-EoaMessageTraceV2DedupKey -Row $item
+                        if ($key -and $mergedSeen.ContainsKey($key)) { continue }
+                        if ($key) { $mergedSeen[$key] = $true }
+                        [void]$merged.Add($item)
+                    }
+                    if ($child.Incomplete) {
+                        $incomplete = $true
+                        $incompleteReason = $child.IncompleteReason
+                    }
+                }
+                return [pscustomobject]@{
+                    Rows              = $merged
+                    Incomplete        = $incomplete
+                    IncompleteReason  = $incompleteReason
+                    RoundCount        = ($round + $childRounds)
+                    LastPageFull      = $false
+                }
+            }
+            $incomplete = $true
+            $incompleteReason = "cursor stalled (same Received and RecipientAddress) for $Label"
+            Write-Warning "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            break
+        }
+
+        $startRecipient = [string]$last.RecipientAddress
+        $currentEnd = $last.Received
+        $prevCursor = $newCursor
+        if (-not $startRecipient) {
+            $incomplete = $true
+            $incompleteReason = "paging stopped on a full page with no RecipientAddress cursor for $Label"
+            Write-Warning "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            Write-ExportStatusLine -StatusFile $StatusFile -Message "INCOMPLETE message trace window ${Label}: $incompleteReason."
+            break
+        }
+    }
+
+    if ($round -ge $MaxRounds -and $lastPageFull) {
+        $incomplete = $true
+        $incompleteReason = "round cap $MaxRounds reached for $Label"
+        Write-Warning "INCOMPLETE message trace window ${Label}: $incompleteReason."
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "INCOMPLETE message trace window ${Label}: $incompleteReason."
+    }
+
+    return [pscustomobject]@{
+        Rows             = $rows
+        Incomplete       = $incomplete
+        IncompleteReason = $incompleteReason
+        RoundCount       = $round
+        LastPageFull     = $lastPageFull
+    }
+}
+
+function Write-EoaMessageTraceCoverage {
+    param(
+        [int]$EntryCount,
+        [int]$DaysRequested,
+        [System.Collections.Generic.List[string]]$MissingDays,
+        [System.Collections.Generic.List[string]]$TruncatedDays,
+        [string]$StopReason = '',
+        [string]$StatusFile = $null,
+        [int]$UnreachableDays = 0,
+        [string]$UnreachableReason = ''
+    )
+    # Days trimmed by API retention are counted separately: reporting "10 of 10 days" after a
+    # 90-day request reads as success while hiding 80 days the caller asked for. Truncated days
+    # returned a newest-slice (or stalled cursor) and must not be reported as complete coverage.
+    $unreachable = if ($UnreachableDays -gt 0) { " $UnreachableDays earlier day(s) requested but unavailable$(if ($UnreachableReason) { " ($UnreachableReason)" })." } else { '' }
+    $hasMissing = $MissingDays -and $MissingDays.Count -gt 0
+    $hasTrunc = $TruncatedDays -and $TruncatedDays.Count -gt 0
+    if (-not $hasMissing -and -not $hasTrunc) {
+        $msg = "Message trace collected: $EntryCount entries ($DaysRequested of $DaysRequested days).$unreachable"
+        if ($UnreachableDays -gt 0) { Write-Warning $msg }
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+        return
+    }
+    $problemCount = 0
+    if ($hasMissing) { $problemCount += $MissingDays.Count }
+    if ($hasTrunc) { $problemCount += $TruncatedDays.Count }
+    $covered = [Math]::Max(0, $DaysRequested - $problemCount)
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($hasTrunc) {
+        $tsorted = @($TruncatedDays | Sort-Object)
+        $trange = if ($tsorted.Count -eq 1) { $tsorted[0] } else { "$($tsorted[0]) to $($tsorted[-1])" }
+        [void]$parts.Add("Truncated $($tsorted.Count) day(s) (partial newest-slice or paging stopped early): $trange.")
+    }
+    if ($hasMissing) {
+        $sorted = @($MissingDays | Sort-Object)
+        $range = if ($sorted.Count -eq 1) { $sorted[0] } else { "$($sorted[0]) to $($sorted[-1])" }
+        [void]$parts.Add("No data for $($sorted.Count) day(s): $range.")
+    }
+    $reason = if ($StopReason) { " $StopReason" } else { '' }
+    $warn = "INCOMPLETE message trace: $EntryCount entries covering $covered of $DaysRequested days. $($parts -join ' ')$reason$unreachable"
+    Write-Warning $warn
+    Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
+}
+
 function Get-ExchangeMessageTrace {
     param(
         [int]$DaysBack = 10,
@@ -2409,7 +4093,13 @@ function Get-ExchangeMessageTrace {
         [Parameter(Mandatory=$false)]
         [DateTime]$EndDate = [DateTime]::MinValue,
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [string[]]$Status = @(),
+        [Parameter(Mandatory=$false)]
+        [string]$StatusFile = $null,
+        [Parameter(Mandatory=$false)]
+        [switch]$NoGraph
     )
 
     try {
@@ -2421,165 +4111,310 @@ function Get-ExchangeMessageTrace {
             Write-Host ("Collecting message trace data ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
         } else {
             $end = (Get-Date).ToUniversalTime()
-            $start = $end.AddDays(-$DaysBack).Date # start at 00:00Z; last window ends at $end (run time)
+            $start = $end.AddDays(-$DaysBack).Date
             Write-Host "Collecting message trace data (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         }
 
+        $statusValues = @(Get-EoaNormalizedMessageTraceStatuses -Status $Status)
+        $statusFilter = Get-EoaMessageTraceStatusFilterValue -Status $statusValues
+        if ($statusFilter) {
+            $filterMsg = "Message trace status filter: $statusFilter"
+            Write-Host $filterMsg -ForegroundColor Cyan
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $filterMsg
+        }
+        if (Test-EoaMessageTraceStatusNeedsTenDayWindow -Status $statusValues) {
+            $tenDayStart = (Get-Date).ToUniversalTime().AddDays(-10)
+            if ($start -lt $tenDayStart) {
+                $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} (Quarantined/FilteredAsSpam only work for searches shorter than 10 days)." -f $start, $tenDayStart)
+                Write-Host $clampMsg -ForegroundColor Yellow
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $clampMsg
+                $start = $tenDayStart
+            }
+        }
+
+        if (-not (Test-ExchangeUserMailboxesPresent)) {
+            $skipMsg = 'Message trace skipped: this tenant has no Exchange Online user mailboxes, so no mail flows through Exchange Online to trace. Mail is hosted elsewhere - investigate it in that mail platform.'
+            Write-Warning $skipMsg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+            return [System.Collections.ArrayList]@()
+        }
+
+        # V2: up to 90 days lookback, max ~10 days per query (we chunk by day).
+        # Legacy Get-MessageTrace is retired in commercial clouds but still served in government
+        # clouds, where neither V2 nor the Graph endpoint is exposed - see the fallback order below.
+        $v2Cmd = Get-ExchangeMessageTraceV2CommandInfo
+        $hasV2 = $null -ne $v2Cmd -or (Test-ExchangeMessageTraceV2Available)
+        $useGraph = $false
+        $canUseLegacy = $false
+        if (-not $hasV2) {
+            if ((-not $NoGraph) -and (Test-GraphMessageTraceAvailable -StatusFile $StatusFile)) {
+                $useGraph = $true
+            } elseif (Get-Command Get-MessageTrace -ErrorAction SilentlyContinue) {
+                # Government clouds expose neither the V2 cmdlets nor the Graph endpoint but still
+                # serve legacy Get-MessageTrace. Its 10-day lookback is clamped below, which returns
+                # the days it can reach instead of nothing.
+                $canUseLegacy = $true
+            } else {
+                $graphErr = if ($NoGraph) { 'Exchange only' } elseif ($global:EOA_GraphMessageTraceError) { $global:EOA_GraphMessageTraceError } else { 'not attempted' }
+                $skipMsg = "Message trace skipped: neither Get-MessageTraceV2 nor legacy Get-MessageTrace is exported in this Exchange session. Graph messageTraces failed ($graphErr). Re-run Exchange Auth; if the cmdlets are still missing, this tenant does not expose a message trace API."
+                Write-Warning $skipMsg
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+                return [System.Collections.ArrayList]@()
+            }
+        }
+        if ($useGraph) {
+            $clampEarliest = (Get-Date).ToUniversalTime().AddDays(-90)
+            if ($end -lt $clampEarliest) {
+                $skipMsg = ("Message trace skipped: requested range ends {0:yyyy-MM-dd} outside Graph 90-day lookback (earliest {1:yyyy-MM-dd})." -f $end, $clampEarliest)
+                Write-Warning $skipMsg
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+                return [System.Collections.ArrayList]@()
+            }
+            if ($start -lt $clampEarliest) {
+                $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} (Graph ~90-day retention)." -f $start, $clampEarliest)
+                Write-Host $clampMsg -ForegroundColor Yellow
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $clampMsg
+                $start = $clampEarliest
+            }
+            $apiMsg = 'Message trace API: Graph /admin/exchange/tracing/messageTraces (max lookback ~90 days; 10-day windows).'
+            Write-Host $apiMsg -ForegroundColor Cyan
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
+            $graphRows = Get-GraphMessageTrace -StartDate $start -EndDate $end -SelectedUsers $SelectedUsers -Status $statusValues -StatusFile $StatusFile
+            if (@($graphRows).Count -gt 0) { return $graphRows }
+            # A clean empty result means the tenant really had no matching mail. Only distrust it
+            # when some windows errored, since a half-provisioned Transport Data Platform answers
+            # HTTP 200 with an empty set on the nodes that are not ready yet.
+            if ($script:EOA_GraphMessageTraceWindowErrors -gt 0) {
+                $warnMsg = "Message trace: Graph returned 0 entries but $($script:EOA_GraphMessageTraceWindowErrors) window(s) errored, so this is NOT a reliable empty result (Transport Data Platform may still be provisioning). Re-run Graph Auth and try again."
+                Write-Warning $warnMsg
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $warnMsg
+            }
+            return [System.Collections.ArrayList]@()
+        }
+        if (-not $v2Cmd) { $v2Cmd = Get-Command -Name Get-MessageTraceV2 -ErrorAction SilentlyContinue }
+        if ($canUseLegacy) {
+            $maxLookbackDays = $script:EOA_LegacyMessageTraceLookbackDays
+            $apiLabel = 'Get-MessageTrace (legacy)'
+        } else {
+            $maxLookbackDays = 90
+            $apiLabel = 'Get-MessageTraceV2'
+        }
+        $apiMsg = "Message trace API: $apiLabel (max lookback ~$maxLookbackDays days; chunked queries)."
+        Write-Host $apiMsg -ForegroundColor Cyan
+        Write-ExportStatusLine -StatusFile $StatusFile -Message $apiMsg
+
+        $earliestAllowed = (Get-Date).ToUniversalTime().AddDays(-$maxLookbackDays)
+        if ($end -lt $earliestAllowed) {
+            $skipMsg = ("Message trace skipped: requested range ends {0:yyyy-MM-dd} outside {1} lookback (earliest {2:yyyy-MM-dd})." -f $end, $apiLabel, $earliestAllowed)
+            Write-Warning $skipMsg
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $skipMsg
+            return [System.Collections.ArrayList]@()
+        }
+        $unreachableDays = 0
+        $unreachableReason = ''
+        $requestedStart = $start
+        if ($start -lt $earliestAllowed) {
+            $unreachableDays = [int][Math]::Floor(($earliestAllowed - $start).TotalDays)
+            $unreachableReason = "$apiLabel reaches back only $maxLookbackDays days in this tenant"
+            $clampMsg = ("Message trace: clamping start {0:yyyy-MM-dd} -> {1:yyyy-MM-dd} ({2} ~{3}-day retention)." -f $start, $earliestAllowed, $apiLabel, $maxLookbackDays)
+            Write-Host $clampMsg -ForegroundColor Yellow
+            Write-ExportStatusLine -StatusFile $StatusFile -Message $clampMsg
+            $start = $earliestAllowed
+        }
+
         $results = New-Object System.Collections.Generic.List[object]
+        $traceCallCount = 0
+        $script:EOA_MessageTraceCallCount = 0
 
-        $hasV2 = $null -ne (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
-
-        # If SelectedUsers provided, filter server-side by querying per user
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             $selectedUserList = @()
             foreach ($user in $SelectedUsers) {
                 $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                 $selectedUserList += $upn
             }
-            
-            # Query message trace for each selected user (server-side filtering)
-            $daysToIterate = if ($useDateRange) { [Math]::Max(1, [int](($end - $start).TotalDays)) } else { $DaysBack }
+
+            $daysToIterate = if ($useDateRange) { [Math]::Max(1, [int][Math]::Ceiling(($end - $start).TotalDays)) } else { $DaysBack }
+            $failedCalls = 0
+            $incompletePaging = $false
             foreach ($upn in $selectedUserList) {
-                # Chunk by day to avoid server-side caps; last window extends to run time
                 for ($d = 0; $d -lt $daysToIterate; $d++) {
                     $winStart = $start.AddDays($d)
                     $winEnd   = if ($d -eq $daysToIterate - 1) { $end } else { $winStart.AddDays(1) }
+                    $dayLabel = $winStart.ToString('yyyy-MM-dd')
 
-                    try {
-                        if ($hasV2) {
-                            # Query by sender - handle pagination
-                            try {
-                                $params = @{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn; ErrorAction = 'Stop' }
-                                $params.ResultSize = 5000  # Use ResultSize for pagination
-                                $chunk = Get-MessageTraceV2 @params
-                                if ($chunk) {
-                                    # Handle both single objects and collections
-                                    $chunkArray = @($chunk)
-                                    foreach ($item in $chunkArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
-                                }
-                            } catch {
-                                Write-Warning "Failed to get message trace by sender for ${upn}: $($_.Exception.Message)"
-                            }
-                            
-                            # Query by recipient - handle pagination
-                            try {
-                                $params = @{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn; ErrorAction = 'Stop' }
-                                $params.ResultSize = 5000  # Use ResultSize for pagination
-                                $chunk = Get-MessageTraceV2 @params
-                                if ($chunk) {
-                                    # Handle both single objects and collections
-                                    $chunkArray = @($chunk)
-                                    foreach ($item in $chunkArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
-                                }
-                            } catch {
-                                Write-Warning "Failed to get message trace by recipient for ${upn}: $($_.Exception.Message)"
-                            }
-                        } else {
-                            # Legacy Get-MessageTrace - filter by sender
-                            try {
-                                $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -SenderAddress $upn -ErrorAction Stop
-                                if ($batch) {
-                                    $batchArray = @($batch)
-                                    foreach ($item in $batchArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
-                                }
-                            } catch {
-                                Write-Warning "Failed to get message trace by sender for ${upn}: $($_.Exception.Message)"
-                            }
-                            
-                            # Filter by recipient
-                            try {
-                                $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -RecipientAddress $upn -ErrorAction Stop
-                                if ($batch) {
-                                    $batchArray = @($batch)
-                                    foreach ($item in $batchArray) {
-                                        if ($item) { [void]$results.Add($item) }
-                                    }
-                                }
-                            } catch {
-                                Write-Warning "Failed to get message trace by recipient for ${upn}: $($_.Exception.Message)"
-                            }
+                    if ($hasV2) {
+                        try {
+                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -SenderAddress $upn -Status $statusValues -Label "sender $upn $dayLabel" -StatusFile $StatusFile
+                            if ($page.Rows) { foreach ($item in @($page.Rows)) { if ($item) { [void]$results.Add($item) } } }
+                            if ($page.Incomplete) { $incompletePaging = $true }
+                        } catch {
+                            $failedCalls++
+                            $traceErr = "Failed message trace sender ${upn} (${dayLabel}): $($_.Exception.Message)"
+                            Write-Warning $traceErr
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
                         }
-                    } catch {
-                        Write-Warning "Failed to get message trace for ${upn}: $($_.Exception.Message)"
+                        try {
+                            $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -RecipientAddress $upn -Status $statusValues -Label "recipient $upn $dayLabel" -StatusFile $StatusFile
+                            if ($page.Rows) { foreach ($item in @($page.Rows)) { if ($item) { [void]$results.Add($item) } } }
+                            if ($page.Incomplete) { $incompletePaging = $true }
+                        } catch {
+                            $failedCalls++
+                            $traceErr = "Failed message trace recipient ${upn} (${dayLabel}): $($_.Exception.Message)"
+                            Write-Warning $traceErr
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
+                        }
+                    } else {
+                        try {
+                            if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
+                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "sender $upn $dayLabel" -Filter (@{ StartDate = $winStart; EndDate = $winEnd; SenderAddress = $upn } + $(if ($statusFilter) { @{ Status = $statusFilter } } else { @{} }))
+                            if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
+                        } catch {
+                            $failedCalls++
+                            $traceErr = "Failed message trace sender ${upn} (${dayLabel}): $($_.Exception.Message)"
+                            Write-Warning $traceErr
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
+                        }
+                        try {
+                            if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
+                            $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label "recipient $upn $dayLabel" -Filter (@{ StartDate = $winStart; EndDate = $winEnd; RecipientAddress = $upn } + $(if ($statusFilter) { @{ Status = $statusFilter } } else { @{} }))
+                            if ($batch) { foreach ($item in @($batch)) { if ($item) { [void]$results.Add($item) } } }
+                        } catch {
+                            $failedCalls++
+                            $traceErr = "Failed message trace recipient ${upn} (${dayLabel}): $($_.Exception.Message)"
+                            Write-Warning $traceErr
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
+                        }
                     }
                 }
             }
-            
-            # Remove duplicates (same message might appear as both sender and recipient)
-            # Use MessageId if available, otherwise use a combination of properties
+
+            if ($statusValues.Count -eq 0) {
+                Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
+            } else {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message 'Message trace: skipping historical search because a Status filter is set (historical reports are unfiltered).'
+            }
+
             $uniqueResults = @()
             $seenIds = @{}
             foreach ($item in $results) {
-                $uniqueKey = $null
-                if ($item.MessageId) {
-                    $uniqueKey = $item.MessageId
-                } elseif ($item.MessageID) {
-                    $uniqueKey = $item.MessageID
-                } else {
-                    # Fallback: use combination of properties
-                    $uniqueKey = "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.Subject)_$($item.MessageTraceId)"
-                }
-                
+                if ($item.MessageId) { $uniqueKey = $item.MessageId }
+                elseif ($item.MessageID) { $uniqueKey = $item.MessageID }
+                else { $uniqueKey = "$($item.SenderAddress)_$($item.RecipientAddress)_$($item.Subject)_$($item.MessageTraceId)" }
                 if ($uniqueKey -and -not $seenIds.ContainsKey($uniqueKey)) {
                     $seenIds[$uniqueKey] = $true
                     $uniqueResults += $item
                 }
             }
-            
+            $unreachableNote = if ($unreachableDays -gt 0) { " $unreachableDays earlier day(s) requested but unavailable ($unreachableReason)." } else { '' }
+            if ($failedCalls -gt 0 -or $incompletePaging) {
+                $detail = if ($failedCalls -gt 0 -and $incompletePaging) {
+                    "$failedCalls failed quer(ies) after retries; one or more days truncated by V2 paging"
+                } elseif ($incompletePaging) {
+                    "one or more days truncated by V2 paging (partial newest-slice, cursor stall, or round cap)"
+                } else {
+                    "$failedCalls failed quer(ies) after retries. Coverage has gaps - re-run later or use a shorter timeframe"
+                }
+                $warn = "INCOMPLETE message trace: $($uniqueResults.Count) entries (filtered users) with $detail.$unreachableNote"
+                Write-Warning $warn
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $warn
+            } else {
+                $msg = "Message trace collected: $($uniqueResults.Count) entries (filtered users).$unreachableNote"
+                if ($unreachableDays -gt 0) { Write-Warning $msg }
+                Write-ExportStatusLine -StatusFile $StatusFile -Message $msg
+            }
             return [System.Collections.ArrayList]$uniqueResults
         } else {
-            # No selection - get all message traces
-            # Chunk by day to avoid server-side caps; last window extends to run time
-            $daysToIterateAll = if ($useDateRange) { [Math]::Max(1, [int](($end - $start).TotalDays)) } else { $DaysBack }
+            $daysToIterateAll = if ($useDateRange) { [Math]::Max(1, [int][Math]::Ceiling(($end - $start).TotalDays)) } else { $DaysBack }
+            $missingDays = [System.Collections.Generic.List[string]]::new()
+            $truncatedDays = [System.Collections.Generic.List[string]]::new()
+            $stopReason = ''
+            $staleRetryUsed = $false
             for ($d = 0; $d -lt $daysToIterateAll; $d++) {
                 $winStart = $start.AddDays($d)
                 $winEnd   = if ($d -eq $daysToIterateAll - 1) { $end } else { $winStart.AddDays(1) }
+                $dayLabel = $winStart.ToString('yyyy-MM-dd')
+
+                if ($d -eq 0 -or $d -eq ($daysToIterateAll - 1) -or ($d % 10) -eq 0) {
+                    $progressMsg = "Message trace: day $($d + 1) of $daysToIterateAll ($dayLabel)..."
+                    Write-Host $progressMsg -ForegroundColor Gray
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $progressMsg
+                }
 
                 try {
                     if ($hasV2) {
-                        # Seek-based pagination using StartingRecipientAddress and ResultSize
-                        $startRecipient = $null
-                        $iterations = 0
-                        do {
-                            $params = @{ StartDate = $winStart; EndDate = $winEnd; ErrorAction = 'Stop' }
-                            $params.ResultSize = 1000
-                            if ($startRecipient) { $params.StartingRecipientAddress = $startRecipient }
-                            $chunk = Get-MessageTraceV2 @params
-                            if ($chunk) {
-                                # Avoid duplicate loops when StartingRecipientAddress is inclusive
-                                if ($startRecipient) {
-                                    $filtered = $chunk | Where-Object { $_.RecipientAddress -gt $startRecipient }
-                                } else {
-                                    $filtered = $chunk
-                                }
-                                if ($filtered) { [void]$results.AddRange($filtered) }
-
-                                $prev = $startRecipient
-                                $last = $chunk[-1]
-                                $startRecipient = $last.RecipientAddress
-                                if (-not $startRecipient -or ($prev -and $startRecipient -le $prev)) { break }
-                            } else {
-                                $startRecipient = $null
-                            }
-                            $iterations++
-                        } while ($chunk -and $chunk.Count -eq 1000 -and $startRecipient -and $iterations -lt 500)
+                        $page = Invoke-EoaMessageTraceV2Paged -V2Command $v2Cmd -WinStart $winStart -WinEnd $winEnd -Status $statusValues -Label $dayLabel -StatusFile $StatusFile
+                        if ($page.Rows -and $page.Rows.Count -gt 0) { [void]$results.AddRange(@($page.Rows)) }
+                        if ($page.Incomplete) { [void]$truncatedDays.Add($dayLabel) }
+                        $dayStatus = "Message trace: day $($d + 1) of $daysToIterateAll ($dayLabel), $($page.RoundCount) rounds, $($results.Count) rows..."
+                        Write-ExportStatusLine -StatusFile $StatusFile -Message $dayStatus
+                        if ($d -eq 0 -or $d -eq ($daysToIterateAll - 1) -or ($d % 10) -eq 0) {
+                            Write-Host $dayStatus -ForegroundColor Gray
+                        }
                     } else {
-                        $batch = Get-MessageTrace -StartDate $winStart -EndDate $winEnd -ErrorAction Stop
-                        if ($batch) { [void]$results.AddRange($batch) }
+                        if ($traceCallCount -gt 0 -and ($traceCallCount % 9) -eq 0) { Start-Sleep -Seconds 7 }; $traceCallCount++
+                        $batch = Invoke-EoaLegacyMessageTracePaged -StatusFile $StatusFile -Label $dayLabel -Filter (@{ StartDate = $winStart; EndDate = $winEnd } + $(if ($statusFilter) { @{ Status = $statusFilter } } else { @{} }))
+                        if ($batch) { [void]$results.AddRange(@($batch)) }
                     }
-                } catch {}
+                } catch {
+                    $errText = [string]$_.Exception.Message
+                    if ((Test-EoaMessageTraceStaleSession -ErrorText $errText) -and -not $staleRetryUsed) {
+                        # The handle points at a disposed tmpEXO module. Drop the cache, re-resolve
+                        # against the live session and give this day one more attempt.
+                        $staleRetryUsed = $true
+                        $global:EOA_MessageTraceV2Command = $null
+                        $fresh = Get-ExchangeMessageTraceV2CommandInfo
+                        if ($fresh) {
+                            $v2Cmd = $fresh
+                            $retryMsg = "Message trace: stale Exchange session handle - re-resolved Get-MessageTraceV2 and retrying $dayLabel."
+                            Write-Warning $retryMsg
+                            Write-ExportStatusLine -StatusFile $StatusFile -Message $retryMsg
+                            $d--
+                            continue
+                        }
+                    }
+                    $traceErr = "Message trace day $dayLabel failed: $errText"
+                    Write-Warning $traceErr
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $traceErr
+                    [void]$missingDays.Add($dayLabel)
+                    if (Test-EoaMessageTraceStaleSession -ErrorText $errText) {
+                        $stopReason = 'Stopped: the Exchange Online session is no longer valid. Re-run Exchange Auth for this tenant (or Restart worker) and generate again.'
+                        for ($r = $d + 1; $r -lt $daysToIterateAll; $r++) { [void]$missingDays.Add($start.AddDays($r).ToString('yyyy-MM-dd')) }
+                        break
+                    }
+                    if ($errText -match 'CommandNotFound|Get-MessageTrace will start deprecat') {
+                        Write-Warning 'Stopping message trace: Get-MessageTraceV2 is missing or legacy Get-MessageTrace was invoked. Restart the worker and re-run Exchange Auth.'
+                        $stopReason = 'Stopped: Get-MessageTraceV2 unavailable. Restart the worker and re-run Exchange Auth.'
+                        for ($r = $d + 1; $r -lt $daysToIterateAll; $r++) { [void]$missingDays.Add($start.AddDays($r).ToString('yyyy-MM-dd')) }
+                        break
+                    }
+                    if (Test-EoaMessageTraceThrottled -ErrorText $errText) {
+                        # Retries are already exhausted, so the quota is not recovering. Stop
+                        # instead of burning the rest of the window on instant failures.
+                        $stopReason = 'Stopped: query quota exhausted after retries. Re-run this tenant later, or use a shorter timeframe.'
+                        for ($r = $d + 1; $r -lt $daysToIterateAll; $r++) { [void]$missingDays.Add($start.AddDays($r).ToString('yyyy-MM-dd')) }
+                        break
+                    }
+                }
             }
+            $syncCount = $results.Count
+            if ($statusValues.Count -eq 0) {
+                Add-EoaHistoricalMessageTraceRows -Results $results -RequestedStart $requestedStart -ReachableStart $start -EndDate $end -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UnreachableDays $unreachableDays
+            } else {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message 'Message trace: skipping historical search because a Status filter is set (historical reports are unfiltered).'
+            }
+            Write-EoaMessageTraceCoverage -EntryCount $syncCount -DaysRequested $daysToIterateAll -MissingDays $missingDays -TruncatedDays $truncatedDays -StopReason $stopReason -StatusFile $StatusFile -UnreachableDays $unreachableDays -UnreachableReason $unreachableReason
+            if ($results.Count -gt $syncCount) {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace total with historical rows: $($results.Count) entries."
+            }
+            return [System.Collections.ArrayList]$results
         }
 
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "Message trace collected: $($results.Count) entries"
         return [System.Collections.ArrayList]$results
     } catch {
-        Write-Error "Failed to collect message trace: $($_.Exception.Message)"
+        $msg = "Failed to collect message trace: $($_.Exception.Message)"
+        Write-Error $msg
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "ERROR: $msg"
         return @()
     }
 }
@@ -2591,7 +4426,9 @@ function Get-ExchangeInboxRules {
         [Parameter(Mandatory=$false)]
         [int]$ThrottleLimit = 10,
         [Parameter(Mandatory=$false)]
-        [switch]$ForceSequential = $false
+        [switch]$ForceSequential = $false,
+        [Parameter(Mandatory=$false)]
+        [string]$StatusFile = $null
     )
     
     try {
@@ -2625,7 +4462,15 @@ function Get-ExchangeInboxRules {
 
         if ($upns.Count -le 3 -or $ForceSequential) {
             # Sequential for small sets or when ForceSequential (avoids extra auth prompts in worker/runspace context)
+            $total = @($upns).Count
+            $idx = 0
             foreach ($upn in $upns) {
+                $idx++
+                if ($idx -eq 1 -or $idx % 25 -eq 0 -or $idx -eq $total) {
+                    $progressMsg = "Inbox rules: mailbox $idx of $total ($upn)..."
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message $progressMsg
+                    Write-Host $progressMsg -ForegroundColor Gray
+                }
                 try {
                     $rules = @()
                     try { $rules = Get-InboxRule -Mailbox $upn -IncludeHidden -ErrorAction Stop }
@@ -2940,16 +4785,12 @@ function Get-GraphAuditLogs {
     )
 
     try {
-        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-        if ($useDateRange) {
-            $startUtc = $StartDate.ToUniversalTime()
-            $fmt = "yyyy-MM-dd"
-            Write-Host ("Collecting audit logs ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
-        } else {
-            $startUtc = (Get-Date).ToUniversalTime().AddDays(-[Math]::Max(1,$DaysBack))
-            Write-Host "Collecting audit logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
-        }
-        $startIso = $startUtc.ToString("s") + "Z"
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        $startIso = $win.StartIso
+        $endIso = $win.EndIso
+        $dateFilter = "activityDateTime ge $startIso and activityDateTime le $endIso"
+        $fmt = "yyyy-MM-dd"
+        Write-Host ("Collecting audit logs ({0} to {1})..." -f $win.StartLocal.ToString($fmt), $win.EndLocal.ToString($fmt)) -ForegroundColor Yellow
         # Ensure identity modules are available
         # NOTE: Using defensive import pattern (check cmdlet existence before importing) rather than Import-GraphModulesOnDemand
         # because GraphOnline.psm1 is not imported in this module. This pattern avoids unnecessary imports and works reliably.
@@ -2957,7 +4798,6 @@ function Get-GraphAuditLogs {
             Import-Module Microsoft.Graph.Reports -ErrorAction SilentlyContinue | Out-Null
             Import-Module Microsoft.Graph.Authentication -ErrorAction SilentlyContinue | Out-Null
         }
-        # Filter "ge" returns from start through run time (no end filter = through now)
 
         $raw = New-Object System.Collections.Generic.List[object]
         
@@ -2970,11 +4810,15 @@ function Get-GraphAuditLogs {
                 $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                 try {
                     Write-Host "  Looking up user ID for: $upn" -ForegroundColor Gray
-                    $mgUser = Get-MgUser -UserId $upn -Property Id -ErrorAction Stop
+                    $mgUser = Get-MgUserCompat -UserId $upn -Property Id -ErrorAction Stop
                     if ($mgUser -and $mgUser.Id) {
                         $userIds += $mgUser.Id
                         $userIdToUpn[$mgUser.Id] = $upn
                         Write-Host "  [OK] Found user ID $($mgUser.Id) for $upn" -ForegroundColor Gray
+                    } elseif ($mgUser -and $mgUser.id) {
+                        $userIds += $mgUser.id
+                        $userIdToUpn[$mgUser.id] = $upn
+                        Write-Host "  [OK] Found user ID $($mgUser.id) for $upn" -ForegroundColor Gray
                     } else {
                         Write-Warning "User ID lookup returned null for ${upn}"
                     }
@@ -2992,8 +4836,13 @@ function Get-GraphAuditLogs {
                     try {
                         Write-Host "  Querying audit logs for: $upn (ID: $userId)" -ForegroundColor Gray
                         # Filter by target resource ID (server-side)
-                        $filter = "activityDateTime ge $startIso and targetResources/any(t:t/id eq '$userId')"
-                        $page = Get-MgAuditLogDirectoryAudit -All -Filter $filter -ErrorAction Stop
+                        $filter = "$dateFilter and targetResources/any(t:t/id eq '$userId')"
+                        if (Test-GraphRestBearerToken) {
+                            $uri = 'https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?$filter=' + [Uri]::EscapeDataString($filter) + '&$top=999'
+                            $page = Invoke-GraphRestPaged -Uri $uri
+                        } else {
+                            $page = Get-MgAuditLogDirectoryAudit -All -Filter $filter -ErrorAction Stop
+                        }
                         if ($page) {
                             # Handle both single objects and collections
                             $pageArray = @($page)
@@ -3022,7 +4871,12 @@ function Get-GraphAuditLogs {
             }
         } else {
             # No selection - get all audit logs
-            $page = Get-MgAuditLogDirectoryAudit -All -Filter "activityDateTime ge $startIso" -ErrorAction Stop
+            if (Test-GraphRestBearerToken) {
+                $uri = 'https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?$filter=' + [Uri]::EscapeDataString($dateFilter) + '&$top=999'
+                $page = Invoke-GraphRestPaged -Uri $uri
+            } else {
+                $page = Get-MgAuditLogDirectoryAudit -All -Filter $dateFilter -ErrorAction Stop
+            }
             if ($page) {
                 # Handle both single objects and collections
                 $pageArray = @($page)
@@ -3039,28 +4893,34 @@ function Get-GraphAuditLogs {
 
         foreach ($r in $raw) {
             try {
-                $userObj  = $r.InitiatedBy.User
-                $appObj   = $r.InitiatedBy.App
+                $initiatedBy = if ($r.InitiatedBy) { $r.InitiatedBy } else { $r.initiatedBy }
+                $userObj  = if ($initiatedBy.User) { $initiatedBy.User } elseif ($initiatedBy.user) { $initiatedBy.user } else { $null }
+                $appObj   = if ($initiatedBy.App) { $initiatedBy.App } elseif ($initiatedBy.app) { $initiatedBy.app } else { $null }
                 $ipAddr   = $null
                 if ($userObj -and $userObj.IpAddress) { $ipAddr = $userObj.IpAddress }
+                elseif ($userObj -and $userObj.ipAddress) { $ipAddr = $userObj.ipAddress }
 
+                $targetResources = if ($r.TargetResources) { $r.TargetResources } else { $r.targetResources }
                 $targets = @()
-                if ($r.TargetResources) {
-                    foreach ($t in $r.TargetResources) {
-                        $tname = $t.DisplayName
-                        $tid   = $t.Id
-                        $ttype = $t.Type
+                if ($targetResources) {
+                    foreach ($t in $targetResources) {
+                        $tname = if ($t.DisplayName) { $t.DisplayName } else { $t.displayName }
+                        $tid   = if ($t.Id) { $t.Id } else { $t.id }
+                        $ttype = if ($t.Type) { $t.Type } else { $t.type }
                         $targets += ("{0} ({1}, {2})" -f $tname,$tid,$ttype)
                     }
                 }
 
                 $modProps = @()
-                if ($r.TargetResources -and $r.TargetResources[0] -and $r.TargetResources[0].ModifiedProperties) {
-                    foreach ($p in $r.TargetResources[0].ModifiedProperties) {
-                        $pname = $p.DisplayName
-                        $oldV  = $p.OldValue
-                        $newV  = $p.NewValue
-                        $modProps += ("{0}: '{1}' -> '{2}'" -f $pname,$oldV,$newV)
+                if ($targetResources -and $targetResources[0]) {
+                    $modified = if ($targetResources[0].ModifiedProperties) { $targetResources[0].ModifiedProperties } else { $targetResources[0].modifiedProperties }
+                    if ($modified) {
+                        foreach ($p in $modified) {
+                            $pname = if ($p.DisplayName) { $p.DisplayName } else { $p.displayName }
+                            $oldV  = if ($p.OldValue) { $p.OldValue } else { $p.oldValue }
+                            $newV  = if ($p.NewValue) { $p.NewValue } else { $p.newValue }
+                            $modProps += ("{0}: '{1}' -> '{2}'" -f $pname,$oldV,$newV)
+                        }
                     }
                 }
 
@@ -3111,6 +4971,459 @@ function Get-GraphAuditLogs {
     }
 }
 
+# --- Unified Audit pull cache (shared across FileActions / Anonymous / DLP / SP-OD-Teams / main UAL) ---
+$script:UalPullCache = $null
+
+function Clear-UnifiedAuditLogPullCache {
+    $script:UalPullCache = $null
+}
+
+function Get-UalCacheUsersKey {
+    param([array]$SelectedUsers = @())
+    if (-not $SelectedUsers -or $SelectedUsers.Count -eq 0) { return '' }
+    $upns = foreach ($user in $SelectedUsers) {
+        if ($user -is [string]) { $user.ToLowerInvariant() }
+        elseif ($user.UserPrincipalName) { [string]$user.UserPrincipalName.ToLowerInvariant() }
+    }
+    return (($upns | Where-Object { $_ } | Sort-Object -Unique) -join '|')
+}
+
+function Select-UnifiedAuditLogRowsByRecordTypes {
+    param(
+        [Parameter(Mandatory = $true)]$Rows,
+        [Parameter(Mandatory = $false)][array]$RecordTypes = @()
+    )
+    if (-not $RecordTypes -or $RecordTypes.Count -eq 0) {
+        return ,(ConvertTo-UalRowArrayList -Rows $Rows)
+    }
+    $wanted = @{}
+    foreach ($t in $RecordTypes) {
+        if ($null -ne $t -and -not [string]::IsNullOrWhiteSpace([string]$t)) {
+            $wanted[[string]$t] = $true
+        }
+    }
+    $out = New-Object System.Collections.ArrayList
+    foreach ($r in $Rows) {
+        $rt = if ($null -ne $r.RecordType) { $r.RecordType.ToString() } else { '' }
+        if ($wanted.ContainsKey($rt)) { [void]$out.Add($r) }
+    }
+    return ,$out
+}
+
+function Get-UnifiedAuditLogsFromCache {
+    param(
+        [DateTime]$StartDate,
+        [DateTime]$EndDate,
+        [string]$UsersKey,
+        [array]$RecordTypes = @(),
+        [bool]$PullAll = $false
+    )
+    $c = $script:UalPullCache
+    if (-not $c -or -not $c.Rows) { return $null }
+    if ($c.StartTicks -ne $StartDate.Ticks -or $c.EndTicks -ne $EndDate.Ticks) { return $null }
+    if ([string]$c.UsersKey -ne [string]$UsersKey) { return $null }
+    if ($PullAll) {
+        if (-not $c.PullAllTypes) { return $null }
+        return ,(ConvertTo-UalRowArrayList -Rows $c.Rows)
+    }
+    if (-not $c.PullAllTypes) {
+        $cachedTypes = @($c.RecordTypes)
+        foreach ($t in $RecordTypes) {
+            $ts = [string]$t
+            if ($cachedTypes -notcontains $ts) { return $null }
+        }
+    }
+    return (Select-UnifiedAuditLogRowsByRecordTypes -Rows $c.Rows -RecordTypes $RecordTypes)
+}
+
+function ConvertTo-UalRowArrayList {
+    param($Rows)
+    $rowList = New-Object System.Collections.ArrayList
+    if ($null -eq $Rows) { return ,$rowList }
+    # Avoid [ArrayList]@($list) cast — throws "Argument types do not match" on List[object].
+    foreach ($r in $Rows) { [void]$rowList.Add($r) }
+    return ,$rowList
+}
+
+function Set-UnifiedAuditLogPullCache {
+    param(
+        [DateTime]$StartDate,
+        [DateTime]$EndDate,
+        [string]$UsersKey,
+        [bool]$PullAll,
+        [array]$RecordTypes = @(),
+        $Rows
+    )
+    $rowList = ConvertTo-UalRowArrayList -Rows $Rows
+    $existing = $script:UalPullCache
+    if ($existing -and $existing.StartTicks -eq $StartDate.Ticks -and $existing.EndTicks -eq $EndDate.Ticks -and [string]$existing.UsersKey -eq [string]$UsersKey -and -not $PullAll -and -not $existing.PullAllTypes) {
+        $seen = @{}
+        foreach ($r in @($existing.Rows)) {
+            $id = if ($r.Identity) { [string]$r.Identity } else { [guid]::NewGuid().ToString() }
+            $seen[$id] = $true
+        }
+        foreach ($r in @($rowList)) {
+            $id = if ($r.Identity) { [string]$r.Identity } else { $null }
+            if ($id -and $seen.ContainsKey($id)) { continue }
+            if ($id) { $seen[$id] = $true }
+            [void]$existing.Rows.Add($r)
+        }
+        $mergedTypes = New-Object System.Collections.ArrayList
+        foreach ($t in @($existing.RecordTypes)) {
+            if ($t -and $mergedTypes -notcontains [string]$t) { [void]$mergedTypes.Add([string]$t) }
+        }
+        foreach ($t in $RecordTypes) {
+            if ($t -and $mergedTypes -notcontains [string]$t) { [void]$mergedTypes.Add([string]$t) }
+        }
+        $existing.RecordTypes = @($mergedTypes)
+        return
+    }
+    $script:UalPullCache = @{
+        StartTicks    = $StartDate.Ticks
+        EndTicks      = $EndDate.Ticks
+        UsersKey      = [string]$UsersKey
+        PullAllTypes  = [bool]$PullAll
+        RecordTypes   = if ($PullAll) { @() } else { @($RecordTypes | ForEach-Object { [string]$_ } | Select-Object -Unique) }
+        Rows          = $rowList
+    }
+}
+
+function Invoke-UnifiedAuditLogPrefetchForReport {
+    <#
+    .SYNOPSIS
+        One Search-UnifiedAuditLog fan-out for the union of RecordTypes needed by enabled reports.
+    #>
+    param(
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [int]$DaysBack = 10,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null,
+        [bool]$UseDateRange = $false,
+        [bool]$IncludeUnifiedAuditLogs = $false,
+        [bool]$IncludeExchangeItemAggregated = $false,
+        [array]$UnifiedAuditLogRecordTypes = $null,
+        [bool]$IncludeSharePointOneDriveFileActions = $false,
+        [bool]$IncludeAnonymousSharePointSharing = $false,
+        [bool]$IncludeDLPViolations = $false,
+        [bool]$IncludeSharePointActivity = $false,
+        [bool]$IncludeOneDriveActivity = $false,
+        [bool]$IncludeTeamsActivity = $false
+    )
+    if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) { return }
+
+    $types = New-Object System.Collections.Generic.List[string]
+    $pullAll = $false
+    $consumers = 0
+
+    if ($IncludeUnifiedAuditLogs) {
+        $consumers++
+        if ($UnifiedAuditLogRecordTypes -and $UnifiedAuditLogRecordTypes.Count -gt 0) {
+            foreach ($t in $UnifiedAuditLogRecordTypes) {
+                if ($t -and $types -notcontains [string]$t) { [void]$types.Add([string]$t) }
+            }
+        } else {
+            $pullAll = $true
+        }
+    }
+    if ($IncludeSharePointOneDriveFileActions) {
+        $consumers++
+        foreach ($t in @('SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation', 'OneDrive')) {
+            if ($types -notcontains $t) { [void]$types.Add($t) }
+        }
+    }
+    if ($IncludeAnonymousSharePointSharing) {
+        $consumers++
+        if ($types -notcontains 'SharePointSharingOperation') { [void]$types.Add('SharePointSharingOperation') }
+    }
+    if ($IncludeDLPViolations) {
+        $consumers++
+        foreach ($t in @('ComplianceDLPSharePoint', 'ComplianceDLPExchange', 'ComplianceDLPEndpoint', 'ComplianceDLPSharePointClassification', 'DlpEndpoint')) {
+            if ($types -notcontains $t) { [void]$types.Add($t) }
+        }
+    }
+    if ($IncludeSharePointActivity) {
+        $consumers++
+        foreach ($t in @('SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation')) {
+            if ($types -notcontains $t) { [void]$types.Add($t) }
+        }
+    }
+    if ($IncludeOneDriveActivity) {
+        $consumers++
+        if ($types -notcontains 'OneDrive') { [void]$types.Add('OneDrive') }
+    }
+    if ($IncludeTeamsActivity) {
+        $consumers++
+        if ($types -notcontains 'MicrosoftTeams') { [void]$types.Add('MicrosoftTeams') }
+    }
+
+    # Prefetch only when 2+ reports would otherwise each call Search-UnifiedAuditLog.
+    if ($consumers -lt 2) { return }
+
+    Clear-UnifiedAuditLogPullCache
+    $label = if ($pullAll) { 'all RecordTypes' } else { ($types -join ', ') }
+    Write-Host ("Prefetching Unified Audit once for {0} consumers ({1})..." -f $consumers, $label) -ForegroundColor Cyan
+    if ($StatusFile) {
+        "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Prefetching Unified Audit once for $consumers consumers ($label)..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8
+    }
+
+    $rtArg = if ($pullAll) { $null } else { @($types) }
+    if ($UseDateRange -and $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue) {
+        $null = Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $rtArg -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
+    } else {
+        $null = Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $rtArg -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated
+    }
+}
+
+function Get-UalNoiseOperationSet {
+    # High-volume, low-signal mailbox activity for "is this tenant clean?" style pulls.
+    return [string[]]@(
+        'FolderBind',
+        'MessageBind',
+        'SyncFolderHierarchy',
+        'SyncFolderItems',
+        'SyncConversation'
+    )
+}
+
+function Test-UalRowIsNoiseOperation {
+    param($Row)
+    $noise = Get-UalNoiseOperationSet
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($prop in @('Operations', 'Operation')) {
+        try {
+            $v = $Row.$prop
+            if ($null -eq $v) { continue }
+            if ($v -is [System.Array]) {
+                foreach ($x in $v) { if ($x) { [void]$candidates.Add([string]$x) } }
+            } else {
+                foreach ($part in ([string]$v -split '[;,]')) {
+                    $t = $part.Trim()
+                    if ($t) { [void]$candidates.Add($t) }
+                }
+            }
+        } catch {}
+    }
+    foreach ($c in $candidates) {
+        foreach ($n in $noise) {
+            if ($c -eq $n) { return $true }
+        }
+    }
+    return $false
+}
+
+function ConvertTo-SlimUnifiedAuditLogExportRows {
+    <#
+    .SYNOPSIS
+        Project UAL rows to a compact CSV shape. Omits raw AuditData by default (dominant file-size driver).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Rows,
+        [switch]$ExcludeNoise,
+        [switch]$IncludeRawAuditData
+    )
+    $out = New-Object System.Collections.Generic.List[object]
+    $noiseDropped = 0
+    foreach ($r in @($Rows)) {
+        if ($ExcludeNoise -and (Test-UalRowIsNoiseOperation -Row $r)) {
+            $noiseDropped++
+            continue
+        }
+        $clientIP = $null
+        $objectId = $null
+        $resultStatus = $null
+        $workload = $null
+        $parsedOp = $null
+        $userKey = $null
+        if ($r.AuditData) {
+            try {
+                $ad = if ($r.AuditData -is [string]) {
+                    if ([string]::IsNullOrWhiteSpace([string]$r.AuditData)) { $null } else { $r.AuditData | ConvertFrom-Json -ErrorAction Stop }
+                } else { $r.AuditData }
+                if ($ad) {
+                    $clientIP = $ad.ClientIP
+                    if (-not $clientIP) { $clientIP = $ad.ClientIPAddress }
+                    $objectId = $ad.ObjectId
+                    $resultStatus = $ad.ResultStatus
+                    $workload = $ad.Workload
+                    $parsedOp = $ad.Operation
+                    $userKey = $ad.UserId
+                    if (-not $userKey) { $userKey = $ad.UserKey }
+                }
+            } catch {}
+        }
+        $row = [ordered]@{
+            CreationDate     = $r.CreationDate
+            RecordType       = $r.RecordType
+            UserIds          = $r.UserIds
+            UserId           = $userKey
+            Operations       = $r.Operations
+            Operation        = if ($r.Operation) { $r.Operation } else { $parsedOp }
+            ClientIP         = $clientIP
+            ObjectId         = if ($r.ObjectId) { $r.ObjectId } else { $objectId }
+            ResultStatus     = $resultStatus
+            Workload         = $workload
+            ExternalAccess   = $r.ExternalAccess
+            MailboxOwnerUPN  = $r.MailboxOwnerUPN
+        }
+        if ($IncludeRawAuditData) {
+            $row['AuditData'] = $r.AuditData
+        }
+        [void]$out.Add([pscustomobject]$row)
+    }
+    if ($noiseDropped -gt 0) {
+        Write-Host ("  UAL export: omitted {0} noisy bind/sync operation row(s)" -f $noiseDropped) -ForegroundColor DarkGray
+    }
+    return ,$out
+}
+
+function Write-ExportStatusLine {
+    param([string]$StatusFile, [string]$Message)
+    if ([string]::IsNullOrWhiteSpace($StatusFile) -or [string]::IsNullOrWhiteSpace($Message)) { return }
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $mutex = $null
+        try {
+            $mutex = New-Object System.Threading.Mutex($false, 'Global\EOA_StatusFileWrite')
+            if (-not $mutex.WaitOne(2000)) { throw 'status file mutex timeout' }
+            $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -ge 5) { return }
+            Start-Sleep -Milliseconds (40 * $attempt)
+        } finally {
+            if ($mutex) {
+                try { [void]$mutex.ReleaseMutex() } catch {}
+                try { $mutex.Dispose() } catch {}
+            }
+        }
+    }
+}
+
+function Get-UalTimeWindows {
+    <#
+    .SYNOPSIS
+        Split a UAL date range into day-aligned windows so each Search-UnifiedAuditLog session stays under the ~50k ReturnLargeSet cap.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][DateTime]$StartDate,
+        [Parameter(Mandatory = $true)][DateTime]$EndDate
+    )
+    # Use ArrayList — do not return List[object] wrapped in @(); that throws "Argument types do not match".
+    $windows = New-Object System.Collections.ArrayList
+    if ($EndDate -le $StartDate) {
+        [void]$windows.Add([pscustomobject]@{ Start = $StartDate; End = $EndDate })
+        return ,$windows
+    }
+    $cursor = $StartDate
+    while ($cursor -lt $EndDate) {
+        $dayEnd = $cursor.Date.AddDays(1)
+        if ($dayEnd -le $cursor) { $dayEnd = $cursor.AddHours(24) }
+        if ($dayEnd -gt $EndDate) { $dayEnd = $EndDate }
+        [void]$windows.Add([pscustomobject]@{ Start = $cursor; End = $dayEnd })
+        $cursor = $dayEnd
+    }
+    return ,$windows
+}
+
+function Add-UnifiedAuditLogSearchWindow {
+    <#
+    .SYNOPSIS
+        Paginate one Search-UnifiedAuditLog window into $Raw.
+        Split only when results look silently truncated (date gap or still full pages at high volume).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][DateTime]$WinStart,
+        [Parameter(Mandatory = $true)][DateTime]$WinEnd,
+        [Parameter(Mandatory = $true)]$Raw,
+        [Parameter(Mandatory = $true)][string]$SessionBase,
+        [Parameter(Mandatory = $false)]$RecordType = $null,
+        [Parameter(Mandatory = $false)][string]$UserIds = $null,
+        [Parameter(Mandatory = $false)][string]$StatusFile = $null,
+        [Parameter(Mandatory = $false)][string]$Label = '',
+        [Parameter(Mandatory = $false)][int]$Depth = 0
+    )
+
+    $pageSize = 5000
+    $minSplitMinutes = 15
+    $temp = New-Object System.Collections.Generic.List[object]
+    $chunkSessionId = "${SessionBase}_w$($WinStart.ToString('yyyyMMddHHmmss'))_d$Depth"
+    $pageCount = 0
+    $lastPageSize = 0
+    $winLabel = "{0:yyyy-MM-dd HH:mm} -> {1:yyyy-MM-dd HH:mm}" -f $WinStart, $WinEnd
+
+    try {
+        do {
+            $searchParams = @{
+                StartDate      = $WinStart
+                EndDate        = $WinEnd
+                ResultSize     = $pageSize
+                SessionId      = $chunkSessionId
+                SessionCommand = 'ReturnLargeSet'
+                ErrorAction    = 'Stop'
+            }
+            if ($RecordType) { $searchParams['RecordType'] = $RecordType }
+            if (-not [string]::IsNullOrWhiteSpace($UserIds)) { $searchParams['UserIds'] = $UserIds }
+
+            $results = Search-UnifiedAuditLog @searchParams
+            if ($results -and $results.Count -gt 0) {
+                foreach ($item in $results) { [void]$temp.Add($item) }
+                $lastPageSize = $results.Count
+                $pageCount += $results.Count
+                Write-Host ("    Page: {0} entries ({1}{2}; window total {3})" -f $results.Count, $Label, $winLabel, $pageCount) -ForegroundColor Gray
+                # Sparse status: first page, every ~25k, and final incomplete page
+                if ($StatusFile -and ($pageCount -eq $lastPageSize -or ($pageCount % 25000) -lt $lastPageSize -or $results.Count -lt $pageSize)) {
+                    Write-ExportStatusLine -StatusFile $StatusFile -Message "Unified audit logs: $pageCount entries$Label ($winLabel)..."
+                }
+            } else {
+                break
+            }
+        } while ($results.Count -eq $pageSize)
+    } catch {
+        Write-Warning "Failed UAL window $winLabel$Label : $($_.Exception.Message)"
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "ERROR: Failed UAL window $winLabel$Label : $($_.Exception.Message)"
+        return 0
+    }
+
+    $spanMinutes = ($WinEnd - $WinStart).TotalMinutes
+    $needsSplit = $false
+    if ($pageCount -gt 0 -and $spanMinutes -gt $minSplitMinutes -and $Depth -lt 8) {
+        $maxCreated = $null
+        foreach ($item in $temp) {
+            try {
+                $cd = [datetime]$item.CreationDate
+                if (-not $maxCreated -or $cd -gt $maxCreated) { $maxCreated = $cd }
+            } catch {}
+        }
+        $gapHours = if ($maxCreated) { ($WinEnd - $maxCreated).TotalHours } else { 999.0 }
+        # Classic silent cutoff: paging ends but newest row is well before WinEnd
+        if ($gapHours -gt 2.0) {
+            $needsSplit = $true
+        } elseif ($lastPageSize -eq $pageSize -and $pageCount -ge 45000) {
+            $needsSplit = $true
+        }
+    }
+
+    if ($needsSplit) {
+        Write-Warning ("UAL likely truncated for {0}{1}; splitting window..." -f $winLabel, $Label)
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "WARNING: UAL likely truncated for $winLabel$Label — splitting window..."
+        $mid = $WinStart.AddTicks([int64](($WinEnd - $WinStart).Ticks / 2))
+        $c1 = Add-UnifiedAuditLogSearchWindow -WinStart $WinStart -WinEnd $mid -Raw $Raw -SessionBase $SessionBase `
+            -RecordType $RecordType -UserIds $UserIds -StatusFile $StatusFile -Label $Label -Depth ($Depth + 1)
+        $c2 = Add-UnifiedAuditLogSearchWindow -WinStart $mid -WinEnd $WinEnd -Raw $Raw -SessionBase $SessionBase `
+            -RecordType $RecordType -UserIds $UserIds -StatusFile $StatusFile -Label $Label -Depth ($Depth + 1)
+        return ($c1 + $c2)
+    }
+
+    if ($lastPageSize -eq $pageSize -and $pageCount -ge 45000) {
+        Write-Warning ("UAL window {0}{1} may be incomplete after max splits." -f $winLabel, $Label)
+        Write-ExportStatusLine -StatusFile $StatusFile -Message "WARNING: UAL window $winLabel$Label may be incomplete (session cap)."
+    }
+
+    foreach ($item in $temp) { [void]$Raw.Add($item) }
+    return $pageCount
+}
+
 function Get-UnifiedAuditLogs {
     param(
         [int]$DaysBack = 10,
@@ -3123,7 +5436,13 @@ function Get-UnifiedAuditLogs {
         [Parameter(Mandatory=$false)]
         [string]$StatusFile = $null,
         [Parameter(Mandatory=$false)]
-        [array]$RecordTypes = $null
+        [array]$RecordTypes = $null,
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeExchangeItemAggregated = $false,
+
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$SearchErrors = $null
     )
 
     try {
@@ -3138,17 +5457,27 @@ function Get-UnifiedAuditLogs {
             $endDate = Get-Date  # Through run time (same timing as message trace)
             Write-Host "Collecting unified audit logs (email audit logs) (last $DaysBack days, through run time)..." -ForegroundColor Yellow
         }
+
+        $usersKey = Get-UalCacheUsersKey -SelectedUsers $SelectedUsers
+        $reqTypes = if ($RecordTypes -and $RecordTypes.Count -gt 0) { @($RecordTypes | ForEach-Object { [string]$_ } | Select-Object -Unique) } else { @() }
+        $pullAll = ($reqTypes.Count -eq 0)
+        $fromCache = Get-UnifiedAuditLogsFromCache -StartDate $startDate -EndDate $endDate -UsersKey $usersKey -RecordTypes $reqTypes -PullAll:$pullAll
+        if ($null -ne $fromCache) {
+            $cacheCount = if ($null -eq $fromCache.Count) { 0 } else { $fromCache.Count }
+            Write-Host ("  Using cached Unified Audit results ({0} rows)..." -f $cacheCount) -ForegroundColor DarkCyan
+            return ,(ConvertTo-UalRowArrayList -Rows $fromCache)
+        }
         
         # Check if Search-UnifiedAuditLog cmdlet is available (indicates Exchange Online connection)
         if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
             Write-Warning "Search-UnifiedAuditLog cmdlet not available. Please ensure Exchange Online Management module is installed and connected."
-            return @()
+            return ,[System.Collections.ArrayList]::new()
         }
 
         # Ensure Exchange Online Management module is available
         if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
             Write-Warning "Search-UnifiedAuditLog cmdlet not available. Please ensure Exchange Online Management module is installed."
-            return @()
+            return ,[System.Collections.ArrayList]::new()
         }
 
         $raw = New-Object System.Collections.Generic.List[object]
@@ -3156,44 +5485,67 @@ function Get-UnifiedAuditLogs {
         # Use SessionId + SessionCommand ReturnLargeSet for pagination (up to 50,000 results vs 5,000)
         $sessionId = "UnifiedAuditLog_" + (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 
-        # All available RecordTypes (if all are selected, we skip filtering)
-        $allAvailableRecordTypes = @(
-            'ExchangeItem', 'ExchangeItemGroup', 'ExchangeItemAggregated',
+        # Default UAL RecordTypes. ExchangeItemAggregated is opt-in (very high volume, low IR signal).
+        $defaultUalRecordTypes = @(
+            'ExchangeItem', 'ExchangeItemGroup',
             'SharePointFileOperation', 'SharePoint', 'SharePointSharingOperation',
             'OneDrive', 'MicrosoftTeams', 'AzureActiveDirectory',
             'ThreatIntelligence', 'SecurityComplianceAlerts', 'ExchangeAdmin'
         )
+        $allAvailableRecordTypes = $defaultUalRecordTypes + @('ExchangeItemAggregated')
+        $explicitWantsAggregated = $false
+        if ($RecordTypes -and $RecordTypes.Count -gt 0) {
+            foreach ($rtSel in @($RecordTypes)) {
+                if ([string]$rtSel -eq 'ExchangeItemAggregated') { $explicitWantsAggregated = $true; break }
+            }
+        }
+        $wantAggregated = ($IncludeExchangeItemAggregated -eq $true) -or $explicitWantsAggregated
 
-        # RecordType parameter only accepts a single value, so if multiple RecordTypes provided, query each separately
-        # However, if ALL available types are selected, skip filtering entirely for efficiency
+        # RecordType parameter only accepts a single value, so query each type separately when filtering.
         $recordTypesToQuery = @()
         if ($RecordTypes -and $RecordTypes.Count -gt 0) {
-            # Normalize: remove duplicates and compare unique sets
-            $uniqueSelected = $RecordTypes | Select-Object -Unique
-            $uniqueAvailable = $allAvailableRecordTypes | Select-Object -Unique
-            
-            # Check if all available types are selected (order does not matter)
+            $uniqueSelected = @($RecordTypes | ForEach-Object { [string]$_ } | Select-Object -Unique)
+            $compareSet = if ($wantAggregated) { $allAvailableRecordTypes } else { $defaultUalRecordTypes }
             $allSelected = $true
-            foreach ($availableType in $uniqueAvailable) {
+            foreach ($availableType in $compareSet) {
                 if ($uniqueSelected -notcontains $availableType) {
                     $allSelected = $false
                     break
                 }
             }
-            
-            # If all types are selected, query without RecordType filter for efficiency
-            if ($allSelected -and $uniqueSelected.Count -ge $uniqueAvailable.Count) {
-                # All types selected - query without RecordType filter
+            if ($allSelected) {
                 $recordTypesToQuery = @($null)
-                Write-Host "  All RecordTypes selected - querying all audit log types (no filter)" -ForegroundColor Gray
+                Write-Host "  All standard RecordTypes selected" -ForegroundColor Gray
             } else {
-                # Some types selected - query each separately
                 $recordTypesToQuery = $uniqueSelected
                 Write-Host "  Filtering by RecordTypes ($($uniqueSelected.Count) types): $($uniqueSelected -join ', ')" -ForegroundColor Gray
             }
         } else {
-            # No RecordType filter - query all types
             $recordTypesToQuery = @($null)
+        }
+
+        # Never use an unfiltered Search-UnifiedAuditLog when Aggregated is excluded — that still returns Aggregated rows.
+        if ($recordTypesToQuery.Count -eq 1 -and $null -eq $recordTypesToQuery[0]) {
+            $recordTypesToQuery = if ($wantAggregated) { @($allAvailableRecordTypes) } else { @($defaultUalRecordTypes) }
+            if (-not $wantAggregated) {
+                Write-Host "  Excluding ExchangeItemAggregated (enable IncludeExchangeItemAggregated to opt in)" -ForegroundColor DarkGray
+            }
+        } elseif (-not $wantAggregated) {
+            $recordTypesToQuery = @($recordTypesToQuery | Where-Object { $_ -and [string]$_ -ne 'ExchangeItemAggregated' })
+        } elseif ($wantAggregated) {
+            $hasAgg = $false
+            foreach ($rt in @($recordTypesToQuery)) {
+                if ([string]$rt -eq 'ExchangeItemAggregated') { $hasAgg = $true; break }
+            }
+            if (-not $hasAgg) {
+                $recordTypesToQuery = @($recordTypesToQuery) + @('ExchangeItemAggregated')
+            }
+        }
+
+        $tenantWideExpandTypes = $false
+        if (-not ($SelectedUsers -and $SelectedUsers.Count -gt 0)) {
+            $tenantWideExpandTypes = $true
+            Write-Host ("  Tenant-wide: {0} concrete RecordTypes (avoids all-types session truncation)" -f @($recordTypesToQuery).Count) -ForegroundColor DarkGray
         }
 
         # If SelectedUsers provided, filter by user
@@ -3241,6 +5593,7 @@ function Get-UnifiedAuditLogs {
                         }
                     } catch {
                         Write-Warning "Failed to get unified audit logs for $upn$recordTypeLabel : $($_.Exception.Message)"
+                        if ($null -ne $SearchErrors) { [void]$SearchErrors.Add([string]$_.Exception.Message) }
                         if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: Failed to get unified audit logs for $upn$recordTypeLabel : $($_.Exception.Message)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
                     }
                 }
@@ -3249,46 +5602,34 @@ function Get-UnifiedAuditLogs {
                 }
             }
         } else {
-            # No selection - get all unified audit logs with pagination
+            # Tenant-wide (all users): chunk by day so each ReturnLargeSet session stays under ~50k rows.
+            # Busy tenants that still hit the cap on a single day auto-bisect that window.
+            # Do not wrap Get-UalTimeWindows in @() — ArrayList/@() throws "Argument types do not match".
+            $ualWindows = Get-UalTimeWindows -StartDate $startDate -EndDate $endDate
+            $ualWindowCount = if ($null -eq $ualWindows) { 0 } else { $ualWindows.Count }
+            $typeCount = @($recordTypesToQuery).Count
+            $comboCount = $ualWindowCount * $typeCount
+            Write-Host ("  Tenant-wide UAL: {0} day window(s) x {1} RecordType(s) = {2} searches ({3:yyyy-MM-dd HH:mm} to {4:yyyy-MM-dd HH:mm})" -f $ualWindowCount, $typeCount, $comboCount, $startDate, $endDate) -ForegroundColor Cyan
+            if ($tenantWideExpandTypes) {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message "Tenant-wide UAL: $ualWindowCount day(s) x $typeCount RecordTypes ($comboCount searches)..."
+            } else {
+                Write-ExportStatusLine -StatusFile $StatusFile -Message "Tenant-wide UAL using $ualWindowCount day-aligned window(s) ($typeCount RecordType filter(s))..."
+            }
             foreach ($recordType in $recordTypesToQuery) {
-                try {
-                    $recordTypeLabel = if ($recordType) { " (RecordType: $recordType)" } else { " (all RecordTypes)" }
-                    Write-Host "  Querying unified audit logs for all users$recordTypeLabel (paginated, up to 50,000 results)..." -ForegroundColor Gray
-                    $typeSessionId = $sessionId
-                    if ($recordType) {
-                        $typeSessionId = "${sessionId}_$($recordType.Replace(' ','_'))"
-                    }
-                    $pageCount = 0
-                    do {
-                        $searchParams = @{
-                            StartDate = $startDate
-                            EndDate = $endDate
-                            ResultSize = 5000
-                            SessionId = $typeSessionId
-                            SessionCommand = 'ReturnLargeSet'
-                            ErrorAction = 'Stop'
-                        }
-                        if ($recordType) {
-                            $searchParams['RecordType'] = $recordType
-                        }
-                        $results = Search-UnifiedAuditLog @searchParams
-                        if ($results -and $results.Count -gt 0) {
-                            foreach ($item in $results) {
-                                [void]$raw.Add($item)
-                            }
-                            $pageCount += $results.Count
-                            Write-Host "    Page: $($results.Count) entries (total$recordTypeLabel : $pageCount)" -ForegroundColor Gray
-                            if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Unified audit logs: $pageCount entries collected$recordTypeLabel (still running, can take 10-20 min)..." | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
-                        } else {
-                            break
-                        }
-                    } while ($results.Count -eq 5000)
-                    if ($pageCount -gt 0) {
-                        Write-Host "  Found $pageCount audit log entries$recordTypeLabel" -ForegroundColor Gray
-                    }
-                } catch {
-                    Write-Warning "Failed to get unified audit logs$recordTypeLabel : $($_.Exception.Message)"
-                    if ($StatusFile) { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: Failed to get unified audit logs$recordTypeLabel : $($_.Exception.Message)" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 }
+                $recordTypeLabel = if ($recordType) { " (RecordType: $recordType)" } else { " (all RecordTypes)" }
+                Write-Host "  Querying unified audit logs for all users$recordTypeLabel (day-chunked, paginated)..." -ForegroundColor Gray
+                $typeSessionId = $sessionId
+                if ($recordType) {
+                    $typeSessionId = "${sessionId}_$($recordType.Replace(' ', '_'))"
+                }
+                $typeTotal = 0
+                foreach ($win in $ualWindows) {
+                    $added = Add-UnifiedAuditLogSearchWindow -WinStart $win.Start -WinEnd $win.End -Raw $raw `
+                        -SessionBase $typeSessionId -RecordType $recordType -StatusFile $StatusFile -Label $recordTypeLabel
+                    if ($null -ne $added) { $typeTotal += [int]$added }
+                }
+                if ($typeTotal -gt 0) {
+                    Write-Host "  Found $typeTotal audit log entries$recordTypeLabel" -ForegroundColor Gray
                 }
             }
         }
@@ -3342,16 +5683,21 @@ function Get-UnifiedAuditLogs {
             }
             Write-Host "  Date range: $($startDate.ToString('yyyy-MM-dd HH:mm:ss')) to $($endDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Gray
         }
-        
-        return [System.Collections.ArrayList]$flattened
+
+        try {
+            Set-UnifiedAuditLogPullCache -StartDate $startDate -EndDate $endDate -UsersKey $usersKey -PullAll:$pullAll -RecordTypes $reqTypes -Rows $flattened
+        } catch {
+            Write-Warning "UAL pull cache store failed (results still returned): $($_.Exception.Message)"
+        }
+        # Always return ArrayList. Callers that use @($result).Count throw "Argument types do not match" on List[object].
+        return ,(ConvertTo-UalRowArrayList -Rows $flattened)
     } catch {
         $errorMsg = "Failed to collect unified audit logs: $($_.Exception.Message)"
-        Write-Error $errorMsg
         Write-Warning $errorMsg
         if ($StatusFile) { 
             "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $errorMsg" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 
         }
-        return @()
+        return ,(New-Object System.Collections.ArrayList)
     }
 }
 
@@ -3368,21 +5714,16 @@ function Get-GraphSignInLogs {
     )
     
     try {
-        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-        if ($useDateRange) {
-            $startDate = $StartDate.ToUniversalTime()
-            $daysSpan = [int](($EndDate - $StartDate).TotalDays)
-            $fmt = "yyyy-MM-dd"
-            Write-Host ("Collecting sign-in logs ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
-        } else {
-            $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
-            $daysSpan = $DaysBack
-            Write-Host "Collecting sign-in logs (last $DaysBack days, through run time)..." -ForegroundColor Yellow
-        }
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        $startDate = $win.StartUtc
+        $daysSpan = $win.DaysSpan
+        $startIso = $win.StartIso
+        $endIso = $win.EndIso
+        $fmt = "yyyy-MM-dd"
+        Write-Host ("Collecting sign-in logs ({0} to {1})..." -f $win.StartLocal.ToString($fmt), $win.EndLocal.ToString($fmt)) -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        if (-not (Test-GraphSessionAvailable)) {
             Write-Warning "Microsoft Graph not connected. Cannot collect sign-in logs."
             throw 'Microsoft Graph is not connected. Sign-in logs require an active Graph session (interactive auth or valid access token) in this runspace.'
         }
@@ -3393,14 +5734,12 @@ function Get-GraphSignInLogs {
         }
         
         $allLogs = New-Object System.Collections.ArrayList
-        $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        # Filter "ge" returns from start through run time (no end filter = through now)
-
-        # Build filter for date range
-        $filter = "createdDateTime ge $startIso"
+        # Closed Start-End window
+        $filter = "createdDateTime ge $startIso and createdDateTime le $endIso"
         
         # If specific users are selected, filter by user IDs (per-user mode)
         # If no users selected, collect all sign-in logs (all-users mode)
+        $userIdToUpn = @{}
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             Write-Host "  Per-user mode: Filtering sign-in logs for $($SelectedUsers.Count) selected user(s)..." -ForegroundColor Cyan
             
@@ -3409,9 +5748,10 @@ function Get-GraphSignInLogs {
                 $upn = if ($u -is [string]) { $u } elseif ($u.UserPrincipalName) { $u.UserPrincipalName } else { continue }
                 if ([string]::IsNullOrWhiteSpace($upn)) { continue }
                 try {
-                    $user = Get-MgUser -UserId $upn -Property Id -ErrorAction Stop
+                    $user = Get-MgUserCompat -UserId $upn -Property Id -ErrorAction Stop
                     if ($user -and $user.Id) {
                         $userIds += $user.Id
+                        $userIdToUpn[$user.Id] = $upn
                         Write-Host "  Resolved: $upn -> $($user.Id)" -ForegroundColor Gray
                     }
                 } catch {
@@ -3435,29 +5775,61 @@ function Get-GraphSignInLogs {
         Write-Host "  Querying Microsoft Graph API for sign-in logs..." -ForegroundColor Cyan
         
         try {
+            $signIns = @()
+            if (Test-GraphRestBearerToken) {
+                $uri = 'https://graph.microsoft.com/v1.0/auditLogs/signIns?$filter=' + [Uri]::EscapeDataString($filter) + '&$top=999'
+                $signIns = Invoke-GraphRestPaged -Uri $uri -Headers @{ ConsistencyLevel = 'eventual' }
+                Write-Host "  Retrieved $($signIns.Count) sign-in log entries (Graph REST)" -ForegroundColor Green
+            } else {
             # Attempt to retrieve sign-in logs
             # appliedConditionalAccessPolicies should be included by default with AuditLog.Read.All permission
             $signIns = Get-MgAuditLogSignIn -Filter $filter -All -ErrorAction Stop
+            }
             
             if ($signIns) {
+                if (-not (Test-GraphRestBearerToken)) {
                 Write-Host "  Retrieved $($signIns.Count) sign-in log entries" -ForegroundColor Green
+                }
                 
+                $signInUpnCache = @{}
+                # Load CA policies once (avoids per-sign-in Get-MgIdentityConditionalAccessPolicy N+1)
+                $caPolicyNameById = @{}
+                try {
+                    if (Get-Command Get-MgIdentityConditionalAccessPolicy -ErrorAction SilentlyContinue) {
+                        foreach ($p in @(Get-MgIdentityConditionalAccessPolicy -All -ErrorAction SilentlyContinue)) {
+                            if ($p.Id) { $caPolicyNameById[[string]$p.Id] = [string]$p.DisplayName }
+                        }
+                    } else {
+                        $caResp = Invoke-MgGraphRequestCompat -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
+                        foreach ($p in @($caResp.value)) {
+                            if ($p.id) { $caPolicyNameById[[string]$p.id] = [string]$p.displayName }
+                        }
+                    }
+                    if ($caPolicyNameById.Count -gt 0) {
+                        Write-Host ("  Cached {0} Conditional Access policy name(s) for sign-in enrichment" -f $caPolicyNameById.Count) -ForegroundColor Gray
+                    }
+                } catch { }
                 # Flatten sign-in logs for easier export with all enhanced fields
                 foreach ($signIn in $signIns) {
                     try {
                         # Extract Status information
                         $resultStatusCode = $null
                         $resultStatus = "Unknown"
-                        if ($signIn.Status) {
-                            $resultStatusCode = $signIn.Status.ErrorCode
-                            if ($signIn.Status.ErrorCode -eq 0) {
+                        $statusObj = if ($signIn.Status) { $signIn.Status } elseif ($signIn.status) { $signIn.status } else { $null }
+                        if ($statusObj) {
+                            $resultStatusCode = if ($statusObj.ErrorCode -ne $null) { $statusObj.ErrorCode } else { $statusObj.errorCode }
+                            if ($resultStatusCode -eq 0) {
                                 $resultStatus = "Success"
-                            } elseif ($signIn.Status.FailureReason) {
-                                $resultStatus = $signIn.Status.FailureReason
-                            } elseif ($signIn.Status.AdditionalDetails) {
-                                $resultStatus = $signIn.Status.AdditionalDetails
+                            } elseif ($statusObj.FailureReason) {
+                                $resultStatus = $statusObj.FailureReason
+                            } elseif ($statusObj.failureReason) {
+                                $resultStatus = $statusObj.failureReason
+                            } elseif ($statusObj.AdditionalDetails) {
+                                $resultStatus = $statusObj.AdditionalDetails
+                            } elseif ($statusObj.additionalDetails) {
+                                $resultStatus = $statusObj.additionalDetails
                             } else {
-                                $resultStatus = "Failure (Code: $($signIn.Status.ErrorCode))"
+                                $resultStatus = "Failure (Code: $resultStatusCode)"
                             }
                         }
                         
@@ -3467,18 +5839,21 @@ function Get-GraphSignInLogs {
                         $deviceIsCompliant = $null
                         $deviceIsManaged = $null
                         $deviceDetailSummary = "Unknown"
-                        if ($signIn.DeviceDetail) {
-                            $deviceId = $signIn.DeviceDetail.DeviceId
-                            $deviceIsCompliant = $signIn.DeviceDetail.IsCompliant
-                            $deviceIsManaged = $signIn.DeviceDetail.IsManaged
+                        $deviceDetailObj = if ($signIn.DeviceDetail) { $signIn.DeviceDetail } elseif ($signIn.deviceDetail) { $signIn.deviceDetail } else { $null }
+                        if ($deviceDetailObj) {
+                            $deviceId = if ($deviceDetailObj.DeviceId) { $deviceDetailObj.DeviceId } else { $deviceDetailObj.deviceId }
+                            $deviceIsCompliant = if ($null -ne $deviceDetailObj.IsCompliant) { $deviceDetailObj.IsCompliant } else { $deviceDetailObj.isCompliant }
+                            $deviceIsManaged = if ($null -ne $deviceDetailObj.IsManaged) { $deviceDetailObj.IsManaged } else { $deviceDetailObj.isManaged }
                             try {
-                                $deviceDetailJSON = $signIn.DeviceDetail | ConvertTo-Json -Depth 10 -Compress
+                                $deviceDetailJSON = $deviceDetailObj | ConvertTo-Json -Depth 10 -Compress
                             } catch {
                                 $deviceDetailJSON = "Error serializing DeviceDetail"
                             }
                             $deviceParts = [System.Collections.ArrayList]::new()
-                            if ($signIn.DeviceDetail.Browser) { [void]$deviceParts.Add($signIn.DeviceDetail.Browser) }
-                            if ($signIn.DeviceDetail.OperatingSystem) { [void]$deviceParts.Add($signIn.DeviceDetail.OperatingSystem) }
+                            $browser = if ($deviceDetailObj.Browser) { $deviceDetailObj.Browser } else { $deviceDetailObj.browser }
+                            $os = if ($deviceDetailObj.OperatingSystem) { $deviceDetailObj.OperatingSystem } else { $deviceDetailObj.operatingSystem }
+                            if ($browser) { [void]$deviceParts.Add($browser) }
+                            if ($os) { [void]$deviceParts.Add($os) }
                             if ($deviceParts.Count -gt 0) { $deviceDetailSummary = $deviceParts -join " / " }
                         }
                         
@@ -3557,17 +5932,9 @@ function Get-GraphSignInLogs {
                                         # Get conditions that triggered (if available)
                                         $conditions = & $getProperty $policy @('Conditions', 'conditions')
                                         
-                                        # If still no name, try to get from Id by looking up policy
-                                        if (-not $policyName -and $policyId) {
-                                            try {
-                                                # Try to get policy name from Graph API if we have the ID
-                                                $policyObj = Get-MgIdentityConditionalAccessPolicy -ConditionalAccessPolicyId $policyId -ErrorAction SilentlyContinue
-                                                if ($policyObj -and $policyObj.DisplayName) {
-                                                    $policyName = $policyObj.DisplayName
-                                                }
-                                            } catch {
-                                                # Ignore lookup errors
-                                            }
+                                        # If still no name, resolve from the one-time CA policy cache
+                                        if (-not $policyName -and $policyId -and $caPolicyNameById.ContainsKey([string]$policyId)) {
+                                            $policyName = $caPolicyNameById[[string]$policyId]
                                         }
                                         
                                         # If we have a policy ID but no name, use the ID as fallback
@@ -3651,16 +6018,28 @@ function Get-GraphSignInLogs {
                             }
                         }
                         
+                        $resolvedSignInUpn = 'Unknown'
+                        if ($signIn.PSObject.Properties['UserPrincipalName'] -and -not [string]::IsNullOrWhiteSpace($signIn.UserPrincipalName)) {
+                            $resolvedSignInUpn = $signIn.UserPrincipalName
+                        } elseif ($signIn.userPrincipalName) {
+                            $resolvedSignInUpn = $signIn.userPrincipalName
+                        } elseif ($signIn.UserId) {
+                            if ($userIdToUpn.ContainsKey($signIn.UserId)) {
+                                $resolvedSignInUpn = $userIdToUpn[$signIn.UserId]
+                            } elseif (-not $signInUpnCache.ContainsKey($signIn.UserId)) {
+                                try {
+                                    $user = Get-MgUserCompat -UserId $signIn.UserId -Property UserPrincipalName -ErrorAction SilentlyContinue
+                                    $signInUpnCache[$signIn.UserId] = if ($user -and $user.UserPrincipalName) { $user.UserPrincipalName } else { $signIn.UserId }
+                                } catch {
+                                    $signInUpnCache[$signIn.UserId] = $signIn.UserId
+                                }
+                            }
+                            $resolvedSignInUpn = $signInUpnCache[$signIn.UserId]
+                        }
+
                         $logEntry = [PSCustomObject]@{
                             CreatedDateTime = $signIn.CreatedDateTime
-                            UserPrincipalName = if ($signIn.UserId) { 
-                                try {
-                                    $user = Get-MgUser -UserId $signIn.UserId -Property UserPrincipalName -ErrorAction SilentlyContinue
-                                    if ($user) { $user.UserPrincipalName } else { $signIn.UserId }
-                                } catch {
-                                    $signIn.UserId
-                                }
-                            } else { "Unknown" }
+                            UserPrincipalName = $resolvedSignInUpn
                             UserId = $signIn.UserId
                             AppDisplayName = $signIn.AppDisplayName
                             ClientAppUsed = $signIn.ClientAppUsed
@@ -3836,7 +6215,11 @@ function Get-IntuneDeviceComplianceRecords {
 function Get-MailboxForwardingAndDelegation {
     param(
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        # When false (default), only inspect mailboxes owned by SelectedUsers (fast path for investigations).
+        # When true, also scan the tenant for other mailboxes where selected users are forward/delegate targets.
+        [Parameter(Mandatory=$false)]
+        [bool]$IncludeTenantWideDelegateHunt = $false
     )
     
     try {
@@ -3845,7 +6228,7 @@ function Get-MailboxForwardingAndDelegation {
         $mailboxes = @()
         $selectedUserSet = @{}  # For quick lookup of selected users
         
-        # If SelectedUsers provided, query mailboxes owned by selected users AND all mailboxes to check for delegates/forwarding
+        # If SelectedUsers provided, query owned mailboxes; optionally hunt tenant-wide for inbound delegates/forwards
         if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
             # Build set of selected user UPNs for quick lookup
             foreach ($user in $SelectedUsers) {
@@ -3853,7 +6236,11 @@ function Get-MailboxForwardingAndDelegation {
                 $selectedUserSet[$upn.ToLower()] = $upn
             }
             
-            Write-Host "  User filtering enabled: Checking mailboxes owned by selected users AND all mailboxes for delegates/forwarding..." -ForegroundColor Cyan
+            if ($IncludeTenantWideDelegateHunt) {
+                Write-Host "  User filtering: owned mailboxes + tenant-wide delegate/forward hunt (slow on large tenants)..." -ForegroundColor Cyan
+            } else {
+                Write-Host "  User filtering: owned mailboxes only (set IncludeTenantWideDelegateHunt for full tenant hunt)..." -ForegroundColor Cyan
+            }
             
             # First, get mailboxes owned by selected users
             foreach ($user in $SelectedUsers) {
@@ -3866,7 +6253,8 @@ function Get-MailboxForwardingAndDelegation {
                 }
             }
             
-            # Also get ALL mailboxes to check for delegates/forwarding that match selected users
+            # Optional: get ALL mailboxes to check for delegates/forwarding that match selected users
+            if ($IncludeTenantWideDelegateHunt) {
             try {
                 # Pre-build hashtable of existing mailbox UPNs for O(1) lookup instead of O(n) nested loop
                 $existingMailboxUpns = @{}
@@ -3948,6 +6336,7 @@ function Get-MailboxForwardingAndDelegation {
             } catch {
                 Write-Warning "Could not retrieve all mailboxes for delegate/forwarding check: $($_.Exception.Message)"
             }
+            } # end IncludeTenantWideDelegateHunt
         } else {
             # No selection - get all mailboxes
             try {
@@ -4126,7 +6515,7 @@ function Export-EntraPortalSignInCsv {
         $csvUri = "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$filter=createdDateTime ge $s and createdDateTime lt $e&`$count=true"
         $headers = @{ Accept = 'text/csv'; ConsistencyLevel = 'eventual' }
 
-        $resp = Invoke-MgGraphRequest -Uri $csvUri -Method GET -Headers $headers -OutputFilePath $OutputCsv -ErrorAction SilentlyContinue
+        $resp = Invoke-MgGraphRequestCompat -Uri $csvUri -Method GET -Headers $headers -OutputFilePath $OutputCsv -ErrorAction SilentlyContinue
         if (Test-Path $OutputCsv) { return $true }
         return $false
     } catch {
@@ -5430,17 +7819,22 @@ function Get-SharePointActivityLogs {
     )
 
     try {
-        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-        $effectiveDaysBack = if ($useDateRange) { [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays)) } else { $DaysBack }
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        if (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue) {
+            Write-Host "Collecting SharePoint activity via Unified Audit Log (exact Start-End)..." -ForegroundColor Yellow
+            $types = @('SharePointFileOperation','SharePoint','SharePointSharingOperation')
+            return ,(Get-UnifiedAuditLogs -StartDate $win.StartLocal -EndDate $win.EndLocal -SelectedUsers $SelectedUsers -RecordTypes $types)
+        }
+        Write-Warning "Exchange Unified Audit not available; Reports API period buckets cannot honor exact Start-End. Using closest D7/D30/D90 covering $($win.DaysSpan) days."
+        $effectiveDaysBack = $win.DaysSpan
         Write-Host "Collecting SharePoint activity logs (last $effectiveDaysBack days)..." -ForegroundColor Yellow
 
         # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        if (-not (Test-GraphSessionAvailable)) {
             throw "Microsoft Graph not connected. Cannot collect SharePoint activity logs."
         }
 
-        # Use Invoke-MgGraphRequest to call Reports API directly
+        # Use Invoke-MgGraphRequestCompat to call Reports API directly
         # The Reports API uses function endpoints that return CSV data (D7, D30, D90 only)
         $results = New-Object System.Collections.ArrayList
 
@@ -5459,7 +7853,7 @@ function Get-SharePointActivityLogs {
             $tempCsvFile = Join-Path $env:TEMP "SharePointActivity_$(Get-Random).csv"
             try {
                 $headers = @{ Accept = 'text/csv' }
-                $null = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
+                $null = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
                 
                 if (Test-Path $tempCsvFile) {
                     Write-Host "  CSV file downloaded successfully" -ForegroundColor Gray
@@ -5468,13 +7862,13 @@ function Get-SharePointActivityLogs {
                 } else {
                     Write-Host "  No file was downloaded, trying direct API call..." -ForegroundColor Yellow
                     $headers = @{ Accept = 'text/csv' }
-                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                    $response = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
                 }
             } catch {
                 # If OutputFilePath fails, try direct call
                 Write-Host "  OutputFilePath method failed, trying direct call: $($_.Exception.Message)" -ForegroundColor Yellow
                 $headers = @{ Accept = 'text/csv' }
-                $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                $response = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
             }
             
             # Debug: Log response type and first 500 chars
@@ -5635,17 +8029,22 @@ function Get-OneDriveActivityLogs {
     )
 
     try {
-        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-        $effectiveDaysBack = if ($useDateRange) { [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays)) } else { $DaysBack }
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        if (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue) {
+            Write-Host "Collecting OneDrive activity via Unified Audit Log (exact Start-End)..." -ForegroundColor Yellow
+            $types = @('OneDrive','SharePointFileOperation')
+            return ,(Get-UnifiedAuditLogs -StartDate $win.StartLocal -EndDate $win.EndLocal -SelectedUsers $SelectedUsers -RecordTypes $types)
+        }
+        Write-Warning "Exchange Unified Audit not available; Reports API period buckets cannot honor exact Start-End. Using closest D7/D30/D90 covering $($win.DaysSpan) days."
+        $effectiveDaysBack = $win.DaysSpan
         Write-Host "Collecting OneDrive activity logs (last $effectiveDaysBack days)..." -ForegroundColor Yellow
 
         # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        if (-not (Test-GraphSessionAvailable)) {
             throw "Microsoft Graph not connected. Cannot collect OneDrive activity logs."
         }
 
-        # Use Invoke-MgGraphRequest to call Reports API directly (D7, D30, D90 only)
+        # Use Invoke-MgGraphRequestCompat to call Reports API directly (D7, D30, D90 only)
         $results = New-Object System.Collections.ArrayList
 
         # Determine period format (D7, D30, etc.)
@@ -5663,7 +8062,7 @@ function Get-OneDriveActivityLogs {
             $tempCsvFile = Join-Path $env:TEMP "OneDriveActivity_$(Get-Random).csv"
             try {
                 $headers = @{ Accept = 'text/csv' }
-                $null = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
+                $null = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
                 
                 if (Test-Path $tempCsvFile) {
                     Write-Host "  CSV file downloaded successfully" -ForegroundColor Gray
@@ -5672,13 +8071,13 @@ function Get-OneDriveActivityLogs {
                 } else {
                     Write-Host "  No file was downloaded, trying direct API call..." -ForegroundColor Yellow
                     $headers = @{ Accept = 'text/csv' }
-                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                    $response = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
                 }
             } catch {
                 # If OutputFilePath fails, try direct call
                 Write-Host "  OutputFilePath method failed, trying direct call: $($_.Exception.Message)" -ForegroundColor Yellow
                 $headers = @{ Accept = 'text/csv' }
-                $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                $response = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
             }
             
             # Debug: Log response type and first 500 chars
@@ -5817,17 +8216,22 @@ function Get-TeamsActivityLogs {
     )
 
     try {
-        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-        $effectiveDaysBack = if ($useDateRange) { [Math]::Max(1, [int](($EndDate - $StartDate).TotalDays)) } else { $DaysBack }
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        if (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue) {
+            Write-Host "Collecting Teams activity via Unified Audit Log (exact Start-End)..." -ForegroundColor Yellow
+            $types = @('MicrosoftTeams')
+            return ,(Get-UnifiedAuditLogs -StartDate $win.StartLocal -EndDate $win.EndLocal -SelectedUsers $SelectedUsers -RecordTypes $types)
+        }
+        Write-Warning "Exchange Unified Audit not available; Reports API period buckets cannot honor exact Start-End. Using closest D7/D30/D90 covering $($win.DaysSpan) days."
+        $effectiveDaysBack = $win.DaysSpan
         Write-Host "Collecting Teams activity logs (last $effectiveDaysBack days)..." -ForegroundColor Yellow
 
         # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        if (-not (Test-GraphSessionAvailable)) {
             throw "Microsoft Graph not connected. Cannot collect Teams activity logs."
         }
 
-        # Use Invoke-MgGraphRequest to call Reports API directly (D7, D30, D90 only)
+        # Use Invoke-MgGraphRequestCompat to call Reports API directly (D7, D30, D90 only)
         $results = New-Object System.Collections.ArrayList
 
         # Determine period format (D7, D30, etc.)
@@ -5845,7 +8249,7 @@ function Get-TeamsActivityLogs {
             $tempCsvFile = Join-Path $env:TEMP "TeamsActivity_$(Get-Random).csv"
             try {
                 $headers = @{ Accept = 'text/csv' }
-                $null = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
+                $null = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -OutputFilePath $tempCsvFile -ErrorAction Stop
                 
                 if (Test-Path $tempCsvFile) {
                     Write-Host "  CSV file downloaded successfully" -ForegroundColor Gray
@@ -5854,13 +8258,13 @@ function Get-TeamsActivityLogs {
                 } else {
                     Write-Host "  No file was downloaded, trying direct API call..." -ForegroundColor Yellow
                     $headers = @{ Accept = 'text/csv' }
-                    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                    $response = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
                 }
             } catch {
                 # If OutputFilePath fails, try direct call
                 Write-Host "  OutputFilePath method failed, trying direct call: $($_.Exception.Message)" -ForegroundColor Yellow
                 $headers = @{ Accept = 'text/csv' }
-                $response = Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+                $response = Invoke-MgGraphRequestCompat -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
             }
             
             # Debug: Log response type and first 500 chars
@@ -5990,15 +8394,16 @@ function Get-TeamsActivityLogs {
 function Get-SharePointSharingLinks {
     param(
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [int]$MaxSitesWithoutUserFilter = 40
     )
     
     try {
         Write-Host "Collecting SharePoint sharing links..." -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        if (-not (Test-GraphSessionAvailable)) {
             throw "Microsoft Graph not connected. Cannot collect SharePoint sharing links."
         }
         
@@ -6009,12 +8414,28 @@ function Get-SharePointSharingLinks {
         }
         
         $results = New-Object System.Collections.ArrayList
+        $selectedUpnSet = @{}
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                $selectedUpnSet[$upn.ToLower()] = $true
+            }
+        }
         
-        # Get all SharePoint sites
         Write-Host "  Enumerating SharePoint sites..." -ForegroundColor Gray
         try {
-            $sites = Get-MgSite -All -ErrorAction Stop
-            Write-Host "  Found $($sites.Count) SharePoint sites" -ForegroundColor Gray
+            $sites = @(Get-MgSite -All -ErrorAction Stop)
+            # Prefer personal (-my) sites when investigating selected users; always cap to avoid full-tenant N+1.
+            if ($selectedUpnSet.Count -gt 0) {
+                $personal = @($sites | Where-Object { $_.WebUrl -and $_.WebUrl -match '-my\.sharepoint\.com' })
+                $other = @($sites | Where-Object { -not ($_.WebUrl -and $_.WebUrl -match '-my\.sharepoint\.com') })
+                $sites = @($personal + $other)
+            }
+            if ($sites.Count -gt $MaxSitesWithoutUserFilter) {
+                Write-Warning ("  Tenant has {0} sites; processing first {1}. Pass fewer sites via SelectedUsers scoping or raise MaxSitesWithoutUserFilter." -f $sites.Count, $MaxSitesWithoutUserFilter)
+                $sites = $sites | Select-Object -First $MaxSitesWithoutUserFilter
+            }
+            Write-Host ("  Processing {0} SharePoint site(s)..." -f $sites.Count) -ForegroundColor Gray
             
             $siteCount = 0
             foreach ($site in $sites) {
@@ -6029,23 +8450,20 @@ function Get-SharePointSharingLinks {
                     
                     if ($permissions) {
                         foreach ($perm in $permissions) {
+                            $grantedTo = if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) { $perm.GrantedToV2.User } else { $null }
+                            $userPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { '' }
+
                             # Filter by SelectedUsers if provided
-                            if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                                $grantedTo = if ($perm.GrantedToV2) { $perm.GrantedToV2.User } else { $null }
-                                $userPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { "" }
-                                
+                            if ($selectedUpnSet.Count -gt 0) {
                                 $matches = $false
-                                foreach ($user in $SelectedUsers) {
-                                    $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
-                                    if ($userPrincipalName -eq $upn) {
-                                        $matches = $true
-                                        break
-                                    }
+                                if ($userPrincipalName -and $selectedUpnSet.ContainsKey($userPrincipalName.ToLower())) {
+                                    $matches = $true
                                 }
-                                
-                                if (-not $matches) {
-                                    continue
+                                # Keep anonymous/org links on personal sites when investigating those users
+                                if (-not $matches -and $perm.Link -and $site.WebUrl -match '-my\.sharepoint\.com') {
+                                    $matches = $true
                                 }
+                                if (-not $matches) { continue }
                             }
                             
                             $shareLink = [PSCustomObject]@{
@@ -6056,8 +8474,8 @@ function Get-SharePointSharingLinks {
                                 Roles = $perm.Roles -join '; '
                                 LinkScope = if ($perm.Link) { $perm.Link.Scope } else { "Unknown" }
                                 LinkType = if ($perm.Link) { $perm.Link.Type } else { "Unknown" }
-                                GrantedToPrincipalName = if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) { $perm.GrantedToV2.User.UserPrincipalName } else { "Unknown" }
-                                GrantedToPrincipalId = if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) { $perm.GrantedToV2.User.Id } else { "Unknown" }
+                                GrantedToPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { "Unknown" }
+                                GrantedToPrincipalId = if ($grantedTo -and $grantedTo.Id) { $grantedTo.Id } else { "Unknown" }
                             }
                             [void]$results.Add($shareLink)
                         }
@@ -6090,19 +8508,14 @@ function Get-SecurityAlerts {
     )
     
     try {
-        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-        if ($useDateRange) {
-            $filterDate = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            $fmt = "yyyy-MM-dd"
-            Write-Host ("Collecting security alerts ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
-        } else {
-            $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            Write-Host "Collecting security alerts (last $DaysBack days, through run time)..." -ForegroundColor Yellow
-        }
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        $startIso = $win.StartIso
+        $endIso = $win.EndIso
+        $fmt = "yyyy-MM-dd"
+        Write-Host ("Collecting security alerts ({0} to {1})..." -f $win.StartLocal.ToString($fmt), $win.EndLocal.ToString($fmt)) -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        if (-not (Test-GraphSessionAvailable)) {
             throw "Microsoft Graph not connected. Cannot collect security alerts."
         }
         
@@ -6111,7 +8524,7 @@ function Get-SecurityAlerts {
         if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
         }
-        $filter = "createdDateTime ge $filterDate"  # Through run time (no end filter = through now)
+        $filter = "createdDateTime ge $startIso and createdDateTime le $endIso"
         
         Write-Host "  Querying Microsoft Graph Security API for alerts..." -ForegroundColor Gray
         
@@ -6205,19 +8618,14 @@ function Get-SecurityIncidents {
     )
     
     try {
-        $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
-        if ($useDateRange) {
-            $filterDate = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            $fmt = "yyyy-MM-dd"
-            Write-Host ("Collecting security incidents ({0} to {1})..." -f $StartDate.ToString($fmt), $EndDate.ToString($fmt)) -ForegroundColor Yellow
-        } else {
-            $filterDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            Write-Host "Collecting security incidents (last $DaysBack days, through run time)..." -ForegroundColor Yellow
-        }
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        $startIso = $win.StartIso
+        $endIso = $win.EndIso
+        $fmt = "yyyy-MM-dd"
+        Write-Host ("Collecting security incidents ({0} to {1})..." -f $win.StartLocal.ToString($fmt), $win.EndLocal.ToString($fmt)) -ForegroundColor Yellow
         
         # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        if (-not (Test-GraphSessionAvailable)) {
             throw "Microsoft Graph not connected. Cannot collect security incidents."
         }
         
@@ -6226,7 +8634,7 @@ function Get-SecurityIncidents {
         if (-not (Get-Command Get-MgSecurityIncident -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
         }
-        $filter = "createdDateTime ge $filterDate"  # Through run time (no end filter = through now)
+        $filter = "createdDateTime ge $startIso and createdDateTime le $endIso"
         
         Write-Host "  Querying Microsoft Graph Security API for incidents..." -ForegroundColor Gray
         
@@ -6270,162 +8678,84 @@ function Get-SecurityIncidents {
 }
 
 function Get-AnonymousSharePointSharing {
+    <#
+    .SYNOPSIS
+        Anonymous / anyone-link SharePoint sharing events from Unified Audit (independent of other reports).
+    .NOTES
+        Only AnonymousLink* operations are included. CompanyLinkCreated / SecureLinkCreated are org or named-recipient
+        sharing and belong in SharePointFileSharingLinks / general UAL — not this export.
+    #>
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
-    
+
     try {
-        Write-Host "Collecting anonymous SharePoint sharing events (last $DaysBack days, through run time)..." -ForegroundColor Yellow
-        
-        # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect anonymous sharing events."
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        $fmt = "yyyy-MM-dd"
+        Write-Host ("Collecting anonymous SharePoint sharing events ({0} to {1}) via Unified Audit..." -f $win.StartLocal.ToString($fmt), $win.EndLocal.ToString($fmt)) -ForegroundColor Yellow
+
+        if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
+            Write-Warning "Search-UnifiedAuditLog not available. Anonymous SharePoint sharing requires Exchange Online Unified Audit."
             return @()
         }
-        
-        # Ensure AuditLogs module is available
-        # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
-        if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
-            Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue | Out-Null
-        }
-        
+
+        # SharePointSharingOperation is the authoritative source for anonymous/anyone links (not Entra directoryAudit).
+        $ual = Get-UnifiedAuditLogs -StartDate $win.StartLocal -EndDate $win.EndLocal -SelectedUsers $SelectedUsers -RecordTypes @('SharePointSharingOperation')
         $results = New-Object System.Collections.ArrayList
-        
-        # Calculate date filter (through run time)
-        $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
-        $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        # Only true anyone/anonymous link ops — do not include CompanyLinkCreated / SecureLinkCreated
+        $anonOpPattern = 'AnonymousLink'
 
-        Write-Host "  Querying audit logs for SharePoint sharing events..." -ForegroundColor Gray
+        foreach ($row in @($ual)) {
+            try {
+                $ops = [string]$row.Operations
+                if ([string]::IsNullOrWhiteSpace($ops)) { $ops = [string]$row.Operation }
+                if ($ops -notmatch $anonOpPattern) { continue }
 
-        # Filter for SharePoint sharing activities, specifically anonymous/external sharing
-        # Activity types: FileAccessed, FileDownloaded, FileShared, FileSharedExternally
-        # Look for activities where anonymous links were created or used
-        $filter = "activityDateTime ge $startIso and (activityDisplayName eq 'FileShared' or activityDisplayName eq 'FileSharedExternally' or activityDisplayName eq 'AnonymousLinkCreated' or activityDisplayName eq 'SharingInheritanceBroken')"
-        
-        try {
-            $auditLogs = Get-MgAuditLogDirectoryAudit -Filter $filter -All -ErrorAction Stop
-            
-            if ($auditLogs) {
-                Write-Host "  Retrieved $($auditLogs.Count) audit log entries" -ForegroundColor Gray
-                
-                # Filter by SelectedUsers if provided
-                if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                    $selectedUserSet = @{}
-                    foreach ($user in $SelectedUsers) {
-                        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
-                        $selectedUserSet[$upn.ToLower()] = $true
-                    }
-                    
-                    $auditLogs = $auditLogs | Where-Object {
-                        $matches = $false
-                        if ($_.InitiatedBy -and $_.InitiatedBy.User -and $_.InitiatedBy.User.UserPrincipalName) {
-                            $initiatorUpn = $_.InitiatedBy.User.UserPrincipalName.ToLower()
-                            if ($selectedUserSet.ContainsKey($initiatorUpn)) {
-                                $matches = $true
-                            }
-                        }
-                        if (-not $matches -and $_.TargetResources) {
-                            foreach ($target in $_.TargetResources) {
-                                if ($target.UserPrincipalName -and $selectedUserSet.ContainsKey($target.UserPrincipalName.ToLower())) {
-                                    $matches = $true
-                                    break
-                                }
-                            }
-                        }
-                        $matches
-                    }
-                }
-                
-                # Process audit logs and extract sharing details
-                foreach ($log in $auditLogs) {
+                $linkUrl = ''
+                $siteUrl = ''
+                $objectId = [string]$row.ObjectId
+                $clientIp = ''
+                $eventData = $null
+                if ($row.AuditData) {
                     try {
-                        # Check if this involves anonymous/external sharing
-                        $isAnonymous = $false
-                        $linkUrl = ""
-                        $sharedWith = ""
-                        
-                        # Check AdditionalDetails for link information
-                        if ($log.AdditionalDetails) {
-                            foreach ($detail in $log.AdditionalDetails) {
-                                if ($detail.Key -eq "LinkUrl" -or $detail.Key -eq "SharingLinkUrl") {
-                                    $linkUrl = $detail.Value
-                                    # Check if it's an anonymous link (contains /s/ or /u/ or /d/ patterns)
-                                    if ($linkUrl -match "(/s/|/u/|/d/)" -or $linkUrl -match "anonymous") {
-                                        $isAnonymous = $true
-                                    }
-                                }
-                                if ($detail.Key -eq "SharedWith" -or $detail.Key -eq "RecipientEmail") {
-                                    $sharedWith = $detail.Value
-                                    # If shared with "Anyone" or empty, it's anonymous
-                                    if ($sharedWith -eq "Anyone" -or $sharedWith -eq "" -or $sharedWith -match "anonymous") {
-                                        $isAnonymous = $true
-                                    }
-                                }
-                            }
-                        }
-                        
-                        # Check TargetResources for file/site information
-                        $targetInfo = ""
-                        $filePath = ""
-                        $siteUrl = ""
-                        if ($log.TargetResources) {
-                            foreach ($target in $log.TargetResources) {
-                                if ($target.DisplayName) {
-                                    $targetInfo = $target.DisplayName
-                                }
-                                if ($target.ObjectId) {
-                                    $filePath = $target.ObjectId
-                                }
-                                if ($target.ModifiedProperties) {
-                                    foreach ($prop in $target.ModifiedProperties) {
-                                        if ($prop.Name -eq "SiteUrl" -or $prop.Name -eq "WebUrl") {
-                                            $siteUrl = $prop.NewValue
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        # Only include if it's anonymous/external sharing
-                        if ($isAnonymous -or $log.ActivityDisplayName -eq "FileSharedExternally" -or $log.ActivityDisplayName -eq "AnonymousLinkCreated") {
-                            $sharingEvent = [PSCustomObject]@{
-                                ActivityDateTime = $log.ActivityDateTime
-                                ActivityDisplayName = $log.ActivityDisplayName
-                                InitiatedBy = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.UserPrincipalName } else { "Unknown" }
-                                InitiatedByDisplayName = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.DisplayName } else { "Unknown" }
-                                IPAddress = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.IpAddress } else { "Unknown" }
-                                TargetResource = $targetInfo
-                                FilePath = $filePath
-                                SiteUrl = $siteUrl
-                                LinkUrl = $linkUrl
-                                SharedWith = $sharedWith
-                                IsAnonymous = $isAnonymous
-                                Result = $log.Result
-                                ResultReason = $log.ResultReason
-                                Category = $log.Category
-                                CorrelationId = $log.CorrelationId
-                            }
-                            [void]$results.Add($sharingEvent)
-                        }
-                    } catch {
-                        Write-Warning "  Error processing audit log entry: $($_.Exception.Message)"
-                    }
+                        $eventData = if ($row.AuditData -is [string]) { $row.AuditData | ConvertFrom-Json -ErrorAction Stop } else { $row.AuditData }
+                        if ($eventData.ObjectId) { $objectId = [string]$eventData.ObjectId }
+                        if ($eventData.SiteUrl) { $siteUrl = [string]$eventData.SiteUrl }
+                        if ($eventData.DestinationFileUrl) { $linkUrl = [string]$eventData.DestinationFileUrl }
+                        elseif ($eventData.SourceFileName) { $linkUrl = [string]$eventData.SourceFileName }
+                        if ($eventData.ClientIP) { $clientIp = [string]$eventData.ClientIP }
+                    } catch { }
                 }
-            } else {
-                Write-Host "  No audit log entries found" -ForegroundColor Gray
-            }
-        } catch {
-            if ($_.Exception.Message -like "*Permission*" -or $_.Exception.Message -like "*Access*") {
-                Write-Warning "Permission denied - requires AuditLog.Read.All permission"
-                throw "Permission denied - requires AuditLog.Read.All"
-            } else {
-                throw
+
+                [void]$results.Add([PSCustomObject]@{
+                    ActivityDateTime       = $row.CreationDate
+                    ActivityDisplayName    = $ops
+                    InitiatedBy            = $row.UserIds
+                    InitiatedByDisplayName = $row.UserIds
+                    IPAddress              = $clientIp
+                    TargetResource         = $objectId
+                    FilePath               = $objectId
+                    SiteUrl                = $siteUrl
+                    LinkUrl                = $linkUrl
+                    SharedWith             = if ($eventData -and $eventData.TargetUserOrGroupName) { [string]$eventData.TargetUserOrGroupName } else { '' }
+                    IsAnonymous            = ($ops -match 'AnonymousLink')
+                    Result                 = 'Success'
+                    ResultReason           = ''
+                    Category               = [string]$row.RecordType
+                    CorrelationId          = [string]$row.Identity
+                    RecordType             = [string]$row.RecordType
+                })
+            } catch {
+                Write-Warning "  Error processing anonymous sharing UAL entry: $($_.Exception.Message)"
             }
         }
-        
+
         Write-Host "  Total anonymous sharing events collected: $($results.Count)" -ForegroundColor Green
         return [System.Collections.ArrayList]$results
     } catch {
@@ -6435,145 +8765,140 @@ function Get-AnonymousSharePointSharing {
 }
 
 function Get-SharePointFileSharingLinks {
+    <#
+    .SYNOPSIS
+        Current file/folder sharing *links* (permission.Link) from Graph drives.
+    .DESCRIPTION
+        Independent of UAL history reports. When SelectedUsers is set, scopes to each user's
+        default OneDrive only (efficient). Without users, samples site document libraries
+        (root children only) with a site cap to avoid full-tenant N+1 crawls.
+    #>
     param(
         [Parameter(Mandatory=$false)]
-        [array]$SelectedUsers = @()
+        [array]$SelectedUsers = @(),
+        [Parameter(Mandatory=$false)]
+        [int]$MaxSitesWithoutUserFilter = 40
     )
-    
+
     try {
-        Write-Host "Collecting SharePoint file-level sharing links..." -ForegroundColor Yellow
-        
-        # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
+        Write-Host "Collecting SharePoint/OneDrive file sharing links..." -ForegroundColor Yellow
+
+        if (-not (Test-GraphSessionAvailable)) {
             Write-Warning "Microsoft Graph not connected. Cannot collect file sharing links."
             return @()
         }
-        
-        # Ensure Sites module is available
-        # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
+
+        if (-not (Get-Command Get-MgDriveRootChild -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.Graph.Files -ErrorAction SilentlyContinue | Out-Null
+        }
         if (-not (Get-Command Get-MgSite -ErrorAction SilentlyContinue)) {
             Import-Module Microsoft.Graph.Sites -ErrorAction SilentlyContinue | Out-Null
         }
-        
+
         $results = New-Object System.Collections.ArrayList
-        
-        # Get all SharePoint sites
-        Write-Host "  Enumerating SharePoint sites..." -ForegroundColor Gray
-        try {
-            $sites = Get-MgSite -All -ErrorAction Stop
-            Write-Host "  Found $($sites.Count) SharePoint sites" -ForegroundColor Gray
-            
-            $siteCount = 0
-            foreach ($site in $sites) {
-                $siteCount++
-                if ($siteCount % 10 -eq 0) {
-                    Write-Host "  Processing site $siteCount of $($sites.Count)..." -ForegroundColor Gray
-                }
-                
+        $driveTargets = New-Object System.Collections.ArrayList
+
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            Write-Host "  Scoping to $($SelectedUsers.Count) user OneDrive drive(s)..." -ForegroundColor Gray
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
                 try {
-                    # Get drives (document libraries) in the site
-                    $drives = Get-MgSiteDrive -SiteId $site.Id -All -ErrorAction SilentlyContinue
-                    
-                    if ($drives) {
-                        foreach ($drive in $drives) {
-                            try {
-                                # Get root folder items
-                                $rootItems = Get-MgDriveRootChild -DriveId $drive.Id -All -ErrorAction SilentlyContinue
-                                
-                                if ($rootItems) {
-                                    foreach ($item in $rootItems) {
-                                        try {
-                                            # Get permissions for this item
-                                            $permissions = Get-MgDriveItemPermission -DriveId $drive.Id -DriveItemId $item.Id -All -ErrorAction SilentlyContinue
-                                            
-                                            if ($permissions) {
-                                                foreach ($perm in $permissions) {
-                                                    # Check if this is a sharing link (anonymous or otherwise)
-                                                    $isLink = $false
-                                                    $isAnonymous = $false
-                                                    $linkType = ""
-                                                    
-                                                    if ($perm.Link) {
-                                                        $isLink = $true
-                                                        $linkType = $perm.Link.Type
-                                                        $linkScope = $perm.Link.Scope
-                                                        
-                                                        # Anonymous links have type "view" or "edit" with scope "anonymous"
-                                                        if ($linkScope -eq "anonymous") {
-                                                            $isAnonymous = $true
-                                                        }
-                                                    }
-                                                    
-                                                    # Filter by SelectedUsers if provided
-                                                    if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                                                        $grantedTo = if ($perm.GrantedToV2) { $perm.GrantedToV2.User } else { $null }
-                                                        $userPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { "" }
-                                                        
-                                                        $matches = $false
-                                                        foreach ($user in $SelectedUsers) {
-                                                            $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
-                                                            if ($userPrincipalName -eq $upn) {
-                                                                $matches = $true
-                                                                break
-                                                            }
-                                                        }
-                                                        
-                                                        # Also match if it's an anonymous link (no specific user)
-                                                        if ($isAnonymous) {
-                                                            $matches = $true
-                                                        }
-                                                        
-                                                        if (-not $matches) {
-                                                            continue
-                                                        }
-                                                    }
-                                                    
-                                                    # Only include sharing links (not direct user permissions)
-                                                    if ($isLink) {
-                                                        $shareLink = [PSCustomObject]@{
-                                                            SiteId = $site.Id
-                                                            SiteDisplayName = $site.DisplayName
-                                                            SiteWebUrl = $site.WebUrl
-                                                            DriveId = $drive.Id
-                                                            DriveName = $drive.Name
-                                                            ItemId = $item.Id
-                                                            ItemName = $item.Name
-                                                            ItemWebUrl = $item.WebUrl
-                                                            PermissionId = $perm.Id
-                                                            LinkType = $linkType
-                                                            LinkScope = if ($perm.Link) { $perm.Link.Scope } else { "Unknown" }
-                                                            IsAnonymous = $isAnonymous
-                                                            Roles = $perm.Roles -join '; '
-                                                            GrantedToPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } else { "Anyone (Link)" }
-                                                            GrantedToPrincipalId = if ($grantedTo -and $grantedTo.Id) { $grantedTo.Id } else { "N/A" }
-                                                            ShareId = if ($perm.Link) { $perm.Link.WebUrl } else { "" }
-                                                        }
-                                                        [void]$results.Add($shareLink)
-                                                    }
-                                                }
-                                            }
-                                        } catch {
-                                            # Skip items we can't access
-                                            continue
-                                        }
-                                    }
-                                }
-                            } catch {
-                                # Skip drives we can't access
-                                continue
+                    $drive = $null
+                    if (Get-Command Get-MgUserDefaultDrive -ErrorAction SilentlyContinue) {
+                        $drive = Get-MgUserDefaultDrive -UserId $upn -ErrorAction Stop
+                    } else {
+                        $resp = Invoke-MgGraphRequestCompat -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($upn))/drive" -ErrorAction Stop
+                        if ($resp) {
+                            $drive = [PSCustomObject]@{
+                                Id = $resp.id
+                                Name = $resp.name
+                                WebUrl = $resp.webUrl
                             }
                         }
                     }
+                    if ($drive -and $drive.Id) {
+                        [void]$driveTargets.Add([PSCustomObject]@{
+                            DriveId = $drive.Id
+                            DriveName = $drive.Name
+                            SiteId = ''
+                            SiteDisplayName = $upn
+                            SiteWebUrl = $drive.WebUrl
+                            OwnerUpn = $upn
+                        })
+                    }
                 } catch {
-                    # Skip sites we can't access
-                    continue
+                    Write-Warning "  Could not resolve OneDrive for ${upn}: $($_.Exception.Message)"
                 }
             }
-        } catch {
-            Write-Warning "Failed to enumerate SharePoint sites: $($_.Exception.Message)"
+        } else {
+            Write-Host ("  No SelectedUsers - enumerating site document libraries, cap {0} sites, root items only..." -f $MaxSitesWithoutUserFilter) -ForegroundColor Yellow
+            try {
+                $sites = @(Get-MgSite -All -ErrorAction Stop)
+                if ($sites.Count -gt $MaxSitesWithoutUserFilter) {
+                    Write-Warning "  Tenant has $($sites.Count) sites; processing first $MaxSitesWithoutUserFilter. Pass SelectedUsers for accurate per-user OneDrive scoping."
+                    $sites = $sites | Select-Object -First $MaxSitesWithoutUserFilter
+                }
+                foreach ($site in $sites) {
+                    try {
+                        $drives = @(Get-MgSiteDrive -SiteId $site.Id -All -ErrorAction SilentlyContinue)
+                        foreach ($drive in $drives) {
+                            [void]$driveTargets.Add([PSCustomObject]@{
+                                DriveId = $drive.Id
+                                DriveName = $drive.Name
+                                SiteId = $site.Id
+                                SiteDisplayName = $site.DisplayName
+                                SiteWebUrl = $site.WebUrl
+                                OwnerUpn = ''
+                            })
+                        }
+                    } catch { continue }
+                }
+            } catch {
+                Write-Warning "Failed to enumerate SharePoint sites: $($_.Exception.Message)"
+            }
         }
-        
+
+        $driveIndex = 0
+        foreach ($target in $driveTargets) {
+            $driveIndex++
+            if ($driveIndex % 5 -eq 0 -or $driveIndex -eq 1) {
+                Write-Host "  Scanning drive $driveIndex of $($driveTargets.Count) ($($target.DriveName))..." -ForegroundColor Gray
+            }
+            try {
+                $rootItems = @(Get-MgDriveRootChild -DriveId $target.DriveId -All -ErrorAction SilentlyContinue)
+                foreach ($item in $rootItems) {
+                    try {
+                        $permissions = @(Get-MgDriveItemPermission -DriveId $target.DriveId -DriveItemId $item.Id -All -ErrorAction SilentlyContinue)
+                        foreach ($perm in $permissions) {
+                            if (-not $perm.Link) { continue }
+                            $grantedTo = $null
+                            if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) { $grantedTo = $perm.GrantedToV2.User }
+                            elseif ($perm.GrantedTo -and $perm.GrantedTo.User) { $grantedTo = $perm.GrantedTo.User }
+
+                            [void]$results.Add([PSCustomObject]@{
+                                SiteId                 = $target.SiteId
+                                SiteDisplayName        = $target.SiteDisplayName
+                                SiteWebUrl             = $target.SiteWebUrl
+                                DriveId                = $target.DriveId
+                                DriveName              = $target.DriveName
+                                ItemId                 = $item.Id
+                                ItemName               = $item.Name
+                                ItemWebUrl             = $item.WebUrl
+                                PermissionId           = $perm.Id
+                                LinkType               = $perm.Link.Type
+                                LinkScope              = $perm.Link.Scope
+                                IsAnonymous            = ($perm.Link.Scope -eq 'anonymous')
+                                Roles                  = if ($perm.Roles) { $perm.Roles -join '; ' } else { '' }
+                                GrantedToPrincipalName = if ($grantedTo -and $grantedTo.UserPrincipalName) { $grantedTo.UserPrincipalName } elseif ($target.OwnerUpn) { $target.OwnerUpn } else { 'Anyone (Link)' }
+                                GrantedToPrincipalId   = if ($grantedTo -and $grantedTo.Id) { $grantedTo.Id } else { 'N/A' }
+                                ShareId                = if ($perm.Link.WebUrl) { $perm.Link.WebUrl } else { '' }
+                            })
+                        }
+                    } catch { continue }
+                }
+            } catch { continue }
+        }
+
         Write-Host "  Total file sharing links collected: $($results.Count)" -ForegroundColor Green
         return [System.Collections.ArrayList]$results
     } catch {
@@ -6583,213 +8908,164 @@ function Get-SharePointFileSharingLinks {
 }
 
 function Get-DLPViolations {
+    # DLP hits from Unified Audit ComplianceDLP record types, plus optional Graph security alerts.
+    # Each source is independent (UAL does not gate alerts). Entra directoryAudit is not used.
     param(
         [int]$DaysBack = 10,
         [Parameter(Mandatory=$false)]
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [Parameter(Mandatory=$false)]
         [array]$SelectedUsers = @()
     )
-    
+
     try {
-        Write-Host "Collecting DLP policy violations (last $DaysBack days, through run time)..." -ForegroundColor Yellow
-        
-        # Check if Microsoft Graph is connected
-        $context = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $context) {
-            Write-Warning "Microsoft Graph not connected. Cannot collect DLP violations."
-            return @()
-        }
-        
+        $win = Get-ExportUtcDateWindow -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate
+        $startIso = $win.StartIso
+        $endIso = $win.EndIso
+        $fmt = 'yyyy-MM-dd'
+        Write-Host ('Collecting DLP policy violations ({0} to {1})...' -f $win.StartLocal.ToString($fmt), $win.EndLocal.ToString($fmt)) -ForegroundColor Yellow
+
         $results = New-Object System.Collections.ArrayList
-        
-        # Calculate date filter
-        $startDate = (Get-Date).AddDays(-$DaysBack).ToUniversalTime()
-        $startIso = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        
-        Write-Host "  Querying audit logs for DLP policy violations..." -ForegroundColor Gray
-        
-        # Filter for DLP-related activities
-        # Activity types: DlpSensitiveInformationDetected, DlpPolicyViolation, DlpRuleViolation
-        $filter = "activityDateTime ge $startIso and (activityDisplayName eq 'DLPSensitiveInformationDetected' or activityDisplayName eq 'DLPPolicyViolation' or activityDisplayName eq 'DLPRuleViolation' or category eq 'DataLossPrevention')"
-        
-        try {
-            # Ensure AuditLogs module is available
-            # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
-            if (-not (Get-Command Get-MgAuditLogDirectoryAudit -ErrorAction SilentlyContinue)) {
-                Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue | Out-Null
+        $selectedUserSet = @{}
+        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
+            foreach ($user in $SelectedUsers) {
+                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
+                $selectedUserSet[$upn.ToLower()] = $true
             }
-            
-            $auditLogs = Get-MgAuditLogDirectoryAudit -Filter $filter -All -ErrorAction Stop
-            
-            if ($auditLogs) {
-                Write-Host "  Retrieved $($auditLogs.Count) DLP-related audit log entries" -ForegroundColor Gray
-                
-                # Filter by SelectedUsers if provided
-                if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                    $selectedUserSet = @{}
-                    foreach ($user in $SelectedUsers) {
-                        $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
-                        $selectedUserSet[$upn.ToLower()] = $true
-                    }
-                    
-                    $auditLogs = $auditLogs | Where-Object {
-                        $matches = $false
-                        if ($_.InitiatedBy -and $_.InitiatedBy.User -and $_.InitiatedBy.User.UserPrincipalName) {
-                            $initiatorUpn = $_.InitiatedBy.User.UserPrincipalName.ToLower()
-                            if ($selectedUserSet.ContainsKey($initiatorUpn)) {
-                                $matches = $true
-                            }
-                        }
-                        if (-not $matches -and $_.TargetResources) {
-                            foreach ($target in $_.TargetResources) {
-                                if ($target.UserPrincipalName -and $selectedUserSet.ContainsKey($target.UserPrincipalName.ToLower())) {
-                                    $matches = $true
-                                    break
-                                }
-                            }
-                        }
-                        $matches
-                    }
-                }
-                
-                # Also query Security API for DLP alerts
-                try {
-                    # NOTE: Using defensive import pattern (check cmdlet existence before importing) to avoid unnecessary imports
-                    if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
-                        Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
-                    }
-                    
-                    $filterDate = $startDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
-                    $alertFilter = "createdDateTime ge $filterDate and (category eq 'DataLossPrevention' or title contains 'DLP')"
-                    $dlpAlerts = Get-MgSecurityAlert -Filter $alertFilter -All -ErrorAction SilentlyContinue
-                    
-                    if ($dlpAlerts) {
-                        Write-Host "  Retrieved $($dlpAlerts.Count) DLP security alerts" -ForegroundColor Gray
-                        
-                        # Filter alerts by SelectedUsers if provided
-                        if ($SelectedUsers -and $SelectedUsers.Count -gt 0) {
-                            $selectedUserSet = @{}
-                            foreach ($user in $SelectedUsers) {
-                                $upn = if ($user -is [string]) { $user } elseif ($user.UserPrincipalName) { $user.UserPrincipalName } else { continue }
-                                $selectedUserSet[$upn.ToLower()] = $true
-                            }
-                            
-                            $dlpAlerts = $dlpAlerts | Where-Object {
-                                $matches = $false
-                                if ($_.UserPrincipalNames) {
-                                    foreach ($upn in $_.UserPrincipalNames) {
-                                        if ($selectedUserSet.ContainsKey($upn.ToLower())) {
-                                            $matches = $true
-                                            break
-                                        }
+        }
+
+        # Source 1: Unified Audit (primary / accurate for Purview DLP)
+        if (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue) {
+            Write-Host '  Querying Unified Audit for ComplianceDLP record types...' -ForegroundColor Gray
+            $dlpRecordTypes = @(
+                'ComplianceDLPSharePoint',
+                'ComplianceDLPExchange',
+                'ComplianceDLPEndpoint',
+                'ComplianceDLPSharePointClassification',
+                'DlpEndpoint'
+            )
+            try {
+                $ual = Get-UnifiedAuditLogs -StartDate $win.StartLocal -EndDate $win.EndLocal -SelectedUsers $SelectedUsers -RecordTypes $dlpRecordTypes
+                foreach ($row in @($ual)) {
+                    try {
+                        $ops = [string]$row.Operations
+                        if ([string]::IsNullOrWhiteSpace($ops)) { $ops = [string]$row.Operation }
+                        $policyName = ''
+                        $ruleName = ''
+                        $sensitiveInfoType = ''
+                        $filePath = [string]$row.ObjectId
+                        $severity = 'Medium'
+                        if ($row.AuditData) {
+                            try {
+                                $eventData = if ($row.AuditData -is [string]) { $row.AuditData | ConvertFrom-Json -ErrorAction Stop } else { $row.AuditData }
+                                if ($eventData.PolicyDetails) {
+                                    $pd = @($eventData.PolicyDetails)[0]
+                                    if ($pd.PolicyName) { $policyName = [string]$pd.PolicyName }
+                                    if ($pd.Rules) {
+                                        $rule = @($pd.Rules)[0]
+                                        if ($rule.RuleName) { $ruleName = [string]$rule.RuleName }
                                     }
                                 }
-                                $matches
-                            }
-                        }
-                        
-                        # Add DLP alerts to results
-                        foreach ($alert in $dlpAlerts) {
-                            $violation = [PSCustomObject]@{
-                                Source = "Security Alert"
-                                ActivityDateTime = $alert.CreatedDateTime
-                                ActivityDisplayName = $alert.Title
-                                InitiatedBy = if ($alert.UserPrincipalNames) { $alert.UserPrincipalNames -join '; ' } else { "Unknown" }
-                                Description = $alert.Description
-                                Severity = $alert.Severity
-                                Status = $alert.Status
-                                Category = $alert.Category
-                                PolicyName = if ($alert.ActivityGroupName) { $alert.ActivityGroupName } else { "Unknown" }
-                                TargetResource = if ($alert.UserDisplayNames) { $alert.UserDisplayNames -join '; ' } else { "Unknown" }
-                                Result = $alert.Status
-                                CorrelationId = $alert.Id
-                            }
-                            [void]$results.Add($violation)
-                        }
-                    }
-                } catch {
-                    Write-Warning "  Could not query DLP security alerts: $($_.Exception.Message)"
-                }
-                
-                # Process audit logs
-                foreach ($log in $auditLogs) {
-                    try {
-                        # Extract DLP policy information
-                        $policyName = ""
-                        $ruleName = ""
-                        $sensitiveInfoType = ""
-                        
-                        if ($log.AdditionalDetails) {
-                            foreach ($detail in $log.AdditionalDetails) {
-                                if ($detail.Key -eq "PolicyName" -or $detail.Key -eq "DLPPolicyName") {
-                                    $policyName = $detail.Value
+                                if ($eventData.SensitivityLabelEventData -and $eventData.SensitivityLabelEventData.SensitivityLabelId) {
+                                    $sensitiveInfoType = [string]$eventData.SensitivityLabelEventData.SensitivityLabelId
                                 }
-                                if ($detail.Key -eq "RuleName" -or $detail.Key -eq "DLPRuleName") {
-                                    $ruleName = $detail.Value
-                                }
-                                if ($detail.Key -eq "SensitiveInformationType" -or $detail.Key -eq "SensitiveType") {
-                                    $sensitiveInfoType = $detail.Value
-                                }
-                            }
+                                if ($eventData.ObjectId) { $filePath = [string]$eventData.ObjectId }
+                                if ($eventData.Severity) { $severity = [string]$eventData.Severity }
+                            } catch { }
                         }
-                        
-                        $targetInfo = ""
-                        $filePath = ""
-                        if ($log.TargetResources) {
-                            foreach ($target in $log.TargetResources) {
-                                if ($target.DisplayName) {
-                                    $targetInfo = $target.DisplayName
-                                }
-                                if ($target.ObjectId) {
-                                    $filePath = $target.ObjectId
-                                }
-                            }
-                        }
-                        
-                        $violation = [PSCustomObject]@{
-                            Source = "Audit Log"
-                            ActivityDateTime = $log.ActivityDateTime
-                            ActivityDisplayName = $log.ActivityDisplayName
-                            InitiatedBy = if ($log.InitiatedBy -and $log.InitiatedBy.User) { $log.InitiatedBy.User.UserPrincipalName } else { "Unknown" }
-                            Description = $log.ActivityDisplayName
-                            Severity = "Medium"
-                            Status = $log.Result
-                            Category = $log.Category
-                            PolicyName = $policyName
-                            RuleName = $ruleName
-                            SensitiveInformationType = $sensitiveInfoType
-                            TargetResource = $targetInfo
-                            FilePath = $filePath
-                            Result = $log.Result
-                            ResultReason = $log.ResultReason
-                            CorrelationId = $log.CorrelationId
-                        }
-                        [void]$results.Add($violation)
+                        [void]$results.Add([PSCustomObject]@{
+                            Source                     = 'Unified Audit'
+                            ActivityDateTime           = $row.CreationDate
+                            ActivityDisplayName        = $ops
+                            InitiatedBy                = $row.UserIds
+                            Description                = $ops
+                            Severity                   = $severity
+                            Status                     = 'Logged'
+                            Category                   = [string]$row.RecordType
+                            PolicyName                 = $policyName
+                            RuleName                   = $ruleName
+                            SensitiveInformationType   = $sensitiveInfoType
+                            TargetResource             = $filePath
+                            FilePath                   = $filePath
+                            Result                     = 'Success'
+                            ResultReason               = ''
+                            CorrelationId              = [string]$row.Identity
+                        })
                     } catch {
-                        Write-Warning "  Error processing DLP violation entry: $($_.Exception.Message)"
+                        Write-Warning ("  Error processing DLP UAL entry: {0}" -f $_.Exception.Message)
                     }
                 }
-            } else {
-                Write-Host "  No DLP violation entries found" -ForegroundColor Gray
+                Write-Host ("  Unified Audit DLP rows: {0}" -f @($ual).Count) -ForegroundColor Gray
+            } catch {
+                Write-Warning ("  Unified Audit DLP query failed: {0}" -f $_.Exception.Message)
             }
-        } catch {
-            if ($_.Exception.Message -like "*Permission*" -or $_.Exception.Message -like "*Access*") {
-                Write-Warning "Permission denied - requires AuditLog.Read.All and SecurityEvents.Read.All permissions"
-                throw "Permission denied - requires AuditLog.Read.All and SecurityEvents.Read.All"
-            } else {
-                throw
+        } else {
+            Write-Warning '  Search-UnifiedAuditLog not available - skipping primary DLP source.'
+        }
+
+        # Source 2: Graph security alerts (independent; does not require UAL success)
+        if (Test-GraphSessionAvailable) {
+            try {
+                if (-not (Get-Command Get-MgSecurityAlert -ErrorAction SilentlyContinue)) {
+                    Import-Module Microsoft.Graph.Security -ErrorAction SilentlyContinue | Out-Null
+                }
+                Write-Host '  Querying Graph security alerts for DLP enrichment...' -ForegroundColor Gray
+                $alertFilter = "createdDateTime ge $startIso and createdDateTime le $endIso"
+                $alerts = @(Get-MgSecurityAlert -Filter $alertFilter -All -ErrorAction SilentlyContinue)
+                $dlpAlerts = $alerts | Where-Object {
+                    $cat = [string]$_.Category
+                    $title = [string]$_.Title
+                    ($cat -match 'DataLossPrevention|DLP|Data loss') -or ($title -match 'DLP|Data Loss Prevention|sensitive info')
+                }
+                if ($selectedUserSet.Count -gt 0) {
+                    $dlpAlerts = $dlpAlerts | Where-Object {
+                        $match = $false
+                        foreach ($upn in @($_.UserPrincipalNames)) {
+                            if ($upn -and $selectedUserSet.ContainsKey($upn.ToLower())) { $match = $true; break }
+                        }
+                        $match
+                    }
+                }
+                foreach ($alert in @($dlpAlerts)) {
+                    [void]$results.Add([PSCustomObject]@{
+                        Source                     = 'Security Alert'
+                        ActivityDateTime           = $alert.CreatedDateTime
+                        ActivityDisplayName        = $alert.Title
+                        InitiatedBy                = if ($alert.UserPrincipalNames) { $alert.UserPrincipalNames -join '; ' } else { 'Unknown' }
+                        Description                = $alert.Description
+                        Severity                   = $alert.Severity
+                        Status                     = $alert.Status
+                        Category                   = $alert.Category
+                        PolicyName                 = if ($alert.ActivityGroupName) { $alert.ActivityGroupName } else { '' }
+                        RuleName                   = ''
+                        SensitiveInformationType   = ''
+                        TargetResource             = if ($alert.UserDisplayNames) { $alert.UserDisplayNames -join '; ' } else { '' }
+                        FilePath                   = ''
+                        Result                     = $alert.Status
+                        ResultReason               = ''
+                        CorrelationId              = $alert.Id
+                    })
+                }
+                Write-Host ("  DLP-related security alerts: {0}" -f @($dlpAlerts).Count) -ForegroundColor Gray
+            } catch {
+                Write-Warning ("  Could not query DLP security alerts: {0}" -f $_.Exception.Message)
             }
         }
-        
-        Write-Host "  Total DLP violations collected: $($results.Count)" -ForegroundColor Green
+
+        Write-Host ("  Total DLP violations collected: {0}" -f $results.Count) -ForegroundColor Green
         return [System.Collections.ArrayList]$results
     } catch {
-        Write-Error "Failed to collect DLP violations: $($_.Exception.Message)"
+        Write-Error ("Failed to collect DLP violations: {0}" -f $_.Exception.Message)
         return @()
     }
 }
 
-Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,Get-GraphAccessToken,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
+Export-ModuleMember -Function Set-GraphRestBearerToken,Clear-GraphRestBearerToken,Test-GraphRestBearerToken,Get-GraphRestBearerToken,Invoke-GraphRestRequest,Invoke-GraphRestPaged,Get-MgUserCompat
+Export-ModuleMember -Function Format-InboxRuleXlsx,New-SecurityInvestigationReport,Get-ExchangeMessageTrace,Get-ExchangeInboxRules,Get-GraphAuditLogs,Get-GraphSignInLogs,Get-GraphAccessToken,Connect-MgGraphForReportSession,New-AISecurityInvestigationPrompt,New-TicketSecuritySummary,New-SecurityInvestigationSummary
+Export-ModuleMember -Function Export-EoaHistoricalMessageTraceCsv,Submit-EoaHistoricalMessageTrace,Receive-EoaHistoricalMessageTrace
 Export-ModuleMember -Function Get-MfaCoverageReport,Get-UserSecurityGroupsReport,Export-EntraPortalSignInCsv,Get-ExchangeTransportRules,Get-ExchangeInboundConnectors,Get-ExchangeOutboundConnectors,New-SecurityInvestigationZip
-Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs
+Export-ModuleMember -Function Get-MailboxForwardingAndDelegation,Get-MailFlowConnectors,Get-TenantLicenseSkus,Get-UserLicenseDetails,Get-AllUsersLicenseReport,Export-UserLicenseReport,Get-UnifiedAuditLogs,ConvertTo-SlimUnifiedAuditLogExportRows
 Export-ModuleMember -Function Get-SharePointActivityLogs,Get-OneDriveActivityLogs,Get-TeamsActivityLogs,Get-SharePointSharingLinks,Get-SecurityAlerts,Get-SecurityIncidents,Get-IntuneDeviceComplianceRecords
 Export-ModuleMember -Function Get-AnonymousSharePointSharing,Get-SharePointFileSharingLinks,Get-DLPViolations

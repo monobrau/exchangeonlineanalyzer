@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Store and retrieve Graph app credentials (app-only) in Windows Credential Manager.
 .DESCRIPTION
@@ -146,10 +146,8 @@ function _Get-SecureStringAsPlainForKey {
         $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)
         
-        # Zero out the plain string in memory if possible
-        if ($plain) {
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode([System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($plain))
-        }
+        # Zero the byte array when finished using it (caller's responsibility)
+        # Note: $plain remains in the managed string pool; best effort only
         
         return $bytes
     }
@@ -792,8 +790,10 @@ function Get-WCMTenantListWithNames {
     )
     $result = [System.Collections.ArrayList]::new()
     $ids = Get-WCMTenantIds -Prefix $Prefix
+    $guidNamePattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
     foreach ($tid in $ids) {
         $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
+        if ($name -and $name -match $guidNamePattern) { $name = $null }
         if (-not $SkipGraphLookup) {
             if ($ForceRefreshFromGraph) {
                 $g = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
@@ -838,14 +838,18 @@ function Get-WCMTenantListWithNamesForAppRegCombo {
         name from Graph. Merges duplicate tenant IDs (prefers EOA row unless EOA has no DisplayName and ESR does).
     .PARAMETER ForceRefreshFromGraph
         Passed through to Get-WCMTenantListWithNames (e.g. after Refresh tenant names in the auth console).
+    .PARAMETER SkipGraphLookup
+        When set, uses WCM *-DisplayName entries only (fast; no per-tenant Graph token calls).
     #>
     param(
         [Parameter(Mandatory = $false)]
-        [switch]$ForceRefreshFromGraph
+        [switch]$ForceRefreshFromGraph,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipGraphLookup
     )
     $merged = @{}
     foreach ($pfx in @('EOA', 'ESR')) {
-        foreach ($row in @(Get-WCMTenantListWithNames -Prefix $pfx -ForceRefreshFromGraph:$ForceRefreshFromGraph -ErrorAction SilentlyContinue)) {
+        foreach ($row in @(Get-WCMTenantListWithNames -Prefix $pfx -ForceRefreshFromGraph:$ForceRefreshFromGraph -SkipGraphLookup:$SkipGraphLookup -ErrorAction SilentlyContinue)) {
             $tid = [string]$row.TenantId
             if (-not $merged.ContainsKey($tid)) {
                 $merged[$tid] = $row
@@ -1083,7 +1087,8 @@ function Export-GraphAppCredentialsToFile {
                 $c | Add-Member -NotePropertyName TenantId -NotePropertyValue $normTid -Force
             }
             $dn = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
-            if (-not $dn -and $ResolveMissingDisplayNamesFromGraph) {
+            # Always fill a missing label from Graph so Import on another PC gets names, not raw GUIDs.
+            if (-not $dn) {
                 $dn = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
                 if (-not $dn) {
                     $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
@@ -1122,6 +1127,7 @@ function Export-GraphAppCredentialsToFile {
     if ($key) { [Array]::Clear($key, 0, $key.Length) }
     $header = "EOA-CREDS-1`n"
     [System.IO.File]::WriteAllText($Path, $header + $encrypted, [System.Text.Encoding]::UTF8)
+    return $creds.Count
 }
 
 function Get-GraphAppCredentialEncryptedFileSummary {
@@ -1361,7 +1367,7 @@ function Show-ClearLocalGraphWcmPicker {
 function Invoke-GraphAppCreateWithWcmSave {
     <#
     .SYNOPSIS
-        Runs Start-NewGraphInboxRulesApp.ps1 -SaveToWCM in the same PowerShell host family as the caller (pwsh stays pwsh).
+        Runs Start-NewGraphInboxRulesApp.ps1 (-SaveToWCM, or -UpdateExisting) in the same PowerShell host family as the caller.
     .OUTPUTS
         PSCustomObject with ExitCode, Result, LogPath
     #>
@@ -1370,7 +1376,11 @@ function Invoke-GraphAppCreateWithWcmSave {
         [string]$ProjectRoot,
 
         [Parameter(Mandatory = $false)]
-        [string]$TenantId
+        [string]$TenantId,
+
+        [switch]$UpdateExisting,
+
+        [switch]$NoWait
     )
     $launcherPath = Join-Path $ProjectRoot 'Start-NewGraphInboxRulesApp.ps1'
     if (-not (Test-Path -LiteralPath $launcherPath)) {
@@ -1387,16 +1397,38 @@ function Invoke-GraphAppCreateWithWcmSave {
         }
     }
     $argList = [System.Collections.ArrayList]@(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherPath, '-SaveToWCM'
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherPath
     )
+    if ($UpdateExisting) {
+        [void]$argList.Add('-UpdateExisting')
+    } else {
+        [void]$argList.Add('-SaveToWCM')
+    }
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
         $tid = $TenantId.Trim()
         [void]$argList.Add('-TenantId')
         [void]$argList.Add($tid)
     }
     # Interactive console required for browser sign-in and Read-Host (Y/n). Redirecting stdout breaks both.
-    $proc = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru `
-        -WorkingDirectory $ProjectRoot
+    $startParams = @{
+        FilePath         = $psExe
+        ArgumentList     = [string[]]$argList
+        PassThru         = $true
+        WorkingDirectory = $ProjectRoot
+    }
+    if (-not $NoWait) { $startParams.Wait = $true }
+    $proc = Start-Process @startParams
+    if ($NoWait) {
+        return [pscustomobject]@{
+            Started   = $true
+            ProcessId = $proc.Id
+            Process   = $proc
+            ResultPath = $resultPath
+            LogPath   = $logPath
+            ExitCode  = $null
+            Result    = $null
+        }
+    }
     $result = $null
     if (Test-Path -LiteralPath $resultPath) {
         try {
@@ -1464,4 +1496,131 @@ function Show-GraphAppCreateResultMessage {
     }
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage
+function Connect-MgGraphWithWcmApp {
+    <#
+    .SYNOPSIS
+        Connects to Microsoft Graph using app-only client secret credentials from WCM.
+    .NOTES
+        Prefer this over Connect-MgGraph -AccessToken; UserProvidedTokenCredential is broken in some Graph module versions.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    if (-not (Get-Command Connect-MgGraph -ErrorAction SilentlyContinue)) {
+        Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+    }
+    $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId -Prefix $Prefix
+    if (-not $cred) {
+        throw "No Graph app credentials in Windows Credential Manager for tenant $TenantId (prefix $Prefix)."
+    }
+    $tenantGuid = ($cred.TenantId -replace '[\{\}]', '').Trim()
+    if (-not $tenantGuid) { $tenantGuid = ($TenantId -replace '[\{\}]', '').Trim() }
+    $sec = ConvertTo-SecureString $cred.ClientSecret -AsPlainText -Force
+    $clientCred = New-Object System.Management.Automation.PSCredential($cred.ClientId, $sec)
+    $connectParams = @{
+        TenantId               = $tenantGuid
+        ClientSecretCredential = $clientCred
+        NoWelcome              = $true
+        ErrorAction            = 'Stop'
+    }
+    Connect-MgGraph @connectParams | Out-Null
+}
+
+function Search-GraphUsersWithWcm {
+    <#
+    .SYNOPSIS
+        Searches Graph users using app-only WCM token and REST (no Connect-MgGraph / Get-MgUser).
+    .OUTPUTS
+        @(@{ UserPrincipalName; DisplayName }, ...)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $true)]
+        [string[]]$SearchTerms,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA',
+        [Parameter(Mandatory = $false)]
+        [string]$AccessToken
+    )
+
+    $token = $AccessToken
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $Prefix
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "Could not obtain Graph app-only token for tenant $TenantId."
+    }
+
+    $baseHeaders = @{
+        Authorization = "Bearer $token"
+        Accept        = 'application/json'
+    }
+    $allUsers = [System.Collections.ArrayList]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($searchTerm in $SearchTerms) {
+        $term = $searchTerm.Trim()
+        if ([string]::IsNullOrWhiteSpace($term)) { continue }
+
+        Write-Host "  Searching for users matching: '$term'" -ForegroundColor Gray
+        $batch = @()
+
+        if ($term -match '@') {
+            try {
+                $enc = [Uri]::EscapeDataString($term)
+                $u = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/users/$enc`?$select=userPrincipalName,displayName,id" -Headers $baseHeaders -Method GET -ErrorAction Stop
+                if ($u -and $u.userPrincipalName) { $batch = @($u); Write-Host '    Found via direct UPN lookup' -ForegroundColor Gray }
+            } catch {
+                Write-Host "    Direct UPN lookup failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+            }
+        }
+
+        if ($batch.Count -eq 0) {
+            $escaped = $term.Replace("'", "''")
+            $filterAttempts = @(
+                "startswith(displayName,'$escaped') or startswith(userPrincipalName,'$escaped')",
+                "contains(displayName,'$escaped') or contains(userPrincipalName,'$escaped')"
+            )
+            foreach ($filter in $filterAttempts) {
+                if ($batch.Count -gt 0) { break }
+                try {
+                    $uri = 'https://graph.microsoft.com/v1.0/users?$filter=' + [Uri]::EscapeDataString($filter) + '&$select=userPrincipalName,displayName,id&$top=50'
+                    $headers = @{
+                        Authorization    = $baseHeaders.Authorization
+                        Accept           = $baseHeaders.Accept
+                        ConsistencyLevel = 'eventual'
+                    }
+                    $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method GET -ErrorAction Stop
+                    if ($resp.value -and $resp.value.Count -gt 0) {
+                        $batch = @($resp.value)
+                        Write-Host "    Found $($batch.Count) user(s) via Graph REST filter" -ForegroundColor Gray
+                    }
+                } catch {
+                    Write-Host "    Graph REST filter failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
+            }
+        }
+
+        foreach ($u in $batch) {
+            $upn = [string]$u.userPrincipalName
+            if (-not [string]::IsNullOrWhiteSpace($upn) -and $seen.Add($upn)) {
+                [void]$allUsers.Add([pscustomobject]@{
+                        UserPrincipalName = $upn
+                        DisplayName       = [string]$u.displayName
+                    })
+            }
+        }
+    }
+
+    return @($allUsers)
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Connect-MgGraphWithWcmApp, Search-GraphUsersWithWcm, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage

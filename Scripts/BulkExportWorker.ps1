@@ -31,7 +31,20 @@ function Write-Status {
     param([string]$Message)
     try {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        "[$timestamp] $Message" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+        $line = "[$timestamp] $Message"
+        $mutex = $null
+        try {
+            $mutex = New-Object System.Threading.Mutex($false, 'Global\EOA_StatusFileWrite')
+            [void]$mutex.WaitOne(5000)
+            $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+        } catch {
+            $line | Out-File -FilePath $StatusFile -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+        } finally {
+            if ($mutex) {
+                try { [void]$mutex.ReleaseMutex() } catch {}
+                try { $mutex.Dispose() } catch {}
+            }
+        }
         Write-Host "[Client $ClientNumber] $Message" -ForegroundColor Cyan
     } catch {
         Write-Host "[Client $ClientNumber] $Message" -ForegroundColor Cyan
@@ -48,6 +61,39 @@ function Write-CommandResponse {
     }
 }
 
+
+function Ensure-GraphMgSession {
+    if (-not $graphAuthenticated) { return $false }
+    $mgCtx = Get-MgContext -ErrorAction SilentlyContinue
+    if ($mgCtx) { return $true }
+    $tokenToUse = $script:graphTokenFromWCM
+    if (-not $tokenToUse -and $script:currentTenantId -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+        $tokenToUse = Get-GraphAppTokenFromWCM -TenantId $script:currentTenantId
+        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+    }
+    if (-not $tokenToUse) { return $false }
+    try {
+        $connectJob = Start-Job -ScriptBlock {
+            param($Token)
+            $sec = ConvertTo-SecureString $Token -AsPlainText -Force
+            Connect-MgGraph -AccessToken $sec -NoWelcome -ErrorAction Stop
+        } -ArgumentList $tokenToUse
+        $completed = Wait-Job -Job $connectJob -Timeout 20
+        if ($completed) {
+            Receive-Job -Job $connectJob -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $connectJob -Force -ErrorAction SilentlyContinue
+        } else {
+            Stop-Job -Job $connectJob -Force -ErrorAction SilentlyContinue
+            Remove-Job -Job $connectJob -Force -ErrorAction SilentlyContinue
+            Write-Warning "Connect-MgGraph -AccessToken timed out after 20s for Mg cmdlets"
+            return $false
+        }
+        return $null -ne (Get-MgContext -ErrorAction SilentlyContinue)
+    } catch {
+        Write-Warning "Ensure-GraphMgSession failed: $($_.Exception.Message)"
+        return $false
+    }
+}
 # Write initial error to result file immediately in case of early failure
 Write-Host "Writing initial status to result file..." -ForegroundColor Gray
 try {
@@ -197,6 +243,15 @@ try {
     Write-Host "Importing GraphAppCredential module (for WCM app-only auth)..." -ForegroundColor Gray
     $graphAppMod = Join-Path $ScriptRoot "Modules\GraphAppCredential.psm1"
     if (Test-Path $graphAppMod) { Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue }
+    Write-Host "Importing Remediation module..." -ForegroundColor Gray
+    $remediationMod = Join-Path $ScriptRoot "Modules\Remediation.psm1"
+    if (Test-Path $remediationMod) { Import-Module $remediationMod -Force -ErrorAction SilentlyContinue }
+    Write-Host "Importing Conditional Access catalog module..." -ForegroundColor Gray
+    $caCatalogMod = Join-Path $ScriptRoot "Modules\ConditionalAccessCatalog.psm1"
+    if (Test-Path $caCatalogMod) { Import-Module $caCatalogMod -Force -ErrorAction SilentlyContinue }
+    Write-Host "Importing Email triage module..." -ForegroundColor Gray
+    $emailTriageMod = Join-Path $ScriptRoot "Modules\EmailTriage.psm1"
+    if (Test-Path $emailTriageMod) { Import-Module $emailTriageMod -Force -ErrorAction SilentlyContinue }
     Write-Status "Modules imported successfully"
     Write-Host "All modules imported successfully" -ForegroundColor Green
     Write-Host ""
@@ -223,37 +278,44 @@ try {
         # Ignore - Exchange module may not be loaded yet
     }
     
-    # Load report selections from JSON
-    $reportSelections = @{}
-    if (Test-Path $ReportSelectionsFile) {
-        $jsonObj = Get-Content $ReportSelectionsFile -Raw | ConvertFrom-Json
-        $reportSelections = @{
-            IncludeMessageTrace = if ($null -ne $jsonObj.IncludeMessageTrace) { $jsonObj.IncludeMessageTrace } else { $false }
-            IncludeInboxRules = if ($null -ne $jsonObj.IncludeInboxRules) { $jsonObj.IncludeInboxRules } else { $false }
-            IncludeTransportRules = if ($null -ne $jsonObj.IncludeTransportRules) { $jsonObj.IncludeTransportRules } else { $false }
-            IncludeMailFlowConnectors = if ($null -ne $jsonObj.IncludeMailFlowConnectors) { $jsonObj.IncludeMailFlowConnectors } else { $false }
-            IncludeMailboxForwarding = if ($null -ne $jsonObj.IncludeMailboxForwarding) { $jsonObj.IncludeMailboxForwarding } else { $false }
-            IncludeAuditLogs = if ($null -ne $jsonObj.IncludeAuditLogs) { $jsonObj.IncludeAuditLogs } else { $false }
-            IncludeConditionalAccessPolicies = if ($null -ne $jsonObj.IncludeConditionalAccessPolicies) { $jsonObj.IncludeConditionalAccessPolicies } else { $false }
-            IncludeAppRegistrations = if ($null -ne $jsonObj.IncludeAppRegistrations) { $jsonObj.IncludeAppRegistrations } else { $false }
-            IncludeSignInLogs = (($jsonObj.IncludeSignInLogs -eq $true) -or ("$($jsonObj.IncludeSignInLogs)" -match '^(?i)true$|^(?i)yes$|^1$'))
-            IncludeIntuneDevices = if ($null -ne $jsonObj.IncludeIntuneDevices -and $jsonObj.IncludeIntuneDevices -ne "") { [bool]$jsonObj.IncludeIntuneDevices } else { $false }
-            IncludeMfaCoverage = if ($null -ne $jsonObj.IncludeMfaCoverage -and $jsonObj.IncludeMfaCoverage -ne "") { [bool]$jsonObj.IncludeMfaCoverage } else { $false }
-            IncludeSharePointActivity = if ($null -ne $jsonObj.IncludeSharePointActivity) { $jsonObj.IncludeSharePointActivity } else { $true }
-            IncludeOneDriveActivity = if ($null -ne $jsonObj.IncludeOneDriveActivity) { $jsonObj.IncludeOneDriveActivity } else { $true }
-            IncludeTeamsActivity = if ($null -ne $jsonObj.IncludeTeamsActivity) { $jsonObj.IncludeTeamsActivity } else { $true }
-            IncludeSharePointSharing = if ($null -ne $jsonObj.IncludeSharePointSharing) { $jsonObj.IncludeSharePointSharing } else { $true }
-            IncludeSecurityAlerts = if ($null -ne $jsonObj.IncludeSecurityAlerts) { $jsonObj.IncludeSecurityAlerts } else { $true }
-            IncludeSecurityIncidents = if ($null -ne $jsonObj.IncludeSecurityIncidents) { $jsonObj.IncludeSecurityIncidents } else { $false }
-            IncludeAnonymousSharePointSharing = if ($null -ne $jsonObj.IncludeAnonymousSharePointSharing) { $jsonObj.IncludeAnonymousSharePointSharing } else { $true }
-            IncludeSharePointFileSharingLinks = if ($null -ne $jsonObj.IncludeSharePointFileSharingLinks) { $jsonObj.IncludeSharePointFileSharingLinks } else { $true }
-            IncludeDLPViolations = if ($null -ne $jsonObj.IncludeDLPViolations) { $jsonObj.IncludeDLPViolations } else { $true }
-            IncludeUnifiedAuditLogs = if ($null -ne $jsonObj.IncludeUnifiedAuditLogs) { $jsonObj.IncludeUnifiedAuditLogs } else { $false }
-            IncludeSharePointOneDriveFileActions = if ($null -ne $jsonObj.IncludeSharePointOneDriveFileActions) { $jsonObj.IncludeSharePointOneDriveFileActions } else { $true }
-            SignInLogsDaysBack = if ($null -ne $jsonObj.SignInLogsDaysBack) { $jsonObj.SignInLogsDaysBack } else { 7 }
-            MessageTraceDaysBack = if ($null -ne $jsonObj.MessageTraceDaysBack) { $jsonObj.MessageTraceDaysBack } else { 10 }
-        }
+function Read-BulkWorkerReportSelectionsFromFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return @{} }
+    $jsonObj = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    return @{
+        IncludeMessageTrace = if ($null -ne $jsonObj.IncludeMessageTrace) { $jsonObj.IncludeMessageTrace } else { $false }
+        IncludeInboxRules = if ($null -ne $jsonObj.IncludeInboxRules) { $jsonObj.IncludeInboxRules } else { $false }
+        IncludeTransportRules = if ($null -ne $jsonObj.IncludeTransportRules) { $jsonObj.IncludeTransportRules } else { $false }
+        IncludeMailFlowConnectors = if ($null -ne $jsonObj.IncludeMailFlowConnectors) { $jsonObj.IncludeMailFlowConnectors } else { $false }
+        IncludeMailboxForwarding = if ($null -ne $jsonObj.IncludeMailboxForwarding) { $jsonObj.IncludeMailboxForwarding } else { $false }
+        IncludeAuditLogs = if ($null -ne $jsonObj.IncludeAuditLogs) { $jsonObj.IncludeAuditLogs } else { $false }
+        IncludeConditionalAccessPolicies = if ($null -ne $jsonObj.IncludeConditionalAccessPolicies) { $jsonObj.IncludeConditionalAccessPolicies } else { $false }
+        IncludeAppRegistrations = if ($null -ne $jsonObj.IncludeAppRegistrations) { $jsonObj.IncludeAppRegistrations } else { $false }
+        IncludeSignInLogs = (($jsonObj.IncludeSignInLogs -eq $true) -or ("$($jsonObj.IncludeSignInLogs)" -match '^(?i)true$|^(?i)yes$|^1$'))
+        IncludeIntuneDevices = if ($null -ne $jsonObj.IncludeIntuneDevices -and $jsonObj.IncludeIntuneDevices -ne "") { [bool]$jsonObj.IncludeIntuneDevices } else { $false }
+        IncludeMfaCoverage = if ($null -ne $jsonObj.IncludeMfaCoverage -and $jsonObj.IncludeMfaCoverage -ne "") { [bool]$jsonObj.IncludeMfaCoverage } else { $false }
+        IncludeSharePointActivity = if ($null -ne $jsonObj.IncludeSharePointActivity) { $jsonObj.IncludeSharePointActivity } else { $false }
+        IncludeOneDriveActivity = if ($null -ne $jsonObj.IncludeOneDriveActivity) { $jsonObj.IncludeOneDriveActivity } else { $false }
+        IncludeTeamsActivity = if ($null -ne $jsonObj.IncludeTeamsActivity) { $jsonObj.IncludeTeamsActivity } else { $false }
+        IncludeSharePointSharing = if ($null -ne $jsonObj.IncludeSharePointSharing) { $jsonObj.IncludeSharePointSharing } else { $false }
+        IncludeSecurityAlerts = if ($null -ne $jsonObj.IncludeSecurityAlerts) { $jsonObj.IncludeSecurityAlerts } else { $false }
+        IncludeSecurityIncidents = if ($null -ne $jsonObj.IncludeSecurityIncidents) { $jsonObj.IncludeSecurityIncidents } else { $false }
+        IncludeAnonymousSharePointSharing = if ($null -ne $jsonObj.IncludeAnonymousSharePointSharing) { $jsonObj.IncludeAnonymousSharePointSharing } else { $false }
+        IncludeSharePointFileSharingLinks = if ($null -ne $jsonObj.IncludeSharePointFileSharingLinks) { $jsonObj.IncludeSharePointFileSharingLinks } else { $false }
+        IncludeDLPViolations = if ($null -ne $jsonObj.IncludeDLPViolations) { $jsonObj.IncludeDLPViolations } else { $false }
+        IncludeUnifiedAuditLogs = if ($null -ne $jsonObj.IncludeUnifiedAuditLogs) { $jsonObj.IncludeUnifiedAuditLogs } else { $false }
+        IncludeExchangeItemAggregated = if ($null -ne $jsonObj.IncludeExchangeItemAggregated) { $jsonObj.IncludeExchangeItemAggregated } else { $false }
+        UnifiedAuditLogRecordTypes = if ($null -ne $jsonObj.UnifiedAuditLogRecordTypes) { @($jsonObj.UnifiedAuditLogRecordTypes | ForEach-Object { [string]$_ }) } else { @() }
+        ExportPresetName = if ($null -ne $jsonObj.ExportPresetName -and [string]$jsonObj.ExportPresetName -ne '') { [string]$jsonObj.ExportPresetName } else { '' }
+        IncludeSharePointOneDriveFileActions = if ($null -ne $jsonObj.IncludeSharePointOneDriveFileActions) { $jsonObj.IncludeSharePointOneDriveFileActions } else { $false }
+        SignInLogsDaysBack = if ($null -ne $jsonObj.SignInLogsDaysBack) { $jsonObj.SignInLogsDaysBack } else { 7 }
+        MessageTraceDaysBack = if ($null -ne $jsonObj.MessageTraceDaysBack) { $jsonObj.MessageTraceDaysBack } else { 10 }
+        MessageTraceStatuses = if ($null -ne $jsonObj.MessageTraceStatuses) { @($jsonObj.MessageTraceStatuses | ForEach-Object { [string]$_ } | Where-Object { $_ }) } else { @() }
     }
+}
+
+    # Load report selections from JSON (session defaults; tenant override applied per GENERATE_REPORTS command)
+    $reportSelections = Read-BulkWorkerReportSelectionsFromFile -Path $ReportSelectionsFile
     
     $graphAuthenticated = $false
     $exchangeAuthenticated = $false
@@ -464,7 +526,29 @@ try {
                     "Directory.Read.All",
                     "Policy.Read.All",
                     "Application.Read.All",
-                    "Reports.Read.All"
+                    "Reports.Read.All",
+                    "SecurityAlert.Read.All",
+                    "SecurityIncident.Read.All",
+                    "SecurityEvents.Read.All",
+                    "DeviceManagementManagedDevices.Read.All",
+                    "Sites.Read.All",
+                    "UserAuthenticationMethod.Read.All",
+                    "Organization.Read.All",
+                    "IdentityRiskEvent.Read.All",
+                    "IdentityRiskyUser.Read.All",
+                    "Mail.Read",
+                    "ExchangeMessageTrace.Read.All",
+                    "User.RevokeSessions.All",
+                    "User.EnableDisableAccount.All",
+                    "UserAuthenticationMethod.ReadWrite.All",
+                    "Application.ReadWrite.All",
+                    "Directory.AccessAsUser.All",
+                    "User-PasswordProfile.ReadWrite.All",
+    "DeviceManagementManagedDevices.PrivilegedOperations.All",
+    "DeviceManagementManagedDevices.ReadWrite.All",
+    "GroupMember.ReadWrite.All",
+    "RoleManagement.ReadWrite.Directory",
+    "DelegatedPermissionGrant.ReadWrite.All"
                 )
 
                 # Try WCM (app-only) first when we have tenant ID(s) to try - skip if INTERACTIVE:1 (use browser instead)
@@ -476,14 +560,7 @@ try {
                         $graphAuthExplicitTenantId = $matches[1]
                         $tenantIdsToTry = @($graphAuthExplicitTenantId)
                     } else {
-                        $graphAppMod = Join-Path $ScriptRoot "Modules\GraphAppCredential.psm1"
-                        if (Test-Path $graphAppMod) {
-                            Import-Module $graphAppMod -Force -ErrorAction SilentlyContinue
-                            if (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue) {
-                                $allIds = Get-WCMTenantIds
-                                if ($allIds -and $allIds.Count -gt 0) { $tenantIdsToTry = @($allIds) }
-                            }
-                        }
+                        Write-Host "No tenant ID on GRAPH_AUTH — not trying every WCM entry. Run Exchange Auth first or pick App reg tenant." -ForegroundColor Yellow
                     }
                 }
                 if ($useInteractiveOnly) {
@@ -515,6 +592,9 @@ try {
                             $graphAuthenticated = $true
                             $script:graphTokenFromWCM = $wcmToken
                             $script:currentTenantId = $tid
+                            if (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue) {
+                                Set-GraphRestBearerToken -Token $wcmToken
+                            }
                             Write-Status "Using app-only credentials from Windows Credential Manager"
                             try {
                                 $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
@@ -577,11 +657,44 @@ try {
                     $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
                     $env:MSAL_DISABLE_BROKER = "1"
                     $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+                    $exoLoaded = $exchangeAuthenticated -or [bool](Get-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue)
+                    if ($exoLoaded -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
+                        Write-Host "Exchange Online is already loaded in this worker. Using a fresh PowerShell window for Graph browser sign-in (avoids MSAL WithLogging clash)..." -ForegroundColor Cyan
+                        Write-Status "Waiting for Graph sign-in in a new PowerShell window..."
+                        $iso = Connect-MgGraphInteractiveIsolated -Scopes $scopes
+                        $graphAuthenticated = $true
+                        $script:graphTokenFromWCM = [string]$iso.token
+                        $script:currentTenantId = [string]$iso.tenantId
+                        if ($iso.displayName) { $tenantDisplayName = [string]$iso.displayName }
+                        if (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue) {
+                            Set-GraphRestBearerToken -Token ([string]$iso.token)
+                        }
+                        Write-Status "Graph authentication successful! Tenant: $($iso.tenantId)"
+                        Write-Host "Graph authentication successful (isolated process)!" -ForegroundColor Green
+                        Write-Host "Tenant ID: $($iso.tenantId)" -ForegroundColor Cyan
+                        Write-Host "Tenant: $tenantDisplayName" -ForegroundColor Cyan
+                        $verifiedDomains = @()
+                        if ($iso.domains) { $verifiedDomains = @($iso.domains | ForEach-Object { [string]$_ }) }
+                        if ($verifiedDomains.Count -gt 0) {
+                            Write-Host "Found $($verifiedDomains.Count) verified domain(s): $($verifiedDomains -join ', ')" -ForegroundColor Cyan
+                            Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)|DOMAINS:$($verifiedDomains -join ',')"
+                        } else {
+                            Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)"
+                        }
+                    } else {
                     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
                     Connect-MgGraph -Scopes $scopes -ContextScope Process -NoWelcome -ErrorAction Stop
                     $mgContext = Get-MgContext -ErrorAction Stop
                     $graphAuthenticated = $true
                     $script:currentTenantId = $mgContext.TenantId
+                    if (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
+                        try {
+                            $script:graphTokenFromWCM = Get-GraphAccessToken
+                            if ($script:graphTokenFromWCM -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+                                Set-GraphRestBearerToken -Token $script:graphTokenFromWCM
+                            }
+                        } catch {}
+                    }
                     Write-Status "Graph authentication successful! Tenant: $($mgContext.TenantId)"
                     Write-Host "Graph authentication successful!" -ForegroundColor Green
                     Write-Host "Tenant ID: $($mgContext.TenantId)" -ForegroundColor Cyan
@@ -630,9 +743,37 @@ try {
                     } else {
                         Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($mgContext.TenantId)"
                     }
+                    }
                 } catch {
-                    Write-Status "ERROR: Graph authentication failed - $($_.Exception.Message)"
-                    Write-Host "ERROR: Graph authentication failed - $($_.Exception.Message)" -ForegroundColor Red
+                    $isoFailMsg = $_.Exception.Message
+                    if ($isoFailMsg -match 'WithLogging|InteractiveBrowserCredential|Method not found' -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
+                        try {
+                            Write-Host "In-process Graph sign-in failed (MSAL clash). Retrying in an isolated PowerShell window..." -ForegroundColor Yellow
+                            Write-Status "Waiting for Graph sign-in in a new PowerShell window..."
+                            $iso = Connect-MgGraphInteractiveIsolated -Scopes $scopes
+                            $graphAuthenticated = $true
+                            $script:graphTokenFromWCM = [string]$iso.token
+                            $script:currentTenantId = [string]$iso.tenantId
+                            if ($iso.displayName) { $tenantDisplayName = [string]$iso.displayName }
+                            if (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue) {
+                                Set-GraphRestBearerToken -Token ([string]$iso.token)
+                            }
+                            Write-Status "Graph authentication successful! Tenant: $($iso.tenantId)"
+                            Write-Host "Graph authentication successful (isolated process)!" -ForegroundColor Green
+                            $verifiedDomains = @()
+                            if ($iso.domains) { $verifiedDomains = @($iso.domains | ForEach-Object { [string]$_ }) }
+                            if ($verifiedDomains.Count -gt 0) {
+                                Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)|DOMAINS:$($verifiedDomains -join ',')"
+                            } else {
+                                Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)"
+                            }
+                        } catch {
+                            $isoFailMsg = $_.Exception.Message
+                        }
+                    }
+                    if (-not $graphAuthenticated) {
+                    Write-Status "ERROR: Graph authentication failed - $isoFailMsg"
+                    Write-Host "ERROR: Graph authentication failed - $isoFailMsg" -ForegroundColor Red
                     # If PromptToCreateGraphApp is on, offer to create app and save to WCM
                     $promptToCreate = $false
                     try {
@@ -670,7 +811,8 @@ try {
                         }
                     }
                     if (-not $graphAuthenticated) {
-                        Write-CommandResponse "GRAPH_AUTH_FAILED:$($_.Exception.Message)"
+                        Write-CommandResponse "GRAPH_AUTH_FAILED:$isoFailMsg"
+                    }
                     }
                 }
                 }
@@ -705,13 +847,48 @@ try {
                     $exchangeAuthenticated = $true
                     Write-Status "Exchange Online authentication successful!"
                     Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
-                    Write-CommandResponse "EXCHANGE_AUTH_SUCCESS"
+                    $exoTid = $null
+                    $exoOrg = $null
+                    try {
+                        $conn = Get-ConnectionInformation -ErrorAction SilentlyContinue
+                        $cInfo = if ($conn -is [Array] -and $conn.Count -gt 0) { $conn[0] } else { $conn }
+                        if ($cInfo) {
+                            if ($cInfo.TenantId) { $exoTid = [string]$cInfo.TenantId }
+                            elseif ($cInfo.TenantID) { $exoTid = [string]$cInfo.TenantID }
+                            if ($cInfo.OrganizationName) { $exoOrg = [string]$cInfo.OrganizationName }
+                            elseif ($cInfo.Organization) { $exoOrg = [string]$cInfo.Organization }
+                        }
+                    } catch {}
+                    try {
+                        $org = Get-OrganizationConfig -ErrorAction SilentlyContinue
+                        if ($org) {
+                            if (-not $exoTid -and $org.ExternalDirectoryOrganizationId) { $exoTid = [string]$org.ExternalDirectoryOrganizationId }
+                            if ($org.DisplayName) { $exoOrg = [string]$org.DisplayName }
+                            elseif (-not $exoOrg -and $org.Name) { $exoOrg = [string]$org.Name }
+                        }
+                    } catch {}
+                    if ($exoOrg) { $exoOrg = ($exoOrg -replace '[|]', ' ').Trim() }
+                    if ($exoTid) {
+                        if ($exoOrg) {
+                            Write-CommandResponse "EXCHANGE_AUTH_SUCCESS|TENANT_ID:$exoTid|ORG:$exoOrg"
+                            Write-Status "Exchange tenant: $exoOrg ($exoTid)"
+                        } else {
+                            Write-CommandResponse "EXCHANGE_AUTH_SUCCESS|TENANT_ID:$exoTid"
+                            Write-Status "Exchange tenant ID: $exoTid"
+                        }
+                    } else {
+                        Write-CommandResponse "EXCHANGE_AUTH_SUCCESS"
+                        Write-Status "EXO tenant ID not detected — pick App reg tenant before Graph Auth"
+                    }
                 } catch {
-                    Write-Status "ERROR: Exchange Online authentication failed - $($_.Exception.Message)"
-                    Write-Host "ERROR: Exchange Online authentication failed - $($_.Exception.Message)" -ForegroundColor Red
-                    Write-CommandResponse "EXCHANGE_AUTH_FAILED:$($_.Exception.Message)"
+                    $err = $_.Exception.Message
+                    if ($err -match 'AADSTS500014') {
+                        $err += ' — The tenant you signed into does not allow Exchange Online tokens (wrong tenant in the popup, or Office 365 Exchange Online is disabled). Entra admin center sign-in alone does not prove EXO is enabled. Fix: sign in with the customer Global Admin, pick the correct directory if prompted, then in Entra > Enterprise applications > Office 365 Exchange Online > Properties set Enabled for users to sign-in? to Yes.'
+                    }
+                    Write-Status "ERROR: Exchange Online authentication failed - $err"
+                    Write-Host "ERROR: Exchange Online authentication failed - $err" -ForegroundColor Red
+                    Write-CommandResponse "EXCHANGE_AUTH_FAILED:$err"
                 }
-                
                 Write-Host ""
                 Write-Host "Waiting for Generate Reports command from GUI..." -ForegroundColor Green
                 Write-Host ""
@@ -785,6 +962,7 @@ try {
                     
                     # Perform user search - minimal API calls to avoid extra auth prompts
                     $allFoundUsers = [System.Collections.ArrayList]::new()
+                    $script:validateUsersLookupError = ''
                     foreach ($searchTerm in $searchTerms) {
                         Write-Host "  Searching for users matching: '$searchTerm'" -ForegroundColor Gray
                         $users = @()
@@ -795,6 +973,7 @@ try {
                                     $u = Get-MgUser -UserId $searchTerm.Trim() -Property Id, UserPrincipalName, DisplayName -ErrorAction Stop
                                     if ($u) { $users = @($u); Write-Host "    Found via direct UPN lookup" -ForegroundColor Gray }
                                 } catch {
+                                    $script:validateUsersLookupError = $_.Exception.Message
                                     Write-Host "    Direct UPN lookup failed: $($_.Exception.Message)" -ForegroundColor DarkGray
                                 }
                             }
@@ -832,6 +1011,7 @@ try {
                                     $users = @($all | Where-Object { ($_.DisplayName -and $_.DisplayName -like "*$term*") -or ($_.UserPrincipalName -and $_.UserPrincipalName -like "*$term*") })
                                     if ($users.Count -gt 0) { Write-Host "    Found $($users.Count) user(s) via client-side search" -ForegroundColor Gray }
                                 } catch {
+                                    if (-not $script:validateUsersLookupError) { $script:validateUsersLookupError = $_.Exception.Message }
                                     Write-Host "    Client-side fallback failed: $($_.Exception.Message)" -ForegroundColor DarkGray
                                 }
                             }
@@ -859,15 +1039,23 @@ try {
                         } | ConvertTo-Json -Compress
                         Write-CommandResponse "VALIDATE_USERS_SUCCESS:$responseJson"
                     } else {
-                        Write-Host "Validation completed: No users found matching search terms" -ForegroundColor Yellow
-                        Write-Status "Validation completed: No users found matching search terms"
-                        $responseJson = @{
-                            Success = $false
-                            UserCount = 0
-                            Users = @()
-                            Message = "No users found matching the search terms"
-                        } | ConvertTo-Json -Compress
-                        Write-CommandResponse "VALIDATE_USERS_SUCCESS:$responseJson"
+                        $lookupError = [string]$script:validateUsersLookupError
+                        $authFailed = $lookupError -match 'Invalid token|token lifetime|InvalidAuthenticationToken|Lifetime validation failed|401|Unauthorized|Authorization_RequestDenied|compact token'
+                        if ($authFailed) {
+                            Write-Host "Validation failed: Graph token was rejected. $lookupError" -ForegroundColor Red
+                            Write-Status "Validation failed: Graph token was rejected. Sign in with Graph Auth again. $lookupError"
+                            Write-CommandResponse "VALIDATE_USERS_FAILED:Graph token was rejected. Sign in with Graph Auth again. $lookupError"
+                        } else {
+                            Write-Host "Validation completed: No users found matching search terms" -ForegroundColor Yellow
+                            Write-Status "Validation completed: No users found matching search terms"
+                            $responseJson = @{
+                                Success = $false
+                                UserCount = 0
+                                Users = @()
+                                Message = "No users found matching the search terms"
+                            } | ConvertTo-Json -Compress
+                            Write-CommandResponse "VALIDATE_USERS_SUCCESS:$responseJson"
+                        }
                     }
                 } catch {
                     Write-Host "ERROR: User validation failed - $($_.Exception.Message)" -ForegroundColor Red
@@ -879,7 +1067,139 @@ try {
                 Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
+            } elseif ($command -match "^REMEDIATE_") {
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "REMEDIATION COMMAND RECEIVED" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Remediation command received"
+                Write-CommandResponse "REMEDIATE_STARTED"
+                $remediationMod = Join-Path $ScriptRoot "Modules\Remediation.psm1"
+                if (Test-Path $remediationMod) { Import-Module $remediationMod -Force -ErrorAction SilentlyContinue }
+                if (-not (Get-Command Invoke-RemediationWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Write-CommandResponse "REMEDIATE_FAILED:Remediation module is not loaded"
+                    continue
+                }
+                if (-not (Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue) -or -not (Test-GraphRestBearerToken)) {
+                    $tokenToUse = $script:graphTokenFromWCM
+                    if (-not $tokenToUse -and $script:currentTenantId -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAppTokenFromWCM -TenantId $script:currentTenantId } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if (-not $tokenToUse -and (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAccessToken } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if ($tokenToUse -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+                        Set-GraphRestBearerToken -Token $tokenToUse
+                    }
+                }
+                $auditFolder = $null
+                if ($script:lastReportOutputFolder -and (Test-Path -LiteralPath $script:lastReportOutputFolder)) {
+                    $auditFolder = $script:lastReportOutputFolder
+                } elseif ($CommandDir) {
+                    $auditFolder = $CommandDir
+                }
+                try {
+                    $resp = Invoke-RemediationWorkerCommand -Command $command -ClientNumber $ClientNumber -CompanyName $CompanyName -TenantName $CompanyName -AuditFolder $auditFolder -GraphAuthenticated $graphAuthenticated -ExchangeAuthenticated $exchangeAuthenticated
+                    $respText = @($resp | ForEach-Object { [string]$_ } | Where-Object { $_ -match 'REMEDIATE_[A-Z_]+:' } | Select-Object -Last 1)
+                    if (-not $respText) { $respText = [string]$resp }
+                    if ($respText) { Write-Status $respText }
+                    Write-CommandResponse $respText
+                } catch {
+                    Write-Status "ERROR: Remediation failed - $($_.Exception.Message)"
+                    Write-CommandResponse "REMEDIATE_FAILED:$($_.Exception.Message)"
+                }
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+                
+            } elseif ($command -match "^CA_") {
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "CONDITIONAL ACCESS CATALOG COMMAND" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Conditional Access catalog command received"
+                Write-CommandResponse "CA_STARTED"
+                $caCatalogMod = Join-Path $ScriptRoot "Modules\ConditionalAccessCatalog.psm1"
+                $caNeedReload = ($command -match 'REFRESH:1') -or -not (Get-Command Invoke-CaCatalogWorkerCommand -ErrorAction SilentlyContinue)
+                if ((Test-Path $caCatalogMod) -and $caNeedReload) { Import-Module $caCatalogMod -Force -ErrorAction SilentlyContinue }
+                if ($command -match 'REFRESH:1' -and (Get-Command Clear-CaCatalogCache -ErrorAction SilentlyContinue)) { Clear-CaCatalogCache }
+                if (-not (Get-Command Invoke-CaCatalogWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Write-CommandResponse "CA_FAILED:Conditional Access catalog module is not loaded"
+                    continue
+                }
+                if (-not (Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue) -or -not (Test-GraphRestBearerToken)) {
+                    $tokenToUse = $script:graphTokenFromWCM
+                    if (-not $tokenToUse -and $script:currentTenantId -and (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAppTokenFromWCM -TenantId $script:currentTenantId } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if (-not $tokenToUse -and (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue)) {
+                        try { $tokenToUse = Get-GraphAccessToken } catch {}
+                        if ($tokenToUse) { $script:graphTokenFromWCM = $tokenToUse }
+                    }
+                    if ($tokenToUse -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+                        Set-GraphRestBearerToken -Token $tokenToUse
+                    }
+                }
+                try {
+                    $caAuditFolder = $null
+                    if ($script:lastReportOutputFolder -and (Test-Path -LiteralPath $script:lastReportOutputFolder)) { $caAuditFolder = $script:lastReportOutputFolder }
+                    $resp = Invoke-CaCatalogWorkerCommand -Command $command -AuditFolder $caAuditFolder
+                    $respText = [string]$resp
+                    if ($respText) { Write-Status $respText }
+                    Write-CommandResponse $respText
+                } catch {
+                    Write-Status "ERROR: CA catalog failed - $($_.Exception.Message)"
+                    Write-CommandResponse "CA_FAILED:$($_.Exception.Message)"
+                }
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+                
+            } elseif ($command -match "^TRIAGE_") {
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "EMAIL TRIAGE COMMAND" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Email triage command received"
+                Write-CommandResponse "TRIAGE_STARTED"
+                if (-not $exchangeAuthenticated) {
+                    Write-CommandResponse "TRIAGE_FAILED:Exchange authentication not completed"
+                    continue
+                }
+                $emailTriageMod = Join-Path $ScriptRoot "Modules\EmailTriage.psm1"
+                if ((Test-Path $emailTriageMod) -and -not (Get-Command Invoke-TriageWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Import-Module $emailTriageMod -Force -ErrorAction SilentlyContinue
+                }
+                if (-not (Get-Command Invoke-TriageWorkerCommand -ErrorAction SilentlyContinue)) {
+                    Write-CommandResponse "TRIAGE_FAILED:Email triage module is not loaded"
+                    continue
+                }
+                try {
+                    $resp = Invoke-TriageWorkerCommand -Command $command -CompanyName $CompanyName -ClientNumber $ClientNumber -ScriptRoot $ScriptRoot
+                    $respText = [string]$resp
+                    if ($respText) { Write-Status $respText }
+                    Write-CommandResponse $respText
+                } catch {
+                    Write-Status "ERROR: Email triage failed - $($_.Exception.Message)"
+                    Write-CommandResponse "TRIAGE_FAILED:$($_.Exception.Message)"
+                }
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+
             } elseif ($command -match "^GENERATE_REPORTS") {
+                # Reload effective tenant selections written by web runner (overrides session defaults)
+                if ($command -match '\|ReportSelectionsFile:([^|]+)') {
+                    $tenantRsFile = $Matches[1].Trim()
+                    if (Test-Path -LiteralPath $tenantRsFile) {
+                        $reportSelections = Read-BulkWorkerReportSelectionsFromFile -Path $tenantRsFile
+                        Write-Host "Using tenant report selections: $tenantRsFile" -ForegroundColor Cyan
+                        Write-Status "Using tenant report selections: $tenantRsFile"
+                    } else {
+                        Write-Warning "Tenant report selections file not found: $tenantRsFile"
+                    }
+                }
+                
                 $required = @{ NeedsGraph = $true; NeedsExchange = $true }
                 if (Get-Command Get-RequiredAuthFromReportSelections -ErrorAction SilentlyContinue) {
                     $required = Get-RequiredAuthFromReportSelections -ReportSelections $reportSelections
@@ -973,7 +1293,7 @@ try {
                 
                 # Check if this is a search terms command (GENERATE_REPORTS_SEARCH:["term1","term2"])
                 # Extract search terms before TICKET_DATA if present
-                if ($command -match "^GENERATE_REPORTS_SEARCH:(.+?)(?:\|TICKET_DATA:|$)") {
+                if ($command -match "^GENERATE_REPORTS_SEARCH:([^|]+)(?:\||$)") {
                     try {
                         $searchTermsJson = $Matches[1]
                         $searchTermsParsed = $searchTermsJson | ConvertFrom-Json -ErrorAction Stop
@@ -987,21 +1307,31 @@ try {
                         }
                         Write-Host "User filtering enabled with search terms. Validating users..." -ForegroundColor Cyan
                         Write-Status "User filtering enabled with search terms. Validating users..."
+                        if (-not (Ensure-GraphMgSession)) {
+                            Write-Warning "Graph PowerShell session not available for user search. Report will be generated without user filtering."
+                            Write-Status "WARNING: Graph session unavailable for user search - generating without filtering"
+                            $selectedUsersForReport = @()
+                        } else {
                         
                         # Validate search terms using Graph API
                         $allFoundUsers = [System.Collections.ArrayList]::new()
-                        foreach ($searchTerm in $searchTerms) {
+                        $script:validateUsersLookupError = ''
+                    foreach ($searchTerm in $searchTerms) {
                             Write-Host "  Searching for users matching: '$searchTerm'" -ForegroundColor Gray
                             $users = @()
                             try {
                                 # Try server-side filtering first (startsWith) - try multiple case variations
-                                $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTerm') or startsWith(UserPrincipalName,'$searchTerm')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $escapedTerm = $searchTerm.Replace("'","''")
                                 $searchTermLower = $searchTerm.ToLower()
                                 $searchTermUpper = $searchTerm.ToUpper()
                                 $searchTermTitle = (Get-Culture).TextInfo.ToTitleCase($searchTermLower)
-                                $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermLower') or startsWith(UserPrincipalName,'$searchTermLower')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
-                                $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermUpper') or startsWith(UserPrincipalName,'$searchTermUpper')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
-                                $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$searchTermTitle') or startsWith(UserPrincipalName,'$searchTermTitle')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $escapedLower = $searchTermLower.Replace("'","''")
+                                $escapedUpper = $searchTermUpper.Replace("'","''")
+                                $escapedTitle = $searchTermTitle.Replace("'","''")
+                                $users1 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedTerm') or startsWith(UserPrincipalName,'$escapedTerm')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $users2 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedLower') or startsWith(UserPrincipalName,'$escapedLower')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $users3 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedUpper') or startsWith(UserPrincipalName,'$escapedUpper')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
+                                $users4 = Get-MgUser -Filter "startsWith(DisplayName,'$escapedTitle') or startsWith(UserPrincipalName,'$escapedTitle')" -All -Property Id, UserPrincipalName, DisplayName -ConsistencyLevel eventual -CountVariable userCount -ErrorAction SilentlyContinue
                                 $users = @($users1) + @($users2) + @($users3) + @($users4) | Sort-Object UserPrincipalName -Unique
                                 Write-Host "    Found $($users.Count) users with startsWith filter (tried multiple case variations)" -ForegroundColor Gray
                             } catch {
@@ -1012,12 +1342,12 @@ try {
                                 # Try alternative search methods
                                 try {
                                     # Try exact match (case-sensitive first, then variations)
-                                    $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                    $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt1 = Get-MgUser -Filter "DisplayName eq '$escapedTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt1 += Get-MgUser -Filter "DisplayName eq '$escapedLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
                                     $usersAlt1 = $usersAlt1 | Sort-Object UserPrincipalName -Unique
                                     
-                                    $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$searchTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
-                                    $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$searchTermLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt2 = Get-MgUser -Filter "UserPrincipalName eq '$escapedTerm'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
+                                    $usersAlt2 += Get-MgUser -Filter "UserPrincipalName eq '$escapedLower'" -All -Property Id, UserPrincipalName, DisplayName -ErrorAction SilentlyContinue
                                     $usersAlt2 = $usersAlt2 | Sort-Object UserPrincipalName -Unique
                                     
                                     # Try case-insensitive search by getting all users and filtering client-side
@@ -1060,11 +1390,12 @@ try {
                             Write-Warning "No users found matching the search terms. Report will be generated without user filtering."
                             Write-Status "WARNING: No users found matching search terms - generating report without filtering"
                         }
+                        }
                     } catch {
                         Write-Warning "Could not parse or validate search terms from command: $($_.Exception.Message)"
                         Write-Status "ERROR: Failed to validate search terms - $($_.Exception.Message)"
-                        # Set to empty array so report continues without filtering
-                        $selectedUsersForReport = @()
+                        Write-CommandResponse "GENERATE_REPORTS_FAILED:Could not parse search terms (check GENERATE_REPORTS_SEARCH command). $($_.Exception.Message)"
+                        continue
                     }
                 }
                 # Check if this is a direct users command (GENERATE_REPORTS|SelectedUsers:["user1","user2"])
@@ -1088,6 +1419,11 @@ try {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "GENERATE REPORTS COMMAND RECEIVED" -ForegroundColor Yellow
                 Write-Host "==========================================" -ForegroundColor Yellow
+                # Reset status file so the UI Client log does not replay prior generates.
+                try {
+                    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    "[$timestamp] === Generate reports started (prior status cleared) ===" | Out-File -FilePath $StatusFile -Encoding UTF8 -ErrorAction SilentlyContinue
+                } catch {}
                 Write-Status "Report generation command received"
                 Write-CommandResponse "GENERATE_REPORTS_STARTED"
                 
@@ -1118,23 +1454,45 @@ try {
                 
                 Write-Host "Ticket data being passed: TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), TicketContent length=$($ticketContent.Length)" -ForegroundColor Cyan
                 if (Get-Command Set-LogContext -ErrorAction SilentlyContinue) { Set-LogContext -CompanyName $CompanyName -TicketNumbers $ticketNumbers }
-                # POC: Get Graph token for parallel collection (avoids extra auth prompts in runspaces)
+                # Graph token only needed when selected exports require Graph (parallel runspace collection)
                 $graphToken = $null
-                if ($script:graphTokenFromWCM) {
-                    $graphToken = $script:graphTokenFromWCM
-                    Write-Status "Using app-only token from WCM - parallel collection"
-                } elseif (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
-                    try {
-                        $diag = { param($m) Write-Status $m; if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken: $m" -Level Debug } }
-                        $graphToken = Get-GraphAccessToken -DiagnosticCallback $diag
-                    } catch {
-                        Write-Status "Graph token acquisition failed: $($_.Exception.Message)"
-                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken failed: $($_.Exception.Message)" -Level Warning }
+                if ($required.NeedsGraph) {
+                    if ($script:graphTokenFromWCM) {
+                        $graphToken = $script:graphTokenFromWCM
+                        Write-Status "Using app-only token from WCM - parallel collection"
+                    } elseif (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue) {
+                        try {
+                            $tenantForToken = $null
+                            if ($command -match '\|GRAPH_TENANT:([0-9a-fA-F-]{36})') { $tenantForToken = $Matches[1] }
+                            if ($tenantForToken) {
+                                $graphToken = Get-GraphAppTokenFromWCM -TenantId $tenantForToken
+                                if ($graphToken) { Write-Status "Using app-only token from WCM - parallel collection" }
+                            }
+                        } catch {
+                            Write-Status "WCM Graph token lookup failed: $($_.Exception.Message)"
+                        }
                     }
+                    if (-not $graphToken -and (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue)) {
+                        try {
+                            $graphToken = Get-GraphAccessToken
+                        } catch {
+                            Write-Status "Graph token acquisition failed: $($_.Exception.Message)"
+                            if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Get-GraphAccessToken failed: $($_.Exception.Message)" -Level Warning }
+                        }
+                    }
+                    if ($graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
+                } else {
+                    Write-Status "Graph not required for selected exports - Exchange-only collection"
                 }
-                if ($graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
                 try {
                     $messageTraceDays = if ($reportSelections.MessageTraceDaysBack) { $reportSelections.MessageTraceDaysBack } else { $DaysBack }
+                    $mtStatuses = @()
+                    if ($reportSelections.ContainsKey('MessageTraceStatuses') -and $reportSelections.MessageTraceStatuses) {
+                        $mtStatuses = @($reportSelections.MessageTraceStatuses)
+                    }
+                    if ($mtStatuses.Count -gt 0) {
+                        Write-Status ("Message trace statuses: {0}" -f ($mtStatuses -join ', '))
+                    }
                     $reportParams = @{
                         InvestigatorName = $InvestigatorName
                         CompanyName = $CompanyName
@@ -1163,17 +1521,27 @@ try {
                         IncludeSharePointSharing = $reportSelections.IncludeSharePointSharing
                         IncludeSecurityAlerts = $reportSelections.IncludeSecurityAlerts
                         IncludeSecurityIncidents = $reportSelections.IncludeSecurityIncidents
+                        IncludeAnonymousSharePointSharing = $reportSelections.IncludeAnonymousSharePointSharing
+                        IncludeSharePointFileSharingLinks = $reportSelections.IncludeSharePointFileSharingLinks
+                        IncludeDLPViolations = $reportSelections.IncludeDLPViolations
+                        IncludeSharePointOneDriveFileActions = $reportSelections.IncludeSharePointOneDriveFileActions
                         IncludeUnifiedAuditLogs = $reportSelections.IncludeUnifiedAuditLogs
+                        IncludeExchangeItemAggregated = $reportSelections.IncludeExchangeItemAggregated
+                        UnifiedAuditLogRecordTypes = @(if ($reportSelections.UnifiedAuditLogRecordTypes) { $reportSelections.UnifiedAuditLogRecordTypes } else { @() })
                         SignInLogsDaysBack = $reportSelections.SignInLogsDaysBack
                         MessageTraceDaysBack = $messageTraceDays
+                        MessageTraceStatuses = $mtStatuses
                         SelectedUsers = $selectedUsersForReport
                         TicketNumbers = $ticketNumbers
                         TicketContent = $ticketContent
                     }
-                    if ($reportStartDate -and $reportEndDate -and $reportStartDate -ne [DateTime]::MinValue -and $reportEndDate -ne [DateTime]::MinValue -and $reportEndDate -ge $reportStartDate) {
-                        $reportParams.StartDate = $reportStartDate
-                        $reportParams.EndDate = $reportEndDate
+                    if ($reportStartDate -eq [DateTime]::MinValue -or $reportEndDate -eq [DateTime]::MinValue) {
+                        $reportEndDate = Get-Date
+                        $db = if ($DaysBack) { [int]$DaysBack } else { 10 }
+                        $reportStartDate = $reportEndDate.AddDays(-$db)
                     }
+                    $reportParams.StartDate = $reportStartDate
+                    $reportParams.EndDate = $reportEndDate
                     $report = New-SecurityInvestigationReport @reportParams
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
@@ -1198,6 +1566,7 @@ try {
                     Write-Host "`nReport generation successful!" -ForegroundColor Green
                     Write-Host "Reports saved to: $($report.OutputFolder)" -ForegroundColor Green
                     "SUCCESS: $($report.OutputFolder)" | Out-File -FilePath $ResultFile -Encoding UTF8
+                    $script:lastReportOutputFolder = $report.OutputFolder
                     Write-CommandResponse "GENERATE_REPORTS_SUCCESS:$($report.OutputFolder)"
                 } else {
                     Write-Status "Warning: Report generation returned no data"
@@ -1210,47 +1579,14 @@ try {
                 # Update status FIRST so completion is recorded even if disconnect hangs
                 Write-Status "Processing complete!"
                 
-                # Disconnect sessions (attempt but don't block if it hangs)
-                Write-Host "Disconnecting sessions..." -ForegroundColor Cyan
-                try {
-                    Disconnect-MgGraph -ErrorAction SilentlyContinue
-                } catch {}
-                
-                # Attempt Exchange disconnect with timeout (non-blocking)
-                try {
-                    if (Get-Command Disconnect-ExchangeOnline -ErrorAction SilentlyContinue) {
-                        # Use runspace with module import and timeout
-                        $runspace = [runspacefactory]::CreateRunspace()
-                        $runspace.Open()
-                        $ps = [PowerShell]::Create()
-                        $ps.Runspace = $runspace
-                        # Import module and disconnect
-                        $script = "Import-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue; Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue"
-                        $null = $ps.AddScript($script)
-                        $handle = $ps.BeginInvoke()
-                        $waited = $handle.AsyncWaitHandle.WaitOne(5000)  # 5 second timeout
-                        if ($waited) {
-                            try { $ps.EndInvoke($handle) | Out-Null } catch {}
-                        } else {
-                            Write-Host "Exchange disconnect timed out (non-critical, continuing...)" -ForegroundColor Yellow
-                            $ps.Stop()
-                        }
-                        $ps.Dispose()
-                        $runspace.Close()
-                        $runspace.Dispose()
-                    }
-                } catch {
-                    Write-Host "Disconnect completed with warnings (non-critical)" -ForegroundColor Yellow
-                }
                 Write-Host ""
                 Write-Host "==========================================" -ForegroundColor Green
                 Write-Host "Client $ClientNumber processing complete!" -ForegroundColor Green
                 Write-Host "==========================================" -ForegroundColor Green
-                Write-Host "This window will remain open. You may close it manually." -ForegroundColor Yellow
+                Write-Host "Graph and Exchange stay connected. Generate again or continue Containment on this tenant." -ForegroundColor Yellow
                 Write-Host ""
-                
-                # Keep window open but stop polling
-                break
+                Write-Status "Ready! Sessions still authenticated — generate again or run containment."
+                continue
             } elseif ($command -eq "CANCEL_AUTH") {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "CANCEL AUTHENTICATION COMMAND RECEIVED" -ForegroundColor Yellow
@@ -1335,6 +1671,9 @@ try {
                         Get-ChildItem -Path $env:IDENTITY_SERVICE_CACHE_DIR -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
                     }
                 } catch {}
+                $script:graphTokenFromWCM = $null
+                if (Get-Command Clear-GraphRestBearerToken -ErrorAction SilentlyContinue) { Clear-GraphRestBearerToken }
+                if (Get-Command Clear-CaCatalogCache -ErrorAction SilentlyContinue) { Clear-CaCatalogCache }
                 Write-Status "Microsoft Graph disconnected"
                 Write-Host "Graph session ended in this window. Use Graph Auth to sign in again." -ForegroundColor Green
                 Write-CommandResponse "GRAPH_DISCONNECT_SUCCESS"

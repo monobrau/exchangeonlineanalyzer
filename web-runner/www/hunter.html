@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Threat hunter</title>
+  <style>
+    :root { font-family: Segoe UI, system-ui, sans-serif; color: #1a1a1a; background: #f4f6f8; }
+    html, body { height: 100%; }
+    body { margin: 0; padding: 0.6rem 0.85rem 0.75rem; max-width: none; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
+    h1 { margin: 0 0 0.2rem; font-size: 1.15rem; }
+    h2 { font-size: 1.02rem; margin: 0 0 0.45rem; }
+    .intro { margin: 0 0 0.45rem; }
+    .layout { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0.65rem; }
+    .queueCard { flex: 1 1 auto; }
+    .work { display: none; min-height: 0; overflow: auto; flex-direction: column; gap: 0.65rem; }
+    .layout:has(#ticketCard:not([hidden])) .queueCard,
+    .layout:has(#ticketCard:not([hidden])) .intro,
+    .layout:has(#ticketCard:not([hidden])) h1 { display: none; }
+    .layout:has(#ticketCard:not([hidden])) .work { display: flex; flex: 1 1 auto; }
+    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 0.75rem 0.9rem; margin: 0; min-height: 0; display: flex; flex-direction: column; }
+    .card[hidden] { display: none !important; }
+    .work { overflow: hidden; }
+    .workBar { display: flex; align-items: center; gap: 0.75rem; flex: 0 0 auto; }
+    .workBar[hidden] { display: none !important; }
+    #workBarTitle { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #ticketCard { flex: 0 0 auto; overflow: auto; max-height: 28vh; }
+    .panes { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.15fr) minmax(0, 1fr); gap: 0.55rem; }
+    .panes > .outputPanel, .panes > .draftCol { min-height: 0; overflow: auto; display: flex; flex-direction: column; border: 1px solid #eaeef2; border-radius: 6px; padding: 0.45rem 0.55rem; }
+    .draftCol details { margin-top: 0.35rem; }
+    .draftCol > #panelClient { flex: 1 0 auto; min-height: 18rem; }
+    #panelClient > #clientNotes { flex: 0 1 auto; max-height: 6rem; }
+    #verdictBadge { font-weight: 700; margin: 0 0 0.35rem; }
+    #verdictBadge[hidden] { display: none !important; }
+    @media (max-width: 1100px) {
+      .panes { grid-template-columns: 1fr; overflow: auto; }
+      .panes > .outputPanel, .panes > .draftCol { max-height: 70vh; }
+    }
+    #ticketSetup > summary { cursor: pointer; font-weight: 600; }
+    #outputCard { flex: 1 1 auto; overflow: hidden; min-height: 0; }
+    #outputCard[hidden] { display: none !important; }
+    #notesCard { flex: 0 0 auto; overflow: visible; padding-top: 0.35rem; }
+    button { margin: 0.25rem 0.35rem 0.25rem 0; padding: 0.45rem 0.85rem; cursor: pointer; border-radius: 6px; border: 1px solid #8c959f; background: #f6f8fa; }
+    button.primary { background: #0969da; color: #fff; border-color: #0969da; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .muted { color: #57606a; font-size: 0.9rem; }
+    label { display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 1rem; margin-bottom: 0.35rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; align-items: center; margin-bottom: 0.45rem; }
+    input[type="text"], input[type="number"], select, textarea { padding: 0.35rem; }
+    input[type="text"] { min-width: 16rem; }
+    select { min-width: 12rem; max-width: 100%; }
+    textarea { width: 100%; min-height: 8rem; box-sizing: border-box; font: inherit; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92rem; table-layout: fixed; }
+    th, td { text-align: left; padding: 0.4rem 0.45rem; border-bottom: 1px solid #eaeef2; vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    th:nth-child(1), td:nth-child(1) { width: 2rem; text-align: center; }
+    th:nth-child(2), td:nth-child(2) { width: 5.2rem; }
+    th:nth-child(3), td:nth-child(3) { width: 4.6rem; }
+    th:nth-child(4), td:nth-child(4) { width: 11rem; }
+    th:nth-child(6), td:nth-child(6) { width: 4.8rem; }
+    th:nth-child(7), td:nth-child(7) { width: 8.5rem; }
+    th:nth-child(8), td:nth-child(8) { width: 6rem; }
+    th:nth-child(9), td:nth-child(9) { width: 8rem; }
+    th:nth-child(10), td:nth-child(10) { width: 3.4rem; }
+    .triageMark { color: #1a7f37; font-weight: 600; font-size: 0.82rem; }
+    .pri { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
+    .pri i { width: 0.7rem; height: 0.7rem; border-radius: 50%; display: inline-block; flex: 0 0 auto; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.25); }
+    #escSummary { min-height: 6rem; }
+    tr.ticket { cursor: pointer; }
+    tr.ticket:hover { background: #f6f8fa; }
+    tr.ticket.selected { background: #ddf4ff; }
+    button.sort { border: 0; background: transparent; margin: 0; padding: 0; font: inherit; font-weight: 600; color: inherit; }
+    button.sort.active { color: #0969da; }
+    #filterKeyword { min-width: 14rem; }
+    #filterName { min-width: 10rem; }
+    .queue { flex: 1; min-height: 0; max-height: none; overflow: auto; border: 1px solid #eaeef2; border-radius: 6px; }
+    #enrichLog { max-height: 8rem; margin: 0.5rem 0 0; }
+    thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
+    pre, textarea.editor { background: #fff; color: #1a1a1a; border: 1px solid #d0d7de; border-left: 4px solid #0969da; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: none; white-space: pre-wrap; font-size: 0.92rem; line-height: 1.4; }
+    .noteList { flex: 1 1 auto; min-height: 8rem; overflow: auto; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 0.55rem; display: flex; flex-direction: column; gap: 0.6rem; }
+    .noteList.empty { flex: 0 0 auto; min-height: 0; }
+    .threadTabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.35rem 0; }
+    .threadTabs button.active { background: #ddf4ff; border-color: #0969da; }
+    .outputPanel { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+    .outputPanel[hidden] { display: none !important; }
+    .outputPanel textarea.editor { flex: 1 1 auto; min-height: 8rem; }
+    .revisionBox { flex: 0 0 auto; margin-top: 0.45rem; }
+    textarea.revision { flex: 0 0 auto; min-height: 4.5rem; margin: 0.25rem 0 0.45rem; }
+    .threadNote { margin: 0; padding: 0.55rem 0.7rem 0.65rem; background: #fff; border: 1px solid #d0d7de; border-left: 4px solid #6e7781; border-radius: 6px; }
+    .threadNote.kind-description { border-left-color: #0969da; }
+    .threadNote.kind-discussion { border-left-color: #1a7f37; }
+    .threadNote.kind-internal { border-left-color: #9a6700; }
+    .threadNote.kind-resolution { border-left-color: #8250df; }
+    .threadNote .meta { color: #424a53; font-size: 0.82rem; font-weight: 600; margin-bottom: 0.4rem; padding-bottom: 0.3rem; border-bottom: 1px solid #eaeef2; }
+    .threadNote .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .noteActions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem; }
+    .noteDeleteBtn { color: #a40e26; border-color: #f1aeb5; }
+    .noteTime { display: flex; flex-wrap: wrap; gap: 0.35rem 0.8rem; align-items: center; margin-top: 0.35rem; }
+    .noteTime[hidden] { display: none !important; }
+    .threadNote a { color: #0969da; }
+    #manageLogBody { white-space: pre-wrap; margin: 0.35rem 0 0.6rem; }
+    textarea.editor { width: 100%; min-height: 12rem; box-sizing: border-box; font: inherit; resize: vertical; }
+    #userMatches button { display: block; width: 100%; text-align: left; }
+    .status { min-height: 1.2rem; margin: 0.35rem 0; }
+    .warn { color: #7d4e00; }
+    .bad { color: #a40e26; }
+    .noteHead { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Threat hunter</h1>
+  <p class="intro muted">Open Security tickets. Posting writes notes as <span id="memberLabel">cknospe</span> and sets the status. It does not close the ticket.</p>
+  <div class="layout">
+  <section class="card queueCard">
+    <div class="row">
+      <h2 style="margin:0">Security board</h2>
+      <button type="button" id="btnRefresh">Refresh</button>
+      <button type="button" id="btnEnrich">Add alert enrichment</button>
+      <span id="queueStatus" class="muted"></span>
+    </div>
+    <div class="row">
+      <label>Owner
+        <select id="filterOwner">
+          <option value="none">No owner</option>
+          <option value="any">Any owner</option>
+          <option value="mine">Mine</option>
+          <option value="owned">Has an owner</option>
+        </select>
+      </label>
+      <label>Status
+        <select id="filterStatus"><option value="">Any status</option></select>
+      </label>
+      <label>Keyword
+        <input type="text" id="filterKeyword" placeholder="company, summary, or ticket #" autocomplete="off" />
+      </label>
+      <label title="Hides summaries R-Vulnerability Scan &amp; Report and Security Foundations Review">
+        <input type="checkbox" id="hideRoutine" checked />
+        Hide scan and foundations tickets
+      </label>
+      <label>Save as
+        <input type="text" id="filterName" placeholder="Filter name" autocomplete="off" />
+      </label>
+      <button type="button" id="btnSaveFilter">Save filter</button>
+      <label>Saved
+        <select id="savedFilters"><option value="">Choose a saved filter</option></select>
+      </label>
+      <button type="button" id="btnDeleteFilter">Delete saved</button>
+    </div>
+    <div class="queue">
+      <table>
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="pickVisible" title="Select the tickets in this list" /></th>
+            <th><button type="button" class="sort" data-sort="id" data-label="#">#</button></th>
+            <th><button type="button" class="sort" data-sort="priority" data-label="Priority">Priority</button></th>
+            <th><button type="button" class="sort" data-sort="company" data-label="Company">Company</button></th>
+            <th><button type="button" class="sort" data-sort="summary" data-label="Summary">Summary</button></th>
+            <th><button type="button" class="sort" data-sort="triage" data-label="Triage">Triage</button></th>
+            <th><button type="button" class="sort" data-sort="status" data-label="Status">Status</button></th>
+            <th><button type="button" class="sort" data-sort="owner" data-label="Owner">Owner</button></th>
+            <th><button type="button" class="sort" data-sort="entered" data-label="Entered">Entered</button></th>
+            <th><button type="button" class="sort" data-sort="age" data-label="Age">Age</button></th>
+          </tr>
+        </thead>
+        <tbody id="ticketRows"></tbody>
+      </table>
+    </div>
+    <pre id="enrichLog" class="muted" hidden></pre>
+  </section>
+
+  <div class="work">
+  <div class="workBar" id="workBar" hidden>
+    <button type="button" id="btnBackToQueue">Back to tickets</button>
+    <span id="workBarTitle"></span>
+  </div>
+  <section class="card" id="ticketCard" hidden>
+    <details id="ticketSetup" open>
+    <summary id="ticketTitle">Mailbox and status</summary>
+    <p id="ticketMeta" class="muted"></p>
+    <h2>User</h2>
+    <p class="muted">Search the signed-in tenant and choose the person before the check. The contact on the ticket is not always the mailbox.</p>
+    <div class="row">
+      <label>Search
+        <input type="text" id="userSearch" placeholder="name or email" autocomplete="off" />
+      </label>
+      <button type="button" id="btnFindUser">Find user</button>
+    </div>
+    <p id="userStatus" class="status"></p>
+    <div id="userMatches"></div>
+    <div class="row">
+      <label>Mailbox to check
+        <input type="text" id="mailbox" placeholder="user@company.com" autocomplete="off" />
+      </label>
+      <label>From the alert
+        <select id="mailboxPick"><option value="">Choose an address</option></select>
+      </label>
+    </div>
+    <div class="row">
+      <label>Signed-in tenant
+        <select id="tenantPick"><option value="">No tenant yet</option></select>
+      </label>
+      <button type="button" id="btnTenants">Refresh tenants</button>
+      <button type="button" id="btnAddTenant">Add tenant</button>
+      <button type="button" id="btnExoAuth" hidden>Exchange Auth</button>
+      <button type="button" id="btnGraphAuth" hidden>Graph Auth</button>
+    </div>
+    <p id="tenantEmpty" class="muted" hidden>No tenant yet. Add one here, then sign in to Exchange and Graph. The sign-in windows open on this PC.</p>
+    <p id="authStatus" class="status"></p>
+    <div class="row">
+      <label><input type="checkbox" id="autoRepull" checked /> Pull a longer window automatically</label>
+    </div>
+    <div class="row">
+      <label>Status
+        <select id="ticketStatus"></select>
+      </label>
+      <button type="button" id="btnSetStatus">Set status</button>
+    </div>
+    <div class="row" id="closeTime" hidden>
+      <label>Time
+        <select id="closeTimePick">
+          <option value="none">No time</option>
+          <option value="remote">Remote Consulting (billable)</option>
+          <option value="communication">Communication (not billable)</option>
+        </select>
+      </label>
+      <label>Start
+        <input type="datetime-local" id="closeStart" />
+      </label>
+      <label>Hours
+        <input type="number" id="closeHours" min="0.25" max="24" step="0.25" value="0.25" style="min-width:5rem" />
+      </label>
+    </div>
+    <p id="statusChange" class="status"></p>
+    <button type="button" class="primary" id="btnTriage">Triage alert</button>
+    <button type="button" id="btnScan">Run threat check</button>
+    <button type="button" id="btnReturn">Send back to Security queue</button>
+    <button type="button" id="btnReviewAgain" hidden>Review again</button>
+    <button type="button" id="btnRepull" hidden>Pull longer window and review again</button>
+    <p id="scanStatus" class="status"></p>
+    </details>
+  </section>
+
+  <section class="card" id="outputCard" hidden>
+    <div class="threadTabs" id="outputTabs">
+      <button type="button" class="outputTab active" data-output="ticket">Ticket</button>
+      <button type="button" class="outputTab" data-output="review">Review</button>
+      <button type="button" class="outputTab" data-output="client">Client email</button>
+      <button type="button" class="outputTab" data-output="internal">Internal note</button>
+      <button type="button" class="outputTab" data-output="incident">Incident report</button>
+    </div>
+    <div class="panes">
+    <div class="outputPanel" id="panelTicket" data-output="ticket">
+      <div id="ticketThread" class="noteList"></div>
+      <details id="manageLog">
+        <summary>Manage writes from this hunter</summary>
+        <div id="manageLogBody" class="muted">No writes yet.</div>
+      </details>
+    </div>
+    <div class="outputPanel" id="panelReview" data-output="review">
+      <p id="verdictBadge" hidden></p>
+      <label for="review">Review. Edit this before writing the notes.</label>
+      <textarea id="review" class="editor" placeholder="The review shows up here after a threat check. It is not saved on the ticket."></textarea>
+      <div class="revisionBox">
+        <label for="reviewRevision">Revision for the next review</label>
+        <textarea id="reviewRevision" class="revision" placeholder="Tell the model what to change. It rewrites this review from the logs already pulled."></textarea>
+        <button type="button" id="btnReviseReview" hidden>Revise the review</button>
+        <button type="button" id="btnNotes" hidden>Write the notes</button>
+      </div>
+    </div>
+    <div class="draftCol">
+    <div class="outputPanel" id="panelClient" data-output="client">
+      <div id="clientNotes" class="noteList"></div>
+      <div class="noteHead">
+        <label><input type="checkbox" id="useClient" checked /> Client email</label>
+        <label>Insert
+          <select id="clientInsert">
+            <option value="">Choose a client line</option>
+            <option value="authorized">Authorized activity</option>
+            <option value="false-positive">False positive</option>
+            <option value="true-positive">True positive</option>
+            <option value="unsecured-credentials">Huntress unsecured credentials</option>
+          </select>
+        </label>
+      </div>
+      <textarea id="clientText" class="editor"></textarea>
+    </div>
+    <details id="internalWrap">
+    <summary>Internal note</summary>
+    <div class="outputPanel" id="panelInternal" data-output="internal">
+      <div id="internalNotes" class="noteList"></div>
+      <div class="noteHead">
+        <label><input type="checkbox" id="useInternal" checked /> Internal note</label>
+      </div>
+      <textarea id="internalText" class="editor"></textarea>
+      <details id="escalation">
+        <summary>Escalation handoff</summary>
+        <label><input type="checkbox" id="useEscalation" /> Include this internal note</label>
+        <div class="row">
+          <label>Type
+            <select id="escKind">
+              <option value="functional">Functional (to another team)</option>
+              <option value="hierarchical">Hierarchical (to a lead)</option>
+            </select>
+          </label>
+          <label>From <input type="text" id="escFrom" autocomplete="off" /></label>
+          <label>To <input type="text" id="escTo" placeholder="team or person" autocomplete="off" /></label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="escExpertise" /> Security expertise</label>
+          <label><input type="checkbox" id="escAccess" /> Access limitation</label>
+          <label><input type="checkbox" id="escVendor" /> Vendor-specific</label>
+          <label><input type="checkbox" id="escSla" /> SLA risk</label>
+          <label><input type="checkbox" id="escOther" /> Other</label>
+          <input type="text" id="escOtherText" placeholder="Other reason" autocomplete="off" />
+        </div>
+        <label>Summary</label>
+        <textarea id="escSummary" class="editor"></textarea>
+      </details>
+    </div>
+    </details>
+    <details id="incidentWrap">
+    <summary>Incident report</summary>
+    <div class="outputPanel" id="panelIncident" data-output="incident">
+      <div id="incidentNotes" class="noteList"></div>
+      <div class="noteHead">
+        <label><input type="checkbox" id="useIncident" /> Incident report</label>
+      </div>
+      <textarea id="incidentText" class="editor"></textarea>
+    </div>
+    </details>
+    <div id="notesCard" hidden>
+    <div class="revisionBox">
+      <label for="notesRevision">Revision for the notes</label>
+      <textarea id="notesRevision" class="revision" placeholder="Tell the model what to change in the client email, internal note, and incident report."></textarea>
+      <button type="button" id="btnReviseNotes">Revise the notes</button>
+    </div>
+    <p class="muted">Post sends the checked notes. The client email is a discussion note, and time is added on that note only. The internal note is not emailed and has no time. The incident report is a second discussion note with no time.</p>
+    <div class="row" style="margin-top:0.75rem">
+      <label>Status
+        <select id="statusPick">
+          <option value="review">Review — investigation is done</option>
+          <option value="waiting">Waiting on Client — need something from the client</option>
+          <option value="keep">Leave status — alert triage only</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <label>Time on the client email
+        <select id="timePick">
+          <option value="none">No time</option>
+          <option value="remote">Remote Consulting (billable)</option>
+          <option value="communication">Communication (not billable)</option>
+        </select>
+      </label>
+      <label>Hours
+        <input type="number" id="hours" min="0.25" max="24" step="0.25" value="0.25" style="min-width:5rem" />
+      </label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="includeRecipients" /> Email the ticket's existing client recipients</label>
+    </div>
+    <p id="recipientList" class="muted"></p>
+    <button type="button" class="primary" id="btnPost">Post selected notes</button>
+    <p id="postStatus" class="status"></p>
+    </div>
+    </div>
+    </div>
+  </section>
+  </div>
+  </div>
+
+  <script src="hunter.js"></script>
+</body>
+</html>
