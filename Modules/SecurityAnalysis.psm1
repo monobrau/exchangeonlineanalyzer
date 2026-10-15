@@ -21,6 +21,14 @@ $script:requiredScopes = @(
     "Directory.Read.All"
 )
 
+function Test-SecurityAnalysisRestGraph {
+    try {
+        return [bool]((Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue) -and (Test-GraphRestBearerToken))
+    } catch {
+        return $false
+    }
+}
+
 function Test-SecurityAnalysisModules {
     [CmdletBinding()]
     param()
@@ -271,7 +279,11 @@ function Get-ConditionalAccessPolicies {
         $policies = @()
         
         try {
-            $caPolicies = Get-MgIdentityConditionalAccessPolicy -ErrorAction Stop
+            if (Test-SecurityAnalysisRestGraph) {
+                $caPolicies = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies')
+            } else {
+                $caPolicies = Get-MgIdentityConditionalAccessPolicy -ErrorAction Stop
+            }
             Write-Host "Found $($caPolicies.Count) Conditional Access policies" -ForegroundColor Cyan
             
             foreach ($policy in $caPolicies) {
@@ -280,7 +292,7 @@ function Get-ConditionalAccessPolicies {
                     IsEnabled = $policy.State -eq "enabled"
                     HasSuspiciousConditions = $false
                     HasSuspiciousControls = $false
-                    SuspiciousIndicators = @()
+                    SuspiciousIndicators = [System.Collections.ArrayList]::new()
                     RiskScore = 0
                 }
                 
@@ -340,7 +352,7 @@ function Get-ConditionalAccessPolicies {
                     $requiresCompliantDevice = $policy.GrantControls.BuiltInControls -contains "compliantDevice"
                     $requiresHybridDevice = $policy.GrantControls.BuiltInControls -contains "domainJoinedDevice"
                     if (-not $requiresCompliantDevice -and -not $requiresHybridDevice) {
-                        $analysis.SuspiciousIndicators += "No device compliance requirement"
+                        [void]$analysis.SuspiciousIndicators.Add("No device compliance requirement")
                         $analysis.RiskScore += 1
                     }
                 }
@@ -371,14 +383,11 @@ function Get-ConditionalAccessPolicies {
             
         } catch {
             if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
-                Write-Warning "Insufficient permissions to read Conditional Access policies. Requires 'Policy.Read.All' permission."
-                return @()
+                throw "Permission denied - requires Policy.Read.All to read Conditional Access policies. $($_.Exception.Message)"
             } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*") {
-                Write-Warning "Conditional Access requires Azure AD Premium P1 license."
-                return @()
+                throw "Conditional Access requires Azure AD Premium P1 (or equivalent). $($_.Exception.Message)"
             } else {
-                Write-Warning "Error retrieving CA policies: $($_.Exception.Message)"
-                return @()
+                throw
             }
         }
         
@@ -386,7 +395,7 @@ function Get-ConditionalAccessPolicies {
         
     } catch {
         Write-Error "Failed to get Conditional Access policies: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 
@@ -403,14 +412,22 @@ function Get-AppRegistrations {
         $appRegistrations = @()
         
         try {
-            $apps = Get-MgApplication -All -ErrorAction Stop
+            if (Test-SecurityAnalysisRestGraph) {
+                $apps = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/applications')
+            } else {
+                $apps = Get-MgApplication -All -ErrorAction Stop
+            }
             Write-Host "Found $($apps.Count) app registrations" -ForegroundColor Cyan
             
             # Pre-fetch all service principals to avoid repeated calls (performance optimization)
             Write-Host "Pre-fetching service principals for permission resolution..." -ForegroundColor Cyan
             $allServicePrincipals = @{}
             try {
-                $sps = Get-MgServicePrincipal -All -ErrorAction SilentlyContinue
+                if (Test-SecurityAnalysisRestGraph) {
+                    $sps = @(Invoke-GraphRestPaged -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals')
+                } else {
+                    $sps = Get-MgServicePrincipal -All -ErrorAction SilentlyContinue
+                }
                 foreach ($sp in $sps) {
                     $allServicePrincipals[$sp.AppId] = $sp
                 }
@@ -539,7 +556,7 @@ function Get-AppRegistrations {
                 if ($app.PublisherDomain) {
                     if ($app.PublisherDomain -notlike "*.onmicrosoft.com" -and $app.PublisherDomain -notlike "*.microsoft.com") {
                         # External publisher - might be suspicious
-                        $analysis.SuspiciousIndicators += "External publisher: $($app.PublisherDomain)"
+                        [void]$analysis.SuspiciousIndicators.Add("External publisher: $($app.PublisherDomain)")
                         $analysis.RiskScore += 1
                     }
                 } else {
@@ -549,7 +566,7 @@ function Get-AppRegistrations {
                 
                 # Check if app is disabled or deleted
                 if ($app.DeletedDateTime) {
-                    $analysis.SuspiciousIndicators += "App is deleted"
+                    [void]$analysis.SuspiciousIndicators.Add("App is deleted")
                     $analysis.RiskScore += 1
                 }
                 
@@ -613,11 +630,9 @@ function Get-AppRegistrations {
             
         } catch {
             if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
-                Write-Warning "Insufficient permissions to read app registrations. Requires 'Application.Read.All' permission."
-                return @()
+                throw "Permission denied - requires Application.Read.All to read app registrations. $($_.Exception.Message)"
             } else {
-                Write-Warning "Error retrieving app registrations: $($_.Exception.Message)"
-                return @()
+                throw
             }
         }
         
@@ -625,7 +640,7 @@ function Get-AppRegistrations {
         
     } catch {
         Write-Error "Failed to get app registrations: $($_.Exception.Message)"
-        return @()
+        throw
     }
 }
 

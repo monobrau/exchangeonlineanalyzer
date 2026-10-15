@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+  <meta charset="UTF-8" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <title>EOA Bulk Runner</title>
+
+  <style>
+
+    :root { font-family: Segoe UI, system-ui, sans-serif; color: #1a1a1a; background: #f4f6f8; }
+
+    body { margin: 0; padding: 1.5rem; max-width: 1024px; }
+
+    h1 { margin-top: 0; font-size: 1.4rem; }
+
+    h2 { font-size: 1.05rem; margin: 0 0 0.65rem; }
+
+    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+
+    button { margin: 0.25rem 0.35rem 0.25rem 0; padding: 0.45rem 0.85rem; cursor: pointer; border-radius: 6px; border: 1px solid #8c959f; background: #f6f8fa; }
+
+    button.primary { background: #0969da; color: #fff; border-color: #0969da; }
+
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    select, input[type="text"], input[type="number"], input[type="datetime-local"] { padding: 0.35rem; min-width: 140px; }
+
+    input[type="text"].ticketInput { min-width: 160px; }
+
+    input[type="text"].userSearchInput { min-width: 320px; max-width: 100%; }
+    select.investigateFolderSelect { max-width: 16rem; font-size: 0.82rem; }
+
+    pre { background: #0d1117; color: #c9d1d9; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: 220px; font-size: 0.82rem; }
+    pre.copyBlock { background: #fff; color: #1a1a1a; border: 1px solid #0969da; border-left: 4px solid #0969da; max-height: 36rem; white-space: pre-wrap; }
+    .becInvestigate { margin: 0.75rem 0; padding: 0.65rem 0.75rem; border: 1px solid #0969da; border-radius: 8px; background: #fff; }
+
+    .tenant { border-top: 1px solid #eaeef2; padding-top: 0.75rem; margin-top: 0.75rem; }
+
+    .muted { color: #57606a; font-size: 0.9rem; }
+
+    label { display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 1rem; margin-bottom: 0.35rem; }
+
+    .row { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: center; margin-bottom: 0.35rem; }
+
+    .sectionLabel { font-size: 0.85rem; font-weight: 600; color: #424a53; margin: 0.5rem 0 0.25rem; }
+
+    button.success { background: #1a7f37; color: #fff; border-color: #1a7f37; }
+    button.dangerFill { background: #cf222e; color: #fff; border-color: #cf222e; }
+    button.dangerFill:hover:not(:disabled) { background: #a40e26; }
+
+    .outputPath { font-size: 0.85rem; word-break: break-all; margin: 0.35rem 0; }
+
+    .validatedUsersList { font-size: 0.82rem; max-height: 4.5rem; overflow: auto; margin: 0.25rem 0; }
+    details.collapsible summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 0.5rem; }
+    details.collapsible summary::-webkit-details-marker { display: none; }
+    details.collapsible summary::before { content: '▸'; font-size: 0.75rem; color: #57606a; }
+    details.collapsible[open] summary::before { content: '▾'; }
+    details.collapsible .collapsible-body { margin-top: 0.65rem; }
+    details.collapsible:not([open]) .collapsible-body { display: none; }
+    .tenantSummary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.65rem; }
+    .tenantSummaryTitle { flex: 1 1 180px; min-width: 0; }
+    .tenantSummaryActions { display: inline-flex; gap: 0.35rem; margin-left: auto; flex-shrink: 0; }
+    .tenantStatusBadge { font-size: 0.78rem; font-weight: 600; padding: 0.12rem 0.45rem; border-radius: 999px; white-space: nowrap; border: 1px solid #d0d7de; background: #f6f8fa; color: #57606a; }
+    .tenantStatusBadge.status-generating { border-color: #bf8700; background: #fff8c5; color: #7d4e00; }
+    .tenantStatusBadge.status-auth { border-color: #0969da; background: #ddf4ff; color: #0550ae; }
+    .tenantStatusBadge.status-ready { border-color: #1a7f37; background: #dafbe1; color: #116329; }
+    .tenantStatusBadge.status-failed { border-color: #cf222e; background: #ffebe9; color: #a40e26; }
+    button.tenantStatusBtn { font-size: 0.78rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; white-space: nowrap; }
+    button.tenantStatusBtn.success { background: #1a7f37; color: #fff; border-color: #1a7f37; }
+    button.tenantStatusBtn.success:hover { background: #116329; }
+    button.danger { background: #fff; color: #cf222e; border-color: #cf222e; }
+    button.danger:hover { background: #ffebe9; }
+    button.small { padding: 0.25rem 0.55rem; font-size: 0.82rem; }
+    .historyTable { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .historyTable th, .historyTable td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eaeef2; vertical-align: top; }
+    .historyTable tr:hover { background: #f6f8fa; }
+    .historyActions { white-space: nowrap; }
+    .historyActions button { margin-right: 0.25rem; margin-bottom: 0.15rem; }
+    .historySection { margin-top: 1rem; }
+    .historySection:first-of-type { margin-top: 0.5rem; }
+    .historySectionTitle { font-size: 0.95rem; margin: 0 0 0.35rem; }
+    .historySearch { width: 100%; max-width: 28rem; margin: 0.35rem 0 0.5rem; padding: 0.35rem 0.5rem; font: inherit; border: 1px solid #d0d7de; border-radius: 6px; }
+    .historyTable th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .historyTable th.sortable:hover { color: #0969da; }
+    .historyTable th .sortInd { font-size: 0.72rem; color: #57606a; margin-left: 0.15rem; }
+    .historyTable th.sortActive .sortInd { color: #0969da; }
+    .historyTable th.colEmpty, .historyTable td.colEmpty { display: none; }
+    .historyClients { line-height: 1.35; }
+    .reportExportGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.25rem 1rem; margin: 0.35rem 0; }
+    .reportExportGrid label { font-size: 0.88rem; font-weight: normal; margin: 0; }
+    .reportExportGroup { margin: 0.5rem 0 0.75rem; }
+    .reportExportGroupTitle { font-size: 0.82rem; font-weight: 600; color: #57606a; margin-bottom: 0.25rem; }
+    .reportExportsHint.customized { color: #9a6700; font-weight: 600; }
+    .reportExportMt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.45rem; }
+    .reportExportMt label { margin: 0; }
+    .mtScopeHint, .ualScopeHint { margin: 0.35rem 0 0; font-size: 0.85rem; }
+    .eoaDialog { position: fixed; inset: 0; z-index: 80; display: flex; align-items: flex-start; justify-content: center; padding: 8vh 1rem 1rem; }
+    .eoaDialog[hidden] { display: none !important; }
+    .eoaDialogBackdrop { position: absolute; inset: 0; background: rgba(27, 31, 36, 0.45); }
+    .eoaDialogPanel { position: relative; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 1rem 1.15rem; width: min(34rem, 100%); max-height: 80vh; overflow: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+    .eoaDialogPanel h3 { margin: 0 0 0.35rem; font-size: 1.05rem; }
+    .mtStatusPresets { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.4rem 0; }
+    .mtStatusList { display: flex; flex-direction: column; gap: 0.28rem; margin: 0.5rem 0; max-height: 16rem; overflow: auto; }
+    .mtStatusList label { font-weight: normal; margin: 0; align-items: flex-start; }
+    .mtStatusList .muted { font-size: 0.78rem; }
+    .eoaDialogActions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.65rem; }
+    .logTabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.35rem; }
+    .logTabs button { padding: 0.25rem 0.55rem; font-size: 0.82rem; }
+    .logTabs button.active { background: #0969da; color: #fff; border-color: #0969da; }
+    .logPanel { display: none; }
+    .logPanel.active { display: block; }
+    .logPanel pre { max-height: 320px; overflow: auto; margin: 0; }
+    .wcmActions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }
+    .securityPanel { margin: 0.5rem 0; padding: 0.5rem 0.65rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .securityChips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0; }
+    .securityChip { font-size: 0.75rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid #d0d7de; background: #fff; color: #424a53; }
+    .securityChip.on { border-color: #1a7f37; background: #dafbe1; color: #116329; }
+    .securityChip.warn { border-color: #bf8700; background: #fff8c5; color: #7d4e00; }
+    .securityGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.2rem 0.75rem; margin: 0.35rem 0; }
+    .securityGrid label { font-size: 0.85rem; font-weight: normal; margin: 0; }
+    .securityNotice { font-size: 0.82rem; color: #9a6700; margin: 0.35rem 0; }
+    .curatePanel { margin: 0.5rem 0; padding: 0.5rem 0.65rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .curateFacets { max-height: 22rem; overflow: auto; margin-top: 0.5rem; }
+    .curateSource { margin: 0.65rem 0; padding: 0.45rem 0.55rem; border: 1px solid #eaeef2; border-radius: 6px; background: #fff; }
+    .curateSourceTitle { font-size: 0.88rem; font-weight: 600; margin-bottom: 0.25rem; }
+    .curateFacet { margin: 0.4rem 0 0.2rem; }
+    .curateFacetName { font-size: 0.8rem; font-weight: 600; color: #57606a; margin-bottom: 0.15rem; }
+    .curateValues { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.15rem 0.65rem; }
+    .curateValues label { font-size: 0.8rem; font-weight: normal; margin: 0; align-items: flex-start; }
+    .curatePreview { font-size: 0.82rem; margin-top: 0.45rem; white-space: pre-wrap; }
+    .containmentPanel .containmentBody { margin-top: 0.5rem; }
+    .containmentUserList { display: flex; flex-direction: column; gap: 0.15rem; margin: 0.35rem 0; max-height: 8rem; overflow: auto; }
+    .containmentUserList label { font-size: 0.85rem; font-weight: normal; margin: 0; }
+    .containmentConfirm { min-width: 22rem; max-width: 100%; }
+    .containmentStatus {
+      display: none;
+      font-size: 0.98rem;
+      font-weight: 600;
+      margin: 0.55rem 0 0.75rem;
+      padding: 0.7rem 0.85rem;
+      border-radius: 8px;
+      border: 2px solid #d0d7de;
+      background: #fff;
+      color: #1f2328;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+    .containmentStatus.hasStatus { display: block; }
+    .containmentStatus.statusBusy { background: #fff8c5; border-color: #d4a72c; color: #633c01; }
+    .containmentStatus.statusOk { background: #dafbe1; border-color: #1a7f37; color: #0f3d1a; }
+    .containmentStatus.statusWarn { background: #fff1e5; border-color: #bc4c00; color: #762d00; }
+    .containmentStatus.statusBad { background: #ffebe9; border-color: #cf222e; color: #82071e; }
+    .signinChip { display: flex; flex-wrap: wrap; gap: 0.3rem 0.75rem; align-items: baseline; padding: 0.4rem 0; border-bottom: 1px solid rgba(31, 35, 40, 0.1); font-weight: 500; }
+    .signinChip:last-child { border-bottom: 0; padding-bottom: 0; }
+    .signinChip:first-child { padding-top: 0; }
+    .signinChip .chipLabel { font-size: 0.78rem; font-weight: 750; letter-spacing: 0.04em; padding: 0.15rem 0.5rem; border-radius: 999px; color: #fff; }
+    .signinChip.blocked .chipLabel, .signinChip.error .chipLabel { background: #cf222e; }
+    .signinChip.allowed .chipLabel { background: #1a7f37; }
+    .signinChip.restricted .chipLabel { background: #9a6700; }
+    .signinChip.ok .chipLabel { background: #0969da; }
+    .signinChip .chipUpn { font-family: ui-monospace, Consolas, monospace; font-size: 0.92rem; }
+    .containmentPhase { margin: 0.7rem 0 0; padding: 0.5rem 0.65rem 0.55rem; border: 1px solid #d8dee4; border-radius: 6px; background: #f6f8fa; }
+    .containmentPhaseTitle { font-size: 0.88rem; font-weight: 650; color: #1f2328; margin: 0 0 0.2rem; }
+    .containmentPhaseHint { font-size: 0.78rem; color: #57606a; margin: 0 0 0.4rem; }
+    .containmentRulesWrap, .containmentMailboxWrap, .containmentTransportWrap, .containmentConnectorsWrap,
+    .containmentMfaWrap, .containmentDevicesWrap, .containmentAppsWrap,
+    .containmentOauthWrap, .containmentIntuneWrap, .containmentMobileWrap, .containmentFoldersWrap,
+    .containmentAutoreplyWrap, .containmentOrgfwdWrap, .containmentJunkWrap, .containmentJournalWrap,
+    .containmentHoldWrap, .containmentElsewhereWrap, .containmentRolesWrap, .containmentAppcredsWrap,
+    .containmentFlowsWrap { max-height: 16rem; overflow: auto; margin-top: 0.45rem; }
+    .containmentPhase .historyTable thead th { position: sticky; top: 0; background: #f6f8fa; z-index: 1; }
+    .containmentRulesTable input, .containmentMailboxTable input, .containmentTransportTable input, .containmentConnectorsTable input,
+    .containmentMfaTable input, .containmentDevicesTable input, .containmentAppsTable input,
+    .containmentOauthTable input, .containmentIntuneTable input, .containmentMobileTable input, .containmentFoldersTable input,
+    .containmentOrgfwdTable input, .containmentJunkTable input, .containmentJournalTable input,
+    .containmentElsewhereTable input, .containmentRolesTable input, .containmentAppcredsTable input,
+    .containmentFlowsTable input { margin: 0; }
+    .containmentSubLabel { font-size: 0.82rem; font-weight: 600; color: #424a53; margin: 0.65rem 0 0.25rem; }
+    .containmentPhase .containmentSubLabel:first-of-type { margin-top: 0.15rem; }
+    .caCatalogPanel { margin: 0.65rem 0; padding: 0.35rem 0.55rem 0.45rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .caCatalogPanel .caCatalogBody { margin-top: 0.5rem; }
+    .caCatalogPoliciesWrap, .caCatalogLocationsWrap { margin-top: 0.35rem; overflow: visible; }
+    .caCatalogPanel .historyTable { table-layout: auto; }
+    .caCatalogPanel .historyTable td { overflow-wrap: anywhere; word-break: break-word; }
+    .caCatalogBackdrop { position: fixed; inset: 0; z-index: 89; background: rgba(27, 31, 36, 0.45); }
+    .caCatalogBackdrop[hidden] { display: none !important; }
+    .caCatalogBody.caCatalogPopped {
+      display: block !important;
+      position: fixed;
+      inset: 3vh 2vw;
+      z-index: 90;
+      width: auto;
+      height: auto;
+      margin: 0;
+      padding: 1rem 1.2rem 1.15rem;
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+    }
+    .caCatalogClosePopup { display: none; }
+    .caCatalogBody.caCatalogPopped .caCatalogClosePopup { display: inline-block; }
+    .caCatalogBody.caCatalogPopped .caCatalogOpenPopup { display: none; }
+    .caCatalogPopupBar { display: none; }
+    .caCatalogBody.caCatalogPopped .caCatalogPopupBar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.75rem; margin: 0 0 0.45rem; }
+    .caCatalogPopupBar h3 { margin: 0; font-size: 1.05rem; }
+    .caCatalogSubLabel { font-size: 0.82rem; font-weight: 600; color: #424a53; margin: 0.65rem 0 0.25rem; }
+    .caCatalogPolicyRow { cursor: pointer; }
+    .caCatalogDrawer { margin: 0.55rem 0 0; padding: 0.55rem 0.7rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+    .caCatalogDrawer h3 { margin: 0 0 0.35rem; font-size: 0.88rem; }
+    .caCatalogDrawer ul { margin: 0; padding-left: 1.1rem; }
+    .caCatalogDrawer li { margin: 0.15rem 0; font-size: 0.82rem; }
+    .caCatalogEdit { margin: 0.7rem 0 0; padding: 0.55rem 0.65rem; border: 1px dashed #d0d7de; border-radius: 6px; background: #fff; }
+    .caCatalogEdit h4 { margin: 0 0 0.3rem; font-size: 0.84rem; }
+    .caCatalogEditHint { font-size: 0.78rem; color: #57606a; margin: 0 0 0.4rem; }
+    .caCatalogUserList { max-height: 11rem; overflow: auto; margin: 0 0 0.35rem; padding: 0.2rem 0; }
+    .caCatalogUserRow { display: flex; align-items: flex-start; gap: 0.35rem; font-size: 0.8rem; margin: 0.12rem 0; }
+    .caCatalogUserRow input { margin-top: 0.15rem; }
+    .caCatalogSearchRow { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0; }
+    .caCatalogSearchRow input[type="search"] { flex: 1 1 12rem; min-width: 10rem; }
+    .caCatalogSearchHits { max-height: 9rem; overflow: auto; margin: 0.25rem 0 0.4rem; }
+    .caCatalogStatus { display: none; font-size: 0.88rem; margin: 0.45rem 0; padding: 0.45rem 0.65rem; border-radius: 6px; border: 1px solid #d0d7de; white-space: pre-wrap; }
+    .caCatalogStatus.hasStatus { display: block; }
+    .caCatalogStatus.statusBusy { background: #fff8c5; border-color: #d4a72c; color: #633c01; }
+    .caCatalogStatus.statusOk { background: #dafbe1; border-color: #1a7f37; color: #0f3d1a; }
+    .caCatalogStatus.statusWarn { background: #fff8c5; border-color: #d4a72c; color: #633c01; }
+    .caCatalogStatus.statusBad { background: #ffebe9; border-color: #cf222e; color: #82071e; }
+    .caStateChip { display: inline-block; font-size: 0.72rem; line-height: 1.2; padding: 0.12rem 0.4rem; border-radius: 999px; border: 1px solid #d0d7de; background: #f6f8fa; }
+    .caStateChip.ok { background: #dafbe1; border-color: #2da44e; color: #1a7f37; }
+    .caStateChip.report { background: #fff8c5; border-color: #bf8700; color: #9a6700; }
+    .caStateChip.muted { color: #57606a; }
+
+  </style>
+
+</head>
+
+<body>
+
+  <h1>Bulk Tenant Report Exporter (Web Runner)</h1>
+
+  <p class="muted">Local Windows runner — auth popups open on this PC. Run <strong>Exchange Auth</strong> first so auto WCM picks the matching tenant. Use <strong>Fetch from Manage</strong> for ticket text. See <code>docs/BulkWebRunnerArchitecture.md</code>.</p>
+
+
+
+  <div class="card">
+
+    <h2>Session</h2>
+
+    <div class="row">
+
+      <label>Message trace days
+
+        <select id="messageTraceDays">
+
+          <option value="1">1</option>
+
+          <option value="3">3</option>
+
+          <option value="5">5</option>
+
+          <option value="7" selected>7</option>
+
+          <option value="10">10</option>
+
+          <option value="14">14</option>
+
+          <option value="30">30</option>
+
+          <option value="45">45</option>
+
+          <option value="60">60</option>
+
+          <option value="90">90</option>
+
+        </select>
+
+      </label>
+
+      <label>Sign-in logs days
+
+        <select id="signInLogsDays">
+
+          <option value="1">1</option>
+
+          <option value="7" selected>7</option>
+
+          <option value="30">30</option>
+
+        </select>
+
+      </label>
+
+      <label id="relAmountWrap">Default timeframe
+
+        <input type="number" id="relAmount" min="1" max="90" value="7" style="min-width:4rem" />
+
+      </label>
+
+      <label>Unit
+
+        <select id="relUnit">
+
+          <option value="days" selected>Days</option>
+
+          <option value="weeks">Weeks</option>
+
+          <option value="months">Months</option>
+
+          <option value="max">Max (90 days)</option>
+
+        </select>
+
+      </label>
+
+      <span id="relHint" class="muted"></span>
+
+    </div>
+
+    <button class="primary" id="btnNewSession">New session</button>
+    <button type="button" id="btnOpenSessionTemp" class="small">View session files</button>
+    <button type="button" id="btnInvestigatePacks" class="small" onclick="location.href='investigate.html'">Investigate past reports</button>
+    <button type="button" id="btnThreatHunter" class="small" onclick="window.open('hunter.html','eoaThreatHunter','width='+screen.availWidth+',height='+screen.availHeight)">Threat hunter</button>
+
+    <span id="sessionInfo" class="muted"></span>
+
+    <details id="sessionReportExports" class="collapsible" style="margin-top:0.75rem">
+
+      <summary>Report exports (session defaults) <span id="sessionReportExportsSummary" class="muted"></span></summary>
+
+      <div class="collapsible-body">
+
+        <p class="muted" style="margin-top:0">These apply to every tenant unless a client overrides them below.</p>
+
+        <div class="row">
+          <label>Preset
+            <select id="sessionReportPreset">
+              <option value="BEC / Business Email Compromise">BEC / Business Email Compromise</option>
+            </select>
+          </label>
+          <button type="button" id="btnReportSelectAll" class="small">Select all</button>
+          <button type="button" id="btnReportSelectNone" class="small">Deselect all</button>
+        </div>
+
+        <div id="sessionReportExportsBody"></div>
+
+      </div>
+
+    </details>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <details id="sessionHistoryPanel" class="collapsible">
+
+      <summary>Session history <span id="sessionHistorySummary" class="muted">(loading…)</span></summary>
+
+      <div class="collapsible-body">
+
+        <p class="muted" style="margin-top:0">Past bulk web sessions on this PC (saved when you add tenants, fetch tickets, change settings, or authenticate). <strong>Investigate</strong> opens logs from that session’s report packs without restoring workers. <strong>Restore</strong> reopens settings and tenant slots (re-auth and re-fetch tickets as needed). <strong>Archive</strong> moves a session out of the saved list; <strong>Delete</strong> removes it permanently.</p>
+
+        <button type="button" id="btnRefreshHistory" class="small">Refresh history</button>
+
+        <section class="historySection" id="savedHistorySection">
+          <h3 class="historySectionTitle">Saved sessions <span id="savedHistorySummary" class="muted">(loading…)</span></h3>
+          <input type="search" id="savedHistorySearch" class="historySearch" placeholder="Search client, organization, ticket, session…" autocomplete="off" />
+          <div id="sessionHistoryList" class="muted">Loading…</div>
+        </section>
+
+        <section class="historySection" id="archivedHistorySection">
+          <h3 class="historySectionTitle">Archive <span id="sessionArchiveSummary" class="muted">(loading…)</span></h3>
+          <input type="search" id="archivedHistorySearch" class="historySearch" placeholder="Search client, organization, ticket, session…" autocomplete="off" />
+          <div id="sessionArchiveList" class="muted">Loading…</div>
+        </section>
+
+      </div>
+
+    </details>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <h2>Tenants</h2>
+
+    <button id="btnAddTenant">Add tenant</button>
+
+    <button id="btnRefresh">Refresh status</button>
+
+    <div id="tenants"></div>
+
+  </div>
+
+
+
+  <div class="card">
+    <details id="appRegsPanel" class="collapsible">
+      <summary>App registrations (WCM) <span id="appRegsSummary" class="muted">(loading…)</span></summary>
+      <div class="collapsible-body">
+        <div class="wcmActions">
+          <button type="button" id="btnCreateGraphApp">Create Graph App</button>
+          <button type="button" id="btnUpdateGraphAppScopes" title="Add missing Graph application permissions to the existing River Run app. Does not rotate the client secret.">Update Graph App scopes</button>
+          <button type="button" id="btnDeleteGraphApp" class="danger">Delete Graph App</button>
+          <button type="button" id="btnExportWcm">Export creds</button>
+          <button type="button" id="btnImportWcm">Import creds</button>
+          <button type="button" id="btnClearWcm">Clear local WCM</button>
+          <button type="button" id="btnLoadAppRegs" title="Re-fetch display names from Graph for tenants missing WCM labels (slow)">Refresh from Graph</button>
+        </div>
+        <pre id="appRegs">Loading…</pre>
+      </div>
+    </details>
+  </div>
+
+
+
+  <div class="card">
+
+    <h2>Log</h2>
+
+    <div id="logTabs" class="logTabs"><button type="button" class="active" data-log-tab="activity">Activity</button></div>
+    <div id="logPanelActivity" class="logPanel active"><pre id="log"></pre></div>
+
+  </div>
+
+
+
+  </div>
+
+
+
+  <div id="mtStatusDialog" class="eoaDialog" hidden>
+    <div class="eoaDialogBackdrop" data-mt-dismiss="1"></div>
+    <div class="eoaDialogPanel" role="dialog" aria-labelledby="mtStatusTitle">
+      <h3 id="mtStatusTitle">Message trace statuses</h3>
+      <p class="muted" style="margin:0 0 0.45rem">Leave all unchecked for every status (full volume). Quarantined and Filtered as spam only work for searches shorter than 10 days — generate will clamp those pulls.</p>
+      <label>Search
+        <input type="search" id="mtStatusSearch" placeholder="quarantined, failed, spam…" autocomplete="off" />
+      </label>
+      <div class="mtStatusPresets">
+        <button type="button" class="small" data-mt-chip="all">All</button>
+        <button type="button" class="small" data-mt-chip="Quarantined">Quarantined</button>
+        <button type="button" class="small" data-mt-chip="Failed">Failed</button>
+        <button type="button" class="small" data-mt-chip="FilteredAsSpam">Filtered as spam</button>
+        <button type="button" class="small" data-mt-chip="issues">Delivery issues</button>
+      </div>
+      <div id="mtStatusList" class="mtStatusList"></div>
+      <p id="mtStatusWarn" class="muted"></p>
+      <div class="eoaDialogActions">
+        <button type="button" class="primary" id="mtStatusApply">Apply</button>
+        <button type="button" id="mtStatusCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+
+</body>
+
+</html>
+
+

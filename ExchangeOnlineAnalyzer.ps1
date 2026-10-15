@@ -51,6 +51,7 @@ function Add-ToolTip {
 # Import Logging module first (contains Safe-ImportModule utility)
 Import-Module "$PSScriptRoot\Modules\Logging.psm1" -Global -ErrorAction Stop
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\ExchangeOnline.psm1"
+Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\ConnectWiseManage.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\GraphOnline.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\MailboxAnalysis.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\TransportRules.psm1"
@@ -58,8 +59,6 @@ Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\Connectors.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SessionRevocation.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SignInManagement.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\ExportUtils.psm1"
-$reportAnalysisPath = Join-Path $PSScriptRoot 'Modules\ReportAnalysis.psm1'
-if (Test-Path $reportAnalysisPath) { Safe-ImportModule -ModulePath $reportAnalysisPath }
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\EntraInvestigator.psm1"
 Safe-ImportModule -ModulePath "$PSScriptRoot\Modules\SecurityAnalysis.psm1"
 # Import Settings module (needed for settings tab and configuration)
@@ -1863,145 +1862,25 @@ $aiPanel.Dock = 'Fill'
 $aiPanel.Padding = New-Object System.Windows.Forms.Padding(10)
 $aiPanel.AutoScroll = $true
 
-# Rule-Based Analysis section (no LLM)
-$aiRuleBasedTitle = New-Object System.Windows.Forms.Label
-$aiRuleBasedTitle.Text = "Rule-Based Analysis (No LLM)"
-$aiRuleBasedTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiRuleBasedTitle.Location = New-Object System.Drawing.Point(10,10)
-$aiRuleBasedTitle.AutoSize = $true
-
-$aiRuleBasedDesc = New-Object System.Windows.Forms.Label
-$aiRuleBasedDesc.Text = "Analyze report folder with deterministic rules. Writes Findings.csv, _Automated_Summary.txt. No API key required."
-$aiRuleBasedDesc.Location = New-Object System.Drawing.Point(10,32)
-$aiRuleBasedDesc.Size = New-Object System.Drawing.Size(740, 28)
-$aiRuleBasedDesc.ForeColor = [System.Drawing.Color]::DarkGray
-
-$aiRuleBasedFolderLabel = New-Object System.Windows.Forms.Label
-$aiRuleBasedFolderLabel.Text = "Report Folder:"
-$aiRuleBasedFolderLabel.Location = New-Object System.Drawing.Point(10,62)
-$aiRuleBasedFolderLabel.AutoSize = $true
-
-$aiRuleBasedFolderText = New-Object System.Windows.Forms.TextBox
-$aiRuleBasedFolderText.Location = New-Object System.Drawing.Point(100, 59)
-$aiRuleBasedFolderText.Width = 520
-
-$aiRuleBasedBrowseBtn = New-Object System.Windows.Forms.Button
-$aiRuleBasedBrowseBtn.Text = "Browse..."
-$aiRuleBasedBrowseBtn.Location = New-Object System.Drawing.Point(630, 57)
-$aiRuleBasedBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
-$aiRuleBasedBrowseBtn.add_Click({
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select report folder with CSV files"
-    if ($aiRuleBasedFolderText.Text -and (Test-Path $aiRuleBasedFolderText.Text)) { $fbd.SelectedPath = $aiRuleBasedFolderText.Text }
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $aiRuleBasedFolderText.Text = $fbd.SelectedPath }
-})
-
-$aiAnalyzeBtn = New-Object System.Windows.Forms.Button
-$aiAnalyzeBtn.Text = "Analyze Report"
-$aiAnalyzeBtn.Location = New-Object System.Drawing.Point(10, 90)
-$aiAnalyzeBtn.Size = New-Object System.Drawing.Size(120, 28)
-$aiAnalyzeBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-$aiAnalyzeBtn.ForeColor = [System.Drawing.Color]::White
-$aiAnalyzeBtn.add_Click({
-    $folder = $aiRuleBasedFolderText.Text
-    if (-not $folder -or -not (Test-Path $folder)) {
-        [System.Windows.Forms.MessageBox]::Show("Select a valid report folder.", "Invalid Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        return
-    }
-    $aiRuleBasedStatus.Text = "Analyzing..."
-    $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Gray
-    $aiAnalyzeBtn.Enabled = $false
-    try {
-        if (Get-Command Invoke-ReportFolderAnalysis -ErrorAction SilentlyContinue) {
-            $result = Invoke-ReportFolderAnalysis -Path $folder -WriteOutputFiles
-            $aiRuleBasedStatus.Text = "Done: $($result.Findings.Count) findings, Risk $($result.RiskScore.Level)"
-            $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Green
-            $analysisResultForm = New-Object System.Windows.Forms.Form
-            $analysisResultForm.Text = "Rule-Based Analysis Results"
-            $analysisResultForm.Size = New-Object System.Drawing.Size(900, 600)
-            $analysisResultForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-            $tb = New-Object System.Windows.Forms.RichTextBox
-            $tb.Dock = 'Fill'
-            $tb.ReadOnly = $true
-            $tb.Font = New-Object System.Drawing.Font('Consolas', 9)
-            $tb.Text = $result.Summary
-            $analysisResultForm.Controls.Add($tb)
-            $analysisResultForm.ShowDialog()
-        } else {
-            $aiRuleBasedStatus.Text = "ReportAnalysis module not found."
-            $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Red
-        }
-    } catch {
-        $aiRuleBasedStatus.Text = "Error: $($_.Exception.Message)"
-        $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Red
-    } finally {
-        $aiAnalyzeBtn.Enabled = $true
-    }
-})
-
-$aiBulkAnalyzeBtn = New-Object System.Windows.Forms.Button
-$aiBulkAnalyzeBtn.Text = "Analyze Bulk Folders..."
-$aiBulkAnalyzeBtn.Location = New-Object System.Drawing.Point(140, 90)
-$aiBulkAnalyzeBtn.Size = New-Object System.Drawing.Size(140, 28)
-$aiBulkAnalyzeBtn.add_Click({
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select parent folder (e.g. SecurityInvestigation) with tenant subfolders"
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        try {
-            if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                $aiRuleBasedStatus.Text = "Bulk analysis: $($results.Count) tenants ranked"
-                $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Green
-                $bulkForm = New-Object System.Windows.Forms.Form
-                $bulkForm.Text = "Bulk Tenant Ranking"
-                $bulkForm.Size = New-Object System.Drawing.Size(800, 500)
-                $bulkForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                $dg = New-Object System.Windows.Forms.DataGridView
-                $dg.Dock = 'Fill'
-                $dg.AutoGenerateColumns = $true
-                $dg.DataSource = $results
-                $bulkForm.Controls.Add($dg)
-                $bulkForm.ShowDialog()
-            }
-        } catch {
-            $aiRuleBasedStatus.Text = "Error: $($_.Exception.Message)"
-            $aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::Red
-        }
-    }
-})
-
-$aiRuleBasedStatus = New-Object System.Windows.Forms.Label
-$aiRuleBasedStatus.Text = "Ready"
-$aiRuleBasedStatus.Location = New-Object System.Drawing.Point(290, 95)
-$aiRuleBasedStatus.Size = New-Object System.Drawing.Size(400, 20)
-$aiRuleBasedStatus.ForeColor = [System.Drawing.Color]::DarkGray
-
-# LLM Analysis section
-$aiLlmSeparator = New-Object System.Windows.Forms.Label
-$aiLlmSeparator.Text = "--- LLM Analysis ---"
-$aiLlmSeparator.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$aiLlmSeparator.Location = New-Object System.Drawing.Point(10,135)
-$aiLlmSeparator.AutoSize = $true
-
+# LLM Analysis
 $aiTitle = New-Object System.Windows.Forms.Label
 $aiTitle.Text = "Send to AI (Gemini/Claude)"
 $aiTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$aiTitle.Location = New-Object System.Drawing.Point(10,158)
+$aiTitle.Location = New-Object System.Drawing.Point(10,10)
 $aiTitle.AutoSize = $true
 
 $aiDesc = New-Object System.Windows.Forms.Label
 $aiDesc.Text = "Send the latest or selected investigation dataset to Gemini or Claude for analysis. Configure API keys in Settings."
-$aiDesc.Location = New-Object System.Drawing.Point(10,178)
+$aiDesc.Location = New-Object System.Drawing.Point(10,32)
 $aiDesc.Size = New-Object System.Drawing.Size(740, 30)
 
-# Folder selection (shared with rule-based - sync on browse)
 $aiProviderLabel = New-Object System.Windows.Forms.Label
 $aiProviderLabel.Text = "Provider:"
-$aiProviderLabel.Location = New-Object System.Drawing.Point(10,213)
+$aiProviderLabel.Location = New-Object System.Drawing.Point(10,68)
 $aiProviderLabel.AutoSize = $true
 
 $aiProviderCombo = New-Object System.Windows.Forms.ComboBox
-$aiProviderCombo.Location = New-Object System.Drawing.Point(100, 210)
+$aiProviderCombo.Location = New-Object System.Drawing.Point(100, 65)
 $aiProviderCombo.Width = 140
 $aiProviderCombo.DropDownStyle = 'DropDownList'
 $aiProviderCombo.Items.AddRange(@('Gemini','Claude'))
@@ -2009,16 +1888,16 @@ $aiProviderCombo.SelectedIndex = 0
 
 $aiFolderLabel = New-Object System.Windows.Forms.Label
 $aiFolderLabel.Text = "Report Folder:"
-$aiFolderLabel.Location = New-Object System.Drawing.Point(250,213)
+$aiFolderLabel.Location = New-Object System.Drawing.Point(250,68)
 $aiFolderLabel.AutoSize = $true
 
 $aiFolderText = New-Object System.Windows.Forms.TextBox
-$aiFolderText.Location = New-Object System.Drawing.Point(340, 210)
+$aiFolderText.Location = New-Object System.Drawing.Point(340, 65)
 $aiFolderText.Width = 380
 
 $aiBrowseBtn = New-Object System.Windows.Forms.Button
 $aiBrowseBtn.Text = "Browse..."
-$aiBrowseBtn.Location = New-Object System.Drawing.Point(730, 208)
+$aiBrowseBtn.Location = New-Object System.Drawing.Point(730, 63)
 $aiBrowseBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiBrowseBtn.add_Click({
     $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -2030,16 +1909,16 @@ $aiBrowseBtn.add_Click({
 # Extra files list
 $aiExtraLabel = New-Object System.Windows.Forms.Label
 $aiExtraLabel.Text = "Extra Files (optional):"
-$aiExtraLabel.Location = New-Object System.Drawing.Point(10,258)
+$aiExtraLabel.Location = New-Object System.Drawing.Point(10,113)
 $aiExtraLabel.AutoSize = $true
 
 $aiExtraList = New-Object System.Windows.Forms.ListBox
-$aiExtraList.Location = New-Object System.Drawing.Point(10,278)
+$aiExtraList.Location = New-Object System.Drawing.Point(10,133)
 $aiExtraList.Size = New-Object System.Drawing.Size(610, 120)
 
 $aiAddExtraBtn = New-Object System.Windows.Forms.Button
 $aiAddExtraBtn.Text = "Add..."
-$aiAddExtraBtn.Location = New-Object System.Drawing.Point(630, 278)
+$aiAddExtraBtn.Location = New-Object System.Drawing.Point(630, 133)
 $aiAddExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiAddExtraBtn.add_Click({
     $ofd = New-Object System.Windows.Forms.OpenFileDialog
@@ -2055,7 +1934,7 @@ $aiAddExtraBtn.add_Click({
 
 $aiRemoveExtraBtn = New-Object System.Windows.Forms.Button
 $aiRemoveExtraBtn.Text = "Remove"
-$aiRemoveExtraBtn.Location = New-Object System.Drawing.Point(630, 308)
+$aiRemoveExtraBtn.Location = New-Object System.Drawing.Point(630, 163)
 $aiRemoveExtraBtn.Size = New-Object System.Drawing.Size(85, 24)
 $aiRemoveExtraBtn.add_Click({
     $sel = @($aiExtraList.SelectedItems)
@@ -2065,15 +1944,15 @@ $aiRemoveExtraBtn.add_Click({
 # Send button and status
 $aiSendBtn = New-Object System.Windows.Forms.Button
 $aiSendBtn.Text = "Send to AI"
-$aiSendBtn.Location = New-Object System.Drawing.Point(10, 413)
+$aiSendBtn.Location = New-Object System.Drawing.Point(10, 268)
 $aiSendBtn.Size = New-Object System.Drawing.Size(140, 30)
 
 $aiStatus = New-Object System.Windows.Forms.Label
-$aiStatus.Location = New-Object System.Drawing.Point(160, 418)
+$aiStatus.Location = New-Object System.Drawing.Point(160, 273)
 $aiStatus.Size = New-Object System.Drawing.Size(555, 20)
 $aiStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
-$aiPanel.Controls.AddRange(@($aiRuleBasedTitle,$aiRuleBasedDesc,$aiRuleBasedFolderLabel,$aiRuleBasedFolderText,$aiRuleBasedBrowseBtn,$aiAnalyzeBtn,$aiBulkAnalyzeBtn,$aiRuleBasedStatus,$aiLlmSeparator,$aiTitle,$aiDesc,$aiProviderLabel,$aiProviderCombo,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
+$aiPanel.Controls.AddRange(@($aiTitle,$aiDesc,$aiProviderLabel,$aiProviderCombo,$aiFolderLabel,$aiFolderText,$aiBrowseBtn,$aiExtraLabel,$aiExtraList,$aiAddExtraBtn,$aiRemoveExtraBtn,$aiSendBtn,$aiStatus))
 $aiTab.Controls.Add($aiPanel)
 $tabControl.TabPages.Add($aiTab)
 
@@ -2101,7 +1980,6 @@ $aiTab.add_Enter({
         $latest = & $getLatestReportFolder
         if ($latest) {
             if (-not $aiFolderText.Text -or -not (Test-Path $aiFolderText.Text)) { $aiFolderText.Text = $latest }
-            if (-not $aiRuleBasedFolderText.Text -or -not (Test-Path $aiRuleBasedFolderText.Text)) { $aiRuleBasedFolderText.Text = $latest }
         }
     } catch {}
 })
@@ -2636,15 +2514,133 @@ $btnDeleteGraphApp.add_Click({
     }
 })
 
+# ConnectWise Manage (PSA) — ticket fetch API
+$manageSectionTitle = New-Object System.Windows.Forms.Label
+$manageSectionTitle.Text = "ConnectWise Manage (PSA)"
+$manageSectionTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$manageSectionTitle.Location = New-Object System.Drawing.Point(10,675)
+$manageSectionTitle.AutoSize = $true
+
+$lblManageHelp = New-Object System.Windows.Forms.Label
+$lblManageHelp.Text = "API keys: Manage → System → Members → API Members → API Keys. Client ID header: developer.connectwise.com (UUID, not the public key)."
+$lblManageHelp.Location = New-Object System.Drawing.Point(10,698)
+$lblManageHelp.Size = New-Object System.Drawing.Size(680, 32)
+$lblManageHelp.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
+
+$lblManageApiUrl = New-Object System.Windows.Forms.Label
+$lblManageApiUrl.Text = "Manage API URL:"
+$lblManageApiUrl.Location = New-Object System.Drawing.Point(10,735)
+$lblManageApiUrl.AutoSize = $true
+$lblManageApiUrl.Width = 180
+
+$txtManageApiUrl = New-Object System.Windows.Forms.TextBox
+$txtManageApiUrl.Location = New-Object System.Drawing.Point(200,732)
+$txtManageApiUrl.Width = 450
+$txtManageApiUrl.PlaceholderText = 'https://na.myconnectwise.net/v4_6_release'
+
+$lblManageCompanyId = New-Object System.Windows.Forms.Label
+$lblManageCompanyId.Text = "Company ID (auth):"
+$lblManageCompanyId.Location = New-Object System.Drawing.Point(10,765)
+$lblManageCompanyId.AutoSize = $true
+$lblManageCompanyId.Width = 180
+
+$txtManageCompanyId = New-Object System.Windows.Forms.TextBox
+$txtManageCompanyId.Location = New-Object System.Drawing.Point(200,762)
+$txtManageCompanyId.Width = 450
+
+$lblManagePublicKey = New-Object System.Windows.Forms.Label
+$lblManagePublicKey.Text = "Public key:"
+$lblManagePublicKey.Location = New-Object System.Drawing.Point(10,795)
+$lblManagePublicKey.AutoSize = $true
+$lblManagePublicKey.Width = 180
+
+$txtManagePublicKey = New-Object System.Windows.Forms.TextBox
+$txtManagePublicKey.Location = New-Object System.Drawing.Point(200,792)
+$txtManagePublicKey.Width = 450
+
+$lblManagePrivateKey = New-Object System.Windows.Forms.Label
+$lblManagePrivateKey.Text = "Private key:"
+$lblManagePrivateKey.Location = New-Object System.Drawing.Point(10,825)
+$lblManagePrivateKey.AutoSize = $true
+$lblManagePrivateKey.Width = 180
+
+$txtManagePrivateKey = New-Object System.Windows.Forms.TextBox
+$txtManagePrivateKey.Location = New-Object System.Drawing.Point(200,822)
+$txtManagePrivateKey.Width = 450
+$txtManagePrivateKey.UseSystemPasswordChar = $true
+
+$lblManageClientId = New-Object System.Windows.Forms.Label
+$lblManageClientId.Text = "Client ID header:"
+$lblManageClientId.Location = New-Object System.Drawing.Point(10,855)
+$lblManageClientId.AutoSize = $true
+$lblManageClientId.Width = 180
+
+$txtManageClientId = New-Object System.Windows.Forms.TextBox
+$txtManageClientId.Location = New-Object System.Drawing.Point(200,852)
+$txtManageClientId.Width = 450
+
+$chkManagePreferVScan = New-Object System.Windows.Forms.CheckBox
+$chkManagePreferVScan.Text = "Prefer VScanMagic Manage credentials when EOA fields are blank (%LocalAppData%\VScanMagic\ConnectWise-Manage-Credentials.json)"
+$chkManagePreferVScan.Location = New-Object System.Drawing.Point(10,880)
+$chkManagePreferVScan.AutoSize = $true
+$chkManagePreferVScan.Width = 680
+
+$btnTestManageConnection = New-Object System.Windows.Forms.Button
+$btnTestManageConnection.Text = "Test Manage Connection"
+$btnTestManageConnection.Location = New-Object System.Drawing.Point(200,905)
+$btnTestManageConnection.Size = New-Object System.Drawing.Size(180, 28)
+$btnTestManageConnection.add_Click({
+    try {
+        Import-Module (Join-Path $PSScriptRoot "Modules\ConnectWiseManage.psm1") -Force -ErrorAction Stop
+        $probe = [pscustomobject]@{
+            ManageApiUrl = $txtManageApiUrl.Text.Trim()
+            ManageCompanyId = $txtManageCompanyId.Text.Trim()
+            ManagePublicKey = $txtManagePublicKey.Text.Trim()
+            ManagePrivateKey = $txtManagePrivateKey.Text.Trim()
+            ManageClientId = $txtManageClientId.Text.Trim()
+            ManagePreferVScanCredentials = $chkManagePreferVScan.Checked
+        }
+        $result = Test-ConnectWiseManageConnection -Settings $probe
+        $icon = if ($result.Success) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Warning }
+        [System.Windows.Forms.MessageBox]::Show($result.Message, "ConnectWise Manage", [System.Windows.Forms.MessageBoxButtons]::OK, $icon) | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "ConnectWise Manage", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
+})
+
+$btnImportManageFromVScan = New-Object System.Windows.Forms.Button
+$btnImportManageFromVScan.Text = "Import from VScanMagic"
+$btnImportManageFromVScan.Location = New-Object System.Drawing.Point(390,905)
+$btnImportManageFromVScan.Size = New-Object System.Drawing.Size(150, 28)
+$btnImportManageFromVScan.add_Click({
+    try {
+        Import-Module (Join-Path $PSScriptRoot "Modules\ConnectWiseManage.psm1") -Force -ErrorAction Stop
+        $creds = Import-ConnectWiseManageCredentialsFromVScan
+        if (-not $creds) {
+            [System.Windows.Forms.MessageBox]::Show("No VScanMagic Manage credentials found at:`n$([Environment]::GetFolderPath('LocalApplicationData'))\VScanMagic\ConnectWise-Manage-Credentials.json", "Import from VScanMagic", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+        $txtManageApiUrl.Text = $creds.ApiUrl
+        $txtManageCompanyId.Text = $creds.CompanyId
+        $txtManagePublicKey.Text = $creds.PublicKey
+        $txtManagePrivateKey.Text = $creds.PrivateKey
+        $txtManageClientId.Text = $creds.ClientId
+        $lblStatus.Text = "Imported Manage credentials from VScanMagic - click Save Settings to persist."
+        $lblStatus.ForeColor = [System.Drawing.Color]::Blue
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Import from VScanMagic", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
+})
+
 $lblContactOverrides = New-Object System.Windows.Forms.Label
 $lblContactOverrides.Text = "Client Contact Overrides:"
-$lblContactOverrides.Location = New-Object System.Drawing.Point(10,665)
+$lblContactOverrides.Location = New-Object System.Drawing.Point(10,945)
 $lblContactOverrides.AutoSize = $true
 $lblContactOverrides.Width = 180
 
 # DataGridView for client contact overrides
 $dgvContactOverrides = New-Object System.Windows.Forms.DataGridView
-$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 662)
+$dgvContactOverrides.Location = New-Object System.Drawing.Point(200, 942)
 $dgvContactOverrides.Width = 500
 $dgvContactOverrides.Height = 120
 $dgvContactOverrides.AllowUserToAddRows = $true
@@ -2684,31 +2680,31 @@ $dgvContactOverrides.Columns.Add($colGreeting)
 # Buttons for managing overrides
 $btnAddOverride = New-Object System.Windows.Forms.Button
 $btnAddOverride.Text = "Add"
-$btnAddOverride.Location = New-Object System.Drawing.Point(200, 790)
+$btnAddOverride.Location = New-Object System.Drawing.Point(200, 1070)
 $btnAddOverride.Width = 80
 $btnAddOverride.Height = 25
 
 $btnRemoveOverride = New-Object System.Windows.Forms.Button
 $btnRemoveOverride.Text = "Remove"
-$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 790)
+$btnRemoveOverride.Location = New-Object System.Drawing.Point(290, 1070)
 $btnRemoveOverride.Width = 80
 $btnRemoveOverride.Height = 25
 
 # Buttons
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "Save Settings"
-$btnSave.Location = New-Object System.Drawing.Point(200, 830)
+$btnSave.Location = New-Object System.Drawing.Point(200, 1110)
 $btnSave.Width = 120
 
 $btnGenerateReadme = New-Object System.Windows.Forms.Button
 $btnGenerateReadme.Text = "Generate AI Readme"
-$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 830)
+$btnGenerateReadme.Location = New-Object System.Drawing.Point(330, 1110)
 $btnGenerateReadme.Width = 150
 $btnGenerateReadmeTooltip = New-Object System.Windows.Forms.ToolTip
 $btnGenerateReadmeTooltip.SetToolTip($btnGenerateReadme, "Generate _AI_Readme.txt file in the latest Security Investigation folder")
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(10,810)
+$lblStatus.Location = New-Object System.Drawing.Point(10,1090)
 $lblStatus.AutoSize = $true
 $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80,80,80)
 
@@ -2720,6 +2716,7 @@ $allControls = @($sTitle,$lblSettingsLocation,$txtSettingsLocation,$btnBrowseSet
     $lblThirdPartyMFA,$txtThirdPartyMFA,$memberberrySectionTitle,$chkMemberberryEnabled,$lblMemberberryPath,$txtMemberberryPath,$btnBrowseMemberberryPath,
     $lblMemberberryExceptionsPath,$txtMemberberryExceptionsPath,$btnBrowseMemberberryExceptionsPath,$btnTestMemberberry,
     $graphAppSectionTitle,$chkPromptToCreateGraphApp,$btnCreateGraphApp,$btnDeleteGraphApp,$btnClearLocalGraphCreds,$btnExportAppCreds,$btnImportAppCreds,
+    $manageSectionTitle,$lblManageHelp,$lblManageApiUrl,$txtManageApiUrl,$lblManageCompanyId,$txtManageCompanyId,$lblManagePublicKey,$txtManagePublicKey,$lblManagePrivateKey,$txtManagePrivateKey,$lblManageClientId,$txtManageClientId,$chkManagePreferVScan,$btnTestManageConnection,$btnImportManageFromVScan,
     $lblContactOverrides,$dgvContactOverrides,$btnAddOverride,$btnRemoveOverride,$btnSave,$btnGenerateReadme,$lblStatus)
 $settingsScrollPanel.Controls.AddRange($allControls)
 $settingsScrollPanel.AutoScrollMargin = New-Object System.Drawing.Size(20, 20)
@@ -2774,6 +2771,13 @@ $settingsTab.add_Enter({
                 $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
             }
             $chkPromptToCreateGraphApp.Checked = if ($s.PromptToCreateGraphApp) { $true } else { $false }
+
+            $txtManageApiUrl.Text = [string]$s.ManageApiUrl
+            $txtManageCompanyId.Text = [string]$s.ManageCompanyId
+            $txtManagePublicKey.Text = [string]$s.ManagePublicKey
+            $txtManagePrivateKey.Text = [string]$s.ManagePrivateKey
+            $txtManageClientId.Text = [string]$s.ManageClientId
+            $chkManagePreferVScan.Checked = if ($s.ManagePreferVScanCredentials) { $true } else { $false }
             
             # Load client contact overrides into DataGridView
             $dgvContactOverrides.Rows.Clear()
@@ -2873,6 +2877,13 @@ $btnBrowseSettingsLocation.add_Click({
                         $txtMemberberryExceptionsPath.Text = 'C:\git\memberberry\exceptions.json'
                     }
                     $chkPromptToCreateGraphApp.Checked = if ($s.PromptToCreateGraphApp) { $true } else { $false }
+
+                    $txtManageApiUrl.Text = [string]$s.ManageApiUrl
+                    $txtManageCompanyId.Text = [string]$s.ManageCompanyId
+                    $txtManagePublicKey.Text = [string]$s.ManagePublicKey
+                    $txtManagePrivateKey.Text = [string]$s.ManagePrivateKey
+                    $txtManageClientId.Text = [string]$s.ManageClientId
+                    $chkManagePreferVScan.Checked = if ($s.ManagePreferVScanCredentials) { $true } else { $false }
                     
                     # Load client contact overrides
                     $dgvContactOverrides.Rows.Clear()
@@ -2986,6 +2997,12 @@ $btnSave.add_Click({
         $s.MemberberryPath = $memberberryPath
         $s.MemberberryExceptionsPath = $memberberryExceptionsPath
         $s.PromptToCreateGraphApp = $chkPromptToCreateGraphApp.Checked
+        $s.ManageApiUrl = $txtManageApiUrl.Text.Trim()
+        $s.ManageCompanyId = $txtManageCompanyId.Text.Trim()
+        $s.ManagePublicKey = $txtManagePublicKey.Text.Trim()
+        $s.ManagePrivateKey = $txtManagePrivateKey.Text.Trim()
+        $s.ManageClientId = $txtManageClientId.Text.Trim()
+        $s.ManagePreferVScanCredentials = $chkManagePreferVScan.Checked
         $s.ClientContactOverrides = $overridesJson
         
         # Save settings
@@ -6404,6 +6421,12 @@ $securityInvestigationButton.add_Click({
             } catch {}
         })
 
+        # Apply default BEC preset now that the change handler is wired.
+        if ($presetComboBox.Items.Count -gt 0) {
+            $presetComboBox.SelectedIndex = -1
+            $presetComboBox.SelectedIndex = 0
+        }
+
         # Select All button click handler
         $selectAllReportsBtn.add_Click({
             $messageTraceCheckBox.Checked = $true
@@ -6815,8 +6838,6 @@ $securityInvestigationButton.add_Click({
                         if ($filePaths.AppRegistrationsJson) { $exportedFiles += "AppRegistrations.json" }
                         if ($filePaths.AppRegistrationsError) { $exportedFiles += "AppRegistrations_Error.txt" }
                         if ($filePaths.UserSecurityPostureCsv) { $exportedFiles += "UserSecurityPosture.csv" }
-                        if ($filePaths.FindingsCsv) { $exportedFiles += "Findings.csv" }
-                        if ($filePaths.AutomatedSummaryTxt) { $exportedFiles += "_Automated_Summary.txt" }
                         if ($filePaths.LLMInstructionsTxt) { $exportedFiles += "_AI_Readme.txt" }
                         if ($filePaths.ZipFile) {
                             # Handle multiple zip files (comma-separated)
@@ -6890,8 +6911,6 @@ $securityInvestigationButton.add_Click({
                                         "AppRegistrations.json" { $filePath = $filePaths.AppRegistrationsJson }
                                         "AppRegistrations_Error.txt" { $filePath = $filePaths.AppRegistrationsError }
                                         "UserSecurityPosture.csv" { $filePath = $filePaths.UserSecurityPostureCsv }
-                                        "Findings.csv" { $filePath = $filePaths.FindingsCsv }
-                                        "_Automated_Summary.txt" { $filePath = $filePaths.AutomatedSummaryTxt }
                                         "_AI_Readme.txt" { $filePath = $filePaths.LLMInstructionsTxt }
                                     }
                                 }
@@ -6907,34 +6926,8 @@ $securityInvestigationButton.add_Click({
                     $filesPanel.Controls.AddRange(@($filesLabel, $filesListBox))
                     $filesTab.Controls.Add($filesPanel)
 
-                    # Automated Findings tab (when rule-based analysis ran)
-                    $autoFindingsTab = $null
-                    if ($securityReport.AutomatedFindings -or $securityReport.AutomatedSummary) {
-                        $autoFindingsTab = New-Object System.Windows.Forms.TabPage
-                        $autoFindingsTab.Text = "Automated Findings"
-                        $autoFindingsPanel = New-Object System.Windows.Forms.Panel
-                        $autoFindingsPanel.Dock = 'Fill'
-                        $autoFindingsPanel.Padding = New-Object System.Windows.Forms.Padding(10)
-                        $autoRiskLabel = New-Object System.Windows.Forms.Label
-                        $autoRiskLabel.Text = "Risk Level: $($securityReport.RiskScore.Level) (Score: $($securityReport.RiskScore.Score))"
-                        $autoRiskLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-                        $autoRiskLabel.Location = New-Object System.Drawing.Point(10, 10)
-                        $autoRiskLabel.AutoSize = $true
-                        $autoFindingsPanel.Controls.Add($autoRiskLabel)
-                        $autoFindingsTb = New-Object System.Windows.Forms.RichTextBox
-                        $autoFindingsTb.Location = New-Object System.Drawing.Point(10, 40)
-                        $autoFindingsTb.Size = New-Object System.Drawing.Size(950, 650)
-                        $autoFindingsTb.Anchor = 'Top','Left','Bottom','Right'
-                        $autoFindingsTb.ReadOnly = $true
-                        $autoFindingsTb.Font = New-Object System.Drawing.Font('Consolas', 9)
-                        $autoFindingsTb.Text = $securityReport.AutomatedSummary
-                        $autoFindingsPanel.Controls.Add($autoFindingsTb)
-                        $autoFindingsTab.Controls.Add($autoFindingsPanel)
-                    }
-
                     # Add tabs
                     $resultsTabControl.TabPages.Add($summaryTab)
-                    if ($autoFindingsTab) { $resultsTabControl.TabPages.Add($autoFindingsTab) }
                     $resultsTabControl.TabPages.Add($aiPromptTab)
                     $resultsTabControl.TabPages.Add($ticketTab)
                     $resultsTabControl.TabPages.Add($filesTab)
@@ -7328,76 +7321,6 @@ $bulkTenantExporterButton.add_Click({
             $bulkForm.Close()
         })
 
-        # Analyze Single Report button (rule-based analysis on one report folder)
-        $bulkAnalyzeSingleBtn = New-Object System.Windows.Forms.Button
-        $bulkAnalyzeSingleBtn.Text = "Analyze Single Report"
-        $bulkAnalyzeSingleBtn.Location = New-Object System.Drawing.Point(720, 110)
-        $bulkAnalyzeSingleBtn.Size = New-Object System.Drawing.Size(160, 24)
-        $bulkAnalyzeSingleBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-        $bulkAnalyzeSingleBtn.ForeColor = [System.Drawing.Color]::White
-        $bulkAnalyzeSingleBtn.add_Click({
-            $defaultPath = if ($script:outputBaseDir -and (Test-Path $script:outputBaseDir)) { $script:outputBaseDir } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation" }
-            $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-            $fbd.Description = "Select a single report folder (e.g. SecurityInvestigation\TenantName\2024-03-09_123456)"
-            $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-            if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                try {
-                    if (Get-Command Invoke-ReportFolderAnalysis -ErrorAction SilentlyContinue) {
-                        $result = Invoke-ReportFolderAnalysis -Path $fbd.SelectedPath -WriteOutputFiles
-                        $analysisResultForm = New-Object System.Windows.Forms.Form
-                        $analysisResultForm.Text = "Rule-Based Analysis Results"
-                        $analysisResultForm.Size = New-Object System.Drawing.Size(900, 600)
-                        $analysisResultForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                        $tb = New-Object System.Windows.Forms.RichTextBox
-                        $tb.Dock = 'Fill'
-                        $tb.ReadOnly = $true
-                        $tb.Font = New-Object System.Drawing.Font('Consolas', 9)
-                        $tb.Text = $result.Summary
-                        $analysisResultForm.Controls.Add($tb)
-                        $analysisResultForm.ShowDialog()
-                    } else {
-                        [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                    }
-                } catch {
-                    [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                }
-            }
-        })
-
-        # Analyze All Reports button (rule-based analysis on existing report folders)
-        $bulkAnalyzeAllBtn = New-Object System.Windows.Forms.Button
-        $bulkAnalyzeAllBtn.Text = "Analyze All Reports"
-        $bulkAnalyzeAllBtn.Location = New-Object System.Drawing.Point(720, 138)
-        $bulkAnalyzeAllBtn.Size = New-Object System.Drawing.Size(160, 24)
-        $bulkAnalyzeAllBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-        $bulkAnalyzeAllBtn.ForeColor = [System.Drawing.Color]::White
-        $bulkAnalyzeAllBtn.add_Click({
-            $defaultPath = if ($script:outputBaseDir -and (Test-Path $script:outputBaseDir)) { $script:outputBaseDir } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation" }
-            $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-            $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
-            $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-            if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                try {
-                    if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                        $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                        $rankForm = New-Object System.Windows.Forms.Form
-                        $rankForm.Text = "Bulk Tenant Risk Ranking"
-                        $rankForm.Size = New-Object System.Drawing.Size(850, 500)
-                        $rankForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                        $dg = New-Object System.Windows.Forms.DataGridView
-                        $dg.Dock = 'Fill'
-                        $dg.AutoGenerateColumns = $true
-                        $dg.DataSource = $results
-                        $rankForm.Controls.Add($dg)
-                        $rankForm.ShowDialog()
-                    } else {
-                        [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                    }
-                } catch {
-                    [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                }
-            }
-        })
 
         # Start Export button click handler - Opens Authentication Console
         $bulkStartButton.add_Click({
@@ -7561,11 +7484,10 @@ try {
         # Ignore errors - no session exists or module not loaded yet
     }
     
-    # Load report selections from JSON
-    `$reportSelections = @{}
-if (Test-Path `$ReportSelectionsFile) {
-        `$jsonObj = Get-Content `$ReportSelectionsFile -Raw | ConvertFrom-Json
-        `$reportSelections = @{
+    function Convert-WorkerReportSelections {
+        param(`$jsonObj)
+        if (-not `$jsonObj) { return @{} }
+        return @{
             IncludeMessageTrace = if (`$null -ne `$jsonObj.IncludeMessageTrace) { `$jsonObj.IncludeMessageTrace } else { `$false }
             IncludeUnifiedAuditLogs = if (`$null -ne `$jsonObj.IncludeUnifiedAuditLogs) { `$jsonObj.IncludeUnifiedAuditLogs } else { `$false }
             IncludeInboxRules = if (`$null -ne `$jsonObj.IncludeInboxRules) { `$jsonObj.IncludeInboxRules } else { `$false }
@@ -7589,7 +7511,15 @@ if (Test-Path `$ReportSelectionsFile) {
             IncludeDLPViolations = if (`$null -ne `$jsonObj.IncludeDLPViolations) { `$jsonObj.IncludeDLPViolations } else { `$true }
             SignInLogsDaysBack = if (`$null -ne `$jsonObj.SignInLogsDaysBack) { `$jsonObj.SignInLogsDaysBack } else { 7 }
             MessageTraceDaysBack = if (`$null -ne `$jsonObj.MessageTraceDaysBack) { `$jsonObj.MessageTraceDaysBack } else { 10 }
+            MessageTraceStatuses = if (`$null -ne `$jsonObj.MessageTraceStatuses) { @(`$jsonObj.MessageTraceStatuses | ForEach-Object { [string]`$_ } | Where-Object { `$_ }) } else { @() }
         }
+    }
+
+    # Load report selections from JSON
+    `$reportSelections = @{}
+    if (Test-Path `$ReportSelectionsFile) {
+        `$jsonObj = Get-Content `$ReportSelectionsFile -Raw | ConvertFrom-Json
+        `$reportSelections = Convert-WorkerReportSelections `$jsonObj
     }
     
     `$graphAuthenticated = `$false
@@ -7815,7 +7745,17 @@ if (Test-Path `$ReportSelectionsFile) {
         "Directory.Read.All",
         "Policy.Read.All",
         "Application.Read.All",
-        "Reports.Read.All"
+        "Reports.Read.All",
+        "SecurityAlert.Read.All",
+        "SecurityIncident.Read.All",
+        "SecurityEvents.Read.All",
+        "DeviceManagementManagedDevices.Read.All",
+        "Sites.Read.All",
+        "UserAuthenticationMethod.Read.All",
+        "Organization.Read.All",
+        "IdentityRiskEvent.Read.All",
+        "IdentityRiskyUser.Read.All",
+        "Mail.Read"
     )
 
                 # Try WCM (app-only) first when we have tenant ID(s) to try - skip if INTERACTIVE:1 (use browser instead)
@@ -7825,14 +7765,7 @@ if (Test-Path `$ReportSelectionsFile) {
                     if (`$command -match '\|TENANT_ID:([a-fA-F0-9\-]{36})') {
                         `$tenantIdsToTry = @(`$matches[1])
                     } else {
-                        `$graphAppMod = Join-Path `$ScriptRoot "Modules\GraphAppCredential.psm1"
-                        if (Test-Path `$graphAppMod) {
-                            Import-Module `$graphAppMod -Force -ErrorAction SilentlyContinue
-                            if (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue) {
-                                `$allIds = Get-WCMTenantIds
-                                if (`$allIds -and `$allIds.Count -gt 0) { `$tenantIdsToTry = @(`$allIds) }
-                            }
-                        }
+                        Write-Host "No tenant ID on GRAPH_AUTH — not trying every WCM entry. Run Exchange Auth first or pick App reg tenant." -ForegroundColor Yellow
                     }
                 }
                 if (`$useInteractiveOnly) {
@@ -7978,7 +7911,39 @@ if (Test-Path `$ReportSelectionsFile) {
                     `$exchangeAuthenticated = `$true
                     Write-Status "Exchange Online authentication successful!"
         Write-Host "Exchange Online authentication successful!" -ForegroundColor Green
-                    Write-CommandResponse "EXCHANGE_AUTH_SUCCESS"
+                    `$exoTid = `$null
+                    `$exoOrg = `$null
+                    try {
+                        `$conn = Get-ConnectionInformation -ErrorAction SilentlyContinue
+                        `$c = if (`$conn -is [Array] -and `$conn.Count -gt 0) { `$conn[0] } else { `$conn }
+                        if (`$c) {
+                            if (`$c.TenantId) { `$exoTid = [string]`$c.TenantId }
+                            elseif (`$c.TenantID) { `$exoTid = [string]`$c.TenantID }
+                            if (`$c.OrganizationName) { `$exoOrg = [string]`$c.OrganizationName }
+                            elseif (`$c.Organization) { `$exoOrg = [string]`$c.Organization }
+                        }
+                    } catch {}
+                    try {
+                        `$org = Get-OrganizationConfig -ErrorAction SilentlyContinue
+                        if (`$org) {
+                            if (-not `$exoTid -and `$org.ExternalDirectoryOrganizationId) { `$exoTid = [string]`$org.ExternalDirectoryOrganizationId }
+                            if (`$org.DisplayName) { `$exoOrg = [string]`$org.DisplayName }
+                            elseif (-not `$exoOrg -and `$org.Name) { `$exoOrg = [string]`$org.Name }
+                        }
+                    } catch {}
+                    if (`$exoOrg) { `$exoOrg = (`$exoOrg -replace '[|]', ' ').Trim() }
+                    if (`$exoTid) {
+                        if (`$exoOrg) {
+                            Write-CommandResponse "EXCHANGE_AUTH_SUCCESS|TENANT_ID:`$exoTid|ORG:`$exoOrg"
+                            Write-Status "Exchange tenant: `$exoOrg (`$exoTid)"
+                        } else {
+                            Write-CommandResponse "EXCHANGE_AUTH_SUCCESS|TENANT_ID:`$exoTid"
+                            Write-Status "Exchange tenant ID: `$exoTid"
+                        }
+                    } else {
+                        Write-CommandResponse "EXCHANGE_AUTH_SUCCESS"
+                        Write-Status "EXO tenant ID not detected — pick App reg tenant before Graph Auth"
+                    }
     } catch {
                     Write-Status "ERROR: Exchange Online authentication failed - `$(`$_.Exception.Message)"
                     Write-Host "ERROR: Exchange Online authentication failed - `$(`$_.Exception.Message)" -ForegroundColor Red
@@ -8098,6 +8063,46 @@ if (Test-Path `$ReportSelectionsFile) {
                 Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
+            } elseif (`$command -eq "COLLECT_HISTORICAL_TRACE") {
+                if (-not `$exchangeAuthenticated) {
+                    Write-Host "ERROR: Exchange authentication must be completed first!" -ForegroundColor Red
+                    Write-CommandResponse "COLLECT_HISTORICAL_TRACE_FAILED:Exchange authentication not completed"
+                    continue
+                }
+
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Host "COLLECT HISTORICAL TRACE COMMAND RECEIVED" -ForegroundColor Yellow
+                Write-Host "==========================================" -ForegroundColor Yellow
+                Write-Status "Collecting completed historical message trace reports..."
+                Write-CommandResponse "COLLECT_HISTORICAL_TRACE_STARTED"
+
+                try {
+                    `$histResult = Export-EoaHistoricalMessageTraceCsv -StatusFile `$StatusFile
+                    if (`$histResult.RowCount -gt 0) {
+                        Write-Status "Historical message trace: collected `$(`$histResult.RowCount) row(s). `$(`$histResult.PendingJobs) job(s) still running."
+                    } elseif (`$histResult.PendingJobs -gt 0) {
+                        Write-Status "Historical message trace: `$(`$histResult.PendingJobs) job(s) still running on Microsoft's queue - nothing ready yet."
+                    } else {
+                        Write-Status "Historical message trace: no queued reports found. Run Generate with a window longer than the live API reaches to request them."
+                    }
+                    `$responseJson = @{
+                        Success = `$true
+                        RowCount = `$histResult.RowCount
+                        PendingJobs = `$histResult.PendingJobs
+                        TotalJobs = `$histResult.TotalJobs
+                        CsvPath = `$histResult.CsvPath
+                    } | ConvertTo-Json -Compress
+                    Write-CommandResponse "COLLECT_HISTORICAL_TRACE_SUCCESS:`$responseJson"
+                } catch {
+                    Write-Host "ERROR: Historical trace collection failed - `$(`$_.Exception.Message)" -ForegroundColor Red
+                    Write-Status "ERROR: Historical trace collection failed - `$(`$_.Exception.Message)"
+                    Write-CommandResponse "COLLECT_HISTORICAL_TRACE_FAILED:`$(`$_.Exception.Message)"
+                }
+
+                Write-Host ""
+                Write-Host "Waiting for next command from GUI..." -ForegroundColor Green
+                Write-Host ""
+
             } elseif (`$command -match "^GENERATE_REPORTS") {
                 if (-not `$graphAuthenticated -or -not `$exchangeAuthenticated) {
                     Write-Host "ERROR: Both Graph and Exchange authentication must be completed first!" -ForegroundColor Red
@@ -8163,6 +8168,19 @@ if (Test-Path `$ReportSelectionsFile) {
                 } else {
                     Write-Host "No TICKET_DATA found in command. Command: `$command" -ForegroundColor Gray
                 }
+
+                if (`$command -match '\|ReportSelectionsFile:([^|]+)') {
+                    `$reloadPath = `$Matches[1].Trim()
+                    if (Test-Path -LiteralPath `$reloadPath) {
+                        try {
+                            `$jsonObj = Get-Content -LiteralPath `$reloadPath -Raw | ConvertFrom-Json
+                            `$reportSelections = Convert-WorkerReportSelections `$jsonObj
+                            Write-Status "Loaded report selections from `$reloadPath"
+                        } catch {
+                            Write-Warning "Could not reload report selections: `$(`$_.Exception.Message)"
+                        }
+                    }
+                }
                 
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "GENERATE REPORTS COMMAND RECEIVED" -ForegroundColor Yellow
@@ -8209,7 +8227,11 @@ if (Test-Path `$ReportSelectionsFile) {
                 if (`$graphToken) { Write-Status "Graph token acquired - using parallel collection" } else { Write-Status "No Graph token - using sequential collection" }
                 try {
                     `$messageTraceDays = if (`$reportSelections.MessageTraceDaysBack) { `$reportSelections.MessageTraceDaysBack } else { `$DaysBack }
-                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel:(-not `$graphToken) -GraphAccessToken `$graphToken -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
+                    `$mtStatuses = @()
+                    if (`$reportSelections.ContainsKey('MessageTraceStatuses') -and `$reportSelections.MessageTraceStatuses) {
+                        `$mtStatuses = @(`$reportSelections.MessageTraceStatuses)
+                    }
+                    `$report = New-SecurityInvestigationReport -InvestigatorName `$InvestigatorName -CompanyName `$CompanyName -DaysBack `$DaysBack -StatusLabel `$null -MainForm `$null -NoParallel:(-not `$graphToken) -GraphAccessToken `$graphToken -ProgressCallback { param(`$m) Write-Status `$m } -SessionId "Client`$ClientNumber" -StatusFile `$StatusFile -IncludeMessageTrace `$reportSelections.IncludeMessageTrace -IncludeInboxRules `$reportSelections.IncludeInboxRules -IncludeTransportRules `$reportSelections.IncludeTransportRules -IncludeMailFlowConnectors `$reportSelections.IncludeMailFlowConnectors -IncludeMailboxForwarding `$reportSelections.IncludeMailboxForwarding -IncludeAuditLogs `$reportSelections.IncludeAuditLogs -IncludeConditionalAccessPolicies `$reportSelections.IncludeConditionalAccessPolicies -IncludeAppRegistrations `$reportSelections.IncludeAppRegistrations -IncludeSignInLogs `$reportSelections.IncludeSignInLogs -IncludeIntuneDevices `$reportSelections.IncludeIntuneDevices -IncludeMfaCoverage `$reportSelections.IncludeMfaCoverage -IncludeSharePointActivity `$reportSelections.IncludeSharePointActivity -IncludeOneDriveActivity `$reportSelections.IncludeOneDriveActivity -IncludeTeamsActivity `$reportSelections.IncludeTeamsActivity -IncludeSharePointSharing `$reportSelections.IncludeSharePointSharing -IncludeSecurityAlerts `$reportSelections.IncludeSecurityAlerts -IncludeSecurityIncidents `$reportSelections.IncludeSecurityIncidents -IncludeUnifiedAuditLogs `$reportSelections.IncludeUnifiedAuditLogs -SignInLogsDaysBack `$reportSelections.SignInLogsDaysBack -MessageTraceDaysBack `$messageTraceDays -MessageTraceStatuses `$mtStatuses -SelectedUsers `$selectedUsersForReport -TicketNumbers `$ticketNumbers -TicketContent `$ticketContent
                     Write-Status "Report generation function completed"
                     Write-Host "Report generation function completed successfully" -ForegroundColor Green
         } catch {
@@ -8639,41 +8661,6 @@ if (Test-Path `$ReportSelectionsFile) {
                 }
             })
 
-            # Analyze All Reports button - rule-based bulk analysis (no LLM)
-            $analyzeAllReportsBtn = New-Object System.Windows.Forms.Button
-            $analyzeAllReportsBtn.Text = "Analyze All Reports"
-            $analyzeAllReportsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-            $analyzeAllReportsBtn.Location = New-Object System.Drawing.Point(795, 98)
-            $analyzeAllReportsBtn.Size = New-Object System.Drawing.Size(160, 35)
-            $analyzeAllReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-            $analyzeAllReportsBtn.ForeColor = [System.Drawing.Color]::White
-            $analyzeAllReportsBtn.add_Click({
-                $defaultPath = if ($script:outputBaseDir -and (Test-Path $script:outputBaseDir)) { $script:outputBaseDir } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation" }
-                $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-                $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
-                $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-                if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                    try {
-                        if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                            $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                            $rankForm = New-Object System.Windows.Forms.Form
-                            $rankForm.Text = "Bulk Tenant Risk Ranking"
-                            $rankForm.Size = New-Object System.Drawing.Size(850, 500)
-                            $rankForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                            $dg = New-Object System.Windows.Forms.DataGridView
-                            $dg.Dock = 'Fill'
-                            $dg.AutoGenerateColumns = $true
-                            $dg.DataSource = $results
-                            $rankForm.Controls.Add($dg)
-                            $rankForm.ShowDialog()
-                        } else {
-                            [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                        }
-                    } catch {
-                        [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-                    }
-                }
-            })
 
             # Export App Creds button (auth console)
             $exportAppCredsBtn = New-Object System.Windows.Forms.Button
@@ -8840,7 +8827,7 @@ if (Test-Path `$ReportSelectionsFile) {
             $clientRowSpacing = 10  # Increased spacing between rows
 
             # Add controls to form
-            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $refreshTenantNamesBtn, $analyzeAllReportsBtn, $authPanel))
+            $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $refreshTenantNamesBtn, $authPanel))
 
             # Close button
             $authCloseBtn = New-Object System.Windows.Forms.Button
@@ -11319,7 +11306,7 @@ if (Test-Path `$ReportSelectionsFile) {
         # Add all controls to main panel
         $bulkMainPanel.Controls.AddRange(@(
             $bulkTitleLabel, $bulkDescLabel, $bulkConfigGroupBox, $bulkReportsGroupBox,
-            $bulkStartButton, $bulkAnalyzeSingleBtn, $bulkAnalyzeAllBtn, $bulkProgressLabel, $bulkStatusTextBox, $bulkCloseButton
+            $bulkStartButton, $bulkProgressLabel, $bulkStatusTextBox, $bulkCloseButton
         ))
 
         $bulkForm.Controls.Add($bulkMainPanel)

@@ -46,8 +46,9 @@ Start-Process 'firefox.exe' -ArgumentList (
 ## 🚀 Features
 
 ### Bulk Tenant Report Exporter
-- **📦 Single implementation**: `BulkTenantExporter.ps1` — run standalone, or from the main app (same script, `-Owner $mainForm` for a modal window centered on the main form)
-- **🔄 Integrated Mode**: "Bulk Tenant Report Exporter" button calls `BulkTenantExporter.ps1` in-process (no duplicate UI code)
+- **🌐 Web runner (recommended)**: `web-runner/Start-BulkWebRunner.ps1` — browser UI at http://127.0.0.1:8765/ (hidden workers, live log tabs, WCM lifecycle, full report matrix)
+- **📦 Legacy WinForms**: `BulkTenantExporter.ps1` — deprecated; still available standalone or via main app prompt (No = legacy)
+- **🔄 Integrated Mode**: "Bulk Tenant Report Exporter" button opens the web runner by default
 - **➕ Dynamic Tenant Management**: Add tenants on-the-fly during export (no fixed count required)
 - **🔐 Per-Tenant Authentication**: Isolated authentication sessions for each tenant
 - **👥 User Filtering**: Filter reports by specific users (name, email, or partial matches) per tenant
