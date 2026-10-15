@@ -206,7 +206,7 @@ function Get-RiskyUsers {
                     
                     # Get risk detections for this user
                     try {
-                        $riskDetections = Get-MgIdentityRiskDetection -Filter "userId eq '$($user.Id)'" -ErrorAction SilentlyContinue
+                        $riskDetections = Get-MgIdentityRiskDetection -Filter "userId eq '$($user.Id)'" -All -ErrorAction SilentlyContinue
                         if ($riskDetections) {
                             $userDetails.RiskDetections = $riskDetections | ForEach-Object {
                                 @{
@@ -446,7 +446,7 @@ function Get-AppRegistrations {
                 $oauthGrants = @()
                 if ($IncludeOAuthConsents -and $servicePrincipal) {
                     try {
-                        $oauthGrants = Get-MgOauth2PermissionGrant -Filter "clientId eq '$($servicePrincipal.Id)'" -ErrorAction SilentlyContinue
+                        $oauthGrants = Get-MgOauth2PermissionGrant -Filter "clientId eq '$($servicePrincipal.Id)'" -All -ErrorAction SilentlyContinue
                         if ($oauthGrants -and $oauthGrants.Count -gt 0) {
                             $analysis.HasDelegatedConsents = $true
                             foreach ($grant in $oauthGrants) {
@@ -763,6 +763,242 @@ function Get-OAuthPermissionGrants {
     }
 }
 
+function Get-MailboxPermissionChanges {
+    <#
+    .SYNOPSIS
+        Detects suspicious mailbox permission changes (FullAccess, SendAs, SendOnBehalf, folder permissions).
+    .PARAMETER DaysBack
+        Number of days to look back (default: 30)
+    .PARAMETER SelectedUsers
+        Filter to specific mailboxes (optional)
+    .PARAMETER OrgDomains
+        Organization domains to identify external principals (optional)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [int]$DaysBack = 30,
+        
+        [Parameter(Mandatory=$false)]
+        [array]$SelectedUsers = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [array]$OrgDomains = @()
+    )
+    
+    try {
+        Import-SecurityAnalysisModules
+        
+        $changes = @()
+        $suspiciousChanges = @()
+        
+        try {
+            $startDate = (Get-Date).AddDays(-$DaysBack)
+            $startIso = $startDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            
+            # Mailbox permission activities to monitor
+            $permissionActivities = @(
+                'Add-MailboxPermission',
+                'Set-Mailbox',
+                'Add-MailboxFolderPermission',
+                'Set-MailboxFolderPermission',
+                'Add-RecipientPermission',
+                'Set-RecipientPermission'
+            )
+            
+            Write-Host "Searching audit logs for mailbox permission changes (last $DaysBack days)..." -ForegroundColor Cyan
+            
+            $allChanges = @()
+            
+            # Query unified audit log for mailbox permission changes
+            foreach ($activity in $permissionActivities) {
+                try {
+                    $filter = "activityDateTime ge $startIso and (activityDisplayName eq '$activity' or Operations eq '$activity')"
+                    $auditLogs = Get-MgAuditLogDirectoryAudit -Filter $filter -All -ErrorAction SilentlyContinue
+                    
+                    if ($auditLogs) {
+                        foreach ($log in $auditLogs) {
+                            # Extract target mailbox
+                            $targetMailbox = $null
+                            $targetIdentity = $null
+                            
+                            if ($log.TargetResources -and $log.TargetResources.Count -gt 0) {
+                                $targetMailbox = $log.TargetResources[0].UserPrincipalName
+                                if (-not $targetMailbox) {
+                                    $targetMailbox = $log.TargetResources[0].DisplayName
+                                }
+                                $targetIdentity = if ($log.TargetResources[0].Id) { $log.TargetResources[0].Id } else { $targetMailbox }
+                            }
+                            
+                            # Filter by selected users if specified
+                            if ($SelectedUsers.Count -gt 0 -and $targetMailbox) {
+                                if ($targetMailbox -notin $SelectedUsers) {
+                                    continue
+                                }
+                            }
+                            
+                            $allChanges += [PSCustomObject]@{
+                                Log = $log
+                                TargetMailbox = $targetMailbox
+                                TargetIdentity = $targetIdentity
+                                Activity = $activity
+                            }
+                        }
+                    }
+                } catch {
+                    Write-Verbose "Could not retrieve audit logs for activity '$activity': $($_.Exception.Message)"
+                }
+            }
+            
+            Write-Host "Found $($allChanges.Count) mailbox permission change events" -ForegroundColor Cyan
+            
+            # Analyze each change for suspicious patterns
+            foreach ($item in $allChanges) {
+                $log = $item.Log
+                $isSuspicious = $false
+                $suspiciousReasons = [System.Collections.ArrayList]::new()
+                $permissionType = "Unknown"
+                $grantedTo = "Unknown"
+                $accessRights = "Unknown"
+                
+                # Parse additional details from audit log
+                try {
+                    if ($log.AdditionalDetails) {
+                        foreach ($detail in $log.AdditionalDetails) {
+                            if ($detail.Key -eq 'AccessRights' -or $detail.Key -eq 'Rights') {
+                                $accessRights = $detail.Value
+                            }
+                            elseif ($detail.Key -eq 'User' -or $detail.Key -eq 'Trustee' -or $detail.Key -eq 'Delegate') {
+                                $grantedTo = $detail.Value
+                            }
+                        }
+                    }
+                } catch {
+                    Write-Verbose "Could not parse additional details: $($_.Exception.Message)"
+                }
+                
+                # Determine permission type from activity
+                switch ($item.Activity) {
+                    'Add-MailboxPermission' { 
+                        $permissionType = "FullAccess/SendAs/Other"
+                        if ($accessRights -like "*FullAccess*") {
+                            $permissionType = "FullAccess"
+                            $isSuspicious = $true
+                            [void]$suspiciousReasons.Add("FullAccess permission granted")
+                        }
+                    }
+                    'Add-RecipientPermission' {
+                        $permissionType = "SendAs"
+                        $isSuspicious = $true
+                        [void]$suspiciousReasons.Add("SendAs permission granted")
+                    }
+                    'Set-Mailbox' {
+                        # Check if GrantSendOnBehalfTo was modified
+                        if ($log.AdditionalDetails) {
+                            $hasGrantOnBehalf = $log.AdditionalDetails | Where-Object { $_.Key -like "*GrantSendOnBehalfTo*" -or $_.Key -like "*SendOnBehalf*" }
+                            if ($hasGrantOnBehalf) {
+                                $permissionType = "SendOnBehalf"
+                                $isSuspicious = $true
+                                [void]$suspiciousReasons.Add("SendOnBehalf permission granted")
+                            }
+                        }
+                    }
+                    'Add-MailboxFolderPermission' {
+                        $permissionType = "FolderPermission"
+                        # Only flag if high-risk rights (e.g., Owner, Editor)
+                        if ($accessRights -match "Owner|Editor|PublishingEditor") {
+                            $isSuspicious = $true
+                            [void]$suspiciousReasons.Add("High-privilege folder permission: $accessRights")
+                        }
+                    }
+                    'Set-MailboxFolderPermission' {
+                        $permissionType = "FolderPermission (Modified)"
+                        if ($accessRights -match "Owner|Editor|PublishingEditor") {
+                            $isSuspicious = $true
+                            [void]$suspiciousReasons.Add("Folder permission elevated to: $accessRights")
+                        }
+                    }
+                }
+                
+                # Extract who initiated the change
+                $initiatedBy = if ($log.InitiatedBy.User) {
+                    $log.InitiatedBy.User.UserPrincipalName
+                } elseif ($log.InitiatedBy.App) {
+                    "App: $($log.InitiatedBy.App.DisplayName)"
+                } else {
+                    "Unknown"
+                }
+                
+                # Check if granted to external principal
+                if ($grantedTo -ne "Unknown" -and $OrgDomains.Count -gt 0) {
+                    $isExternal = $true
+                    foreach ($domain in $OrgDomains) {
+                        if ($grantedTo -like "*@$domain") {
+                            $isExternal = $false
+                            break
+                        }
+                    }
+                    
+                    if ($isExternal) {
+                        $isSuspicious = $true
+                        [void]$suspiciousReasons.Add("Permission granted to external principal: $grantedTo")
+                    }
+                }
+                
+                # Check if granted to unexpected principal (service accounts, admin accounts)
+                if ($grantedTo -match "admin|svc|service|system|sync" -and $grantedTo -ne "Unknown") {
+                    [void]$suspiciousReasons.Add("Permission granted to service/admin account: $grantedTo")
+                }
+                
+                # Check result status
+                if ($log.Result -and $log.Result -ne 'success') {
+                    [void]$suspiciousReasons.Add("Failed attempt: $($log.Result)")
+                }
+                
+                $changeDetails = [PSCustomObject]@{
+                    ActivityDateTime = $log.ActivityDateTime
+                    ActivityDisplayName = $log.ActivityDisplayName
+                    TargetMailbox = $item.TargetMailbox
+                    PermissionType = $permissionType
+                    GrantedTo = $grantedTo
+                    AccessRights = $accessRights
+                    InitiatedBy = $initiatedBy
+                    Result = $log.Result
+                    CorrelationId = $log.CorrelationId
+                    IpAddress = if ($log.InitiatedBy.User) { $log.InitiatedBy.User.IpAddress } else { $null }
+                    IsSuspicious = $isSuspicious
+                    SuspiciousReasons = @($suspiciousReasons)
+                }
+                
+                $changes += $changeDetails
+                if ($isSuspicious) {
+                    $suspiciousChanges += $changeDetails
+                }
+            }
+            
+            Write-Host "Found $($suspiciousChanges.Count) suspicious mailbox permission changes out of $($changes.Count) total" -ForegroundColor $(if ($suspiciousChanges.Count -gt 0) { 'Yellow' } else { 'Green' })
+            
+        } catch {
+            if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
+                Write-Warning "Insufficient permissions to read audit logs. Requires 'AuditLog.Read.All' or 'Directory.Read.All' permission."
+                return @{ AllChanges = @(); SuspiciousChanges = @() }
+            } else {
+                Write-Warning "Error retrieving mailbox permission changes: $($_.Exception.Message)"
+                return @{ AllChanges = @(); SuspiciousChanges = @() }
+            }
+        }
+        
+        return @{
+            AllChanges = $changes
+            SuspiciousChanges = $suspiciousChanges
+        }
+        
+    } catch {
+        Write-Error "Failed to get mailbox permission changes: $($_.Exception.Message)"
+        return @{ AllChanges = @(); SuspiciousChanges = @() }
+    }
+}
+
 function Get-UserAuthenticationMethodChanges {
     <#
     .SYNOPSIS
@@ -921,5 +1157,5 @@ function Get-UserAuthenticationMethodChanges {
 }
 
 # Export functions
-Export-ModuleMember -Function Get-RiskyUsers, Get-ConditionalAccessPolicies, Get-AppRegistrations, Test-SecurityAnalysisModules, Install-SecurityAnalysisModules, Import-SecurityAnalysisModules, Get-OAuthPermissionGrants, Get-UserAuthenticationMethodChanges
+Export-ModuleMember -Function Get-RiskyUsers, Get-ConditionalAccessPolicies, Get-AppRegistrations, Test-SecurityAnalysisModules, Install-SecurityAnalysisModules, Import-SecurityAnalysisModules, Get-OAuthPermissionGrants, Get-UserAuthenticationMethodChanges, Get-MailboxPermissionChanges
 

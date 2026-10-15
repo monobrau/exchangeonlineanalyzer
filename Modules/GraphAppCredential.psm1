@@ -476,19 +476,17 @@ function Save-GraphAppCredentialToWCM {
             $mainCredSaved = $true
         }
         else {
-            # Last resort: cmdkey (breaks when secret or user contains &, ", etc.)
-            try {
-                $targetArg = "/generic:$target"
-                $userArg = "/user:$userName"
-                $passArg = "/pass:$ClientSecret"
-                $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList $targetArg, $userArg, $passArg -Wait -PassThru -WindowStyle Hidden
-                if ($proc.ExitCode -ne 0) {
-                    throw "cmdkey exited with code $($proc.ExitCode)"
-                }
-                $mainCredSaved = $true
-            } catch {
-                throw "Could not save to WCM: $($_.Exception.Message). Install-Module CredentialManager -Scope CurrentUser, or run Create Graph App from Windows PowerShell 5.1."
-            }
+            # Native CredWrite failed - do not fall back to cmdkey due to security risk
+            # cmdkey exposes secrets in process arguments, visible via Process Explorer/tasklist
+            throw @"
+Could not save to Windows Credential Manager using native CredWrite API.
+Install CredentialManager module to enable secure WCM storage:
+    Install-Module CredentialManager -Scope CurrentUser -Force
+Then restart PowerShell and try again.
+
+If using PowerShell 7+, run this command in Windows PowerShell 5.1 (powershell.exe) instead,
+as CredentialManager requires .NET Framework dependencies.
+"@
         }
     }
 

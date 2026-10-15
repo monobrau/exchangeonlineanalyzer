@@ -146,9 +146,17 @@ function Get-MfaCoverageReport {
         # 2) Conditional Access policies requiring MFA (tenant-wide set)
         $caPolicies = @()
         try {
-            $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999' -ErrorAction SilentlyContinue
-            if ($resp.value) { $caPolicies = $resp.value }
-        } catch {}
+            $uri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=999'
+            do {
+                $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                if ($resp.value) { 
+                    $caPolicies += $resp.value 
+                }
+                $uri = $resp.'@odata.nextLink'
+            } while ($uri)
+        } catch {
+            Write-Verbose "Could not retrieve CA policies: $($_.Exception.Message)"
+        }
 
         # Filter enabled policies that require MFA
         $mfaPolicies = [System.Collections.ArrayList]::new()
@@ -196,19 +204,26 @@ function Get-MfaCoverageReport {
                 $directMfa = $false
                 # Attempt to detect registered methods (requires UserAuthenticationMethod.Read.All). Best-effort.
                 try {
-                    $methods = Invoke-MgGraphRequest -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id) -ErrorAction SilentlyContinue
-                    if ($methods.value) {
-                        foreach ($m in $methods.value) {
-                            $otype = $m.'@odata.type'
-                            if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod' -or
-                                $otype -eq '#microsoft.graph.externalAuthenticationMethod') {
-                                $directMfa = $true; break
-                            }
+                    $methodsUri = "https://graph.microsoft.com/v1.0/users/{0}/authentication/methods" -f $u.Id
+                    $allMethods = @()
+                    do {
+                        $methods = Invoke-MgGraphRequest -Method GET -Uri $methodsUri -ErrorAction SilentlyContinue
+                        if ($methods.value) {
+                            $allMethods += $methods.value
+                        }
+                        $methodsUri = $methods.'@odata.nextLink'
+                    } while ($methodsUri)
+                    
+                    foreach ($m in $allMethods) {
+                        $otype = $m.'@odata.type'
+                        if ($otype -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' -or
+                            $otype -eq '#microsoft.graph.phoneAuthenticationMethod' -or
+                            $otype -eq '#microsoft.graph.softwareOathAuthenticationMethod' -or
+                            $otype -eq '#microsoft.graph.fido2AuthenticationMethod' -or
+                            $otype -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod' -or
+                            $otype -eq '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod' -or
+                            $otype -eq '#microsoft.graph.externalAuthenticationMethod') {
+                            $directMfa = $true; break
                         }
                     }
                 } catch {}
