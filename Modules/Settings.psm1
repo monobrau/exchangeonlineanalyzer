@@ -103,6 +103,7 @@ function Get-DefaultSettings {
         CompanyName = 'Organization'
         GeminiApiKey = ''
         ClaudeApiKey = ''
+        ClaudeModel = 'claude-sonnet-5-5'
         TimeZone = 'CST'
         AdminUsernames = 'admin,admin1,serviceadmin'
         InternalTeamDisplayNames = 'Internal Team,Managed Services'
@@ -116,6 +117,11 @@ function Get-DefaultSettings {
         MemberberryPath = 'C:\git\memberberry'
         MemberberryExceptionsPath = 'C:\git\memberberry\exceptions.json'
         PromptToCreateGraphApp = $false
+        ConnectWiseCompanyID = ''
+        ConnectWiseClientId = ''
+        ConnectWiseMemberIdentifier = ''
+        ConnectWiseBaseUrl = 'https://api-na.myconnectwise.net'
+        ConnectWiseDefaultBoard = 'Service Board'
     }
 }
 

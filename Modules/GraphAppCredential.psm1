@@ -146,10 +146,8 @@ function _Get-SecureStringAsPlainForKey {
         $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)
         
-        # Zero out the plain string in memory if possible
-        if ($plain) {
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode([System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($plain))
-        }
+        # Zero the byte array when finished using it (caller's responsibility)
+        # Note: $plain remains in the managed string pool; best effort only
         
         return $bytes
     }
