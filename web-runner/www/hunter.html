@@ -28,6 +28,8 @@
     .panes { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.15fr) minmax(0, 1fr); gap: 0.55rem; }
     .panes > .outputPanel, .panes > .draftCol { min-height: 0; overflow: auto; display: flex; flex-direction: column; border: 1px solid #eaeef2; border-radius: 6px; padding: 0.45rem 0.55rem; }
     .draftCol details { margin-top: 0.35rem; }
+    .draftCol > #panelClient { flex: 1 0 auto; min-height: 18rem; }
+    #panelClient > #clientNotes { flex: 0 1 auto; max-height: 6rem; }
     #verdictBadge { font-weight: 700; margin: 0 0 0.35rem; }
     #verdictBadge[hidden] { display: none !important; }
     @media (max-width: 1100px) {

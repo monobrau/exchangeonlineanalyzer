@@ -1898,6 +1898,8 @@ async function writeNotes(applyRevision) {
   if (internalWrap) internalWrap.open = Boolean($('internalText').value.trim());
   if (incidentWrap) incidentWrap.open = Boolean(incident.trim());
   showOutput(confirmedIncident ? 'incident' : 'client');
+  const draftCol = document.querySelector('.draftCol');
+  if (draftCol) draftCol.scrollTop = 0;
   setStatus('scanStatus', confirmedIncident
     ? 'Notes ready. The ticket confirms an incident, so the incident report is selected.'
     : 'Notes ready. Choose what to post.');
