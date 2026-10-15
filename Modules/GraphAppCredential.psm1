@@ -140,10 +140,18 @@ function _Get-SecureStringAsPlainForKey {
     #>
     param([Parameter(Mandatory = $true)][SecureString]$SecureString)
     $bstr = [IntPtr]::Zero
+    $bytes = $null
     try {
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
         $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-        return [System.Text.Encoding]::UTF8.GetBytes($plain)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)
+        
+        # Zero out the plain string in memory if possible
+        if ($plain) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode([System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($plain))
+        }
+        
+        return $bytes
     }
     finally {
         if ($bstr -ne [IntPtr]::Zero) {
@@ -468,19 +476,17 @@ function Save-GraphAppCredentialToWCM {
             $mainCredSaved = $true
         }
         else {
-            # Last resort: cmdkey (breaks when secret or user contains &, ", etc.)
-            try {
-                $targetArg = "/generic:$target"
-                $userArg = "/user:$userName"
-                $passArg = "/pass:$ClientSecret"
-                $proc = Start-Process -FilePath "cmdkey.exe" -ArgumentList $targetArg, $userArg, $passArg -Wait -PassThru -WindowStyle Hidden
-                if ($proc.ExitCode -ne 0) {
-                    throw "cmdkey exited with code $($proc.ExitCode)"
-                }
-                $mainCredSaved = $true
-            } catch {
-                throw "Could not save to WCM: $($_.Exception.Message). Install-Module CredentialManager -Scope CurrentUser, or run Create Graph App from Windows PowerShell 5.1."
-            }
+            # Native CredWrite failed - do not fall back to cmdkey due to security risk
+            # cmdkey exposes secrets in process arguments, visible via Process Explorer/tasklist
+            throw @"
+Could not save to Windows Credential Manager using native CredWrite API.
+Install CredentialManager module to enable secure WCM storage:
+    Install-Module CredentialManager -Scope CurrentUser -Force
+Then restart PowerShell and try again.
+
+If using PowerShell 7+, run this command in Windows PowerShell 5.1 (powershell.exe) instead,
+as CredentialManager requires .NET Framework dependencies.
+"@
         }
     }
 
@@ -1104,12 +1110,16 @@ function Export-GraphAppCredentialsToFile {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $key = $sha.ComputeHash($pwdBytes)[0..31]
+        # Zero password bytes after use
+        if ($pwdBytes) { [Array]::Clear($pwdBytes, 0, $pwdBytes.Length) }
     }
     finally {
         $sha.Dispose()
     }
     $secure = ConvertTo-SecureString $json -AsPlainText -Force
     $encrypted = $secure | ConvertFrom-SecureString -Key $key
+    # Zero key after use
+    if ($key) { [Array]::Clear($key, 0, $key.Length) }
     $header = "EOA-CREDS-1`n"
     [System.IO.File]::WriteAllText($Path, $header + $encrypted, [System.Text.Encoding]::UTF8)
 }
@@ -1134,11 +1144,15 @@ function Get-GraphAppCredentialEncryptedFileSummary {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $key = $sha.ComputeHash($pwdBytes)[0..31]
+        # Zero password bytes after use
+        if ($pwdBytes) { [Array]::Clear($pwdBytes, 0, $pwdBytes.Length) }
     }
     finally {
         $sha.Dispose()
     }
     $secure = $encrypted | ConvertTo-SecureString -Key $key
+    # Zero key after use
+    if ($key) { [Array]::Clear($key, 0, $key.Length) }
     $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try {
         $json = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
@@ -1195,16 +1209,22 @@ function Import-GraphAppCredentialsFromFile {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $key = $sha.ComputeHash($pwdBytes)[0..31]
+        # Zero password bytes after use
+        if ($pwdBytes) { [Array]::Clear($pwdBytes, 0, $pwdBytes.Length) }
     }
     finally {
         $sha.Dispose()
     }
     try {
         $secure = $encrypted | ConvertTo-SecureString -Key $key
+        # Zero key after use
+        if ($key) { [Array]::Clear($key, 0, $key.Length) }
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
         $json = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     } catch {
+        # Zero key on error path
+        if ($key) { [Array]::Clear($key, 0, $key.Length) }
         throw "Decryption failed. Wrong password?"
     }
     $creds = $json | ConvertFrom-Json

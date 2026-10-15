@@ -1,4 +1,107 @@
 function Test-ExternalForwarding {
+    <#
+    .SYNOPSIS
+        Tests if inbox rule forwards/redirects to external domains or has suspicious actions.
+    .PARAMETER Rule
+        Inbox rule object to analyze
+    .PARAMETER InternalDomains
+        List of organization domains
+    .OUTPUTS
+        @{ IsExternal = $bool; ForwardingType = $string; Recipients = @(); IsSuspicious = $bool; SuspiciousReasons = @() }
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        $Rule,
+        [Parameter(Mandatory=$true)]
+        [array]$InternalDomains
+    )
+    
+    $result = @{
+        IsExternal = $false
+        ForwardingType = "None"
+        Recipients = @()
+        IsSuspicious = $false
+        SuspiciousReasons = [System.Collections.ArrayList]::new()
+    }
+    
+    # Check all forwarding/redirecting properties
+    $recipientProperties = @(
+        @{ Name = 'ForwardTo'; Type = 'Forward' },
+        @{ Name = 'ForwardAsAttachmentTo'; Type = 'ForwardAsAttachment' },
+        @{ Name = 'RedirectTo'; Type = 'Redirect' }
+    )
+    
+    foreach ($prop in $recipientProperties) {
+        $recipients = $Rule.($prop.Name)
+        if ($null -eq $recipients -or $recipients.Count -eq 0) { continue }
+        
+        $externalRecipients = @()
+        
+        foreach ($recipient in $recipients) {
+            $emailAddress = $null
+            if ($recipient -is [string]) { 
+                $emailAddress = $recipient 
+            }
+            elseif ($recipient -is [Microsoft.Exchange.Data.SmtpAddress]) { 
+                $emailAddress = $recipient.ToString() 
+            }
+            elseif ($recipient.PropertyNames -contains 'Address') { 
+                $emailAddress = $recipient.Address 
+            } 
+            elseif ($recipient.PropertyNames -contains 'EmailAddress') { 
+                $emailAddress = $recipient.EmailAddress 
+            }
+            
+            if (-not [string]::IsNullOrWhiteSpace($emailAddress)) {
+                try {
+                    $domain = ($emailAddress -split '@')[1].ToLowerInvariant()
+                    if ($domain -notin $InternalDomains) {
+                        $externalRecipients += $emailAddress
+                        $result.IsExternal = $true
+                        $result.ForwardingType = $prop.Type
+                        [void]$result.SuspiciousReasons.Add("$($prop.Type) to external domain: $emailAddress")
+                    }
+                    $result.Recipients += $emailAddress
+                } catch { 
+                    Write-Verbose "Could not parse domain from: $emailAddress" 
+                }
+            }
+        }
+    }
+    
+    # Check for suspicious delete actions
+    if ($Rule.DeleteMessage -eq $true) {
+        $result.IsSuspicious = $true
+        [void]$result.SuspiciousReasons.Add("Rule deletes messages")
+    }
+    
+    # Check for suspicious move-to-hidden-folder actions
+    if ($Rule.MoveToFolder) {
+        $folderPath = $Rule.MoveToFolder.ToString()
+        # Flag if moving to RSS, Junk, Deleted Items, or folders with suspicious names
+        if ($folderPath -match "\\RSS|\\Junk|\\Deleted|\\Archive|\\Conversation History" -or
+            $folderPath -match "[^\x20-\x7E]" -or # Non-printable characters
+            $folderPath -match "^\s+$") { # Whitespace-only names
+            $result.IsSuspicious = $true
+            [void]$result.SuspiciousReasons.Add("Moves to suspicious folder: $folderPath")
+        }
+    }
+    
+    # Check for combination of suspicious conditions (delete AND condition)
+    if ($Rule.DeleteMessage -and ($Rule.SubjectOrBodyContainsWords -or $Rule.FromAddressContainsWords)) {
+        [void]$result.SuspiciousReasons.Add("Deletes messages matching specific patterns (evidence hiding)")
+    }
+    
+    # Mark as suspicious if any suspicious reasons found
+    if ($result.SuspiciousReasons.Count -gt 0) {
+        $result.IsSuspicious = $true
+    }
+    
+    return $result
+}
+
+# Legacy function wrapper for backward compatibility
+function Test-ExternalForwardingLegacy {
     param(
         [Parameter(Mandatory=$true)]
         [array]$RecipientAddresses,
@@ -280,8 +383,12 @@ function Analyze-MailboxRulesEnhanced {
                 }
                 
                 # Check for external forwarding in hidden rules
-                if (-not $isSuspiciousHidden -and $rule.ForwardTo -and $rule.ForwardTo -match '@') {
-                    $isSuspiciousHidden = $true
+                if (-not $isSuspiciousHidden) {
+                    # Use enhanced Test-ExternalForwarding that checks ForwardTo, RedirectTo, ForwardAsAttachmentTo
+                    $fwdTest = Test-ExternalForwarding -Rule $rule -InternalDomains @('dummy.local')
+                    if ($fwdTest.IsExternal -or $fwdTest.IsSuspicious) {
+                        $isSuspiciousHidden = $true
+                    }
                 }
             }
             
@@ -313,9 +420,20 @@ function Analyze-MailboxRulesEnhanced {
             $suspiciousVisibleCount++
         }
         
-        # Check for external forwarding
-        if ($rule.ForwardTo -and $rule.ForwardTo -match '@') {
+        # Check for external forwarding or suspicious actions
+        $fwdTest = Test-ExternalForwarding -Rule $rule -InternalDomains @('dummy.local')
+        if ($fwdTest.IsExternal) {
             $hasExternalForwarding = $true
+        }
+        if ($fwdTest.IsSuspicious) {
+            if ($rule.IsHidden) {
+                # Already counted in suspicious hidden if applicable
+            } else {
+                # Count as suspicious visible rule
+                if (-not $isSuspiciousVisible) {
+                    $suspiciousVisibleCount++
+                }
+            }
         }
     }
     
@@ -327,4 +445,4 @@ function Analyze-MailboxRulesEnhanced {
     }
 }
 
-Export-ModuleMember -Function Test-ExternalForwarding,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains,Get-MailboxDelegatesAndPermissions,Analyze-MailboxRulesEnhanced 
+Export-ModuleMember -Function Test-ExternalForwarding,Test-ExternalForwardingLegacy,Analyze-MailboxDelegates,Analyze-MailboxPermissions,Get-AutoDetectedDomains,Get-MailboxDelegatesAndPermissions,Analyze-MailboxRulesEnhanced 
