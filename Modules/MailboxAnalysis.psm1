@@ -572,21 +572,12 @@ function Analyze-MailboxRulesEnhanced {
             $hasExternalForwarding = $true
         }
         
-        # Count suspicious rules based on risk score (only high-risk rules)
-        if ($riskTest.RiskScore -ge 5 -or $riskTest.IsSuspicious) {
-            if ($rule.IsHidden) {
-                # Already counted in suspicious hidden if applicable
-            } else {
-                # Count as suspicious visible rule (only once)
-                if (-not $isSuspiciousVisible) {
-                    $suspiciousVisibleCount++
-                }
+        # Count suspicious visible rules (avoid double-counting)
+        if (-not $rule.IsHidden) {
+            # Either has suspicious keyword/symbol pattern OR high risk score
+            if ($isSuspiciousVisible -or ($riskTest.RiskScore -ge 5 -or $riskTest.IsSuspicious)) {
+                $suspiciousVisibleCount++
             }
-        }
-        
-        # Count suspicious visible rules with keyword/symbol patterns
-        if ($isSuspiciousVisible -and -not $rule.IsHidden) {
-            $suspiciousVisibleCount++
         }
     }
     

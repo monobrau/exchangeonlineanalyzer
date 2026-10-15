@@ -420,7 +420,9 @@ function Analyze-MailboxBatch {
                         $null
                     }
                     if ($rules -and $rules.Count -gt 0) {
-                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords
+                        # Pass detected domains if available
+                        $domainsToUse = if ($detectedDomains -and $detectedDomains.Count -gt 0) { $detectedDomains } else { @() }
+                        $analysis = Analyze-MailboxRulesEnhanced -Rules $rules -BaseSuspiciousKeywords $BaseSuspiciousKeywords -InternalDomains $domainsToUse
                         $result.RulesCount = $analysis.TotalRules.ToString()
                         $result.HiddenRules = $analysis.SuspiciousHidden.ToString()
                         $result.SuspiciousRules = $analysis.SuspiciousVisible.ToString()

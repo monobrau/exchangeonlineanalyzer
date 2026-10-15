@@ -787,7 +787,8 @@ function Get-OAuthPermissionGrants {
                 
                 if ($hasMailRead -and ($hasOfflineAccess -or $hasMailSend)) {
                     $riskScore += 2
-                    [void]$riskFactors.Add("Mail.Read combined with $($hasOfflineAccess ? 'offline_access' : 'Mail.Send')")
+                    $combinedWith = if ($hasOfflineAccess) { 'offline_access' } else { 'Mail.Send' }
+                    [void]$riskFactors.Add("Mail.Read combined with $combinedWith")
                 }
                 
                 # User-level consent adds risk but isn't automatically suspicious
