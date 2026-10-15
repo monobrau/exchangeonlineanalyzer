@@ -116,6 +116,9 @@ function Get-DefaultSettings {
         MemberberryPath = 'C:\git\memberberry'
         MemberberryExceptionsPath = 'C:\git\memberberry\exceptions.json'
         PromptToCreateGraphApp = $false
+        ConnectWiseCompanyID = ''
+        ConnectWiseBaseUrl = 'https://api-na.myconnectwise.net'
+        ConnectWiseDefaultBoard = 'Service Board'
     }
 }
 
