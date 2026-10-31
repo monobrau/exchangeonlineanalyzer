@@ -426,11 +426,7 @@ function _Write-GraphAppCredentialStore {
     $utf8 = New-Object System.Text.UTF8Encoding $false
     $tmp = $path + '.tmp'
     [System.IO.File]::WriteAllText($tmp, $json, $utf8)
-    if ([System.IO.File]::Exists($path)) {
-        [System.IO.File]::Replace($tmp, $path, $null)
-    } else {
-        [System.IO.File]::Move($tmp, $path)
-    }
+    [System.IO.File]::Move($tmp, $path, $true)
     if (-not (_Test-GraphAppCredentialOnWindows)) {
         try { & chmod 700 $dir } catch { }
         try { & chmod 600 $path } catch { }
