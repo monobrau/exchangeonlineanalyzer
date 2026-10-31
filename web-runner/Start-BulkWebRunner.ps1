@@ -39,16 +39,84 @@ $script:ListenLan = [bool]$ListenLan
 $script:ListenPort = $Port
 Import-Module (Join-Path $script:RunnerRoot 'Modules\BulkRunnerSession.psm1') -Force
 Set-BulkRunnerWorkerVisibility -Hidden:(-not $ShowWorkers)
+# Per-browser isolation: each browser gets its own cookie → BulkRunner session + GraphAppJob.
+# The single-threaded GetContext loop loads the matching context into $script:BulkSession /
+# $script:GraphAppJob for the duration of each request, then writes it back.
+$script:BrowserContexts = @{}
 $script:BulkSession = $null
 $script:ShutdownRequested = $false
 $script:GraphAppJob = $null
+$script:RequestBrowserId = $null
+$script:BrowserCookieName = 'eoa_browser'
+
+function Get-BulkWebBrowserIdFromCookie {
+    param([string]$CookieHeader)
+    if ([string]::IsNullOrWhiteSpace($CookieHeader)) { return $null }
+    $name = [regex]::Escape($script:BrowserCookieName)
+    if ($CookieHeader -match "(?:^|;\s*)$name=([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:;|$)") {
+        return $Matches[1].ToLowerInvariant()
+    }
+    return $null
+}
+
+function New-BulkWebBrowserId {
+    return [guid]::NewGuid().ToString('D').ToLowerInvariant()
+}
+
+function Get-BulkWebBrowserCookieHeader {
+    param([Parameter(Mandatory = $true)][string]$BrowserId)
+    # HttpOnly so JS cannot steal it; SameSite=Lax keeps same-site API calls working.
+    return "$($script:BrowserCookieName)=$BrowserId; Path=/; HttpOnly; SameSite=Lax"
+}
+
+function Ensure-BulkWebBrowserContext {
+    param([Parameter(Mandatory = $true)][string]$BrowserId)
+    if (-not $script:BrowserContexts.ContainsKey($BrowserId)) {
+        $script:BrowserContexts[$BrowserId] = [ordered]@{
+            BrowserId   = $BrowserId
+            Session     = $null
+            GraphAppJob = $null
+            LastAccess  = (Get-Date).ToUniversalTime()
+        }
+    }
+    return $script:BrowserContexts[$BrowserId]
+}
+
+function Test-BulkWebLiveSessionConflict {
+    param(
+        [string]$SessionId,
+        [string]$TempDir
+    )
+    foreach ($key in @($script:BrowserContexts.Keys)) {
+        if ($key -eq $script:RequestBrowserId) { continue }
+        $other = $script:BrowserContexts[$key].Session
+        if (-not $other) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($SessionId) -and [string]$other.SessionId -eq $SessionId) { return $true }
+        if (-not [string]::IsNullOrWhiteSpace($TempDir) -and [string]$other.TempDir -eq $TempDir) { return $true }
+    }
+    return $false
+}
+
+function Stop-BulkWebAllBrowserSessions {
+    foreach ($key in @($script:BrowserContexts.Keys)) {
+        $ctx = $script:BrowserContexts[$key]
+        if ($ctx -and $ctx.Session) {
+            try { Stop-BulkRunnerSessionTenants -Session $ctx.Session } catch { }
+        }
+    }
+    $script:BrowserContexts.Clear()
+    $script:BulkSession = $null
+    $script:GraphAppJob = $null
+    $script:RequestBrowserId = $null
+}
 
 function Write-JsonResponse {
     param(
         [System.Net.HttpListenerResponse]$Response,
         [object]$Body,
         [int]$StatusCode = 200,
-        [int]$Depth = 20
+        [int]$Depth = 20,
+        [string]$SetCookie = $null
     )
     try {
         if (-not $Response.OutputStream.CanWrite) { return }
@@ -56,6 +124,9 @@ function Write-JsonResponse {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
         $Response.StatusCode = $StatusCode
         $Response.ContentType = 'application/json; charset=utf-8'
+        if (-not [string]::IsNullOrWhiteSpace($SetCookie)) {
+            $Response.Headers.Add('Set-Cookie', $SetCookie)
+        }
         $Response.ContentLength64 = $bytes.Length
         $Response.OutputStream.Write($bytes, 0, $bytes.Length)
     } finally {
@@ -166,21 +237,20 @@ function Handle-ApiRequest {
     if ($Method -eq 'POST' -and $Path -eq '/api/shutdown') {
         if (-not $IsLocal) { throw 'Shutdown is only allowed from this machine.' }
         $script:ShutdownRequested = $true
-        if ($script:BulkSession) {
-            try { Stop-BulkRunnerSessionTenants -Session $script:BulkSession } catch { }
-        }
+        Stop-BulkWebAllBrowserSessions
         return @{ ok = $true; shuttingDown = $true }
     }
 
     if ($Method -eq 'GET' -and $Path -eq '/api/health') {
         return @{
             ok       = $true
-            version  = '0.4.0'
+            version  = '0.5.0'
             pid      = $PID
             projectRoot = $script:ProjectRoot
             hiddenWorkers = (-not $ShowWorkers)
             listenLan = $script:ListenLan
             port = $script:ListenPort
+            activeBrowsers = $script:BrowserContexts.Count
             lanUrls = if ($script:ListenLan -and $script:LanUrls) { @($script:LanUrls) } else { @() }
             features = @{
                 sessionHistory        = $true
@@ -188,6 +258,7 @@ function Handle-ApiRequest {
                 reportSelections      = $true
                 exportPresets         = $true
                 noWaitCommands        = $true
+                multiUserSessions     = $true
                 hiddenWorkers         = $true
                 wcmManagement         = $true
                 workerLogTabs         = $true
@@ -483,6 +554,7 @@ function Handle-ApiRequest {
     if ($Method -eq 'POST' -and $Path -eq '/api/session') {
         if ($script:BulkSession) {
             Save-BulkRunnerSessionManifest -Session $script:BulkSession -Status 'replaced' | Out-Null
+            try { Stop-BulkRunnerSessionTenants -Session $script:BulkSession } catch { }
         }
         $selections = Get-BulkRunnerDefaultReportSelections
         if ($Body.reportSelections) {
@@ -525,6 +597,11 @@ function Handle-ApiRequest {
             Save-BulkRunnerSessionManifest -Session $script:BulkSession -Status 'replaced' | Out-Null
         }
         $manifest = Get-BulkRunnerSessionManifest -SessionId ([string]$Body.sessionId)
+        $liveTemp = if ($manifest.tempDir) { [string]$manifest.tempDir } else { '' }
+        $liveId = if ($manifest.sessionId) { [string]$manifest.sessionId } else { [string]$Body.sessionId }
+        if (Test-BulkWebLiveSessionConflict -SessionId $liveId -TempDir $liveTemp) {
+            throw 'That session is open in another browser.'
+        }
         $restored = New-BulkRunnerSessionFromManifest -ProjectRoot $script:ProjectRoot -Manifest $manifest
         $script:BulkSession = $restored.Session
         Sync-BulkRunnerSessionManifest -Session $script:BulkSession -Force | Out-Null
@@ -668,7 +745,8 @@ function Handle-ApiRequest {
                 try { $busy = -not $script:GraphAppJob.Process.HasExited } catch { }
                 if ($busy) { throw 'A Graph app console is already open. Finish or close it, then retry.' }
             }
-            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -NoWait
+            $jobId = if ($script:RequestBrowserId) { [string]$script:RequestBrowserId } else { [guid]::NewGuid().ToString('D') }
+            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -NoWait -JobId $jobId
             $script:GraphAppJob = $outcome
             $script:GraphAppJob | Add-Member -NotePropertyName UpdateExisting -NotePropertyValue $false -Force
             return @{ started = $true; processId = $outcome.ProcessId; logPath = $outcome.LogPath }
@@ -681,7 +759,8 @@ function Handle-ApiRequest {
                 try { $busy = -not $script:GraphAppJob.Process.HasExited } catch { }
                 if ($busy) { throw 'A Graph app console is already open. Finish or close it, then retry.' }
             }
-            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -UpdateExisting -NoWait
+            $jobId = if ($script:RequestBrowserId) { [string]$script:RequestBrowserId } else { [guid]::NewGuid().ToString('D') }
+            $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -UpdateExisting -NoWait -JobId $jobId
             $script:GraphAppJob = $outcome
             $script:GraphAppJob | Add-Member -NotePropertyName UpdateExisting -NotePropertyValue $true -Force
             return @{ started = $true; processId = $outcome.ProcessId; logPath = $outcome.LogPath; updated = $true }
@@ -1091,25 +1170,10 @@ function Handle-ApiRequest {
         if ($action -eq 'command' -and $Method -eq 'POST') {
             $cmd = [string]$Body.command
             if ([string]::IsNullOrWhiteSpace($cmd)) { throw 'Missing command' }
-            $noWait = $false
-            if ($Body.noWait -eq $true -or "$($Body.noWait)" -eq 'true') { $noWait = $true }
-            $wait = 60
-            if ($null -ne $Body.waitSeconds) { $wait = [int]$Body.waitSeconds }
-            if ($noWait) { $wait = 0 }
+            # Always noWait: blocking wait freezes the single-threaded listener for every browser.
             $cmd = Expand-BulkRunnerGenerateReportsCommand -Session $script:BulkSession -ClientNumber $clientNumber -Command $cmd
-            $cmdParams = @{
-                Session        = $script:BulkSession
-                ClientNumber   = $clientNumber
-                Command        = $cmd
-                TimeoutSeconds = $wait
-            }
-            if ($noWait) { $cmdParams.NoWait = $true }
-            $response = Send-BulkRunnerCommand @cmdParams
-            if (-not $noWait) {
-                Sync-BulkRunnerSessionManifest -Session $script:BulkSession -Force | Out-Null
-            } else {
-                Sync-BulkRunnerSessionManifest -Session $script:BulkSession | Out-Null
-            }
+            $response = Send-BulkRunnerCommand -Session $script:BulkSession -ClientNumber $clientNumber -Command $cmd -TimeoutSeconds 0 -NoWait
+            Sync-BulkRunnerSessionManifest -Session $script:BulkSession | Out-Null
             return @{ response = $response }
         }
     }
@@ -1653,13 +1717,44 @@ try {
         $request = $context.Request
         $response = $context.Response
         $path = $request.Url.AbsolutePath
+        $setCookie = $null
+        $browserCtx = $null
+        $bindBrowser = $false
 
         try {
             if ($path.StartsWith('/api/')) {
                 $body = Read-RequestBody -Request $request
-                $result = Handle-ApiRequest -Method $request.HttpMethod -Path $path -Body $body -RequestUrl $request.Url -IsLocal:$request.IsLocal
+                $bindBrowser = ($path -ne '/api/health')
+                if ($bindBrowser) {
+                    $cookieHeader = [string]$request.Headers['Cookie']
+                    $browserId = Get-BulkWebBrowserIdFromCookie -CookieHeader $cookieHeader
+                    if (-not $browserId) {
+                        $browserId = New-BulkWebBrowserId
+                        $setCookie = Get-BulkWebBrowserCookieHeader -BrowserId $browserId
+                    }
+                    $browserCtx = Ensure-BulkWebBrowserContext -BrowserId $browserId
+                    $script:RequestBrowserId = $browserId
+                    $script:BulkSession = $browserCtx.Session
+                    $script:GraphAppJob = $browserCtx.GraphAppJob
+                    $browserCtx.LastAccess = (Get-Date).ToUniversalTime()
+                }
+
+                try {
+                    $result = Handle-ApiRequest -Method $request.HttpMethod -Path $path -Body $body -RequestUrl $request.Url -IsLocal:$request.IsLocal
+                } finally {
+                    if ($bindBrowser) {
+                        # Persist this browser's session/job even if the handler threw.
+                        $browserCtx.Session = $script:BulkSession
+                        $browserCtx.GraphAppJob = $script:GraphAppJob
+                        $browserCtx.LastAccess = (Get-Date).ToUniversalTime()
+                        $script:RequestBrowserId = $null
+                        $script:BulkSession = $null
+                        $script:GraphAppJob = $null
+                    }
+                }
+
                 $jsonDepth = if ($path -like '/api/curate/*' -or $path -like '/api/investigate/*' -or $path -like '/api/triage/*') { 12 } else { 8 }
-                Write-JsonResponse -Response $response -Body $result -Depth $jsonDepth
+                Write-JsonResponse -Response $response -Body $result -Depth $jsonDepth -SetCookie $setCookie
                 if ($script:ShutdownRequested) {
                     Write-Host "Shutdown requested - stopping listener." -ForegroundColor Yellow
                     try { $listener.Stop() } catch { }
@@ -1684,7 +1779,7 @@ try {
             }
         } catch {
             try {
-                Write-JsonResponse -Response $response -Body @{ error = $_.Exception.Message } -StatusCode 400
+                Write-JsonResponse -Response $response -Body @{ error = $_.Exception.Message } -StatusCode 400 -SetCookie $setCookie
             } catch {
                 Write-Host "Response error: $($_.Exception.Message)" -ForegroundColor Yellow
                 try { $response.Close() } catch { }
@@ -1692,6 +1787,7 @@ try {
         }
     }
 } finally {
+    try { Stop-BulkWebAllBrowserSessions } catch { }
     $listener.Stop()
     $listener.Close()
 }

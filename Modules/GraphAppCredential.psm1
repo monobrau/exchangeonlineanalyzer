@@ -398,6 +398,23 @@ function _Read-GraphAppCredentialStore {
     return $store
 }
 
+function Invoke-GraphAppCredentialFileLocked {
+    param([Parameter(Mandatory = $true)][scriptblock]$Action)
+    $mutex = New-Object System.Threading.Mutex($false, 'EOA-GraphAppCredentialStore')
+    $owned = $false
+    try {
+        $owned = $mutex.WaitOne(15000)
+        if (-not $owned) { throw 'Timed out waiting for the shared app registration store.' }
+        & $Action
+    }
+    finally {
+        if ($owned) {
+            try { $mutex.ReleaseMutex() } catch { }
+        }
+        $mutex.Dispose()
+    }
+}
+
 function _Write-GraphAppCredentialStore {
     param($Store)
     $path = _Get-GraphAppCredentialStorePath
@@ -407,7 +424,13 @@ function _Write-GraphAppCredentialStore {
     }
     $json = $Store | ConvertTo-Json -Depth 6
     $utf8 = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($path, $json, $utf8)
+    $tmp = $path + '.tmp'
+    [System.IO.File]::WriteAllText($tmp, $json, $utf8)
+    if ([System.IO.File]::Exists($path)) {
+        [System.IO.File]::Replace($tmp, $path, $null)
+    } else {
+        [System.IO.File]::Move($tmp, $path)
+    }
     if (-not (_Test-GraphAppCredentialOnWindows)) {
         try { & chmod 700 $dir } catch { }
         try { & chmod 600 $path } catch { }
@@ -436,13 +459,15 @@ function _Save-GraphAppCredentialFile {
         [ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
     )
     $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
-    $store = _Read-GraphAppCredentialStore
-    $store[$Prefix][$tid] = @{
-        clientId     = $ClientId
-        clientSecret = $ClientSecret
-        displayName  = [string]$TenantDisplayName
+    Invoke-GraphAppCredentialFileLocked {
+        $store = _Read-GraphAppCredentialStore
+        $store[$Prefix][$tid] = @{
+            clientId     = $ClientId
+            clientSecret = $ClientSecret
+            displayName  = [string]$TenantDisplayName
+        }
+        _Write-GraphAppCredentialStore -Store $store
     }
-    _Write-GraphAppCredentialStore -Store $store
 }
 
 function _Remove-GraphAppCredentialFile {
@@ -451,10 +476,12 @@ function _Remove-GraphAppCredentialFile {
         [ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
     )
     $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
-    $store = _Read-GraphAppCredentialStore
-    if ($store[$Prefix].ContainsKey($tid)) {
-        $store[$Prefix].Remove($tid) | Out-Null
-        _Write-GraphAppCredentialStore -Store $store
+    Invoke-GraphAppCredentialFileLocked {
+        $store = _Read-GraphAppCredentialStore
+        if ($store[$Prefix].ContainsKey($tid)) {
+            $store[$Prefix].Remove($tid) | Out-Null
+            _Write-GraphAppCredentialStore -Store $store
+        }
     }
 }
 
@@ -1549,6 +1576,9 @@ function Invoke-GraphAppCreateWithWcmSave {
         [Parameter(Mandatory = $false)]
         [string]$TenantId,
 
+        [Parameter(Mandatory = $false)]
+        [string]$JobId,
+
         [switch]$UpdateExisting,
 
         [switch]$NoWait
@@ -1560,8 +1590,17 @@ function Invoke-GraphAppCreateWithWcmSave {
     # Same executable as the GUI (pwsh when you launch from pwsh). Do not switch to Windows PowerShell 5.1:
     # -NoProfile there hides Microsoft.Graph modules installed for pwsh.
     $psExe = (Get-Process -Id $PID -ErrorAction Stop).Path
-    $resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
-    $logPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+    $jobToken = $null
+    if (-not [string]::IsNullOrWhiteSpace($JobId) -and $JobId -match '^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+        $jobToken = $JobId.ToLowerInvariant()
+    }
+    if ($jobToken) {
+        $resultPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-result.json"
+        $logPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-last.log"
+    } else {
+        $resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+        $logPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+    }
     foreach ($p in @($resultPath, $logPath, "${logPath}.err")) {
         if ($p -and (Test-Path -LiteralPath $p)) {
             Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
@@ -1581,14 +1620,24 @@ function Invoke-GraphAppCreateWithWcmSave {
         [void]$argList.Add($tid)
     }
     # Interactive console required for browser sign-in and Read-Host (Y/n). Redirecting stdout breaks both.
-    $startParams = @{
-        FilePath         = $psExe
-        ArgumentList     = [string[]]$argList
-        PassThru         = $true
-        WorkingDirectory = $ProjectRoot
+    $prevJobEnv = $env:EOA_GRAPH_APP_JOB_ID
+    if ($jobToken) { $env:EOA_GRAPH_APP_JOB_ID = $jobToken } else { Remove-Item Env:EOA_GRAPH_APP_JOB_ID -ErrorAction SilentlyContinue }
+    try {
+        $startParams = @{
+            FilePath         = $psExe
+            ArgumentList     = [string[]]$argList
+            PassThru         = $true
+            WorkingDirectory = $ProjectRoot
+        }
+        if (-not $NoWait) { $startParams.Wait = $true }
+        $proc = Start-Process @startParams
+    } finally {
+        if ($null -ne $prevJobEnv -and $prevJobEnv -ne '') {
+            $env:EOA_GRAPH_APP_JOB_ID = $prevJobEnv
+        } else {
+            Remove-Item Env:EOA_GRAPH_APP_JOB_ID -ErrorAction SilentlyContinue
+        }
     }
-    if (-not $NoWait) { $startParams.Wait = $true }
-    $proc = Start-Process @startParams
     if ($NoWait) {
         return [pscustomobject]@{
             Started   = $true

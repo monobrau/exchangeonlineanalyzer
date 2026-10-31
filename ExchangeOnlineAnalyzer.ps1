@@ -7447,7 +7447,7 @@ try {
     Write-Host ""
     
     # Create isolated cache directory for this client
-    `$cacheDir = Join-Path `$env:TEMP "ExchangeOnlineAnalyzer_Client`$ClientNumber_Cache_`$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    `$cacheDir = Join-Path `$env:TEMP ("ExchangeOnlineAnalyzer_Client`$ClientNumber_Cache_" + (Get-Date -Format 'yyyyMMdd_HHmmss') + "_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
     `$null = New-Item -ItemType Directory -Path `$cacheDir -Force -ErrorAction Stop
     `$env:IDENTITY_SERVICE_CACHE_DIR = `$cacheDir
     `$env:MSAL_CACHE_DIR = `$cacheDir

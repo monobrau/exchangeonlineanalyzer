@@ -58,7 +58,7 @@ function resolveContainmentState(clientNumber, existing = {}) {
   if (hasContainmentPayload(existing.containment)) return existing.containment;
   return readContainmentFromSessionStorage(clientNumber);
 }
-let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false, deviceCodeAuth: false, isWindowsHost: true };
+let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, multiUserSessions: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false, deviceCodeAuth: false, isWindowsHost: true };
 const uiStateSyncTimers = new Map();
 const sessionReportSyncTimer = { id: null };
 const HISTORY_SORT_STORAGE = { saved: 'bulkRunnerHistorySort.saved', archived: 'bulkRunnerHistorySort.archived' };
@@ -7114,6 +7114,8 @@ async function api(path, options = {}, timeoutMs = 20000) {
 
       ...options,
 
+      credentials: 'same-origin',
+
       signal: controller.signal,
 
     });
@@ -7645,7 +7647,7 @@ async function refreshSession() {
 
     currentSessionId = session.sessionId;
 
-    sessionInfo.textContent = `Session ${session.sessionId} (${count} tenant(s))`;
+    sessionInfo.textContent = `This browser: ${session.sessionId} (${count} tenant(s))`;
 
     renderTenants(session);
 

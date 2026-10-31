@@ -40,7 +40,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+# Optional EOA_GRAPH_APP_JOB_ID (GUID) isolates result/log files when multiple browsers create apps in parallel.
+$graphAppJobId = [string]$env:EOA_GRAPH_APP_JOB_ID
+if ($graphAppJobId -and $graphAppJobId -match '^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+    $jobToken = $graphAppJobId.ToLowerInvariant()
+    $resultPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-result.json"
+    $script:graphAppCreateTranscriptPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-last.log"
+} else {
+    $resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+    $script:graphAppCreateTranscriptPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+}
 $script:graphAppCreateTenantId = $null
 $script:graphAppCreateTenantDisplayName = $null
 $script:graphAppCreateClientId = $null
@@ -172,7 +181,6 @@ function Import-GraphAppCreateModuleStack {
     }
 }
 
-$script:graphAppCreateTranscriptPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
 try {
     Start-Transcript -Path $script:graphAppCreateTranscriptPath -Force -ErrorAction SilentlyContinue | Out-Null
 } catch { }

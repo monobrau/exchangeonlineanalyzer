@@ -552,7 +552,9 @@ function New-BulkRunnerSession {
         throw "Missing worker script: $workerTemplate"
     }
 
-    $tempDir = Join-Path $env:TEMP "EOA_BulkWeb_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
+    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $tempDir = Join-Path $env:TEMP "EOA_BulkWeb_${stamp}_$suffix"
     $null = New-Item -ItemType Directory -Path $tempDir -Force -ErrorAction Stop
     $commandDir = Join-Path $tempDir 'commands'
     $null = New-Item -ItemType Directory -Path $commandDir -Force -ErrorAction Stop

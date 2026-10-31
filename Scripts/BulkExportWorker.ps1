@@ -159,7 +159,7 @@ try {
     # Create isolated cache directory for this client
     Write-Host "Creating cache directory..." -ForegroundColor Gray
     try {
-        $cacheDir = Join-Path $env:TEMP "ExchangeOnlineAnalyzer_Client$ClientNumber_Cache_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        $cacheDir = Join-Path $env:TEMP "ExchangeOnlineAnalyzer_Client${ClientNumber}_Cache_$(Get-Date -Format 'yyyyMMdd_HHmmss')_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
         $null = New-Item -ItemType Directory -Path $cacheDir -Force -ErrorAction Stop
         $env:IDENTITY_SERVICE_CACHE_DIR = $cacheDir
         $env:MSAL_CACHE_DIR = $cacheDir
@@ -464,7 +464,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
 
                 # Create a FRESH cache directory for THIS auth attempt (new path = no cached tokens)
                 # This is critical to prevent reusing tokens from previous tenants or prior attempts
-                $authCacheDir = Join-Path $env:TEMP "ExchangeOnlineAnalyzer_Client$ClientNumber_Auth_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                $authCacheDir = Join-Path $env:TEMP "ExchangeOnlineAnalyzer_Client${ClientNumber}_Auth_$(Get-Date -Format 'yyyyMMdd_HHmmss')_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
                 try {
                     if (Test-Path $authCacheDir) { Remove-Item -Path $authCacheDir -Recurse -Force -ErrorAction SilentlyContinue }
                     New-Item -ItemType Directory -Path $authCacheDir -Force -ErrorAction Stop | Out-Null
