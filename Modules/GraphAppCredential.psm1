@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Store and retrieve Graph app credentials (app-only) in Windows Credential Manager.
 .DESCRIPTION
@@ -143,7 +143,9 @@ function _Get-SecureStringAsPlainForKey {
     $bytes = $null
     try {
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
-        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        # PtrToStringAuto is wrong on Linux/Unix: BSTRs are UTF-16 and Auto stops at the first 0x00
+        # (first password char only) → export/import keys diverge and decryption looks like a bad password.
+        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)
         
         # Zero the byte array when finished using it (caller's responsibility)
@@ -1316,7 +1318,7 @@ function Get-GraphAppCredentialEncryptedFileSummary {
     if ($key) { [Array]::Clear($key, 0, $key.Length) }
     $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try {
-        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
     }
     finally {
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
@@ -1390,12 +1392,12 @@ function Import-GraphAppCredentialsFromFile {
         # Zero key after use
         if ($key) { [Array]::Clear($key, 0, $key.Length) }
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     } catch {
         # Zero key on error path
         if ($key) { [Array]::Clear($key, 0, $key.Length) }
-        throw "Decryption failed. Wrong password?"
+        throw "Decryption failed. Wrong password, or the file was altered. On Linux runners, password keying must use PtrToStringBSTR (not Auto)."
     }
     $creds = $json | ConvertFrom-Json
     if (-not $creds) { throw 'No credentials were imported.' }
