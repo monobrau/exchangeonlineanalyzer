@@ -26,6 +26,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace([string]$env:TEMP)) {
+    $tempFallback = [string]$env:TMPDIR
+    if ([string]::IsNullOrWhiteSpace($tempFallback)) { $tempFallback = [string]$env:TMP }
+    if ([string]::IsNullOrWhiteSpace($tempFallback)) { $tempFallback = '/tmp' }
+    $env:TEMP = $tempFallback
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:TMP)) { $env:TMP = [string]$env:TEMP }
 $script:RunnerRoot = $PSScriptRoot
 $script:ProjectRoot = Split-Path $PSScriptRoot -Parent
 $script:ListenLan = [bool]$ListenLan
@@ -125,6 +132,11 @@ function Resolve-TriageWebFolder {
     if ([string]::IsNullOrWhiteSpace($Folder)) { throw 'Missing folder' }
     $resolved = [System.IO.Path]::GetFullPath($Folder)
     $docs = [Environment]::GetFolderPath('MyDocuments')
+    if ([string]::IsNullOrWhiteSpace($docs)) {
+        $home = [string]$env:HOME
+        if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+        $docs = Join-Path $home 'Documents'
+    }
     $root = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $docs 'ExchangeOnlineAnalyzer') 'SecurityInvestigation'))
     if (-not $resolved.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Triage folder must be under Documents\ExchangeOnlineAnalyzer\SecurityInvestigation'
@@ -184,6 +196,9 @@ function Handle-ApiRequest {
                 sentinelOneIntegration = $true
                 investigatePacks      = $true
                 investigateAccessGraph = $true
+                # Linux/lab and browser-fail paths use device-code (https://microsoft.com/devicelogin).
+                deviceCodeAuth        = -not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+                isWindowsHost         = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
             }
         }
     }
@@ -698,9 +713,19 @@ function Handle-ApiRequest {
         }
 
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/import') {
-            if (-not $Body.path -or -not $Body.password) { throw 'Missing path or password' }
+            if (-not $Body.password) { throw 'Missing password' }
             $sec = ConvertTo-SecureString ([string]$Body.password) -AsPlainText -Force
-            $count = Import-GraphAppCredentialsFromFile -Path ([string]$Body.path) -Password $sec
+            $importParams = @{ Password = $sec }
+            if (-not [string]::IsNullOrWhiteSpace([string]$Body.fileText)) {
+                $importParams.FileText = [string]$Body.fileText
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace([string]$Body.path)) {
+                $importParams.Path = [string]$Body.path
+            }
+            else {
+                throw 'Choose an .eoa-creds file.'
+            }
+            $count = Import-GraphAppCredentialsFromFile @importParams
             return @{ ok = $true; imported = $count }
         }
 
@@ -1169,10 +1194,14 @@ function Open-BulkRunnerFolderInExplorer {
         throw "Folder not found: $resolved"
     }
 
-    $docsRoot = [System.IO.Path]::GetFullPath([Environment]::GetFolderPath('MyDocuments'))
-    $tempRoot = [System.IO.Path]::GetFullPath($env:TEMP)
-    $allowed = ($resolved.StartsWith($docsRoot, [StringComparison]::OrdinalIgnoreCase)) `
-        -or ($resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase))
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    $docsRoot = ''
+    if (-not [string]::IsNullOrWhiteSpace($docs)) {
+        $docsRoot = [System.IO.Path]::GetFullPath($docs)
+    }
+    $tempRoot = [System.IO.Path]::GetFullPath([string]$env:TEMP)
+    $underDocs = (-not [string]::IsNullOrWhiteSpace($docsRoot)) -and $resolved.StartsWith($docsRoot, [StringComparison]::OrdinalIgnoreCase)
+    $allowed = $underDocs -or ($resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase))
     if (-not $allowed -and -not $AllowTempRoot) {
         throw 'Only folders under Documents or TEMP can be opened from the web UI.'
     }
@@ -1180,6 +1209,8 @@ function Open-BulkRunnerFolderInExplorer {
         throw 'Session temp folder must be under TEMP.'
     }
 
+    $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    if (-not $onWindows) { return $resolved }
     Start-Process explorer.exe -ArgumentList "`"$resolved`""
     [void](Set-BulkRunnerExplorerForeground -Path $resolved)
     return $resolved
@@ -1201,6 +1232,8 @@ function Test-BulkWebRunnerLanFirewallRule {
 function Ensure-BulkWebRunnerLanFirewallRule {
     param([Parameter(Mandatory = $true)][int]$Port)
 
+    $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    if (-not $onWindows) { return $true }
     if (Test-BulkWebRunnerLanFirewallRule -Port $Port) { return $true }
 
     $ruleName = "EOA Bulk Web Runner (TCP $Port)"
@@ -1479,17 +1512,32 @@ function Start-BulkWebRunnerHttpListener {
 
     Stop-BulkWebRunnerExisting -Port $Port
 
-    $listener = New-Object System.Net.HttpListener
+    $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $prefixes = @("http://127.0.0.1:$Port/")
     if ($ListenLan) {
-        $listener.Prefixes.Add($plusPrefix)
-    } else {
-        $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+        if ($onWindows) { $prefixes = @($plusPrefix) }
+        else { $prefixes = @("http://*:$Port/", $plusPrefix) }
     }
-
-    try {
-        $listener.Start()
-        return $listener
-    } catch {
+    $listener = $null
+    $started = $false
+    $lastError = $null
+    foreach ($prefix in $prefixes) {
+        $listener = New-Object System.Net.HttpListener
+        $listener.Prefixes.Add($prefix)
+        try {
+            $listener.Start()
+            $started = $true
+            break
+        }
+        catch {
+            $lastError = $_
+            try { $listener.Close() } catch {}
+            $listener = $null
+        }
+    }
+    if ($started) { return $listener }
+    $_ = $lastError
+    try { throw $lastError } catch {
         $msg = [string]$_.Exception.Message
         $accessDenied = $msg -match '(?i)Access is denied|Access denied|5\b'
 

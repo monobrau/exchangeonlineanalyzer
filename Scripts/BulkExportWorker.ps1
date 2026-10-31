@@ -632,7 +632,13 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 }
 
                 if (-not $graphAuthenticated) {
-                Write-Host "No WCM credentials found or validation failed. Connecting interactively (browser/popup/WAM)..." -ForegroundColor Yellow
+                $onWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+                if ($onWindowsHost) {
+                    Write-Host "No WCM credentials found or validation failed. Connecting interactively (browser/popup), with device-code fallback..." -ForegroundColor Yellow
+                } else {
+                    Write-Host "No WCM credentials found or validation failed. Using device-code Graph auth (web token) for this Linux/lab runner..." -ForegroundColor Yellow
+                    Write-Status "Device code Graph auth: open https://microsoft.com/devicelogin and enter the code in this worker log."
+                }
                 Write-Host "If you expected app-only: add EOA-GraphApp-<tenantId> in Credential Manager (Import App Creds or Create Graph App), or pick the tenant that matches an existing EOA-GraphApp-* entry." -ForegroundColor Gray
                 if ($graphAuthExplicitTenantId -and (Get-Command Get-WCMTenantIds -ErrorAction SilentlyContinue)) {
                     try {
@@ -644,24 +650,22 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     } catch {}
                 }
                 try {
-                    # Use standard Connect-MgGraph authentication
-                    # LIMITATION: Microsoft.Graph.Authentication version 2.33.0+ defaults to WAM (Web Account Manager) on Windows.
-                    # Unlike Connect-ExchangeOnline which has a -DisableWAM parameter, Connect-MgGraph does not provide
-                    # this option. Environment variables are set below to attempt disabling WAM, but newer module versions
-                    # may ignore them. The authentication will still function correctly via the WAM popup if the system
-                    # browser doesn't open automatically. This is a known limitation of the Microsoft.Graph.Authentication
-                    # module and not a bug in this script.
-                    # TODO: Revisit this implementation if/when Microsoft.Graph.Authentication adds a -DisableWAM parameter
-                    #       or provides another mechanism to force system browser authentication.
-                    # Set environment variables to try to disable WAM (may not work with newer module versions)
                     $env:AZURE_IDENTITY_DISABLE_BROKER = "true"
                     $env:MSAL_DISABLE_BROKER = "1"
                     $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = "1"
+                    $env:MSAL_FORCE_WAM = "0"
+                    $statusCb = { param($m) Write-Status $m }
                     $exoLoaded = $exchangeAuthenticated -or [bool](Get-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue)
-                    if ($exoLoaded -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
-                        Write-Host "Exchange Online is already loaded in this worker. Using a fresh PowerShell window for Graph browser sign-in (avoids MSAL WithLogging clash)..." -ForegroundColor Cyan
-                        Write-Status "Waiting for Graph sign-in in a new PowerShell window..."
+                    $preferDevice = (-not $onWindowsHost)
+
+                    # After EXO on Windows, isolate to avoid MSAL WithLogging clash. On Linux prefer in-process device code
+                    # so the code streams into the worker log the operator is watching.
+                    $usedIsolated = $false
+                    if ($exoLoaded -and $onWindowsHost -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
+                        Write-Host "Exchange Online is already loaded in this worker. Using a fresh PowerShell process for Graph sign-in (avoids MSAL WithLogging clash)..." -ForegroundColor Cyan
+                        Write-Status "Waiting for Graph sign-in (isolated process; device code if browser fails)..."
                         $iso = Connect-MgGraphInteractiveIsolated -Scopes $scopes
+                        $usedIsolated = $true
                         $graphAuthenticated = $true
                         $script:graphTokenFromWCM = [string]$iso.token
                         $script:currentTenantId = [string]$iso.tenantId
@@ -682,75 +686,85 @@ function Read-BulkWorkerReportSelectionsFromFile {
                             Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($iso.tenantId)"
                         }
                     } else {
-                    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
-                    Connect-MgGraph -Scopes $scopes -ContextScope Process -NoWelcome -ErrorAction Stop
-                    $mgContext = Get-MgContext -ErrorAction Stop
-                    $graphAuthenticated = $true
-                    $script:currentTenantId = $mgContext.TenantId
-                    if (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
-                        try {
-                            $script:graphTokenFromWCM = Get-GraphAccessToken
-                            if ($script:graphTokenFromWCM -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
-                                Set-GraphRestBearerToken -Token $script:graphTokenFromWCM
-                            }
-                        } catch {}
-                    }
-                    Write-Status "Graph authentication successful! Tenant: $($mgContext.TenantId)"
-                    Write-Host "Graph authentication successful!" -ForegroundColor Green
-                    Write-Host "Tenant ID: $($mgContext.TenantId)" -ForegroundColor Cyan
-                    
-                    # Get tenant name
-                    try {
-                        $ti = $null
-                        try { $ti = Get-TenantIdentity } catch {}
-                        if ($ti -and $ti.TenantDisplayName) {
-                            $tenantDisplayName = $ti.TenantDisplayName
-                        } elseif ($ti -and $ti.PrimaryDomain) {
-                            $tenantDisplayName = $ti.PrimaryDomain
+                        Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
+                        if (Get-Command Connect-MgGraphDelegatedAuth -ErrorAction SilentlyContinue) {
+                            Connect-MgGraphDelegatedAuth -Scopes $scopes -PreferDeviceCode:$preferDevice -StatusCallback $statusCb
                         } else {
+                            $connectParams = @{
+                                Scopes       = $scopes
+                                ContextScope = 'Process'
+                                NoWelcome    = $true
+                                ErrorAction  = 'Stop'
+                            }
+                            if ($preferDevice) { $connectParams.UseDeviceCode = $true }
+                            Connect-MgGraph @connectParams
+                        }
+                        $mgContext = Get-MgContext -ErrorAction Stop
+                        $graphAuthenticated = $true
+                        $script:currentTenantId = $mgContext.TenantId
+                        if (Get-Command Get-GraphAccessToken -ErrorAction SilentlyContinue) {
                             try {
-                                $org = Get-MgOrganization -ErrorAction SilentlyContinue | Select-Object -First 1
-                                if ($org -and $org.DisplayName) {
-                                    $tenantDisplayName = $org.DisplayName
+                                $script:graphTokenFromWCM = Get-GraphAccessToken
+                                if ($script:graphTokenFromWCM -and (Get-Command Set-GraphRestBearerToken -ErrorAction SilentlyContinue)) {
+                                    Set-GraphRestBearerToken -Token $script:graphTokenFromWCM
                                 }
                             } catch {}
                         }
-                    } catch {}
-                    
-                    Write-Status "Tenant identified as: $tenantDisplayName"
-                    Write-Host "Tenant: $tenantDisplayName" -ForegroundColor Cyan
+                        Write-Status "Graph authentication successful! Tenant: $($mgContext.TenantId)"
+                        Write-Host "Graph authentication successful!" -ForegroundColor Green
+                        Write-Host "Tenant ID: $($mgContext.TenantId)" -ForegroundColor Cyan
 
-                    # Query all verified domains for the tenant
-                    $verifiedDomains = @()
-                    try {
-                        Write-Host "Querying tenant domains..." -ForegroundColor Gray
-                        $domainsResponse = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/domains" -ErrorAction Stop
-                        if ($domainsResponse -and $domainsResponse.value) {
-                            $verifiedDomains = $domainsResponse.value |
-                                               Where-Object { $_.isVerified -eq $true } |
-                                               ForEach-Object { $_.id }
-                            Write-Host "Found $($verifiedDomains.Count) verified domain(s): $($verifiedDomains -join ', ')" -ForegroundColor Cyan
+                        try {
+                            $ti = $null
+                            try { $ti = Get-TenantIdentity } catch {}
+                            if ($ti -and $ti.TenantDisplayName) {
+                                $tenantDisplayName = $ti.TenantDisplayName
+                            } elseif ($ti -and $ti.PrimaryDomain) {
+                                $tenantDisplayName = $ti.PrimaryDomain
+                            } else {
+                                try {
+                                    $org = Get-MgOrganization -ErrorAction SilentlyContinue | Select-Object -First 1
+                                    if ($org -and $org.DisplayName) {
+                                        $tenantDisplayName = $org.DisplayName
+                                    }
+                                } catch {}
+                            }
+                        } catch {}
+
+                        Write-Status "Tenant identified as: $tenantDisplayName"
+                        Write-Host "Tenant: $tenantDisplayName" -ForegroundColor Cyan
+
+                        $verifiedDomains = @()
+                        try {
+                            Write-Host "Querying tenant domains..." -ForegroundColor Gray
+                            $domainsResponse = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/domains" -ErrorAction Stop
+                            if ($domainsResponse -and $domainsResponse.value) {
+                                $verifiedDomains = $domainsResponse.value |
+                                                   Where-Object { $_.isVerified -eq $true } |
+                                                   ForEach-Object { $_.id }
+                                Write-Host "Found $($verifiedDomains.Count) verified domain(s): $($verifiedDomains -join ', ')" -ForegroundColor Cyan
+                            }
+                        } catch {
+                            Write-Host "Warning: Failed to query tenant domains: $($_.Exception.Message)" -ForegroundColor Yellow
+                            Write-Host "Falling back to tenant name as primary domain" -ForegroundColor Yellow
                         }
-                    } catch {
-                        Write-Host "Warning: Failed to query tenant domains: $($_.Exception.Message)" -ForegroundColor Yellow
-                        Write-Host "Falling back to tenant name as primary domain" -ForegroundColor Yellow
-                    }
 
-                    # Build response with tenant name, tenant ID, and domains (tenant ID enables WCM-first on re-auth)
-                    if ($verifiedDomains -and $verifiedDomains.Count -gt 0) {
-                        $domainsString = $verifiedDomains -join ','
-                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($mgContext.TenantId)|DOMAINS:$domainsString"
-                    } else {
-                        Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($mgContext.TenantId)"
-                    }
+                        if ($verifiedDomains -and $verifiedDomains.Count -gt 0) {
+                            $domainsString = $verifiedDomains -join ','
+                            Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($mgContext.TenantId)|DOMAINS:$domainsString"
+                        } else {
+                            Write-CommandResponse "GRAPH_AUTH_SUCCESS:$tenantDisplayName|TENANT_ID:$($mgContext.TenantId)"
+                        }
                     }
                 } catch {
                     $isoFailMsg = $_.Exception.Message
-                    if ($isoFailMsg -match 'WithLogging|InteractiveBrowserCredential|Method not found' -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
+                    if ($isoFailMsg -match 'WithLogging|InteractiveBrowserCredential|Method not found|BrowserAuthentication' -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
                         try {
-                            Write-Host "In-process Graph sign-in failed (MSAL clash). Retrying in an isolated PowerShell window..." -ForegroundColor Yellow
-                            Write-Status "Waiting for Graph sign-in in a new PowerShell window..."
-                            $iso = Connect-MgGraphInteractiveIsolated -Scopes $scopes
+                            Write-Host "In-process Graph sign-in failed. Retrying in an isolated PowerShell process (device code on Linux / browser failback)..." -ForegroundColor Yellow
+                            Write-Status "Waiting for Graph sign-in in isolated process (check this worker log for device code)..."
+                            $isoParams = @{ Scopes = $scopes }
+                            if (-not $onWindowsHost) { $isoParams.PreferDeviceCode = $true }
+                            $iso = Connect-MgGraphInteractiveIsolated @isoParams
                             $graphAuthenticated = $true
                             $script:graphTokenFromWCM = [string]$iso.token
                             $script:currentTenantId = [string]$iso.tenantId
@@ -781,7 +795,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                         $s = Get-AppSettings -ErrorAction SilentlyContinue
                         if ($s -and $s.PromptToCreateGraphApp) { $promptToCreate = $true }
                     } catch {}
-                    if ($promptToCreate) {
+                    if ($promptToCreate -and $onWindowsHost) {
                         Write-Host ""
                         Write-Host "Create app registration (River Run Security Investigator) and save to Windows Credential Manager? (y/n): " -ForegroundColor Yellow -NoNewline
                         $create = Read-Host
@@ -821,6 +835,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 Write-Host "Waiting for Exchange Online Auth command from GUI..." -ForegroundColor Green
                 Write-Host ""
                 
+                
             } elseif ($command -eq "EXCHANGE_AUTH") {
                 Write-Host "==========================================" -ForegroundColor Yellow
                 Write-Host "EXCHANGE ONLINE AUTHENTICATION COMMAND RECEIVED" -ForegroundColor Yellow
@@ -836,10 +851,17 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 # Exchange Online Authentication
                 Write-Host ""
                 Write-Host "Connecting to Exchange Online..." -ForegroundColor Yellow
-                Write-Host "A browser window will open for authentication - typically 15-60 seconds total." -ForegroundColor Yellow
-                Write-Host "Please wait for the browser popup and complete the sign-in." -ForegroundColor Yellow
+                $exoOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+                if ($exoOnWindows) {
+                    Write-Host "A browser window will open for authentication - typically 15-60 seconds total." -ForegroundColor Yellow
+                    Write-Host "Please wait for the browser popup and complete the sign-in." -ForegroundColor Yellow
+                    Write-Status "Waiting for browser popup (typically 15-60 seconds)..."
+                } else {
+                    Write-Host "Linux/lab runner: using device-code Exchange auth (web token)." -ForegroundColor Yellow
+                    Write-Host "Open https://microsoft.com/devicelogin and enter the code shown in this worker log." -ForegroundColor Yellow
+                    Write-Status "Device code Exchange auth: open https://microsoft.com/devicelogin and enter the code in this worker log."
+                }
                 Write-Host ""
-                Write-Status "Waiting for browser popup (typically 15-60 seconds)..."
     
                 try {
                     # Connect-ExchangeOnline may take 15-60s; optional params are added only when supported by the installed module

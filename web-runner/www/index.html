@@ -244,7 +244,7 @@
 
   <h1>Bulk Tenant Report Exporter (Web Runner)</h1>
 
-  <p class="muted">Local Windows runner — auth popups open on this PC. Run <strong>Exchange Auth</strong> first so auto WCM picks the matching tenant. Use <strong>Fetch from Manage</strong> for ticket text. See <code>docs/BulkWebRunnerArchitecture.md</code>.</p>
+  <p class="muted" id="runnerAuthHint">Local runner — on Windows, auth popups open on this PC; on Linux/lab, use the device code shown in each tenant’s worker log (<a href="https://microsoft.com/devicelogin" target="_blank" rel="noopener">microsoft.com/devicelogin</a>). Run <strong>Exchange Auth</strong> first so auto WCM picks the matching tenant. Use <strong>Fetch from Manage</strong> for ticket text. See <code>docs/BulkWebRunnerArchitecture.md</code>.</p>
 
 
 
@@ -413,6 +413,7 @@
           <button type="button" id="btnDeleteGraphApp" class="danger">Delete Graph App</button>
           <button type="button" id="btnExportWcm">Export creds</button>
           <button type="button" id="btnImportWcm">Import creds</button>
+          <input type="file" id="wcmCredsFile" accept=".eoa-creds,.txt" hidden>
           <button type="button" id="btnClearWcm">Clear local WCM</button>
           <button type="button" id="btnLoadAppRegs" title="Re-fetch display names from Graph for tenants missing WCM labels (slow)">Refresh from Graph</button>
         </div>

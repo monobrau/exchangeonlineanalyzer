@@ -1119,7 +1119,22 @@ function New-SecurityInvestigationReport {
                     try { & $writeStatus "Exchange runspace: mailbox forwarding done ($($r.MailboxForwarding.Count) mailboxes)" } catch {}
                 }
                 # Graph runspace cannot reuse this cache — only prefetch Exchange-thread UAL consumers.
-                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $Params.StartDate -EndDate $Params.EndDate -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -UseDateRange:($Params.UseDateRange -eq $true) -IncludeUnifiedAuditLogs:($Params.IncludeUnifiedAuditLogs -eq $true) -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) -UnifiedAuditLogRecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:($Params.IncludeSharePointOneDriveFileActions -eq $true) -IncludeAnonymousSharePointSharing:($Params.IncludeAnonymousSharePointSharing -eq $true) -IncludeDLPViolations:($Params.IncludeDLPViolations -eq $true)
+                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $Params.StartDate -EndDate $Params.EndDate -DaysBack $Params.DaysBack -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile -UseDateRange:($Params.UseDateRange -eq $true) -IncludeUnifiedAuditLogs:($Params.IncludeUnifiedAuditLogs -eq $true) -IncludeExchangeItemAggregated:($Params.IncludeExchangeItemAggregated -eq $true) -UnifiedAuditLogRecordTypes $Params.UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:($Params.IncludeSharePointOneDriveFileActions -eq $true) -IncludeAnonymousSharePointSharing:($Params.IncludeAnonymousSharePointSharing -eq $true) -IncludeDLPViolations:($Params.IncludeDLPViolations -eq $true) -IncludeSignInLogs:($Params.IncludeSignInLogs -eq $true)
+                if ($Params.IncludeSignInLogs) {
+                    try {
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting sign-in logs from unified audit..." -Level Info -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: collecting sign-in logs from unified audit (preferred)..." } catch {}
+                        $signInReport = @{ SignInLogs = @(); SignInLogsError = $null; SignInLogsCoverageNote = $null }
+                        $null = Add-UnifiedAuditSignInLogsToReport -Report $signInReport -DaysBack $Params.SignInLogsDaysBack -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers -StatusFile $Params.StatusFile
+                        $r.SignInLogs = $signInReport.SignInLogs
+                        $r.SignInLogsCoverageNote = $signInReport.SignInLogsCoverageNote
+                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" -Level Info -Component ExchangeRS }
+                        try { & $writeStatus "Exchange runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" } catch {}
+                    } catch {
+                        $r.SignInLogs = @()
+                        $r.SignInLogsError = $_.Exception.Message
+                    }
+                }
                 if ($Params.IncludeUnifiedAuditLogs) {
                     try {
                         if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Exchange runspace: collecting unified audit logs..." -Level Info -Component ExchangeRS }
@@ -1209,27 +1224,10 @@ function New-SecurityInvestigationReport {
                     if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: audit logs done ($($r.AuditLogs.Count) entries)" -Level Info -Component GraphRS }
                     try { & $writeStatus "Graph runspace: audit logs done ($($r.AuditLogs.Count) entries)" } catch {}
                 }
-                if ($Params.IncludeSignInLogs) {
-                    try {
-                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: collecting sign-in logs..." -Level Info -Component GraphRS }
-                        try { & $writeStatus "Graph runspace: collecting sign-in logs..." } catch {}
-                        $r.SignInLogs = if ($Params.UseDateRange -and $Params.StartDate -and $Params.EndDate) { Get-GraphSignInLogs -StartDate $Params.StartDate -EndDate $Params.EndDate -SelectedUsers $Params.SelectedUsers } else { Get-GraphSignInLogs -DaysBack $Params.SignInLogsDaysBack -SelectedUsers $Params.SelectedUsers }
-                        if (Get-Command Write-Log -ErrorAction SilentlyContinue) { Write-Log -Message "Graph runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" -Level Info -Component GraphRS }
-                        try { & $writeStatus "Graph runspace: sign-in logs done ($($r.SignInLogs.Count) entries)" } catch {}
-                    }
-                    catch { $r.SignInLogs = @(); $r.SignInLogsError = $_.Exception.Message }
-                }
+                # Sign-in logs: preferred on Exchange (UAL). Graph runspace only failbacks after merge.
                 if ($Params.IncludeIntuneDevices) {
                     try {
-                        $deviceIdsFromSignIns = @()
-                        if ($r.SignInLogs -and $r.SignInLogs.Count -gt 0) {
-                            foreach ($signIn in $r.SignInLogs) {
-                                if ($signIn.DeviceId -and -not [string]::IsNullOrWhiteSpace($signIn.DeviceId) -and $deviceIdsFromSignIns -notcontains $signIn.DeviceId) {
-                                    $deviceIdsFromSignIns += $signIn.DeviceId
-                                }
-                            }
-                        }
-                        $r.IntuneDevices = Get-IntuneDeviceComplianceRecords -SelectedUsers $Params.SelectedUsers -DeviceIds $deviceIdsFromSignIns
+                        $r.IntuneDevices = Get-IntuneDeviceComplianceRecords -SelectedUsers $Params.SelectedUsers -DeviceIds @()
                     }
                     catch { $r.IntuneDevices = @(); $r.IntuneDevicesError = $_.Exception.Message }
                 }
@@ -1292,7 +1290,19 @@ function New-SecurityInvestigationReport {
                 if ($IncludeMailFlowConnectors) { $exchangeResult.MailFlowConnectors = Get-MailFlowConnectors }
                 if ($IncludeMailboxForwarding) { $exchangeResult.MailboxForwarding = Get-MailboxForwardingAndDelegation -SelectedUsers $SelectedUsers -IncludeTenantWideDelegateHunt:$IncludeMailboxForwardingTenantHunt }
                 # Hybrid: Graph collectors run in another runspace — prefetch only Exchange UAL consumers.
-                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations
+                Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations -IncludeSignInLogs:$IncludeSignInLogs
+                if ($IncludeSignInLogs) {
+                    try {
+                        try { & $writeStatus "Exchange (main): collecting sign-in logs from unified audit (preferred)..." } catch {}
+                        $signInReport = @{ SignInLogs = @(); SignInLogsError = $null; SignInLogsCoverageNote = $null }
+                        $null = Add-UnifiedAuditSignInLogsToReport -Report $signInReport -DaysBack $SignInLogsDaysBack -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile
+                        $exchangeResult.SignInLogs = $signInReport.SignInLogs
+                        $exchangeResult.SignInLogsCoverageNote = $signInReport.SignInLogsCoverageNote
+                    } catch {
+                        $exchangeResult.SignInLogs = @()
+                        $exchangeResult.SignInLogsError = $_.Exception.Message
+                    }
+                }
                 if ($IncludeUnifiedAuditLogs) { try { $exchangeResult.UnifiedAuditLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated } else { Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $UnifiedAuditLogRecordTypes -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated } } catch { $exchangeResult.UnifiedAuditLogs = @(); $exchangeResult.UnifiedAuditLogsError = $_.Exception.Message } }
                 if ($IncludeSharePointOneDriveFileActions) {
                     try {
@@ -1382,6 +1392,19 @@ function New-SecurityInvestigationReport {
             }
 
             if (-not $report.SignInLogs) { $report.SignInLogs = @() }
+            $haveSignIns = $report.SignInLogs -and $report.SignInLogs.Count -gt 0
+            if ($IncludeSignInLogs -and -not $haveSignIns) {
+                if ($graphConnected) {
+                    if ($StatusFile) { Write-ExportStatusLine -StatusFile $StatusFile -Message 'Unified audit returned no sign-in rows. Falling back to Microsoft Graph.' }
+                    Write-Host 'Unified audit returned no sign-in rows. Falling back to Microsoft Graph...' -ForegroundColor Yellow
+                    $null = Add-GraphSignInLogsToReport -Report $report -DaysBack $SignInLogsDaysBack -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers
+                    if ($report.SignInLogsError) {
+                        $report.SignInLogsError = "Unified audit returned no sign-in rows. Graph failback: $($report.SignInLogsError)"
+                    }
+                } elseif (-not $report.SignInLogsError) {
+                    $report.SignInLogsError = 'Unified audit returned no sign-in events, and Microsoft Graph was not available for failback.'
+                }
+            }
             if (-not $report.IntuneDevices) { $report.IntuneDevices = @() }
             if (-not $report.MfaCoverage) { $report.MfaCoverage = $null }
             if (-not $report.UserSecurityGroups) { $report.UserSecurityGroups = $null }
@@ -1458,7 +1481,7 @@ function New-SecurityInvestigationReport {
                 Invoke-DoEventsSafe
             }
 
-            Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations -IncludeSharePointActivity:$IncludeSharePointActivity -IncludeOneDriveActivity:$IncludeOneDriveActivity -IncludeTeamsActivity:$IncludeTeamsActivity
+            Invoke-UnifiedAuditLogPrefetchForReport -StartDate $StartDate -EndDate $EndDate -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -UseDateRange:$useDateRange -IncludeUnifiedAuditLogs:$IncludeUnifiedAuditLogs -IncludeExchangeItemAggregated:$IncludeExchangeItemAggregated -UnifiedAuditLogRecordTypes $UnifiedAuditLogRecordTypes -IncludeSharePointOneDriveFileActions:$IncludeSharePointOneDriveFileActions -IncludeAnonymousSharePointSharing:$IncludeAnonymousSharePointSharing -IncludeDLPViolations:$IncludeDLPViolations -IncludeSharePointActivity:$IncludeSharePointActivity -IncludeOneDriveActivity:$IncludeOneDriveActivity -IncludeTeamsActivity:$IncludeTeamsActivity -IncludeSignInLogs:$IncludeSignInLogs
 
             if ($IncludeUnifiedAuditLogs) {
                 try {
@@ -1620,66 +1643,55 @@ function New-SecurityInvestigationReport {
         }
     }
 
-    # Order: SignInLogs first (required for Intune), then Intune, then independent collectors in parallel
+    # Sign-in logs: Exchange UAL preferred, Graph failback (needed before Intune device-id hints)
+    if ($IncludeSignInLogs) {
+        try {
+            $statusMsg = if ($useDateRange -and $StartDate -and $EndDate) {
+                "Collecting sign-in logs ($($StartDate.ToString('yyyy-MM-dd')) to $($EndDate.ToString('yyyy-MM-dd')))... This may take several minutes."
+            } else {
+                "Collecting sign-in logs (last $SignInLogsDaysBack days)... This may take several minutes."
+            }
+            if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
+            if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
+            Invoke-DoEventsSafe
+            if ($graphConnected) {
+                $null = Connect-MgGraphForReportSession -TenantId $GraphTenantId -GraphAccessToken $GraphAccessToken
+            }
+            Add-SignInLogsToReport -Report $report -DaysBack $SignInLogsDaysBack -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -ExchangeAvailable:$exchangeConnected -GraphAvailable:$graphConnected -ProgressCallback $ProgressCallback
+            if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
+                Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
+                try {
+                    $requestedEnd = if ($useDateRange -and $EndDate -and $EndDate -ne [DateTime]::MinValue) { $EndDate } else { Get-Date }
+                    $maxSi = $null
+                    foreach ($siRow in @($report.SignInLogs)) {
+                        $dt = $null
+                        try { $dt = [datetime]$siRow.CreatedDateTime } catch {}
+                        if ($dt -and ($null -eq $maxSi -or $dt -gt $maxSi)) { $maxSi = $dt }
+                    }
+                    if ($maxSi -and $requestedEnd -and ($requestedEnd - $maxSi).TotalHours -gt 36 -and -not $report.SignInLogsCoverageNote) {
+                        $report.SignInLogsCoverageNote = "Latest sign-in in export is $($maxSi.ToString('yyyy-MM-dd HH:mm:ss')); requested end is $($requestedEnd.ToString('yyyy-MM-dd HH:mm:ss')). Often a quiet period for selected users (UAL STS/sign-in RecordTypes may match). Spot-check Entra if unexpected."
+                        Write-Host "  Note: $($report.SignInLogsCoverageNote)" -ForegroundColor Yellow
+                        if ($ProgressCallback) { try { & $ProgressCallback "Sign-in coverage note: latest $($maxSi.ToString('yyyy-MM-dd HH:mm')) vs end $($requestedEnd.ToString('yyyy-MM-dd HH:mm'))" } catch {} }
+                    }
+                } catch {}
+            } elseif ($report.SignInLogsError) {
+                Write-Warning "Sign-in log collection failed: $($report.SignInLogsError)"
+            }
+            Invoke-DoEventsSafe
+        } catch {
+            $signInDetail = Get-SignInLogErrorText $_
+            Write-Warning "Failed to collect sign-in logs: $signInDetail"
+            $report.SignInLogs = @()
+            $report.SignInLogsError = $signInDetail
+        }
+    } else {
+        $report.SignInLogs = @()
+    }
+
+    # Order: Intune after SignInLogs (uses DeviceIds), then independent collectors in parallel
     if ($graphConnected) {
         $null = Connect-MgGraphForReportSession -TenantId $GraphTenantId -GraphAccessToken $GraphAccessToken
         try {
-            # Phase 1: SignInLogs (must complete before Intune)
-            if ($IncludeSignInLogs) {
-                try {
-                    $statusMsg = if ($useDateRange -and $StartDate -and $EndDate) {
-                        "Collecting sign-in logs ($($StartDate.ToString('yyyy-MM-dd')) to $($EndDate.ToString('yyyy-MM-dd')))... This may take several minutes."
-                    } else {
-                        "Collecting sign-in logs (last $SignInLogsDaysBack days)... This may take several minutes."
-                    }
-                    if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") { $StatusLabel.Text = $statusMsg }
-                    if ($ProgressCallback) { try { & $ProgressCallback $statusMsg } catch {} }
-                    Invoke-DoEventsSafe
-                    Write-Host $statusMsg -ForegroundColor Cyan
-                    $report.SignInLogs = if ($useDateRange -and $StartDate -and $EndDate) { Get-GraphSignInLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers } else { Get-GraphSignInLogs -DaysBack $SignInLogsDaysBack -SelectedUsers $SelectedUsers }
-                    if ($report.SignInLogs -and $report.SignInLogs.Count -gt 0) {
-                        Write-Host "Collected $($report.SignInLogs.Count) sign-in log entries" -ForegroundColor Green
-                        # Surface coverage gaps when Graph returns rows but none near the requested end (quiet period vs truncation).
-                        try {
-                            $requestedEnd = if ($useDateRange -and $EndDate -and $EndDate -ne [DateTime]::MinValue) { $EndDate } else { Get-Date }
-                            $maxSi = $null
-                            foreach ($siRow in @($report.SignInLogs)) {
-                                $dt = $null
-                                try { $dt = [datetime]$siRow.CreatedDateTime } catch {}
-                                if ($dt -and ($null -eq $maxSi -or $dt -gt $maxSi)) { $maxSi = $dt }
-                            }
-                            if ($maxSi -and $requestedEnd -and ($requestedEnd - $maxSi).TotalHours -gt 36) {
-                                $report.SignInLogsCoverageNote = "Latest sign-in in export is $($maxSi.ToString('yyyy-MM-dd HH:mm:ss')); requested end is $($requestedEnd.ToString('yyyy-MM-dd HH:mm:ss')). Often a quiet period for selected users (UAL STS/sign-in RecordTypes may match). Spot-check Entra if unexpected."
-                                Write-Host "  Note: $($report.SignInLogsCoverageNote)" -ForegroundColor Yellow
-                                if ($ProgressCallback) { try { & $ProgressCallback "Sign-in coverage note: latest $($maxSi.ToString('yyyy-MM-dd HH:mm')) vs end $($requestedEnd.ToString('yyyy-MM-dd HH:mm'))" } catch {} }
-                            }
-                        } catch {}
-                    }
-                    Invoke-DoEventsSafe
-                } catch {
-                    if ($_.Exception.Message -like "*insufficient privileges*" -or $_.Exception.Message -like "*permission*" -or $_.Exception.Message -like "*access denied*") {
-                        Write-Warning "Insufficient permissions to read sign-in logs. Requires 'AuditLog.Read.All' permission."
-                        $report.SignInLogs = @()
-                        $report.SignInLogsError = "Permission denied - requires AuditLog.Read.All"
-                    } elseif ($_.Exception.Message -like "*license*" -or $_.Exception.Message -like "*subscription*" -or $_.Exception.Message -like "*premium*") {
-                        $warningMsg = "WARNING: License required - Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days. Pull sign-in logs manually."
-                        Write-Warning "Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants can only access last 7 days."
-                        if ($StatusLabel -and $StatusLabel.GetType().Name -eq "Label") {
-                            $StatusLabel.Text = $warningMsg
-                        }
-                        Write-Host $warningMsg -ForegroundColor Yellow
-                        $report.SignInLogs = @()
-                        $report.SignInLogsError = "License required - Azure AD Premium P1/P2 (free tenants limited to 7 days)"
-                    } else {
-                        Write-Warning "Failed to collect sign-in logs: $($_.Exception.Message)"
-                        $report.SignInLogs = @()
-                        $report.SignInLogsError = $_.Exception.Message
-                    }
-                }
-            } else {
-                $report.SignInLogs = @()
-            }
-            
             # Intune Device Records
             if ($IncludeIntuneDevices) {
                 try {
@@ -1725,7 +1737,7 @@ function New-SecurityInvestigationReport {
             $report.GraphDataError = $_.Exception.Message
         }
     } else {
-        $report.SignInLogs = @()
+        if (-not $IncludeSignInLogs) { $report.SignInLogs = @() }
         $report.IntuneDevices = @()
     }
 
@@ -5108,7 +5120,8 @@ function Invoke-UnifiedAuditLogPrefetchForReport {
         [bool]$IncludeDLPViolations = $false,
         [bool]$IncludeSharePointActivity = $false,
         [bool]$IncludeOneDriveActivity = $false,
-        [bool]$IncludeTeamsActivity = $false
+        [bool]$IncludeTeamsActivity = $false,
+        [bool]$IncludeSignInLogs = $false
     )
     if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) { return }
 
@@ -5116,6 +5129,12 @@ function Invoke-UnifiedAuditLogPrefetchForReport {
     $pullAll = $false
     $consumers = 0
 
+    if ($IncludeSignInLogs) {
+        $consumers++
+        foreach ($t in @('AzureActiveDirectoryStsLogon', 'AzureActiveDirectoryAccountLogon')) {
+            if ($types -notcontains $t) { [void]$types.Add($t) }
+        }
+    }
     if ($IncludeUnifiedAuditLogs) {
         $consumers++
         if ($UnifiedAuditLogRecordTypes -and $UnifiedAuditLogRecordTypes.Count -gt 0) {
@@ -5701,6 +5720,268 @@ function Get-UnifiedAuditLogs {
     }
 }
 
+function Get-SignInLogErrorText {
+    param($ErrorRecord)
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Message) { [void]$parts.Add([string]$ErrorRecord.Exception.Message) }
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { [void]$parts.Add([string]$ErrorRecord.ErrorDetails.Message) }
+    $inner = if ($ErrorRecord.Exception) { $ErrorRecord.Exception.InnerException } else { $null }
+    while ($inner) {
+        if ($inner.Message) { [void]$parts.Add([string]$inner.Message) }
+        $inner = $inner.InnerException
+    }
+    return ($parts -join ' ')
+}
+
+function Test-SignInLogLicenseBlock {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    return [bool]($Text -match 'Authentication_RequestFromNonPremiumTenantOrB2CTenant|doesn.t have premium license|does not have a premium license|not included in this tenant license|Azure AD Premium P1|Entra ID P1')
+}
+
+function Test-UnifiedAuditSignInOperation {
+    param([string]$Operation)
+    if ([string]::IsNullOrWhiteSpace($Operation)) { return $false }
+    return [bool]($Operation -match '(?i)^(UserLoggedIn|UserLoginFailed)$')
+}
+
+function Get-UnifiedAuditExtendedValue {
+    param($Items, [string]$Name)
+    foreach ($item in @($Items)) {
+        if ($item -and [string]$item.Name -eq $Name -and $null -ne $item.Value) { return [string]$item.Value }
+    }
+    return ''
+}
+
+function ConvertTo-SignInLogFromUnifiedAudit {
+    param($Row)
+    if (-not $Row) { return $null }
+    $op = [string]$Row.Operations
+    if (-not $op) { $op = [string]$Row.Operation }
+    if (-not (Test-UnifiedAuditSignInOperation $op)) { return $null }
+    $ad = $null
+    if ($Row.AuditData) {
+        try {
+            $ad = if ($Row.AuditData -is [string]) { $Row.AuditData | ConvertFrom-Json -ErrorAction Stop } else { $Row.AuditData }
+        } catch { $ad = $null }
+    }
+    $created = $Row.CreationDate
+    if ($created -is [datetime]) { $created = $created.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    if (-not $created -and $ad -and $ad.CreationTime) { $created = [string]$ad.CreationTime }
+    $upn = ''
+    if ($ad -and $ad.UserId) { $upn = [string]$ad.UserId }
+    if (-not $upn) { $upn = [string]$Row.UserIds }
+    $ip = ''
+    if ($ad -and $ad.ClientIP) { $ip = [string]$ad.ClientIP }
+    elseif ($ad -and $ad.ActorIpAddress) { $ip = [string]$ad.ActorIpAddress }
+    $app = ''
+    $client = ''
+    $authMethod = ''
+    $deviceId = ''
+    $deviceSummary = ''
+    if ($ad) {
+        $app = Get-UnifiedAuditExtendedValue -Items $ad.ExtendedProperties -Name 'AppDisplayName'
+        if (-not $app -and $ad.ApplicationId) { $app = [string]$ad.ApplicationId }
+        $client = Get-UnifiedAuditExtendedValue -Items $ad.ExtendedProperties -Name 'RequestType'
+        if (-not $client) { $client = Get-UnifiedAuditExtendedValue -Items $ad.ExtendedProperties -Name 'UserAgent' }
+        if ($client.Length -gt 120) { $client = $client.Substring(0, 120) }
+        $authMethod = Get-UnifiedAuditExtendedValue -Items $ad.ExtendedProperties -Name 'UserAuthenticationMethod'
+        $deviceId = Get-UnifiedAuditExtendedValue -Items $ad.DeviceProperties -Name 'Id'
+        if (-not $deviceId) { $deviceId = Get-UnifiedAuditExtendedValue -Items $ad.DeviceProperties -Name 'DeviceId' }
+        $os = Get-UnifiedAuditExtendedValue -Items $ad.DeviceProperties -Name 'OS'
+        $browser = Get-UnifiedAuditExtendedValue -Items $ad.DeviceProperties -Name 'Browser'
+        $deviceSummary = (@($os, $browser) | Where-Object { $_ }) -join ', '
+    }
+    $result = if ($ad -and $ad.ResultStatus) { [string]$ad.ResultStatus } elseif ($op -match '(?i)Fail') { 'Failure' } else { 'Success' }
+    $status = if ($result -match '^(?i)succ') { 'Success' } else { 'Failure' }
+    $code = '0'
+    if ($status -ne 'Success') {
+        $code = if ($ad) { Get-UnifiedAuditExtendedValue -Items $ad.ExtendedProperties -Name 'ErrorNumber' } else { '' }
+        if (-not $code) { $code = $result }
+    }
+    return [pscustomobject]@{
+        CreatedDateTime = [string]$created
+        UserPrincipalName = $upn
+        UserId = if ($ad -and $ad.UserKey) { [string]$ad.UserKey } else { '' }
+        AppDisplayName = $app
+        ClientAppUsed = $client
+        IPAddress = $ip
+        Location = 'Unknown'
+        CountryOrRegion = $null
+        ResultStatusCode = $code
+        ResultStatus = $status
+        Status = $status
+        DeviceId = $deviceId
+        DeviceDetailJSON = $null
+        DeviceIsCompliant = $null
+        DeviceIsManaged = $null
+        DeviceDetail = $deviceSummary
+        ConditionalAccessStatus = 'Not Applied'
+        ConditionalAccessPoliciesJSON = $null
+        CAPolicyNames = ''
+        CAPolicyResults = ''
+        CAPolicyDetails = ''
+        AuthenticationDetailsJSON = $null
+        AuthMethods = $authMethod
+        RiskLevelAggregated = $null
+        RiskLevelDuringSignIn = $null
+        RiskState = $null
+        ResourceDisplayName = $app
+        ResourceId = if ($ad -and $ad.ApplicationId) { [string]$ad.ApplicationId } else { '' }
+        SignInSource = 'UnifiedAudit'
+    }
+}
+
+function Get-UnifiedAuditSignInLogs {
+    param(
+        [int]$DaysBack = 7,
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null
+    )
+    # Prefer StsLogon (UserLoggedIn / UserLoginFailed). Keep AccountLogon for older tenants.
+    $recordTypes = @('AzureActiveDirectoryStsLogon', 'AzureActiveDirectoryAccountLogon')
+    $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+    $raw = if ($useDateRange) {
+        Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $recordTypes
+    } else {
+        Get-UnifiedAuditLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers -StatusFile $StatusFile -RecordTypes $recordTypes
+    }
+    $logs = New-Object System.Collections.ArrayList
+    foreach ($row in $raw) {
+        if (-not $row) { continue }
+        $item = ConvertTo-SignInLogFromUnifiedAudit $row
+        if ($item) { [void]$logs.Add($item) }
+    }
+    return ,$logs
+}
+
+function Add-UnifiedAuditSignInLogsToReport {
+    <#
+    .SYNOPSIS
+        Preferred sign-in source: Exchange unified audit STS/account logons.
+    .OUTPUTS
+        $true when one or more sign-in rows were added; otherwise $false (caller may Graph-failback).
+    #>
+    param(
+        $Report,
+        [int]$DaysBack = 7,
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null
+    )
+    if (-not (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    $logs = Get-UnifiedAuditSignInLogs -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile
+    $Report.SignInLogs = $logs
+    if ($logs -and $logs.Count -gt 0) {
+        $Report.SignInLogsError = $null
+        $Report.SignInLogsCoverageNote = 'Sign-in rows are from Exchange unified audit (AzureActiveDirectoryStsLogon / AccountLogon). Conditional access, risk, and device compliance fields are not available from this source.'
+        Write-Host "Collected $($logs.Count) sign-in row(s) from unified audit (preferred)." -ForegroundColor Green
+        return $true
+    }
+    return $false
+}
+
+function Add-GraphSignInLogsToReport {
+    param(
+        $Report,
+        [int]$DaysBack = 7,
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [array]$SelectedUsers = @()
+    )
+    $useDateRange = $StartDate -and $EndDate -and $StartDate -ne [DateTime]::MinValue -and $EndDate -ne [DateTime]::MinValue -and $EndDate -ge $StartDate
+    try {
+        $Report.SignInLogs = if ($useDateRange) {
+            Get-GraphSignInLogs -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers
+        } else {
+            Get-GraphSignInLogs -DaysBack $DaysBack -SelectedUsers $SelectedUsers
+        }
+        if ($Report.SignInLogs -and $Report.SignInLogs.Count -gt 0) {
+            $Report.SignInLogsError = $null
+            $Report.SignInLogsCoverageNote = $null
+            return $true
+        }
+        return $false
+    } catch {
+        $signInDetail = Get-SignInLogErrorText $_
+        if (Test-SignInLogLicenseBlock $signInDetail) {
+            $Report.SignInLogs = @()
+            $Report.SignInLogsError = 'Sign-in logs are not included in this tenant license (Graph).'
+        } elseif ($signInDetail -like '*insufficient privileges*' -or $signInDetail -like '*permission*' -or $signInDetail -like '*access denied*' -or $signInDetail -like '*Forbidden*' -or $signInDetail -like '*AuditLog.Read.All*') {
+            $Report.SignInLogs = @()
+            $Report.SignInLogsError = 'Permission denied - requires AuditLog.Read.All'
+        } else {
+            $Report.SignInLogs = @()
+            $Report.SignInLogsError = $signInDetail
+        }
+        return $false
+    }
+}
+
+function Add-SignInLogsToReport {
+    <#
+    .SYNOPSIS
+        Collect sign-in rows: Exchange unified audit first, Microsoft Graph failback.
+    #>
+    param(
+        $Report,
+        [int]$DaysBack = 7,
+        [DateTime]$StartDate = [DateTime]::MinValue,
+        [DateTime]$EndDate = [DateTime]::MinValue,
+        [array]$SelectedUsers = @(),
+        [string]$StatusFile = $null,
+        [bool]$ExchangeAvailable = $false,
+        [bool]$GraphAvailable = $false,
+        [scriptblock]$ProgressCallback = $null
+    )
+    $Report.SignInLogs = @()
+    $Report.SignInLogsError = $null
+    $Report.SignInLogsCoverageNote = $null
+
+    $ualTried = $false
+    if ($ExchangeAvailable -and (Get-Command Search-UnifiedAuditLog -ErrorAction SilentlyContinue)) {
+        $ualTried = $true
+        $msg = 'Collecting sign-in logs from Exchange unified audit (preferred)...'
+        Write-Host $msg -ForegroundColor Cyan
+        if ($StatusFile) { Write-ExportStatusLine -StatusFile $StatusFile -Message $msg }
+        if ($ProgressCallback) { try { & $ProgressCallback $msg } catch {} }
+        if (Add-UnifiedAuditSignInLogsToReport -Report $Report -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers -StatusFile $StatusFile) {
+            return
+        }
+        Write-Host 'Unified audit returned no sign-in rows. Falling back to Microsoft Graph...' -ForegroundColor Yellow
+        if ($StatusFile) { Write-ExportStatusLine -StatusFile $StatusFile -Message 'Unified audit returned no sign-in rows. Falling back to Microsoft Graph.' }
+    }
+
+    if ($GraphAvailable) {
+        $msg = if ($ualTried) {
+            'Collecting sign-in logs from Microsoft Graph (failback)...'
+        } else {
+            'Collecting sign-in logs from Microsoft Graph (Exchange unified audit unavailable)...'
+        }
+        Write-Host $msg -ForegroundColor Cyan
+        if ($StatusFile) { Write-ExportStatusLine -StatusFile $StatusFile -Message $msg }
+        if ($ProgressCallback) { try { & $ProgressCallback $msg } catch {} }
+        $null = Add-GraphSignInLogsToReport -Report $Report -DaysBack $DaysBack -StartDate $StartDate -EndDate $EndDate -SelectedUsers $SelectedUsers
+        if ($Report.SignInLogsError -and $ualTried) {
+            $Report.SignInLogsError = "Unified audit returned no sign-in rows. Graph failback: $($Report.SignInLogsError)"
+        }
+        return
+    }
+
+    if (-not $ExchangeAvailable -and -not $GraphAvailable) {
+        $Report.SignInLogsError = 'Sign-in logs require Exchange Online (unified audit) or Microsoft Graph.'
+    } elseif ($ualTried) {
+        $Report.SignInLogsError = 'Unified audit returned no sign-in events, and Microsoft Graph was not available for failback.'
+    } else {
+        $Report.SignInLogsError = 'Exchange unified audit is not available for sign-in collection, and Microsoft Graph was not available for failback.'
+    }
+}
+
 function Get-GraphSignInLogs {
     param(
         [Parameter(Mandatory=$false)]
@@ -6082,14 +6363,12 @@ function Get-GraphSignInLogs {
                 Write-Host "  No sign-in logs found for the specified time range" -ForegroundColor Yellow
             }
         } catch {
-            # Check for licensing/permission errors
-            $errorMsg = $_.Exception.Message
-            if ($errorMsg -like "*insufficient privileges*" -or $errorMsg -like "*permission*" -or $errorMsg -like "*access denied*" -or $errorMsg -like "*Forbidden*") {
+            $errorMsg = Get-SignInLogErrorText $_
+            if (Test-SignInLogLicenseBlock $errorMsg) {
+                throw 'Sign-in logs are not included in this tenant license.'
+            } elseif ($errorMsg -like "*insufficient privileges*" -or $errorMsg -like "*permission*" -or $errorMsg -like "*access denied*" -or $errorMsg -like "*Forbidden*") {
                 Write-Warning "Permission denied: Sign-in logs require 'AuditLog.Read.All' permission."
                 throw "Permission denied - requires AuditLog.Read.All permission"
-            } elseif ($errorMsg -like "*license*" -or $errorMsg -like "*subscription*" -or $errorMsg -like "*premium*" -or $errorMsg -like "*not available*") {
-                Write-Warning "License required: Sign-in logs require Azure AD Premium P1 or P2 license. Free tenants are limited to 7 days."
-                throw "License required - Azure AD Premium P1/P2 (free tenants limited to 7 days)"
             } else {
                 Write-Error "Failed to retrieve sign-in logs: $errorMsg"
                 throw

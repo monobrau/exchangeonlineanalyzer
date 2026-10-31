@@ -1,4 +1,4 @@
-function Test-ExchangeModule {
+﻿function Test-ExchangeModule {
     if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
         return $false
     }
@@ -40,6 +40,12 @@ function Get-ConnectExchangeOnlineParams {
         if ($supportedParams -contains 'DisableWAM') {
             $params['DisableWAM'] = $true
         }
+        $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+        # Linux/lab (and other non-Windows) cannot complete WAM/browser popups on the runner — use device code.
+        if (-not $onWindows -and $supportedParams -contains 'Device' -and -not $params.ContainsKey('Device')) {
+            $params['Device'] = $true
+            Write-Host 'Exchange Online: using device-code auth (open https://microsoft.com/devicelogin when prompted).' -ForegroundColor Cyan
+        }
         if ($supportedParams -contains 'SkipLoadingCmdletHelp') {
             $params['SkipLoadingCmdletHelp'] = $true
         }
@@ -77,9 +83,40 @@ function Clear-ExchangeOnlineConnectionState {
     }
 }
 
+function Enable-ExchangeHttpResponseHeaderMethod {
+    <#
+    .SYNOPSIS
+        Lets Exchange's downloaded REST module read WWW-Authenticate on PowerShell 7.
+    .NOTES
+        tmpEXO Get-ClaimsFromExceptionDetails calls Response.GetResponseHeader on a 401.
+        HttpWebResponse has that method. HttpResponseMessage does not, so the claims
+        refresh throws and the mailbox cmdlet surfaces the missing-method error.
+    #>
+    if (-not ('System.Net.Http.HttpResponseMessage' -as [type])) { return }
+    $method = [scriptblock]::Create(@'
+param([string]$Name)
+if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+$values = $null
+try {
+    if ($this.Headers -and $this.Headers.TryGetValues($Name, [ref]$values) -and $values) {
+        return [string]::Join(',', @($values))
+    }
+} catch {}
+try {
+    if ($this.Content -and $this.Content.Headers -and $this.Content.Headers.TryGetValues($Name, [ref]$values) -and $values) {
+        return [string]::Join(',', @($values))
+    }
+} catch {}
+return ''
+'@)
+    Update-TypeData -TypeName 'System.Net.Http.HttpResponseMessage' -MemberType ScriptMethod -MemberName GetResponseHeader -Value $method -Force | Out-Null
+}
+
 function Import-ExchangeOnlineManagementFirst {
     [CmdletBinding()]
     param()
+
+    Enable-ExchangeHttpResponseHeaderMethod
 
     if (Get-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue) {
         return
@@ -275,4 +312,4 @@ function Get-ExchangeOnlineSendingRestrictions {
     }
 }
 
-Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Clear-ExchangeOnlineConnectionState,Import-ExchangeOnlineManagementFirst,Connect-ExchangeOnlineWithDefaults,Get-TmpExoModules,Get-ExchangeMessageTraceV2Command,Get-ExchangeMessageTraceV2RoleEntryHint,Write-ExchangeMessageTraceV2Availability,Get-ExchangeOnlineSendingRestrictions 
+Export-ModuleMember -Function Test-ExchangeModule,Install-ExchangeModule,Get-ConnectExchangeOnlineParams,Clear-ExchangeOnlineConnectionState,Enable-ExchangeHttpResponseHeaderMethod,Import-ExchangeOnlineManagementFirst,Connect-ExchangeOnlineWithDefaults,Get-TmpExoModules,Get-ExchangeMessageTraceV2Command,Get-ExchangeMessageTraceV2RoleEntryHint,Write-ExchangeMessageTraceV2Availability,Get-ExchangeOnlineSendingRestrictions 

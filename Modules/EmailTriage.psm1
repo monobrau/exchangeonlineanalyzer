@@ -3044,6 +3044,100 @@ function Add-TriageBecFactLines {
     if (-not $count) { [void]$Builder.AppendLine('- none') }
 }
 
+function Get-TriageRiverRunGuidanceRule {
+    return @'
+If the pack includes notes from a river-run.com address, that address is a River Run technician already working this ticket with you. Continue their guidance in the review and in anything written back to the ticket or the client. Do not contradict what they already told the client or wrote on the ticket. Do not say they were wrong, and do not walk back a step they already took or promised. If they named a next step, keep it. If the logs disagree with their note, say what the logs show and what they already did, without calling the earlier note a mistake.
+'@.Trim()
+}
+
+function Get-TriageRiverRunGuidance {
+    param([string]$Text)
+    $raw = [string]$Text
+    if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
+    $generic = '^(support|help|helpdesk|servicedesk|service|tickets|ticket|noreply|no-reply|no_reply|donotreply|do-not-reply|notifications|notification|alerts|alert|info|contact|billing|accounts|admin|administrator|mailer-daemon|postmaster)$'
+    $emailRe = [regex]'(?i)(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+)@river-run\.com\b'
+    $lines = @($raw -split "`r?`n")
+    $starts = New-Object System.Collections.Generic.List[int]
+    [void]$starts.Add(0)
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match '^\[20\d{2}[^\]]*\]\s+\S' -or $line -match '^--- .+ ---$') {
+            [void]$starts.Add($i)
+        }
+    }
+    [void]$starts.Add($lines.Count)
+    $blocks = New-Object System.Collections.Generic.List[object]
+    for ($b = 0; $b -lt ($starts.Count - 1); $b++) {
+        $fromLine = $starts[$b]
+        $toLine = $starts[$b + 1]
+        if ($toLine -le $fromLine) { continue }
+        $slice = @($lines[$fromLine..($toLine - 1)])
+        $block = (($slice -join "`n").Trim())
+        if (-not $block) { continue }
+        $emails = New-Object System.Collections.Generic.List[string]
+        $firstAt = -1
+        foreach ($match in $emailRe.Matches($block)) {
+            $local = $match.Groups[1].Value.ToLowerInvariant()
+            if ($local -match $generic) { continue }
+            $lineStart = $block.LastIndexOf("`n", [Math]::Max(0, $match.Index - 1))
+            if ($lineStart -lt 0) { $lineStart = 0 } else { $lineStart++ }
+            $lineEnd = $block.IndexOf("`n", $match.Index)
+            if ($lineEnd -lt 0) { $lineEnd = $block.Length }
+            $matchLine = $block.Substring($lineStart, $lineEnd - $lineStart).Trim()
+            if ($matchLine -match '^(?i)(cc|bcc|to|email|e-mail)\s*:') { continue }
+            $prevBreak = $block.LastIndexOf("`n", [Math]::Max(0, $lineStart - 2))
+            $prevLine = ''
+            if ($lineStart -gt 0) {
+                $prevFrom = if ($prevBreak -lt 0) { 0 } else { $prevBreak + 1 }
+                $prevLine = $block.Substring($prevFrom, [Math]::Max(0, $lineStart - $prevFrom)).Trim()
+            }
+            if ($prevLine -match '^(?i)(cc|bcc|to|email|e-mail)\s*:?\s*$') { continue }
+            $full = "$local@river-run.com"
+            if ($emails -notcontains $full) { [void]$emails.Add($full) }
+            if ($firstAt -lt 0) { $firstAt = $match.Index }
+        }
+        if ($emails.Count -eq 0) { continue }
+        $who = ''
+        $first = @($slice | Where-Object { $_.Trim() } | Select-Object -First 1)
+        if ($first.Count -and [string]$first[0] -match '^\[([^\]]+)\]\s+(.+)$') { $who = $Matches[2].Trim() }
+        $excerpt = $block
+        if ($excerpt.Length -gt 1800 -and $firstAt -ge 0) {
+            $startAt = [Math]::Max(0, $firstAt - 1200)
+            $endAt = [Math]::Min($block.Length, $firstAt + 600)
+            $excerpt = $block.Substring($startAt, $endAt - $startAt).Trim()
+            if ($startAt -gt 0) { $excerpt = "(Earlier lines of this note omitted.)`n$excerpt" }
+        }
+        if ($excerpt.Length -gt 1800) { $excerpt = $excerpt.Substring(0, 1800).Trim() + "`n(Note truncated.)" }
+        [void]$blocks.Add([pscustomobject]@{ Emails = @($emails.ToArray()); Who = $who; Text = $excerpt })
+    }
+    if ($blocks.Count -eq 0) { return '' }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('River Run technicians already on this ticket:')
+    [void]$sb.AppendLine((Get-TriageRiverRunGuidanceRule))
+    $used = 0
+    foreach ($item in $blocks) {
+        if ($used -ge 4500) { break }
+        $label = ($item.Emails -join ', ')
+        if ($item.Who -and $item.Who -notmatch '(?i)river-run\.com') { $label = "$label ($($item.Who))" }
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine("- $label")
+        [void]$sb.AppendLine($item.Text)
+        $used += $item.Text.Length
+    }
+    return $sb.ToString().Trim()
+}
+
+function Add-TriageRiverRunGuidance {
+    param(
+        [System.Text.StringBuilder]$Builder,
+        [string]$Text
+    )
+    $guidance = Get-TriageRiverRunGuidance -Text $Text
+    if (-not $guidance) { return }
+    [void]$Builder.AppendLine('')
+    [void]$Builder.AppendLine($guidance)
+}
+
 function New-TriageBecReviewBrief {
     param($Facts)
     $mailbox = [string](Get-TriageProp $Facts @('mailbox', 'Mailbox'))
@@ -3363,6 +3457,7 @@ function New-TriageBecReviewBrief {
         [void]$sb.AppendLine('Ticket (optional context):')
         if ($ticketNumber.Trim()) { [void]$sb.AppendLine(('Ticket number: {0}' -f $ticketNumber.Trim())) }
         if ($ticket.Trim()) { [void]$sb.AppendLine((Get-TriageClippedText $ticket 4000)) }
+        Add-TriageRiverRunGuidance -Builder $sb -Text $ticket
     }
     $company = [string](Get-TriageProp $Facts @('company', 'Company'))
     $gap = Get-TriageProp $Facts @('collectionGap', 'CollectionGap')
@@ -3411,6 +3506,7 @@ You review one mailbox for malicious activity. Cover business email compromise, 
 MEMBERBERRY EXCEPTION SUGGESTION: <client name> - <one sentence for that client's notes>
 MEMORY VAULT: <one sentence the next review should remember>
 If the pack includes a technician revision, rewrite the review to follow it. The evidence rules still apply. Do not add a true positive or a password reset unless the pack already contains the required evidence, or the technician revision explicitly asks for that wording. Do not add facts that are not already in the pack.
+If the pack includes notes from a river-run.com address, that address is a River Run technician already working this ticket with you. Continue their guidance in the review and in anything written back to the ticket or the client. Do not contradict what they already told the client or wrote on the ticket. Do not say they were wrong, and do not walk back a step they already took or promised. If they named a next step, keep it. If the logs disagree with their note, say what the logs show and what they already did, without calling the earlier note a mistake.
 '@
     $system = $system.Replace('EVIDENCE RULES', (Get-TriageEvidenceRules))
     if ($ConfirmedIncident) {
@@ -3611,6 +3707,7 @@ function New-TriageLogPlanBrief {
     }
     [void]$sb.AppendLine('Ticket:')
     [void]$sb.AppendLine($ticket)
+    Add-TriageRiverRunGuidance -Builder $sb -Text $Ticket
     $context = Get-TriageMemberberryReviewContext -Ticket $ticket
     if ($context) {
         [void]$sb.AppendLine('')
@@ -3656,6 +3753,7 @@ MORE: yes or no
 List one LOG line per log. On a follow-up, MORE: no means no LOG lines. After that shape, add a suggestion line only when the ticket shows a concrete pattern worth keeping. Omit a line when you have nothing concrete.
 MEMBERBERRY EXCEPTION SUGGESTION: <client name> - <one sentence for that client's notes>
 MEMORY VAULT: <one sentence the next review should remember>
+If the pack includes notes from a river-run.com address, that address is a River Run technician already working this ticket with you. Continue their guidance. Do not pull a log just to contradict a step they already took or promised.
 '@
     $request = Get-TriageAiReviewRequest -Provider $provider -Model $model -ApiKey $key -Brief $brief -SystemPrompt $system
     try {
@@ -4534,6 +4632,7 @@ The goal is to close the ticket, not to worry the client. Keep the email short a
         [void]$sb.AppendLine('')
         [void]$sb.AppendLine('Ticket text:')
         [void]$sb.AppendLine((Get-TriageClippedText $Ticket 4000))
+        Add-TriageRiverRunGuidance -Builder $sb -Text $Ticket
     }
     return $sb.ToString().Trim()
 }
@@ -4759,6 +4858,7 @@ function New-TriageAlertReviewBrief {
     [void]$sb.AppendLine('Alert text:')
     if ($packed.Text) { [void]$sb.AppendLine($packed.Text) }
     else { [void]$sb.AppendLine('The ticket had no alert text.') }
+    Add-TriageRiverRunGuidance -Builder $sb -Text $Alert
     return $sb.ToString().Trim()
 }
 
@@ -4984,6 +5084,10 @@ Close with the technician name from the brief on its own line. Do not add the co
 Do not write the words HATZ-AI. That heading is added after you reply.
 '@
     }
+    $riverRunRule = Get-TriageRiverRunGuidanceRule
+    foreach ($key in @('internal', 'client', 'incident', 'alert')) {
+        $systems[$key] = $systems[$key].Trim() + "`n`n" + $riverRunRule
+    }
     $systems.client = $systems.client.Replace('EVIDENCE RULES', (Get-TriageEvidenceRules))
     $texts = @{ internal = ''; client = ''; incident = ''; alert = '' }
     $notes = @{}
@@ -5103,4 +5207,4 @@ The ticket already confirms this incident. Do not re-argue whether it happened. 
     }
 }
 
-Export-ModuleMember -Function Get-TriageFreemailDomains, Get-TriageLayer, Get-TriageHeaderText, ConvertFrom-TriageMessageHeader, Get-TriageClassification, Get-TriageImpersonationMatch, Merge-TriageTraceLegs, ConvertTo-TriageUtc, Get-TriageLocalZoneLabel, ConvertTo-TriagePresentedTime, Get-TriageDnsHost, Test-TriageMxPointsAtEop, Test-TriageConfigFindings, Get-TriageOrcaSummary, Get-TriageBlockTarget, New-TriageActionScript, New-TriageTicketNote, New-TriageClientEmail, Get-TriageCommandToken, Test-TriageConfigModuleInstalled, Update-TriagePackOutputs, Get-TriagePackView, Set-TriageVerdictOverride, Get-TriagePacks, Get-TriageClientNotes, Set-TriageClientNotes, Get-TriagePackFileContent, Invoke-TriageWorkerCommand, ConvertTo-TriageRows, Get-TriageRemediationItems, Invoke-TriageRemediation, Get-TriageAiSettings, Set-TriageAiSettings, New-TriageAiReviewBrief, Get-TriageAiReviewRequest, ConvertFrom-TriageAiResponse, ConvertTo-TriageAiPlainText, Invoke-TriageAiReview, Get-TriageBecRemediations, New-TriageBecReviewBrief, Invoke-TriageBecReview, Get-TriageBecWindow, ConvertFrom-TriageBecRepull, ConvertFrom-TriageBecRepullLogs, Get-TriageBecFollowUpPlan, Test-TriageConfirmedIncident, ConvertFrom-TriageStoreSuggestions, Add-TriageMemberberryClientNote, Add-TriageMemoryVaultNote, ConvertFrom-TriageLogPlanText, New-TriageLogPlanBrief, Get-TriageLogFolderInventory, Test-TriageLogReportFolder, Invoke-TriageLogPlan, Get-TriageTicketCompany, Get-TriageTicketContact, Get-TriageMemberberrySettings, ConvertTo-TriageMemberberryClientBrief, Find-TriageMemberberryClient, ConvertFrom-TriageMemoryVaultText, New-TriageMemberberryNoteBrief, ConvertFrom-TriageMemberberryNote, Invoke-TriageMemberberryNote, Remove-TriageOperationalNotes, New-TriageClientEmailBody, Compress-TriageAlertLogs, Add-TriageAlertReviewBanner, New-TriageAlertReviewBrief, Get-TriageMemberberryGlobalRecord, ConvertTo-TriageMemberberryExceptionBrief, Get-TriageBecVerdict, Get-TriageEvidenceRules, Get-TriageBecReviewSystemPrompt, Test-TriageCompromiseEvidence, Remove-TriageUngatedCredentialReset, ConvertFrom-TriageAiStreamDelta
+Export-ModuleMember -Function Get-TriageFreemailDomains, Get-TriageLayer, Get-TriageHeaderText, ConvertFrom-TriageMessageHeader, Get-TriageClassification, Get-TriageImpersonationMatch, Merge-TriageTraceLegs, ConvertTo-TriageUtc, Get-TriageLocalZoneLabel, ConvertTo-TriagePresentedTime, Get-TriageDnsHost, Test-TriageMxPointsAtEop, Test-TriageConfigFindings, Get-TriageOrcaSummary, Get-TriageBlockTarget, New-TriageActionScript, New-TriageTicketNote, New-TriageClientEmail, Get-TriageCommandToken, Test-TriageConfigModuleInstalled, Update-TriagePackOutputs, Get-TriagePackView, Set-TriageVerdictOverride, Get-TriagePacks, Get-TriageClientNotes, Set-TriageClientNotes, Get-TriagePackFileContent, Invoke-TriageWorkerCommand, ConvertTo-TriageRows, Get-TriageRemediationItems, Invoke-TriageRemediation, Get-TriageAiSettings, Set-TriageAiSettings, New-TriageAiReviewBrief, Get-TriageAiReviewRequest, ConvertFrom-TriageAiResponse, ConvertTo-TriageAiPlainText, Invoke-TriageAiReview, Get-TriageBecRemediations, New-TriageBecReviewBrief, Get-TriageRiverRunGuidance, Invoke-TriageBecReview, Get-TriageBecWindow, ConvertFrom-TriageBecRepull, ConvertFrom-TriageBecRepullLogs, Get-TriageBecFollowUpPlan, Test-TriageConfirmedIncident, ConvertFrom-TriageStoreSuggestions, Add-TriageMemberberryClientNote, Add-TriageMemoryVaultNote, ConvertFrom-TriageLogPlanText, New-TriageLogPlanBrief, Get-TriageLogFolderInventory, Test-TriageLogReportFolder, Invoke-TriageLogPlan, Get-TriageTicketCompany, Get-TriageTicketContact, Get-TriageMemberberrySettings, ConvertTo-TriageMemberberryClientBrief, Find-TriageMemberberryClient, ConvertFrom-TriageMemoryVaultText, New-TriageMemberberryNoteBrief, ConvertFrom-TriageMemberberryNote, Invoke-TriageMemberberryNote, Remove-TriageOperationalNotes, New-TriageClientEmailBody, Compress-TriageAlertLogs, Add-TriageAlertReviewBanner, New-TriageAlertReviewBrief, Get-TriageMemberberryGlobalRecord, ConvertTo-TriageMemberberryExceptionBrief, Get-TriageBecVerdict, Get-TriageEvidenceRules, Get-TriageBecReviewSystemPrompt, Test-TriageCompromiseEvidence, Remove-TriageUngatedCredentialReset, ConvertFrom-TriageAiStreamDelta

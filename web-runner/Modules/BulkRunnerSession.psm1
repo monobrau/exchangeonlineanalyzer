@@ -117,7 +117,13 @@ function Merge-BulkRunnerReportSelections {
 }
 
 function Get-BulkRunnerHistoryDirectory {
-    $root = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'ExchangeOnlineAnalyzer\BulkWebRunner\history'
+    $local = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrWhiteSpace($local)) {
+        $home = [string]$env:HOME
+        if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+        $local = Join-Path $home '.local/share'
+    }
+    $root = Join-Path $local 'ExchangeOnlineAnalyzer\BulkWebRunner\history'
     if (-not (Test-Path -LiteralPath $root)) {
         $null = New-Item -ItemType Directory -Path $root -Force -ErrorAction Stop
     }
@@ -645,9 +651,12 @@ function Start-BulkRunnerTenantProcess {
     Sync-BulkRunnerWorkerScript -Session $Session
 
     $psExe = $null
-    $pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-    if ($pwshCmd -and -not [string]::IsNullOrWhiteSpace($pwshCmd.Source)) {
-        $psExe = $pwshCmd.Source
+    foreach ($name in @('pwsh', 'pwsh.exe', 'powershell', 'powershell.exe')) {
+        $pwshCmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($pwshCmd -and -not [string]::IsNullOrWhiteSpace($pwshCmd.Source)) {
+            $psExe = $pwshCmd.Source
+            break
+        }
     }
     if (-not $psExe) {
         $psExe = (Get-Process -Id $PID -ErrorAction Stop).Path
@@ -672,8 +681,22 @@ function Start-BulkRunnerTenantProcess {
     } else {
         'Normal'
     }
-    $proc = Start-Process -FilePath $psExe -ArgumentList $argList -PassThru -WindowStyle $procStyle `
-        -WorkingDirectory $Session.ProjectRoot -ErrorAction Stop
+    $startParams = @{
+        FilePath         = $psExe
+        ArgumentList     = $argList
+        PassThru         = $true
+        WorkingDirectory = $Session.ProjectRoot
+        ErrorAction      = 'Stop'
+    }
+    $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    if ($onWindows) {
+        $startParams.WindowStyle = $procStyle
+    }
+    else {
+        $startParams.RedirectStandardOutput = (Join-Path $Session.TempDir "Client${ClientNumber}-process.log")
+        $startParams.RedirectStandardError = (Join-Path $Session.TempDir "Client${ClientNumber}-process.err")
+    }
+    $proc = Start-Process @startParams
 
     return [pscustomobject]@{
         ClientNumber          = $ClientNumber
@@ -1410,6 +1433,23 @@ function Get-BulkRunnerTenantStatus {
         }
     }
 
+    $processLog = Join-Path $Session.TempDir "Client${ClientNumber}-process.log"
+    if (Test-Path -LiteralPath $processLog) {
+        if (-not $script:ProcessLogOffsets) { $script:ProcessLogOffsets = @{} }
+        $start = 0
+        if ($script:ProcessLogOffsets.ContainsKey($processLog)) { $start = [int]$script:ProcessLogOffsets[$processLog] }
+        $bytes = [IO.File]::ReadAllBytes($processLog)
+        if ($start -gt $bytes.Length) { $start = 0 }
+        if ($start -lt $bytes.Length) {
+            $extra = [Text.Encoding]::UTF8.GetString($bytes, $start, $bytes.Length - $start)
+            $script:ProcessLogOffsets[$processLog] = $bytes.Length
+            if (-not [string]::IsNullOrEmpty($extra)) {
+                if ($raw -and -not $raw.EndsWith("`n")) { $raw += "`n" }
+                $raw += $extra
+            }
+        }
+    }
+
     return @{
         status     = $raw
         offset     = $length
@@ -1533,7 +1573,13 @@ function Resolve-BulkRunnerContainmentExportFolder {
         }
     }
 
-    $root = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer\SecurityInvestigation'
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    if ([string]::IsNullOrWhiteSpace($docs)) {
+        $home = [string]$env:HOME
+        if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+        $docs = Join-Path $home 'Documents'
+    }
+    $root = Join-Path $docs 'ExchangeOnlineAnalyzer\SecurityInvestigation'
     $name = if (-not [string]::IsNullOrWhiteSpace($CompanyName)) { $CompanyName }
     elseif ($tenant -and $tenant.ExoOrganizationName) { [string]$tenant.ExoOrganizationName }
     elseif ($tenant -and $tenant.GraphTenantName) { [string]$tenant.GraphTenantName }

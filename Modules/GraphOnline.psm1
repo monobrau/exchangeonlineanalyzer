@@ -344,6 +344,92 @@ function Ensure-GraphCmdletsAvailable {
     }
 }
 
+function Test-EOARunningOnWindows {
+    return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+}
+
+function Test-MgGraphBrowserAuthFailure {
+    param([string]$Message)
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+    return [bool]($Message -match 'InteractiveBrowserCredential|BrowserAuthentication|WAM|WebAccountManager|WithBroker|BrokerOptions|unable to open|cannot open|no display|DISPLAY|Headless|Authentication_UIRequired|User canceled|user_canceled|timeout|Timed out|MSAL\.Desktop|platform does not support')
+}
+
+function Get-EOAPowerShellExecutable {
+    foreach ($name in @('pwsh', 'pwsh.exe', 'powershell', 'powershell.exe')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) {
+            return [string]$cmd.Source
+        }
+    }
+    try {
+        $self = (Get-Process -Id $PID -ErrorAction Stop).Path
+        if ($self) { return [string]$self }
+    } catch { }
+    throw 'Could not locate pwsh/powershell for isolated Graph sign-in.'
+}
+
+function Connect-MgGraphDelegatedAuth {
+    <#
+    .SYNOPSIS
+        Delegated Graph sign-in: browser/WAM on Windows when possible; device-code (web token) otherwise / on failure.
+    .NOTES
+        Lab/Linux runners and remote UIs cannot complete an interactive browser on the server.
+        Device code prints https://microsoft.com/devicelogin + a code to the host (worker log).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Scopes,
+        [string]$TenantId,
+        [switch]$PreferDeviceCode,
+        [scriptblock]$StatusCallback
+    )
+
+    $onWindows = Test-EOARunningOnWindows
+    $useDevice = $PreferDeviceCode -or (-not $onWindows)
+    $env:AZURE_IDENTITY_DISABLE_BROKER = 'true'
+    $env:MSAL_DISABLE_BROKER = '1'
+    $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = '1'
+    $env:MSAL_FORCE_WAM = '0'
+
+    $params = @{
+        Scopes       = $Scopes
+        ContextScope = 'Process'
+        NoWelcome    = $true
+        ErrorAction  = 'Stop'
+    }
+    if ($TenantId) { $params.TenantId = $TenantId }
+
+    $writeStatus = {
+        param([string]$Msg)
+        Write-Host $Msg -ForegroundColor Yellow
+        if ($StatusCallback) { try { & $StatusCallback $Msg } catch {} }
+    }
+
+    if (-not $useDevice) {
+        try {
+            & $writeStatus 'Sign in to Microsoft Graph in the browser/popup that opens...'
+            Connect-MgGraph @params
+            return
+        } catch {
+            $msg = $_.Exception.Message
+            if (-not (Test-MgGraphBrowserAuthFailure $msg)) { throw }
+            & $writeStatus "Interactive browser/WAM Graph auth failed ($msg). Falling back to device code (https://microsoft.com/devicelogin)..."
+            $useDevice = $true
+        }
+    }
+
+    if ($useDevice) {
+        $connectCmd = Get-Command Connect-MgGraph -ErrorAction Stop
+        if (-not ($connectCmd.Parameters.Keys -contains 'UseDeviceCode')) {
+            throw 'Connect-MgGraph does not support -UseDeviceCode on this Microsoft.Graph.Authentication version. Upgrade the module or use WCM app-only Graph Auth.'
+        }
+        & $writeStatus 'Device code Graph auth: open https://microsoft.com/devicelogin and enter the code shown in this worker log.'
+        $params.UseDeviceCode = $true
+        Connect-MgGraph @params
+    }
+}
+
 function Connect-MgGraphInteractiveIsolated {
     <#
     .SYNOPSIS
@@ -352,27 +438,31 @@ function Connect-MgGraphInteractiveIsolated {
         Use after EXO auth in the same worker. In-process InteractiveBrowserCredential hits
         MSAL WithLogging(IIdentityLogger, Boolean) when EXO's assemblies loaded first.
         Returns token/tenant/domains for the existing WCM-style REST path (no Connect-MgGraph -AccessToken).
+        On Linux / PreferDeviceCode, the child uses device-code (web token) auth.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Scopes,
-        [string]$TenantId
+        [string]$TenantId,
+        [switch]$PreferDeviceCode
     )
 
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmssfff'
-    $workDir = Join-Path $env:TEMP "EOA_GraphInteractive_$stamp"
+    $workDir = Join-Path ([System.IO.Path]::GetTempPath()) "EOA_GraphInteractive_$stamp"
     New-Item -ItemType Directory -Path $workDir -Force | Out-Null
     $resultFile = Join-Path $workDir 'result.json'
     $scopesFile = Join-Path $workDir 'scopes.json'
     $childScript = Join-Path $workDir 'connect.ps1'
+    $useDevice = $PreferDeviceCode -or (-not (Test-EOARunningOnWindows))
     @($Scopes) | ConvertTo-Json | Set-Content -LiteralPath $scopesFile -Encoding UTF8
 
     @'
 param(
     [Parameter(Mandatory = $true)][string]$ScopesFile,
     [Parameter(Mandatory = $true)][string]$ResultFile,
-    [string]$TenantId
+    [string]$TenantId,
+    [switch]$PreferDeviceCode
 )
 $ErrorActionPreference = 'Stop'
 $result = @{ ok = $false; error = $null; token = $null; tenantId = $null; displayName = $null; domains = @() }
@@ -381,14 +471,15 @@ try {
     $env:MSAL_DISABLE_BROKER = '1'
     $env:MSAL_EXPERIMENTAL_DISABLE_BROKER = '1'
     $env:MSAL_FORCE_WAM = '0'
-    $cache = Join-Path $env:TEMP ("EOA_GraphIsoCache_" + [guid]::NewGuid().ToString('N'))
+    $cache = Join-Path ([System.IO.Path]::GetTempPath()) ("EOA_GraphIsoCache_" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $cache -Force | Out-Null
     $env:MSAL_CACHE_DIR = $cache
     $env:IDENTITY_SERVICE_CACHE_DIR = $cache
 
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
     $scopes = @(Get-Content -LiteralPath $ScopesFile -Raw | ConvertFrom-Json)
-    Write-Host 'Sign in to Microsoft Graph in the browser/popup that opens...' -ForegroundColor Yellow
+    $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $useDevice = $PreferDeviceCode -or (-not $onWindows)
     $params = @{
         Scopes       = $scopes
         ContextScope = 'Process'
@@ -396,7 +487,25 @@ try {
         ErrorAction  = 'Stop'
     }
     if ($TenantId) { $params.TenantId = $TenantId }
-    Connect-MgGraph @params
+    if ($useDevice) {
+        Write-Host 'Device code Graph auth: open https://microsoft.com/devicelogin and enter the code below.' -ForegroundColor Yellow
+        $params.UseDeviceCode = $true
+        Connect-MgGraph @params
+    } else {
+        Write-Host 'Sign in to Microsoft Graph in the browser/popup that opens...' -ForegroundColor Yellow
+        try {
+            Connect-MgGraph @params
+        } catch {
+            $msg = $_.Exception.Message
+            if ($msg -match 'InteractiveBrowserCredential|BrowserAuthentication|WAM|WebAccountManager|WithBroker|BrokerOptions|no display|DISPLAY|Headless|User canceled|user_canceled') {
+                Write-Host "Interactive browser/WAM failed ($msg). Falling back to device code..." -ForegroundColor Cyan
+                $params.UseDeviceCode = $true
+                Connect-MgGraph @params
+            } else {
+                throw
+            }
+        }
+    }
     $ctx = Get-MgContext -ErrorAction Stop
     $result.tenantId = [string]$ctx.TenantId
 
@@ -435,7 +544,7 @@ try {
         $result.domains = @($dom.value | Where-Object { $_.isVerified -eq $true } | ForEach-Object { [string]$_.id })
     }
     $result.ok = $true
-    Write-Host 'Graph sign-in succeeded. You can close this window.' -ForegroundColor Green
+    Write-Host 'Graph sign-in succeeded.' -ForegroundColor Green
 } catch {
     $result.error = $_.Exception.Message
     Write-Host ("Graph sign-in failed: " + $result.error) -ForegroundColor Red
@@ -447,19 +556,87 @@ try {
 if (-not $result.ok) { exit 1 }
 '@ | Set-Content -LiteralPath $childScript -Encoding UTF8
 
-    $psExe = $null
-    $pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-    if ($pwshCmd -and $pwshCmd.Source) { $psExe = $pwshCmd.Source }
-    if (-not $psExe) { $psExe = (Get-Command powershell.exe -ErrorAction Stop).Source }
-
+    $psExe = Get-EOAPowerShellExecutable
     $argList = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $childScript,
         '-ScopesFile', $scopesFile, '-ResultFile', $resultFile
     )
     if ($TenantId) { $argList += @('-TenantId', $TenantId) }
+    if ($useDevice) { $argList += '-PreferDeviceCode' }
 
-    Write-Host 'A new PowerShell window will open for Graph browser sign-in (keeps EXO MSAL out of that process).' -ForegroundColor Cyan
-    $proc = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru -WindowStyle Normal
+    $onWindows = Test-EOARunningOnWindows
+    if ($useDevice) {
+        Write-Host 'Starting isolated Graph device-code sign-in (watch this worker log for the code)...' -ForegroundColor Cyan
+    } else {
+        Write-Host 'A new PowerShell process will open for Graph browser sign-in (keeps EXO MSAL out of that process).' -ForegroundColor Cyan
+    }
+
+    $startParams = @{
+        FilePath     = $psExe
+        ArgumentList = $argList
+        PassThru     = $true
+    }
+    $childOut = $null
+    $childErr = $null
+    if ($onWindows -and -not $useDevice) {
+        $startParams.WindowStyle = 'Normal'
+        $startParams.Wait = $true
+        $proc = Start-Process @startParams
+    } else {
+        # Linux / device-code: stream child stdout live into this host (web-runner worker log).
+        $childOut = Join-Path $workDir 'child.out'
+        $childErr = Join-Path $workDir 'child.err'
+        $startParams.RedirectStandardOutput = $childOut
+        $startParams.RedirectStandardError = $childErr
+        $startParams.NoNewWindow = $true
+        $proc = Start-Process @startParams
+        $outPos = 0
+        $errPos = 0
+        $deadline = (Get-Date).AddMinutes(15)
+        while (-not $proc.HasExited) {
+            if ((Get-Date) -gt $deadline) {
+                try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+                throw 'Isolated Graph sign-in timed out after 15 minutes waiting for device code / browser completion.'
+            }
+            foreach ($pair in @(
+                    @{ Path = $childOut; Pos = [ref]$outPos },
+                    @{ Path = $childErr; Pos = [ref]$errPos }
+                )) {
+                if (-not $pair.Path -or -not (Test-Path -LiteralPath $pair.Path)) { continue }
+                try {
+                    $bytes = [IO.File]::ReadAllBytes($pair.Path)
+                    if ($bytes.Length -gt $pair.Pos.Value) {
+                        $chunk = [Text.Encoding]::UTF8.GetString($bytes, $pair.Pos.Value, $bytes.Length - $pair.Pos.Value)
+                        $pair.Pos.Value = $bytes.Length
+                        if ($chunk) {
+                            Write-Host $chunk -NoNewline
+                            if ($chunk -match '(?i)code|devicelogin|enter') {
+                                # Also nudge status consumers that watch StatusFile lines.
+                                Write-Host ''
+                            }
+                        }
+                    }
+                } catch { }
+            }
+            Start-Sleep -Milliseconds 400
+            try { $proc.Refresh() } catch { }
+        }
+        # Final flush after exit
+        foreach ($pair in @(
+                @{ Path = $childOut; Pos = [ref]$outPos },
+                @{ Path = $childErr; Pos = [ref]$errPos }
+            )) {
+            if (-not $pair.Path -or -not (Test-Path -LiteralPath $pair.Path)) { continue }
+            try {
+                $bytes = [IO.File]::ReadAllBytes($pair.Path)
+                if ($bytes.Length -gt $pair.Pos.Value) {
+                    Write-Host ([Text.Encoding]::UTF8.GetString($bytes, $pair.Pos.Value, $bytes.Length - $pair.Pos.Value)) -NoNewline
+                }
+            } catch { }
+        }
+        Write-Host ''
+    }
+
     if (-not (Test-Path -LiteralPath $resultFile)) {
         throw "Isolated Graph sign-in produced no result (exit $($proc.ExitCode))."
     }
@@ -475,4 +652,4 @@ if (-not $result.ok) { exit 1 }
     return $parsed
 }
 
-Export-ModuleMember -Function Test-GraphModules,Install-GraphModules,Fix-GraphModuleConflicts,Connect-GraphService,Import-GraphModulesOnDemand,Ensure-GraphCmdletsAvailable,Connect-MgGraphInteractiveIsolated 
+Export-ModuleMember -Function Test-GraphModules,Install-GraphModules,Fix-GraphModuleConflicts,Connect-GraphService,Import-GraphModulesOnDemand,Ensure-GraphCmdletsAvailable,Test-EOARunningOnWindows,Test-MgGraphBrowserAuthFailure,Connect-MgGraphDelegatedAuth,Connect-MgGraphInteractiveIsolated,Get-EOAPowerShellExecutable 

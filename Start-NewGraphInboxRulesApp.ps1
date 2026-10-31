@@ -16,16 +16,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Bypass WAM so the inner script gets browser-based auth with an account picker.
-# Must be set before Microsoft.Graph.Authentication loads.
+# Browser sign-in with an account picker. Graph 2.37 keeps the Windows broker on unless these are set
+# before Connect-MgGraph, and a broker failure closes this window with an empty error.
 $env:MSAL_FORCE_WAM = '0'
+$env:AZURE_IDENTITY_DISABLE_BROKER = 'true'
+$env:MSAL_DISABLE_BROKER = '1'
+$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = '1'
 
 foreach ($k in @(
         'MSAL_CACHE_DIR'
         'IDENTITY_SERVICE_CACHE_DIR'
-        'AZURE_IDENTITY_DISABLE_BROKER'
-        'MSAL_DISABLE_BROKER'
-        'MSAL_EXPERIMENTAL_DISABLE_BROKER'
     )) {
     if (Test-Path "Env:\$k") { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
 }

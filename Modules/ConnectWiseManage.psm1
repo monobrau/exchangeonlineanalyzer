@@ -461,6 +461,10 @@ function Get-ConnectWiseManageServiceTicketText {
                 foreach ($note in $noteList) {
                     $when = if ($note.dateCreated) { [string]$note.dateCreated } else { '' }
                     $who = if ($note.member -and $note.member.name) { [string]$note.member.name } elseif ($note.createdBy) { [string]$note.createdBy } else { 'Unknown' }
+                    $mail = ''
+                    if ($note.createdBy -and [string]$note.createdBy -match '(?i)@river-run\.com') { $mail = ([string]$note.createdBy).Trim() }
+                    elseif ($note.member -and $note.member.officeEmail -and [string]$note.member.officeEmail -match '(?i)@river-run\.com') { $mail = ([string]$note.member.officeEmail).Trim() }
+                    if ($mail -and $who -notmatch '(?i)river-run\.com') { $who = "$who <$mail>" }
                     $text = if ($note.text) { [string]$note.text } elseif ($note.detailDescription) { [string]$note.detailDescription } else { '' }
                     if ([string]::IsNullOrWhiteSpace($text)) { continue }
                     [void]$lines.Add("")
@@ -470,6 +474,27 @@ function Get-ConnectWiseManageServiceTicketText {
             }
         } catch {
             Write-Warning "Could not load ticket notes for #$id : $($_.Exception.Message)"
+        }
+        try {
+            $timePath = "time/entries?conditions=chargeToId=$id AND chargeToType=%22ServiceTicket%22&pageSize=100&orderBy=timeStart%20asc"
+            $entries = @(Invoke-ConnectWiseManageApi -Credentials $Credentials -Method GET -RelativePath $timePath)
+            $timeLines = New-Object System.Collections.Generic.List[string]
+            foreach ($entry in $entries) {
+                $noteText = if ($entry.notes) { [string]$entry.notes } else { '' }
+                if ([string]::IsNullOrWhiteSpace($noteText)) { continue }
+                $when = if ($entry.timeStart) { [string]$entry.timeStart } else { '' }
+                $who = if ($entry.member -and $entry.member.name) { [string]$entry.member.name } else { 'Unknown' }
+                if ($when) { [void]$timeLines.Add("[$when] $who") } else { [void]$timeLines.Add($who) }
+                [void]$timeLines.Add($noteText.Trim())
+                [void]$timeLines.Add('')
+            }
+            if ($timeLines.Count -gt 0) {
+                [void]$lines.Add('')
+                [void]$lines.Add('--- Time ---')
+                foreach ($line in $timeLines) { [void]$lines.Add($line) }
+            }
+        } catch {
+            Write-Warning "Could not load time entries for #$id : $($_.Exception.Message)"
         }
     }
 
@@ -1171,6 +1196,10 @@ function Get-ConnectWiseManageHunterTicketThread {
         if ($note.member -and $note.member.name) { $who = [string]$note.member.name }
         elseif ($note.createdBy) { $who = [string]$note.createdBy }
         elseif ($note.contact -and $note.contact.name) { $who = [string]$note.contact.name }
+        $mail = ''
+        if ($note.createdBy -and [string]$note.createdBy -match '(?i)@river-run\.com') { $mail = ([string]$note.createdBy).Trim() }
+        elseif ($note.member -and $note.member.officeEmail -and [string]$note.member.officeEmail -match '(?i)@river-run\.com') { $mail = ([string]$note.member.officeEmail).Trim() }
+        if ($mail -and $who -notmatch '(?i)river-run\.com') { $who = "$who <$mail>" }
         $items.Add([pscustomobject]@{
             id   = if ($note.id) { [string]$note.id } else { '' }
             kind = ConvertTo-ConnectWiseManageHunterNoteKind $note

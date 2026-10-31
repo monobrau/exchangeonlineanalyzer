@@ -199,14 +199,12 @@ if ($TenantId -and $TenantId.Trim() -match $guidPattern) {
 
 $scopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All', 'Organization.Read.All')
 
-# Bypass WAM (mandatory since Graph SDK 2.34+) so MSAL uses the system browser with an
-# account picker instead of silently reusing the last-used Windows broker account.
+# Graph 2.37 uses the Windows account broker unless the broker is disabled here.
+# The broker can report a blank "InteractiveBrowserCredential authentication failed" after sign-in.
 $env:MSAL_FORCE_WAM = '0'
-
-# Clear inherited broker env vars from the parent process
-foreach ($k in @('AZURE_IDENTITY_DISABLE_BROKER', 'MSAL_DISABLE_BROKER', 'MSAL_EXPERIMENTAL_DISABLE_BROKER')) {
-    if (Test-Path "Env:\$k") { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
-}
+$env:AZURE_IDENTITY_DISABLE_BROKER = 'true'
+$env:MSAL_DISABLE_BROKER = '1'
+$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = '1'
 
 # Isolated MSAL cache for this run (do not call Disconnect-MgGraph / GraphSession here - loading those
 # assemblies before Connect-MgGraph causes "assembly already loaded" version conflicts in pwsh).
@@ -259,7 +257,19 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             Connect-GraphWithScopes -Scopes $scopes -TenantId $resolvedTenantId -UseDeviceCode
         }
     } catch {
-        throw "Graph connect failed: $($_.Exception.Message)"
+        $detail = [string]$_.Exception.Message
+        $inner = $_.Exception.InnerException
+        while ($inner) {
+            if ($inner.Message -and $detail -notlike "*$($inner.Message)*") { $detail = "$detail $($inner.Message)" }
+            $inner = $inner.InnerException
+        }
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message -and $detail -notlike "*$($_.ErrorDetails.Message)*") {
+            $detail = "$detail $($_.ErrorDetails.Message)"
+        }
+        if ($attempt -ge $maxAttempts) { throw "Graph connect failed: $detail" }
+        Write-Host "Sign-in did not complete: $detail" -ForegroundColor Yellow
+        Write-Host "Retrying with a device code. Complete that prompt in the browser." -ForegroundColor Cyan
+        continue
     }
 
     $tenantId = (Get-MgContext).TenantId
@@ -580,9 +590,13 @@ Write-Host ""
 catch {
     $script:graphAppCreateScriptError = $_.Exception.Message
     Write-GraphAppCreateResultFile
-    Write-Error $_
+    Write-Host ""
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
 finally {
     try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+    Write-Host ""
+    Write-Host "Press Enter to close this window." -ForegroundColor Yellow
+    try { [void](Read-Host) } catch { }
 }

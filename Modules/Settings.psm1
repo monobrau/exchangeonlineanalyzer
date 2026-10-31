@@ -2481,7 +2481,7 @@ function Get-RequiredAuthFromReportSelections {
     $needsGraph = $false
     $needsExchange = $false
     $graphReports = @(
-        'IncludeAuditLogs', 'IncludeSignInLogs', 'IncludeMfaCoverage', 'IncludeConditionalAccessPolicies',
+        'IncludeAuditLogs', 'IncludeMfaCoverage', 'IncludeConditionalAccessPolicies',
         'IncludeAppRegistrations', 'IncludeSecurityAlerts', 'IncludeSecurityIncidents', 'IncludeIntuneDevices',
         'IncludeSharePointActivity', 'IncludeOneDriveActivity', 'IncludeTeamsActivity', 'IncludeSharePointSharing',
         'IncludeSharePointFileSharingLinks'
@@ -2491,7 +2491,9 @@ function Get-RequiredAuthFromReportSelections {
         'IncludeMailFlowConnectors', 'IncludeMailboxForwarding',
         'IncludeSharePointOneDriveFileActions',
         'IncludeAnonymousSharePointSharing',
-        'IncludeDLPViolations'
+        'IncludeDLPViolations',
+        # Preferred source is Exchange UAL; Graph is optional failback when already connected.
+        'IncludeSignInLogs'
     )
     foreach ($key in $graphReports) {
         if ($ReportSelections[$key] -eq $true) { $needsGraph = $true; break }

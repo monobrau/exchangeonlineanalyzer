@@ -58,7 +58,7 @@ function resolveContainmentState(clientNumber, existing = {}) {
   if (hasContainmentPayload(existing.containment)) return existing.containment;
   return readContainmentFromSessionStorage(clientNumber);
 }
-let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false };
+let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false, deviceCodeAuth: false, isWindowsHost: true };
 const uiStateSyncTimers = new Map();
 const sessionReportSyncTimer = { id: null };
 const HISTORY_SORT_STORAGE = { saved: 'bulkRunnerHistorySort.saved', archived: 'bulkRunnerHistorySort.archived' };
@@ -1491,7 +1491,7 @@ const REPORT_EXPORT_GROUPS = [
   {
     title: 'Microsoft Graph — identity',
     items: [
-      { key: 'IncludeSignInLogs', label: 'Sign-in logs' },
+      { key: 'IncludeSignInLogs', label: 'Sign-in logs (Exchange UAL first, Graph failback)' },
       { key: 'IncludeAuditLogs', label: 'Directory audit logs' },
       { key: 'IncludeMfaCoverage', label: 'MFA coverage' },
       { key: 'IncludeConditionalAccessPolicies', label: 'Conditional Access policies' },
@@ -7704,6 +7704,9 @@ async function waitForWorkerReady(clientNumber, timeoutSec = 45) {
 
 async function ensureVisibleWorkerForAuth(clientNumber, div) {
 
+  // Linux/lab runners have no useful interactive console; device-code auth uses the worker log.
+  if (serverFeatures.deviceCodeAuth || serverFeatures.isWindowsHost === false) return div;
+
   if (!serverFeatures.hiddenWorkers) return div;
 
   const uiKey = String(clientNumber);
@@ -7838,7 +7841,12 @@ async function graphAuth(clientNumber, div) {
 
         } else if (final === 'GRAPH_AUTH_STARTED') {
 
-          log(`Client ${clientNumber}: complete sign-in in the browser popup on this PC…`);
+          if (serverFeatures.deviceCodeAuth) {
+            log(`Client ${clientNumber}: open https://microsoft.com/devicelogin and enter the code from this tenant’s worker log tab…`);
+            focusClientLogTab(clientNumber);
+          } else {
+            log(`Client ${clientNumber}: complete sign-in in the browser popup on this PC (falls back to device code if the popup fails)…`);
+          }
 
         }
 
@@ -7902,6 +7910,11 @@ async function exoAuth(clientNumber, div) {
         if (!final) {
 
           log(`Client ${clientNumber}: waiting for worker to acknowledge auth command…`);
+
+        } else if (serverFeatures.deviceCodeAuth) {
+
+          log(`Client ${clientNumber}: open https://microsoft.com/devicelogin and enter the Exchange device code from this tenant’s worker log tab…`);
+          focusClientLogTab(clientNumber);
 
         } else {
 
@@ -9020,6 +9033,7 @@ async function loadAppRegistrations(options = {}) {
   try {
     const url = forceRefreshFromGraph ? '/api/app-registrations?refresh=1' : '/api/app-registrations';
     appRegistrations = await api(url, {}, forceRefreshFromGraph ? 120000 : 45000);
+    if (!Array.isArray(appRegistrations)) appRegistrations = [];
     const count = appRegistrations.length;
     appRegsEl.textContent = appRegistrations.map(a => a.displayText).join('\n') || '(none in WCM)';
     if (summaryEl) {
@@ -9066,7 +9080,8 @@ async function runUpdateGraphAppScopes(preferredTenantId) {
     if (data.exitCode === 0 && r.UpdatedExisting) {
       log(`Graph app scopes updated for ${r.TenantDisplayName || r.TenantId || tid || 'tenant'} (granted ${r.RolesGranted || 0}, already ${r.RolesAlready || 0}, failed ${r.RolesFailed || 0}). Run Graph Auth again.`);
     } else {
-      log(`Update Graph App scopes finished (exit ${data.exitCode}). See ${data.logPath || 'temp log'} if needed.`);
+      const detail = r.ScriptError || r.WcmError || '';
+      log(`Update Graph App scopes finished (exit ${data.exitCode}).${detail ? ' ' + detail : ''} See ${data.logPath || 'temp log'} if needed.`);
     }
   });
 }
@@ -9145,12 +9160,37 @@ document.getElementById('btnExportWcm')?.addEventListener('click', async () => {
   });
 });
 
-document.getElementById('btnImportWcm')?.addEventListener('click', async () => {
-  const path = window.prompt('Import file path (.eoa-creds):');
-  const password = window.prompt('Encryption password:');
-  if (!path || !password) return;
-  await runAction('Importing WCM credentials…', async () => {
-    const data = await api('/api/wcm/import', { method: 'POST', body: JSON.stringify({ path, password }) });
+let pendingWcmImportPassword = '';
+
+document.getElementById('btnImportWcm')?.addEventListener('click', () => {
+  const password = window.prompt('Encryption password for the .eoa-creds file:');
+  if (!password) {
+    log('Import cancelled.');
+    return;
+  }
+  const input = document.getElementById('wcmCredsFile');
+  if (!input) {
+    log('Import file picker is missing.');
+    return;
+  }
+  pendingWcmImportPassword = password;
+  input.value = '';
+  log('Choose the .eoa-creds file on this PC.');
+  input.click();
+});
+
+document.getElementById('wcmCredsFile')?.addEventListener('change', async () => {
+  const input = document.getElementById('wcmCredsFile');
+  const file = input.files && input.files[0];
+  const password = pendingWcmImportPassword;
+  pendingWcmImportPassword = '';
+  if (!file || !password) return;
+  await runAction('Importing credentials…', async () => {
+    const fileText = await file.text();
+    const data = await api('/api/wcm/import', {
+      method: 'POST',
+      body: JSON.stringify({ fileText, password }),
+    }, 120000);
     log(`Imported ${data.imported ?? 0} credential(s).`);
     await loadAppRegistrations({ quiet: true });
   });

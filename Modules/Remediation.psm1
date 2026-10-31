@@ -1192,6 +1192,17 @@ function Invoke-RemediationWorkerCommand {
     if ($needsExo -and -not $ExchangeAuthenticated) {
         return "REMEDIATE_FAILED:Exchange authentication not completed"
     }
+    if ($needsExo) {
+        if (-not (Get-Command Enable-ExchangeHttpResponseHeaderMethod -ErrorAction SilentlyContinue)) {
+            $exoHelper = Join-Path $PSScriptRoot 'ExchangeOnline.psm1'
+            if (Test-Path -LiteralPath $exoHelper) {
+                Import-Module $exoHelper -Force -DisableNameChecking -ErrorAction SilentlyContinue
+            }
+        }
+        if (Get-Command Enable-ExchangeHttpResponseHeaderMethod -ErrorAction SilentlyContinue) {
+            Enable-ExchangeHttpResponseHeaderMethod
+        }
+    }
     if ($needsGraph) {
         if (-not (Get-Command Test-GraphRestBearerToken -ErrorAction SilentlyContinue) -or -not (Test-GraphRestBearerToken)) {
             return "REMEDIATE_FAILED:Graph REST bearer token is not set. Complete Graph Auth (worker stores the token; Connect-MgGraph is not required)."
@@ -1813,7 +1824,7 @@ function Start-RemediationGraphGets {
     $token = Get-GraphRestBearerToken
     if ([string]::IsNullOrWhiteSpace($token)) { throw 'Graph REST bearer token is not set.' }
     $client = [System.Net.Http.HttpClient]::new()
-    $client.Timeout = [TimeSpan]::FromSeconds(90)
+    $client.Timeout = [TimeSpan]::FromSeconds(150)
     $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $token)
     $client.DefaultRequestHeaders.Accept.ParseAdd('application/json')
     [void]$client.DefaultRequestHeaders.TryAddWithoutValidation('ConsistencyLevel', 'eventual')
@@ -1832,34 +1843,54 @@ function Complete-RemediationGraphGets {
         foreach ($name in @($Batch.Tasks.Keys)) { [void]$pending.Add($Batch.Tasks[$name]) }
         if ($pending.Count -gt 0) {
             try {
-                [void][System.Threading.Tasks.Task]::WaitAll($pending.ToArray(), [TimeSpan]::FromSeconds(95))
+                [void][System.Threading.Tasks.Task]::WaitAll($pending.ToArray(), [TimeSpan]::FromSeconds(160))
             } catch {
                 # A failed request is recorded on that task below.
             }
         }
         foreach ($name in @($Batch.Tasks.Keys)) {
             $task = $Batch.Tasks[$name]
-            if (-not $task.IsCompleted) {
-                $results[$name] = @{ Ok = $false; Error = 'Graph request timed out.'; Json = $null }
-                continue
+            try {
+                # A canceled HttpClient task is completed and its Result is null in PowerShell.
+                # Calling .Content on that null was reported as a failed Graph log pull.
+                if (-not $task -or -not $task.IsCompleted -or $task.IsCanceled) {
+                    $results[$name] = @{ Ok = $false; Error = 'Graph request timed out.'; Json = $null }
+                    continue
+                }
+                if ($task.IsFaulted) {
+                    $message = 'Graph request failed.'
+                    if ($task.Exception) {
+                        $base = $task.Exception.GetBaseException()
+                        if ($base -and $base.Message) { $message = [string]$base.Message }
+                    }
+                    $results[$name] = @{ Ok = $false; Error = $message; Json = $null }
+                    continue
+                }
+                $response = $task.Result
+                if (-not $response) {
+                    $results[$name] = @{ Ok = $false; Error = 'Graph request timed out.'; Json = $null }
+                    continue
+                }
+                $body = ''
+                if ($response.Content) {
+                    $read = $response.Content.ReadAsStringAsync()
+                    if ($read) {
+                        [void]$read.Wait()
+                        $body = [string]$read.Result
+                    }
+                }
+                $code = [int]$response.StatusCode
+                if ($code -ge 400) {
+                    if ($body.Length -gt 300) { $body = $body.Substring(0, 300) }
+                    $results[$name] = @{ Ok = $false; Error = "$code $body"; Json = $null }
+                    continue
+                }
+                $json = $null
+                if ($body) { $json = $body | ConvertFrom-Json }
+                $results[$name] = @{ Ok = $true; Error = ''; Json = $json }
+            } catch {
+                $results[$name] = @{ Ok = $false; Error = [string]$_.Exception.Message; Json = $null }
             }
-            if ($task.IsFaulted) {
-                $results[$name] = @{ Ok = $false; Error = $task.Exception.GetBaseException().Message; Json = $null }
-                continue
-            }
-            $response = $task.Result
-            $read = $response.Content.ReadAsStringAsync()
-            [void]$read.Wait()
-            $body = [string]$read.Result
-            $code = [int]$response.StatusCode
-            if ($code -ge 400) {
-                if ($body.Length -gt 300) { $body = $body.Substring(0, 300) }
-                $results[$name] = @{ Ok = $false; Error = "$code $body"; Json = $null }
-                continue
-            }
-            $json = $null
-            if ($body) { $json = $body | ConvertFrom-Json }
-            $results[$name] = @{ Ok = $true; Error = ''; Json = $json }
         }
     } finally {
         if ($Batch.Client) { $Batch.Client.Dispose() }
@@ -2055,6 +2086,41 @@ function Get-RemediationReportedMessages {
     return @($picked.ToArray())
 }
 
+function Resolve-RemediationSignInUserId {
+    param([Parameter(Mandatory = $true)][string]$User)
+    $directError = ''
+    try {
+        $graphUser = Get-MgUserCompat -UserId $User -Property id
+        if ($graphUser.id) { return [string]$graphUser.id }
+        if ($graphUser.Id) { return [string]$graphUser.Id }
+    } catch {
+        $directError = [string]$_.Exception.Message
+    }
+    $safe = $User.Replace("'", "''")
+    $queries = @(
+        @{
+            Uri = 'https://graph.microsoft.com/v1.0/users?$select=id&$top=1&$filter=' + [Uri]::EscapeDataString("mail eq '$safe' or userPrincipalName eq '$safe'")
+            Headers = @{}
+        },
+        @{
+            Uri = 'https://graph.microsoft.com/v1.0/users?$select=id&$top=1&$count=true&$filter=' + [Uri]::EscapeDataString("proxyAddresses/any(p:p eq 'smtp:$safe') or otherMails/any(m:m eq '$safe')")
+            Headers = @{ ConsistencyLevel = 'eventual' }
+        }
+    )
+    foreach ($query in $queries) {
+        try {
+            $page = Invoke-GraphRestRequest -Uri $query.Uri -Headers $query.Headers
+            $row = @($page.value) | Select-Object -First 1
+            if ($row -and $row.id) { return [string]$row.id }
+            if ($row -and $row.Id) { return [string]$row.Id }
+        } catch {
+            if (-not $directError) { $directError = [string]$_.Exception.Message }
+        }
+    }
+    if ($directError) { throw $directError }
+    return ''
+}
+
 function Get-RemediationBecAudit {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
@@ -2167,9 +2233,7 @@ function Get-RemediationBecAudit {
             $signByUserId = $false
             if (& $wantLog 'signins') {
                 try {
-                    $graphUser = Get-MgUserCompat -UserId $user -Property id
-                    if ($graphUser.id) { $signUserId = [string]$graphUser.id }
-                    elseif ($graphUser.Id) { $signUserId = [string]$graphUser.Id }
+                    $signUserId = Resolve-RemediationSignInUserId -User $user
                 } catch {
                     [void]$notes.Add(('Sign-in user id lookup failed: {0}' -f $_.Exception.Message))
                 }
@@ -2482,19 +2546,25 @@ function Get-RemediationBecAudit {
                 [void]$notes.Add(('MFA posture failed: {0}' -f $_.Exception.Message))
             }
         }
-        if ($got.ContainsKey('signins') -and -not $got.signins.Ok -and (Test-RemediationLogLicenseLimit ([string]$got.signins.Error))) {
+        $signError = ''
+        if ($got.ContainsKey('signins') -and -not $got.signins.Ok) { $signError = [string]$got.signins.Error }
+        $signLicense = Test-RemediationLogLicenseLimit $signError
+        $signTimeout = $signError -match 'timed out'
+        if ($got.ContainsKey('signins') -and -not $got.signins.Ok -and ($signLicense -or $signTimeout)) {
             $signDays = $days
             $signTries = 0
-            while ($signTries -lt 5) {
+            $maxSignTries = if ($signTimeout -and -not $signLicense) { 1 } else { 5 }
+            while ($signTries -lt $maxSignTries) {
                 $signTries++
                 $shorter = Get-RemediationShorterLogDays -Days $signDays
                 if ($shorter -lt 1) {
-                    if ($signByUserId) {
+                    if ($signByUserId -and $signLicense) {
                         $got.signins.Error = 'Sign-in logs for this window were refused by the tenant license. A shorter window will not change that. Do not ask for sign-ins again.'
                     }
                     break
                 }
-                [void]$notes.Add(('{0}-day sign-in log was refused by the license. Trying {1} days.' -f $signDays, $shorter))
+                $why = if ($signTimeout -and -not $signLicense) { 'timed out' } else { 'was refused by the license' }
+                [void]$notes.Add(('{0}-day sign-in log {1}. Trying {2} days.' -f $signDays, $why, $shorter))
                 $signStart = $end.AddDays(-$shorter).ToString('yyyy-MM-ddTHH:mm:ssZ')
                 $signEnd = $end.ToString('yyyy-MM-ddTHH:mm:ssZ')
                 if ($signByUserId -and $signUserId) {
@@ -2508,13 +2578,17 @@ function Get-RemediationBecAudit {
                 try {
                     $signPageRetry = Invoke-GraphRestRequest -Uri $signUri -Headers @{ ConsistencyLevel = 'eventual' }
                     $got.signins = @{ Ok = $true; Error = ''; Json = $signPageRetry }
-                    [void]$notes.Add(('Sign-in log used {0} days because a longer window was refused by the license. Do not ask for that longer sign-in window again.' -f $shorter))
+                    if ($signTimeout -and -not $signLicense) {
+                        [void]$notes.Add(('Sign-in log used {0} days because the longer window timed out.' -f $shorter))
+                    } else {
+                        [void]$notes.Add(('Sign-in log used {0} days because a longer window was refused by the license. Do not ask for that longer sign-in window again.' -f $shorter))
+                    }
                     break
                 } catch {
                     $detail = $_.Exception.Message
                     if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = [string]$_.ErrorDetails.Message }
                     $got.signins = @{ Ok = $false; Error = $detail; Json = $null }
-                    if (-not (Test-RemediationLogLicenseLimit $detail)) { break }
+                    if (-not (Test-RemediationLogLicenseLimit $detail) -and $detail -notmatch 'timed out') { break }
                     $signDays = $shorter
                 }
             }

@@ -938,6 +938,47 @@ Operational note: the pack contains the line REMEDIATE_FAILED:Unknown remediatio
         Test-TriageConfirmedIncident -Text 'The incident is not confirmed.' | Should -Be $false
     }
 
+    It 'keeps a River Run technician note in the review and the ticket drafts' {
+        $ticket = @"
+Service Ticket #1907100
+Summary: Suspicious sign-in
+Contact: Connie Larson
+Email:
+connie.l@staffing-support.com
+Cc: support@river-run.com
+
+Initial Description:
+Please check this alert.
+
+--- Discussion ---
+
+[2026-10-16T14:15:00Z] Connie Larson
+Was this email real?
+
+[2026-10-16T14:45:00Z] Chris Knospe <cknospe@river-run.com>
+I already told Connie this was our own notice and that she does not need to reset her password. We can leave the mailbox as it is.
+
+All the best,
+cknospe@river-run.com
+"@
+        $guidance = Get-TriageRiverRunGuidance -Text $ticket
+        $guidance | Should -Match 'cknospe@river-run.com'
+        $guidance | Should -Match 'does not need to reset her password'
+        $guidance | Should -Not -Match 'support@river-run.com'
+        $guidance | Should -Not -Match 'connie.l@staffing-support.com'
+        $guidance | Should -Match 'Do not contradict'
+        $brief = New-TriageBecReviewBrief -Facts ([pscustomobject]@{ mailbox = 'connie@contoso.com'; ticket = $ticket })
+        $brief | Should -Match 'cknospe@river-run.com'
+        $brief | Should -Match 'does not need to reset her password'
+        $notes = New-TriageMemberberryNoteBrief -Review 'The notice was ours.' -Audience 'client' -Ticket $ticket
+        $notes | Should -Match 'cknospe@river-run.com'
+        $notes | Should -Match 'Do not contradict'
+        $alert = New-TriageAlertReviewBrief -Alert $ticket -TicketNumber '1907100'
+        $alert | Should -Match 'leave the mailbox as it is'
+        Get-TriageBecReviewSystemPrompt -ConfirmedIncident $false | Should -Match 'river-run.com address'
+        (Get-TriageRiverRunGuidance -Text 'Cc: alex@river-run.com') | Should -Be ''
+    }
+
     It 'passes a technician revision into the review and the notes' {
         $brief = New-TriageBecReviewBrief -Facts ([pscustomobject]@{
             mailbox = 'a@contoso.com'

@@ -67,3 +67,33 @@ Describe 'Remediation date conversion' {
         Get-RemediationObjectDateText -Object $cred -PropertyNames @('startDateTime', 'StartDateTime') | Should -Be '2026-03-01T00:00:00Z'
     }
 }
+
+Describe 'Graph batch completion' {
+    It 'records a canceled request as a timeout' {
+        InModuleScope Remediation {
+            $canceled = [System.Threading.Tasks.TaskCompletionSource[System.Net.Http.HttpResponseMessage]]::new()
+            [void]$canceled.TrySetCanceled()
+            $batch = @{ Client = $null; Tasks = @{ signins = $canceled.Task } }
+            $got = Complete-RemediationGraphGets -Batch $batch
+            $got.signins.Ok | Should -Be $false
+            $got.signins.Error | Should -Be 'Graph request timed out.'
+        }
+    }
+
+    It 'keeps a response that has no body' {
+        InModuleScope Remediation {
+            $withBody = [System.Threading.Tasks.TaskCompletionSource[System.Net.Http.HttpResponseMessage]]::new()
+            $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::OK)
+            $response.Content = [System.Net.Http.StringContent]::new('{"value":[]}')
+            [void]$withBody.TrySetResult($response)
+            $empty = [System.Threading.Tasks.TaskCompletionSource[System.Net.Http.HttpResponseMessage]]::new()
+            $bare = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::OK)
+            [void]$empty.TrySetResult($bare)
+            $batch = @{ Client = $null; Tasks = @{ signins = $withBody.Task; alerts = $empty.Task } }
+            $got = Complete-RemediationGraphGets -Batch $batch
+            $got.signins.Ok | Should -Be $true
+            $got.alerts.Ok | Should -Be $true
+            $got.alerts.Json | Should -Be $null
+        }
+    }
+}
