@@ -705,11 +705,50 @@ function Handle-ApiRequest {
         }
 
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/export') {
-            if (-not $Body.path -or -not $Body.password) { throw 'Missing path or password' }
+            if (-not $Body.password) { throw 'Missing password' }
             $sec = ConvertTo-SecureString ([string]$Body.password) -AsPlainText -Force
             $prefix = if ($Body.prefix) { [string]$Body.prefix } else { 'EOA' }
-            $count = Export-GraphAppCredentialsToFile -Path ([string]$Body.path) -Password $sec -Prefix $prefix
-            return @{ ok = $true; path = [string]$Body.path; count = $count }
+            $path = if ($Body.path) { [string]$Body.path } else { '' }
+            $wantBrowse = ($Body.browse -eq $true) -or ($Body.browse -eq 'true')
+            # Default is browser download. Old clients that only sent a typed path still write on the runner.
+            $wantDownload = ($Body.download -eq $true) -or ($Body.download -eq 'true') -or (
+                -not $wantBrowse -and [string]::IsNullOrWhiteSpace($path)
+            )
+            $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+            $fileName = 'GraphAppCredentials.eoa-creds'
+
+            if ($wantDownload) {
+                $payload = New-GraphAppCredentialsExportPayload -Password $sec -Prefix $prefix
+                return @{
+                    ok       = $true
+                    download = $true
+                    count    = [int]$payload.Count
+                    fileName = $fileName
+                    content  = [string]$payload.Content
+                }
+            }
+
+            if ($wantBrowse) {
+                if (-not $onWindows) {
+                    throw 'File browse dialog is only available on Windows. Use browser download instead.'
+                }
+                $initialDir = ''
+                try {
+                    $downloads = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+                    if ($downloads -and (Test-Path -LiteralPath $downloads)) { $initialDir = $downloads }
+                    elseif ($script:ProjectRoot -and (Test-Path -LiteralPath $script:ProjectRoot)) { $initialDir = $script:ProjectRoot }
+                } catch { }
+                $path = Show-GraphAppCredentialSaveFileDialog -DefaultFileName $fileName -InitialDirectory $initialDir
+                if ([string]::IsNullOrWhiteSpace($path)) {
+                    return @{ ok = $false; cancelled = $true }
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($path)) {
+                throw 'Missing export path. Use download=true for a browser save, or browse=true on Windows.'
+            }
+            $count = Export-GraphAppCredentialsToFile -Path $path -Password $sec -Prefix $prefix
+            return @{ ok = $true; path = $path; count = $count; browsed = [bool]$wantBrowse; download = $false }
         }
 
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/import') {

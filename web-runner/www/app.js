@@ -7010,6 +7010,76 @@ function stopWorkerLogPoll(clientNumber) {
   }
 }
 
+const pendingDeviceLogins = new Map();
+const deviceLoginTails = new Map();
+
+function parseDeviceLoginText(clientNumber, text) {
+  const key = String(clientNumber);
+  const prior = deviceLoginTails.get(key) || '';
+  const combined = prior + String(text || '');
+  const lines = combined.split(/\r?\n/);
+  const incomplete = combined.endsWith('\n') ? '' : (lines.pop() || '');
+  deviceLoginTails.set(key, incomplete.slice(-500));
+  const scan = lines.slice();
+  if (incomplete && /enter the code/i.test(incomplete)) scan.push(incomplete);
+  let changed = false;
+  for (const line of scan) {
+    if (/authentication successful|EXCHANGE_AUTH_SUCCESS|GRAPH_AUTH_SUCCESS|authentication failed|AUTH_FAILED/i.test(line)) {
+      if (pendingDeviceLogins.delete(key)) changed = true;
+      continue;
+    }
+    const codeMatch = /enter the code\s+([A-Z0-9-]{6,16})/i.exec(line);
+    if (!codeMatch) continue;
+    const urlMatch = /https?:\/\/\S+/i.exec(line);
+    const url = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : 'https://login.microsoft.com/device';
+    const code = codeMatch[1].toUpperCase();
+    const prev = pendingDeviceLogins.get(key);
+    if (prev && prev.code === code && prev.url === url) continue;
+    pendingDeviceLogins.set(key, { code, url });
+    changed = true;
+    log(`Client ${clientNumber}: sign-in code ${code}. Use the box at the top of this page.`);
+  }
+  if (changed) renderDeviceLoginBanner();
+}
+
+async function copyDeviceCode(code) {
+  try {
+    await navigator.clipboard.writeText(code);
+    return;
+  } catch { /* fall through */ }
+  const input = document.createElement('textarea');
+  input.value = code;
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  input.remove();
+}
+
+function renderDeviceLoginBanner() {
+  const host = document.getElementById('deviceLogin');
+  if (!host) return;
+  if (pendingDeviceLogins.size === 0) {
+    host.hidden = true;
+    host.replaceChildren();
+    return;
+  }
+  host.hidden = false;
+  const parts = ['<h2>Microsoft sign-in</h2>'];
+  for (const [client, info] of pendingDeviceLogins) {
+    parts.push(
+      `<div class="deviceRow" data-code="${escapeHtml(info.code)}" data-url="${escapeHtml(info.url)}">` +
+      `<div>Client ${escapeHtml(client)}</div>` +
+      `<div class="code">${escapeHtml(info.code)}</div>` +
+      `<div class="muted">Open ${escapeHtml(info.url)} and enter this code.</div>` +
+      `<div class="row">` +
+      `<button type="button" class="primary" data-device-action="open">Copy code and open sign-in</button>` +
+      `<button type="button" data-device-action="copy">Copy code</button>` +
+      `</div></div>`
+    );
+  }
+  host.innerHTML = parts.join('');
+}
+
 async function pollWorkerLog(clientNumber) {
   const key = String(clientNumber);
   const offset = workerLogOffsets.get(key) || 0;
@@ -7021,6 +7091,7 @@ async function pollWorkerLog(clientNumber) {
     pre.textContent += (pre.textContent && !pre.textContent.endsWith('\n') ? '\n' : '') + chunk;
     pre.scrollTop = pre.scrollHeight;
   }
+  if (chunk) parseDeviceLoginText(clientNumber, chunk);
 }
 
 function focusClientLogTab(clientNumber) {
@@ -7842,7 +7913,7 @@ async function graphAuth(clientNumber, div) {
         } else if (final === 'GRAPH_AUTH_STARTED') {
 
           if (serverFeatures.deviceCodeAuth) {
-            log(`Client ${clientNumber}: open https://microsoft.com/devicelogin and enter the code from this tenant’s worker log tab…`);
+            log(`Client ${clientNumber}: the Graph sign-in code will show at the top of this page…`);
             focusClientLogTab(clientNumber);
           } else {
             log(`Client ${clientNumber}: complete sign-in in the browser popup on this PC (falls back to device code if the popup fails)…`);
@@ -7913,7 +7984,7 @@ async function exoAuth(clientNumber, div) {
 
         } else if (serverFeatures.deviceCodeAuth) {
 
-          log(`Client ${clientNumber}: open https://microsoft.com/devicelogin and enter the Exchange device code from this tenant’s worker log tab…`);
+          log(`Client ${clientNumber}: the Exchange sign-in code will show at the top of this page…`);
           focusClientLogTab(clientNumber);
 
         } else {
@@ -9150,48 +9221,79 @@ document.getElementById('btnDeleteGraphApp')?.addEventListener('click', async ()
   });
 });
 
-document.getElementById('btnExportWcm')?.addEventListener('click', async () => {
-  const path = window.prompt('Export file path (.eoa-creds):', `${(await api('/api/health')).projectRoot || ''}\\graph-apps.eoa-creds`);
-  const password = window.prompt('Encryption password:');
-  if (!path || !password) return;
+function downloadTextFile(fileName, text) {
+  const blob = new Blob([text], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName || 'GraphAppCredentials.eoa-creds';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+document.getElementById('btnExportWcm')?.addEventListener('click', async (ev) => {
+  const password = window.prompt('Encryption password for the .eoa-creds file:');
+  if (!password) return;
+  // Normal click: browser download (lands in THIS PC's Downloads — what you want before copying to the lab host).
+  // Shift+click on Windows: Save dialog writes onto the runner disk instead.
+  const useBrowse = Boolean(ev?.shiftKey) && serverFeatures.isWindowsHost !== false && !serverFeatures.deviceCodeAuth;
+  if (useBrowse) {
+    log('Shift+click: choose a path on the runner PC in the Save dialog…');
+  } else {
+    log('Exporting for browser download (check Downloads for GraphAppCredentials.eoa-creds)…');
+  }
   await runAction('Exporting WCM credentials…', async () => {
-    await api('/api/wcm/export', { method: 'POST', body: JSON.stringify({ path, password }) });
-    log(`Exported credentials to ${path}`);
+    const body = useBrowse ? { password, browse: true } : { password, download: true };
+    const data = await api('/api/wcm/export', { method: 'POST', body: JSON.stringify(body) }, 300000);
+    if (data?.cancelled) {
+      log('Export cancelled.');
+      return;
+    }
+    if (data?.download && data.content != null && data.content !== '') {
+      downloadTextFile(data.fileName || 'GraphAppCredentials.eoa-creds', data.content);
+      log(`Downloaded ${data.count ?? 0} credential(s) as ${data.fileName || 'GraphAppCredentials.eoa-creds'}. Import that file on the host.`);
+      return;
+    }
+    if (data?.path) {
+      log(`Saved ${data.count ?? 0} credential(s) on the runner at ${data.path}`);
+      return;
+    }
+    throw new Error('Export returned no file content. Restart the web runner so it picks up the download export API.');
   });
 });
 
-let pendingWcmImportPassword = '';
-
 document.getElementById('btnImportWcm')?.addEventListener('click', () => {
-  const password = window.prompt('Encryption password for the .eoa-creds file:');
-  if (!password) {
-    log('Import cancelled.');
-    return;
-  }
   const input = document.getElementById('wcmCredsFile');
   if (!input) {
     log('Import file picker is missing.');
     return;
   }
-  pendingWcmImportPassword = password;
   input.value = '';
-  log('Choose the .eoa-creds file on this PC.');
+  log('Choose the .eoa-creds file to import…');
   input.click();
 });
 
 document.getElementById('wcmCredsFile')?.addEventListener('change', async () => {
   const input = document.getElementById('wcmCredsFile');
   const file = input.files && input.files[0];
-  const password = pendingWcmImportPassword;
-  pendingWcmImportPassword = '';
-  if (!file || !password) return;
-  await runAction('Importing credentials…', async () => {
+  if (!file) return;
+  log(`Selected ${file.name}. Enter the encryption password to continue.`);
+  const password = window.prompt(`Encryption password for ${file.name}:`);
+  if (!password) {
+    log('Import cancelled.');
+    input.value = '';
+    return;
+  }
+  await runAction(`Importing credentials from ${file.name}…`, async () => {
     const fileText = await file.text();
     const data = await api('/api/wcm/import', {
       method: 'POST',
       body: JSON.stringify({ fileText, password }),
     }, 120000);
-    log(`Imported ${data.imported ?? 0} credential(s).`);
+    log(`Imported ${data.imported ?? 0} credential(s) from ${file.name}.`);
     await loadAppRegistrations({ quiet: true });
   });
 });
@@ -9231,6 +9333,26 @@ document.getElementById('savedHistorySearch')?.addEventListener('input', (e) => 
 document.getElementById('archivedHistorySearch')?.addEventListener('input', (e) => {
   historySearch.archived = e.target.value;
   renderHistorySection('archived');
+});
+
+document.getElementById('deviceLogin')?.addEventListener('click', async (event) => {
+  const btn = event.target.closest('button[data-device-action]');
+  if (!btn) return;
+  const row = btn.closest('[data-code]');
+  if (!row) return;
+  const code = row.dataset.code || '';
+  const url = row.dataset.url || 'https://login.microsoft.com/device';
+  const label = btn.textContent;
+  try {
+    await copyDeviceCode(code);
+    btn.textContent = 'Copied';
+    if (btn.dataset.deviceAction === 'open') {
+      window.open(url, '_blank', 'noopener');
+    }
+  } catch (error) {
+    btn.textContent = error.message || 'Copy failed';
+  }
+  setTimeout(() => { btn.textContent = label; }, 1500);
 });
 
 (async () => {

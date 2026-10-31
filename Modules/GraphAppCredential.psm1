@@ -1186,24 +1186,16 @@ function _ReadCredentialViaCredRead {
     }
 }
 
-function Export-GraphAppCredentialsToFile {
+function New-GraphAppCredentialsExportPayload {
     <#
     .SYNOPSIS
-        Exports all Graph app credentials from WCM to an encrypted file.
-    .PARAMETER Path
-        Output file path (e.g. .eoa-creds). Will be overwritten.
-    .PARAMETER Password
-        SecureString password for encryption. Required for security.
-    .PARAMETER ResolveMissingDisplayNamesFromGraph
-        When WCM has no *-DisplayName entry for a tenant, resolve display name via Graph and embed TenantDisplayName
-        in the file so Import recreates friendly labels on PCs where Graph lookup fails.
+        Builds the encrypted .eoa-creds file body from WCM (does not write to disk).
+    .OUTPUTS
+        Hashtable with Count and Content (UTF-8 text of the export file).
     #>
     param(
-        [Parameter(Mandatory=$true)][string]$Path,
-        [Parameter(Mandatory=$true)][SecureString]$Password,
-        [Parameter(Mandatory=$false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
-        [Parameter(Mandatory=$false)]
-        [switch]$ResolveMissingDisplayNamesFromGraph
+        [Parameter(Mandatory = $true)][SecureString]$Password,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
     )
     $ids = Get-WCMTenantIds -Prefix $Prefix
     if ($ids.Count -eq 0) {
@@ -1246,7 +1238,6 @@ function Export-GraphAppCredentialsToFile {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $key = $sha.ComputeHash($pwdBytes)[0..31]
-        # Zero password bytes after use
         if ($pwdBytes) { [Array]::Clear($pwdBytes, 0, $pwdBytes.Length) }
     }
     finally {
@@ -1254,11 +1245,44 @@ function Export-GraphAppCredentialsToFile {
     }
     $secure = ConvertTo-SecureString $json -AsPlainText -Force
     $encrypted = $secure | ConvertFrom-SecureString -Key $key
-    # Zero key after use
     if ($key) { [Array]::Clear($key, 0, $key.Length) }
-    $header = "EOA-CREDS-1`n"
-    [System.IO.File]::WriteAllText($Path, $header + $encrypted, [System.Text.Encoding]::UTF8)
-    return $creds.Count
+    return @{
+        Count   = $creds.Count
+        Content = "EOA-CREDS-1`n$encrypted"
+    }
+}
+
+function Export-GraphAppCredentialsToFile {
+    <#
+    .SYNOPSIS
+        Exports all Graph app credentials from WCM to an encrypted file.
+    .PARAMETER Path
+        Output file path (e.g. .eoa-creds). Will be overwritten. Must be a file path, not a folder.
+    .PARAMETER Password
+        SecureString password for encryption. Required for security.
+    .PARAMETER ResolveMissingDisplayNamesFromGraph
+        When WCM has no *-DisplayName entry for a tenant, resolve display name via Graph and embed TenantDisplayName
+        in the file so Import recreates friendly labels on PCs where Graph lookup fails.
+    #>
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][SecureString]$Password,
+        [Parameter(Mandatory=$false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
+        [Parameter(Mandatory=$false)]
+        [switch]$ResolveMissingDisplayNamesFromGraph
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Missing export path.' }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (Test-Path -LiteralPath $fullPath -PathType Container) {
+        throw "Export path is a folder, not a file: $fullPath. Choose a file such as $(Join-Path $fullPath 'GraphAppCredentials.eoa-creds')."
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($fullPath)
+    if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "Export folder does not exist: $parent"
+    }
+    $payload = New-GraphAppCredentialsExportPayload -Password $Password -Prefix $Prefix
+    [System.IO.File]::WriteAllText($fullPath, [string]$payload.Content, [System.Text.Encoding]::UTF8)
+    return [int]$payload.Count
 }
 
 function Get-GraphAppCredentialEncryptedFileSummary {
@@ -1768,4 +1792,93 @@ function Search-GraphUsersWithWcm {
     return @($allUsers)
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Connect-MgGraphWithWcmApp, Search-GraphUsersWithWcm, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage
+function Show-GraphAppCredentialSaveFileDialog {
+    <#
+    .SYNOPSIS
+        Windows Save File dialog for .eoa-creds export (STA-safe for web-runner HTTP threads).
+    .OUTPUTS
+        Selected full path, or $null if the user cancels / dialog unavailable.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$DefaultFileName = 'GraphAppCredentials.eoa-creds',
+        [string]$InitialDirectory = ''
+    )
+
+    $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    if (-not $onWindows) {
+        throw 'Save file dialog requires Windows.'
+    }
+
+    $dialogScript = {
+        param([string]$DefaultFileName, [string]$InitialDirectory)
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch { }
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.TopMost = $true
+        $owner.ShowInTaskbar = $false
+        $owner.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+        $owner.Opacity = 0
+        [void]$owner.Show()
+        try {
+            $sfd = New-Object System.Windows.Forms.SaveFileDialog
+            $sfd.Title = 'Export Graph app credentials'
+            $sfd.Filter = 'EOA Credentials (*.eoa-creds)|*.eoa-creds|All files (*.*)|*.*'
+            $sfd.DefaultExt = 'eoa-creds'
+            $sfd.AddExtension = $true
+            $sfd.OverwritePrompt = $true
+            $sfd.CheckPathExists = $true
+            $sfd.FileName = if ([string]::IsNullOrWhiteSpace($DefaultFileName)) { 'GraphAppCredentials.eoa-creds' } else { $DefaultFileName }
+            if ($InitialDirectory -and (Test-Path -LiteralPath $InitialDirectory)) {
+                $sfd.InitialDirectory = $InitialDirectory
+            } else {
+                try {
+                    $downloads = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+                    if ($downloads -and (Test-Path -LiteralPath $downloads)) {
+                        $sfd.InitialDirectory = $downloads
+                    } else {
+                        $docs = [Environment]::GetFolderPath('MyDocuments')
+                        if ($docs) { $sfd.InitialDirectory = $docs }
+                    }
+                } catch { }
+            }
+            $result = $sfd.ShowDialog($owner)
+            if ($result -eq [System.Windows.Forms.DialogResult]::OK -and -not [string]::IsNullOrWhiteSpace($sfd.FileName)) {
+                return [string]$sfd.FileName
+            }
+            return $null
+        } finally {
+            try { $owner.Close() } catch { }
+            try { $owner.Dispose() } catch { }
+        }
+    }
+
+    $isSta = ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq [System.Threading.ApartmentState]::STA)
+    if ($isSta) {
+        return & $dialogScript $DefaultFileName $InitialDirectory
+    }
+
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $rs.ApartmentState = [System.Threading.ApartmentState]::STA
+    $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+    $rs.Open()
+    try {
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($dialogScript.ToString()).AddArgument($DefaultFileName).AddArgument($InitialDirectory)
+        $out = $ps.Invoke()
+        if ($ps.HadErrors) {
+            $err = @($ps.Streams.Error | ForEach-Object { $_.ToString() }) -join '; '
+            throw "Save dialog failed: $err"
+        }
+        if ($null -eq $out -or $out.Count -eq 0) { return $null }
+        $picked = [string]$out[0]
+        if ([string]::IsNullOrWhiteSpace($picked)) { return $null }
+        return $picked
+    } finally {
+        try { $rs.Close() } catch { }
+        try { $rs.Dispose() } catch { }
+    }
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Connect-MgGraphWithWcmApp, Search-GraphUsersWithWcm, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, New-GraphAppCredentialsExportPayload, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Show-GraphAppCredentialSaveFileDialog, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage
