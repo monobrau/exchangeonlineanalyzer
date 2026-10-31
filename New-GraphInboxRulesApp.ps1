@@ -314,48 +314,12 @@ Ensure-TransportDataPlatformServicePrincipal
 # Microsoft Graph resource app ID
 $graphAppId = '00000003-0000-0000-c000-000000000000'
 
-# App role IDs for security investigation report (inbox rules, audit, sign-in, CA, apps, reports, sites, alerts, MFA)
-# Plus Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All for Entra Secret Rotate (secret rotation + Add ATR)
-# Mail.Read required for Get-MgUserMailFolderMessageRule (inbox rules); MailboxSettings.Read is for auto-reply etc.
-# Organization.Read.All: explicit app-only read for GET /organization (tenant displayName); see Microsoft Graph permissions reference.
-# SecurityAlert.Read.All / SecurityIncident.Read.All: Defender security alerts & incidents collectors (app-only).
-# ExchangeMessageTrace.Read.All: Graph /admin/exchange/tracing/messageTraces when EXO Get-MessageTraceV2 is not in the REST session.
-# User.RevokeSessions.All / User.EnableDisableAccount.All: web-runner containment (revoke sessions, block/unblock).
-# UserAuthenticationMethod.ReadWrite.All / Device.ReadWrite.All: containment MFA methods and Entra device delete (app-only).
-# User-PasswordProfile.ReadWrite.All: containment password reset (app-only also needs User Administrator on the app).
+# Canonical role catalog: Get-RiverRunInvestigatorExpectedAppRoles in GraphAppCredential.psm1.
 # Existing River Run apps: Update scopes (-UpdateExisting or U at the prompt) or replace (Y).
-$appRoleIds = @(
-    @{ id = '810c84a8-4a9e-49e6-bf7d-12d183f40d01'; name = 'Mail.Read' }
-    @{ id = '89b20d8a-76e2-4057-867b-9961f800b9a4'; name = 'ExchangeMessageTrace.Read.All' }
-    @{ id = '40f97065-369a-49f4-947c-6a255697ae91'; name = 'MailboxSettings.Read' }
-    @{ id = 'df021288-bdef-4463-88db-98f22de89214'; name = 'User.Read.All' }
-    @{ id = 'b0afded3-3588-46d8-8b3d-9842eff778da'; name = 'AuditLog.Read.All' }
-    @{ id = '7ab1d382-f21e-4acd-a863-ba3e13f7da61'; name = 'Directory.Read.All' }
-    @{ id = '498476ce-e0fe-48b0-b801-37ba7e2685c6'; name = 'Organization.Read.All' }
-    @{ id = '246dd0d5-5bd0-4def-940b-0421030a5b68'; name = 'Policy.Read.All' }
-    # Application permission required for CA Manager / app-only Conditional Access policy changes
-    @{ id = '01c0a623-fc9b-48e9-b794-0756f8e8f067'; name = 'Policy.ReadWrite.ConditionalAccess' }
-    @{ id = '9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30'; name = 'Application.Read.All' }
-    @{ id = '1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9'; name = 'Application.ReadWrite.All' }
-    @{ id = '06b708a9-e830-4db3-a914-8e69da51d44f'; name = 'AppRoleAssignment.ReadWrite.All' }
-    @{ id = '230c1aed-a721-4c5d-9cb4-a90514e508ef'; name = 'Reports.Read.All' }
-    @{ id = '332a536c-c7ef-4017-ab91-336970924f0d'; name = 'Sites.Read.All' }
-    @{ id = 'bf394140-e372-4bf9-a898-299cfc7564e5'; name = 'SecurityEvents.Read.All' }
-    @{ id = '472e4a4d-bb4a-4026-98d1-0b0d74cb74a5'; name = 'SecurityAlert.Read.All' }
-    @{ id = '45cc0394-e837-488b-a098-1918f48d186c'; name = 'SecurityIncident.Read.All' }
-    @{ id = '38d9df27-64da-44fd-b7c5-a6fbac20248f'; name = 'UserAuthenticationMethod.Read.All' }
-    @{ id = '50483e42-d915-4231-9639-7fdb7fd190e5'; name = 'UserAuthenticationMethod.ReadWrite.All' }
-    @{ id = '1138cb37-bd11-4084-a2b7-9f71582aeddb'; name = 'Device.ReadWrite.All' }
-    @{ id = '77f3a031-c388-4f99-b373-dc68676a979e'; name = 'User.RevokeSessions.All' }
-    @{ id = '3011c876-62b7-4ada-afa2-506cbbecc68c'; name = 'User.EnableDisableAccount.All' }
-    @{ id = 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7'; name = 'User-PasswordProfile.ReadWrite.All' }
-    @{ id = '8e8e4742-1d95-4f68-9d56-6ee75648c72a'; name = 'DelegatedPermissionGrant.ReadWrite.All' }
-    @{ id = '9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8'; name = 'RoleManagement.ReadWrite.Directory' }
-    @{ id = 'dbaae8cf-10b5-4b86-a4a1-f871c94c6695'; name = 'GroupMember.ReadWrite.All' }
-    @{ id = '2f51be20-0bb4-4fed-bf7b-db946066c75e'; name = 'DeviceManagementManagedDevices.Read.All' }
-    @{ id = '243333ab-4d21-40cb-a475-36241daa0842'; name = 'DeviceManagementManagedDevices.ReadWrite.All' }
-    @{ id = '5b07b0dd-2377-4e44-a38d-703f09a0dc3c'; name = 'DeviceManagementManagedDevices.PrivilegedOperations.All' }
-)
+Import-Module (Join-Path $projectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction Stop
+$appRoleIds = @(Get-RiverRunInvestigatorExpectedAppRoles | ForEach-Object {
+    @{ id = [string]$_.Id; name = [string]$_.Name }
+})
 $requiredResourceAccess = @{
     resourceAccess = $appRoleIds | ForEach-Object { @{ id = $_.id; type = 'Role' } }
     resourceAppId = $graphAppId

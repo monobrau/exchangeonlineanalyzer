@@ -1467,7 +1467,8 @@ function Get-BulkRunnerAppRegistrations {
         [string]$ProjectRoot,
 
         [switch]$ForceRefreshFromGraph,
-        [switch]$SkipGraphLookup
+        [switch]$SkipGraphLookup,
+        [switch]$CheckPermissions
     )
 
     Import-Module (Join-Path $ProjectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction Stop
@@ -1490,10 +1491,30 @@ function Get-BulkRunnerAppRegistrations {
         }
     }
 
+    $statusByTenant = @{}
+    if ($CheckPermissions -and (Get-Command Test-GraphAppPermissionStatusFromWCM -ErrorAction SilentlyContinue)) {
+        foreach ($row in @($list)) {
+            $tid = [string]$row.TenantId
+            if (-not $tid -or $statusByTenant.ContainsKey($tid)) { continue }
+            $statusByTenant[$tid] = Test-GraphAppPermissionStatusFromWCM -TenantId $tid
+        }
+    }
+
     return @($list | ForEach-Object {
+        $tid = [string]$_.TenantId
+        $perm = $null
+        if ($tid -and $statusByTenant.ContainsKey($tid)) { $perm = $statusByTenant[$tid] }
         [pscustomobject]@{
-            displayText = $_.DisplayText
-            tenantId    = $_.TenantId
+            displayText      = $_.DisplayText
+            tenantId         = $tid
+            permissionStatus = if ($perm) { [string]$perm.Status } else { 'unchecked' }
+            missingCount     = if ($perm) { [int]$perm.MissingCount } else { $null }
+            presentCount     = if ($perm) { [int]$perm.PresentCount } else { $null }
+            expectedCount    = if ($perm) { [int]$perm.ExpectedCount } else { $null }
+            missingRoles     = if ($perm) { @($perm.MissingRoles) } else { @() }
+            impacts          = if ($perm) { @($perm.Impacts) } else { @() }
+            permissionError  = if ($perm) { $perm.Error } else { $null }
+            checkedAtUtc     = if ($perm) { $perm.CheckedAtUtc } else { $null }
         }
     })
 }

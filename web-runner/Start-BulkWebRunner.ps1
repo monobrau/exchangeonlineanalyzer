@@ -244,7 +244,7 @@ function Handle-ApiRequest {
     if ($Method -eq 'GET' -and $Path -eq '/api/health') {
         return @{
             ok       = $true
-            version  = '0.5.0'
+            version  = '0.5.1'
             pid      = $PID
             projectRoot = $script:ProjectRoot
             hiddenWorkers = (-not $ShowWorkers)
@@ -259,6 +259,7 @@ function Handle-ApiRequest {
                 exportPresets         = $true
                 noWaitCommands        = $true
                 multiUserSessions     = $true
+                appRegPermissionCheck = $true
                 hiddenWorkers         = $true
                 wcmManagement         = $true
                 workerLogTabs         = $true
@@ -670,14 +671,17 @@ function Handle-ApiRequest {
 
     if ($Method -eq 'GET' -and $Path -eq '/api/app-registrations') {
         $forceRefresh = $false
+        $checkPermissions = $false
         if ($RequestUrl -and -not [string]::IsNullOrWhiteSpace($RequestUrl.Query)) {
             $forceRefresh = ($RequestUrl.Query -match '(?:^|[&?])(?:refresh|forceRefresh)=1(?:&|$)')
+            $checkPermissions = ($RequestUrl.Query -match '(?:^|[&?])(?:checkPermissions|checkPerms)=1(?:&|$)')
         }
         $regParams = @{
             ProjectRoot     = $script:ProjectRoot
             SkipGraphLookup = (-not $forceRefresh)
         }
         if ($forceRefresh) { $regParams['ForceRefreshFromGraph'] = $true }
+        if ($checkPermissions) { $regParams['CheckPermissions'] = $true }
         return @(Get-BulkRunnerAppRegistrations @regParams)
     }
 
@@ -1770,6 +1774,7 @@ try {
                         '.html' { 'text/html; charset=utf-8' }
                         '.js'   { 'application/javascript; charset=utf-8' }
                         '.css'  { 'text/css; charset=utf-8' }
+                        '.svg'  { 'image/svg+xml' }
                         default { 'application/octet-stream' }
                     }
                     $response.AddHeader('Cache-Control', 'no-cache, no-store, must-revalidate')

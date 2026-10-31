@@ -58,7 +58,7 @@ function resolveContainmentState(clientNumber, existing = {}) {
   if (hasContainmentPayload(existing.containment)) return existing.containment;
   return readContainmentFromSessionStorage(clientNumber);
 }
-let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, multiUserSessions: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false, deviceCodeAuth: false, isWindowsHost: true };
+let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, multiUserSessions: false, appRegPermissionCheck: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false, deviceCodeAuth: false, isWindowsHost: true };
 const uiStateSyncTimers = new Map();
 const sessionReportSyncTimer = { id: null };
 const HISTORY_SORT_STORAGE = { saved: 'bulkRunnerHistorySort.saved', archived: 'bulkRunnerHistorySort.archived' };
@@ -7277,11 +7277,11 @@ function renderTenants(session) {
     if (t.graphTenantName) div.dataset.graphTenantName = t.graphTenantName;
     if (t.outputFolder) div.dataset.outputFolder = t.outputFolder;
     if (t.lastResponse) div.dataset.lastResponse = normalizeResponse(t.lastResponse);
-    const appRegOptions = appRegistrations.map(a =>
-
-      `<option value="${a.tenantId || ''}">${a.displayText}</option>`
-
-    ).join('');
+    const appRegOptions = appRegistrations.map(a => {
+      const mark = appRegPermissionMark(a);
+      const label = mark ? `${mark} ${a.displayText}` : a.displayText;
+      return `<option value="${a.tenantId || ''}">${escapeHtml(label)}</option>`;
+    }).join('');
 
     const canGenerate = tenantHasRequiredAuth(t, session) && !t.reportInProgress;
 
@@ -9098,31 +9098,155 @@ document.getElementById('btnAddTenant').addEventListener('click', () => runActio
 
 document.getElementById('btnRefresh').addEventListener('click', () => refreshSession().catch(e => log(`Error: ${e.message}`)));
 
+function appRegPermissionMark(a) {
+  const status = String(a?.permissionStatus || 'unchecked');
+  if (status === 'current') return '✓';
+  if (status === 'needsUpgrade') return '⚠';
+  if (status === 'tokenFailed') return '✗';
+  return '';
+}
+
+function appRegPermissionBadgeLabel(a) {
+  const status = String(a?.permissionStatus || 'unchecked');
+  if (status === 'current') return 'Current';
+  if (status === 'needsUpgrade') {
+    const n = Number(a.missingCount || 0);
+    return n ? `Needs update (${n} missing)` : 'Needs update';
+  }
+  if (status === 'tokenFailed') return 'Token failed';
+  return 'Not checked';
+}
+
+function appRegPermissionDetail(a) {
+  const status = String(a?.permissionStatus || 'unchecked');
+  if (status === 'unchecked') return 'Click Check permissions to compare this app to the current River Run role set.';
+  if (status === 'tokenFailed') return a.permissionError || 'Could not acquire an app-only token from WCM.';
+  if (status === 'current') {
+    const n = Number(a.presentCount || a.expectedCount || 0);
+    return n ? `All ${n} expected application roles are present on the token.` : 'All expected application roles are present on the token.';
+  }
+  const missing = Array.isArray(a.missingRoles) ? a.missingRoles.filter(Boolean) : [];
+  const impacts = Array.isArray(a.impacts) ? a.impacts.filter(Boolean) : [];
+  const lines = [];
+  if (missing.length) lines.push(`Missing: ${missing.join(', ')}`);
+  if (impacts.length) lines.push(`May fail / limited: ${impacts.join('; ')}`);
+  lines.push('Use Update Graph App scopes, finish admin consent, then Graph Auth again.');
+  return lines.join('\n');
+}
+
+function renderAppRegistrationsList() {
+  if (!appRegsEl) return;
+  const summaryEl = document.getElementById('appRegsSummary');
+  if (!appRegistrations.length) {
+    appRegsEl.textContent = '(none in WCM)';
+    if (summaryEl) summaryEl.textContent = '(none in WCM)';
+    return;
+  }
+  const counts = { current: 0, needsUpgrade: 0, tokenFailed: 0, unchecked: 0 };
+  appRegsEl.replaceChildren();
+  for (const a of appRegistrations) {
+    const status = String(a.permissionStatus || 'unchecked');
+    if (counts[status] == null) counts.unchecked += 1;
+    else counts[status] += 1;
+    const row = document.createElement('div');
+    row.className = `appRegRow ${status}`;
+    row.dataset.tenantId = a.tenantId || '';
+
+    const dot = document.createElement('span');
+    dot.className = `appRegDot ${status}`;
+    dot.title = appRegPermissionBadgeLabel(a);
+
+    const main = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'appRegName';
+    name.textContent = a.displayText || a.tenantId || '(unknown)';
+    const meta = document.createElement('div');
+    meta.className = 'appRegMeta';
+    meta.textContent = appRegPermissionDetail(a);
+    main.appendChild(name);
+    main.appendChild(meta);
+
+    if (status === 'needsUpgrade' || status === 'tokenFailed') {
+      const actions = document.createElement('div');
+      actions.className = 'appRegActions';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Update scopes';
+      btn.title = 'Add missing Graph application permissions for this tenant';
+      btn.addEventListener('click', () => runUpdateGraphAppScopes(a.tenantId));
+      actions.appendChild(btn);
+      main.appendChild(actions);
+    }
+
+    const badge = document.createElement('span');
+    badge.className = `appRegBadge ${status}`;
+    badge.textContent = appRegPermissionBadgeLabel(a);
+
+    row.appendChild(dot);
+    row.appendChild(main);
+    row.appendChild(badge);
+    appRegsEl.appendChild(row);
+  }
+
+  if (summaryEl) {
+    const parts = [`${appRegistrations.length} in WCM`];
+    if (counts.current) parts.push(`${counts.current} current`);
+    if (counts.needsUpgrade) parts.push(`${counts.needsUpgrade} need update`);
+    if (counts.tokenFailed) parts.push(`${counts.tokenFailed} failed`);
+    if (counts.unchecked && (counts.current || counts.needsUpgrade || counts.tokenFailed)) {
+      parts.push(`${counts.unchecked} unchecked`);
+    }
+    summaryEl.textContent = `(${parts.join(', ')})`;
+  }
+}
+
 async function loadAppRegistrations(options = {}) {
-  const { quiet = false, refreshTenants = true, forceRefreshFromGraph = false } = options;
+  const {
+    quiet = false,
+    refreshTenants = true,
+    forceRefreshFromGraph = false,
+    checkPermissions = false,
+  } = options;
   const summaryEl = document.getElementById('appRegsSummary');
   if (summaryEl) summaryEl.textContent = '(loading…)';
-  if (!quiet) log(forceRefreshFromGraph ? 'Refreshing app registrations from Graph…' : 'Loading app registrations…');
+  if (!quiet) {
+    if (checkPermissions) log('Checking app registration permissions…');
+    else if (forceRefreshFromGraph) log('Refreshing app registrations from Graph…');
+    else log('Loading app registrations…');
+  }
   try {
-    const url = forceRefreshFromGraph ? '/api/app-registrations?refresh=1' : '/api/app-registrations';
-    appRegistrations = await api(url, {}, forceRefreshFromGraph ? 120000 : 45000);
+    const params = new URLSearchParams();
+    if (forceRefreshFromGraph) params.set('refresh', '1');
+    if (checkPermissions) params.set('checkPermissions', '1');
+    const qs = params.toString();
+    const url = qs ? `/api/app-registrations?${qs}` : '/api/app-registrations';
+    const timeoutMs = (forceRefreshFromGraph || checkPermissions) ? 180000 : 45000;
+    appRegistrations = await api(url, {}, timeoutMs);
     if (!Array.isArray(appRegistrations)) appRegistrations = [];
+    renderAppRegistrationsList();
     const count = appRegistrations.length;
-    appRegsEl.textContent = appRegistrations.map(a => a.displayText).join('\n') || '(none in WCM)';
-    if (summaryEl) {
-      summaryEl.textContent = count ? `(${count} in WCM)` : '(none in WCM)';
+    if (!quiet) {
+      if (checkPermissions) {
+        const need = appRegistrations.filter(a => a.permissionStatus === 'needsUpgrade').length;
+        const failed = appRegistrations.filter(a => a.permissionStatus === 'tokenFailed').length;
+        const ok = appRegistrations.filter(a => a.permissionStatus === 'current').length;
+        log(`Permission check: ${ok} current, ${need} need update, ${failed} token failed (${count} total).`);
+      } else {
+        log(`Loaded ${count} app registration(s).`);
+      }
     }
-    if (!quiet) log(`Loaded ${count} app registration(s).`);
     if (refreshTenants) await refreshSession();
   } catch (e) {
     if (summaryEl) summaryEl.textContent = '(load failed)';
-    appRegsEl.textContent = String(e.message || e);
+    if (appRegsEl) appRegsEl.textContent = String(e.message || e);
     if (!quiet) log(`App registrations: ${e.message}`);
     throw e;
   }
 }
 
 document.getElementById('btnLoadAppRegs')?.addEventListener('click', () => runAction('Refreshing app registrations from Graph (may take a minute)…', () => loadAppRegistrations({ quiet: true, forceRefreshFromGraph: true })));
+
+document.getElementById('btnCheckAppRegPerms')?.addEventListener('click', () => runAction('Checking permissions on all WCM apps (token per tenant)…', () => loadAppRegistrations({ quiet: true, checkPermissions: true })));
 
 document.getElementById('btnOpenSessionTemp')?.addEventListener('click', () => runAction('Opening session temp folder…', async () => {
   await api('/api/session/open-temp', { method: 'POST', body: '{}' });
@@ -9156,6 +9280,9 @@ async function runUpdateGraphAppScopes(preferredTenantId) {
       const detail = r.ScriptError || r.WcmError || '';
       log(`Update Graph App scopes finished (exit ${data.exitCode}).${detail ? ' ' + detail : ''} See ${data.logPath || 'temp log'} if needed.`);
     }
+    try {
+      await loadAppRegistrations({ quiet: true, checkPermissions: true, refreshTenants: false });
+    } catch { /* keep prior list */ }
   });
 }
 

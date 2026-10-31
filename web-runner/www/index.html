@@ -10,6 +10,8 @@
 
   <title>EOA Bulk Runner</title>
 
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
   <style>
 
     :root { font-family: Segoe UI, system-ui, sans-serif; color: #1a1a1a; background: #f4f6f8; }
@@ -116,6 +118,25 @@
     .logPanel.active { display: block; }
     .logPanel pre { max-height: 320px; overflow: auto; margin: 0; }
     .wcmActions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }
+    .appRegsList { background: #0d1117; color: #c9d1d9; padding: 0.5rem; border-radius: 6px; overflow: auto; max-height: 280px; font-size: 0.82rem; }
+    .appRegRow { display: grid; grid-template-columns: auto 1fr auto; gap: 0.45rem; align-items: start; padding: 0.4rem 0.35rem; border-bottom: 1px solid #21262d; }
+    .appRegRow:last-child { border-bottom: none; }
+    .appRegRow.needsUpgrade { background: rgba(210, 153, 34, 0.12); }
+    .appRegRow.tokenFailed { background: rgba(248, 81, 73, 0.12); }
+    .appRegRow.current { background: rgba(63, 185, 80, 0.08); }
+    .appRegDot { width: 0.65rem; height: 0.65rem; border-radius: 50%; margin-top: 0.28rem; background: #8b949e; flex-shrink: 0; }
+    .appRegDot.current { background: #3fb950; }
+    .appRegDot.needsUpgrade { background: #d29922; }
+    .appRegDot.tokenFailed { background: #f85149; }
+    .appRegDot.unchecked { background: #8b949e; }
+    .appRegName { font-weight: 600; color: #e6edf3; }
+    .appRegMeta { color: #8b949e; font-size: 0.78rem; margin-top: 0.15rem; white-space: pre-wrap; }
+    .appRegBadge { font-size: 0.72rem; font-weight: 600; padding: 0.12rem 0.4rem; border-radius: 999px; border: 1px solid #30363d; color: #c9d1d9; white-space: nowrap; }
+    .appRegBadge.current { border-color: #238636; color: #3fb950; }
+    .appRegBadge.needsUpgrade { border-color: #9e6a03; color: #d29922; }
+    .appRegBadge.tokenFailed { border-color: #da3633; color: #f85149; }
+    .appRegActions { margin-top: 0.25rem; }
+    .appRegActions button { font-size: 0.75rem; padding: 0.15rem 0.45rem; }
     .securityPanel { margin: 0.5rem 0; padding: 0.5rem 0.65rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
     .securityChips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0; }
     .securityChip { font-size: 0.75rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid #d0d7de; background: #fff; color: #424a53; }
@@ -422,8 +443,10 @@
           <input type="file" id="wcmCredsFile" accept=".eoa-creds,.txt,application/octet-stream" hidden>
           <button type="button" id="btnClearWcm">Clear local WCM</button>
           <button type="button" id="btnLoadAppRegs" title="Re-fetch display names from Graph for tenants missing WCM labels (slow)">Refresh from Graph</button>
+          <button type="button" id="btnCheckAppRegPerms" title="Acquire a token for each WCM app and compare roles to the current River Run permission set">Check permissions</button>
         </div>
-        <pre id="appRegs">Loading…</pre>
+        <p class="muted" id="appRegsHint" style="margin:0 0 0.4rem;font-size:0.8rem">Green = current roles. Amber = needs Update Graph App scopes. Red = token/WCM failed. Check permissions before Graph Auth if an app may be outdated.</p>
+        <div id="appRegs" class="appRegsList">Loading…</div>
       </div>
     </details>
   </div>

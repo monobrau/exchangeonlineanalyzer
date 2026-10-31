@@ -1928,4 +1928,187 @@ function Show-GraphAppCredentialSaveFileDialog {
     }
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Connect-MgGraphWithWcmApp, Search-GraphUsersWithWcm, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, New-GraphAppCredentialsExportPayload, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Show-GraphAppCredentialSaveFileDialog, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage
+function Get-RiverRunInvestigatorExpectedAppRoles {
+    <#
+    .SYNOPSIS
+        Canonical Microsoft Graph application roles for River Run Security Investigator.
+    .OUTPUTS
+        Objects with Id, Name, Impact (what fails or is limited without the role).
+    #>
+    @(
+        [pscustomobject]@{ Id = '810c84a8-4a9e-49e6-bf7d-12d183f40d01'; Name = 'Mail.Read'; Impact = 'Inbox rules via Graph' }
+        [pscustomobject]@{ Id = '89b20d8a-76e2-4057-867b-9961f800b9a4'; Name = 'ExchangeMessageTrace.Read.All'; Impact = 'Graph message trace' }
+        [pscustomobject]@{ Id = '40f97065-369a-49f4-947c-6a255697ae91'; Name = 'MailboxSettings.Read'; Impact = 'Mailbox settings / auto-reply' }
+        [pscustomobject]@{ Id = 'df021288-bdef-4463-88db-98f22de89214'; Name = 'User.Read.All'; Impact = 'User lookups' }
+        [pscustomobject]@{ Id = 'b0afded3-3588-46d8-8b3d-9842eff778da'; Name = 'AuditLog.Read.All'; Impact = 'Sign-in and directory audit logs' }
+        [pscustomobject]@{ Id = '7ab1d382-f21e-4acd-a863-ba3e13f7da61'; Name = 'Directory.Read.All'; Impact = 'Directory reads' }
+        [pscustomobject]@{ Id = '498476ce-e0fe-48b0-b801-37ba7e2685c6'; Name = 'Organization.Read.All'; Impact = 'Tenant display name' }
+        [pscustomobject]@{ Id = '246dd0d5-5bd0-4def-940b-0421030a5b68'; Name = 'Policy.Read.All'; Impact = 'Conditional Access read' }
+        [pscustomobject]@{ Id = '01c0a623-fc9b-48e9-b794-0756f8e8f067'; Name = 'Policy.ReadWrite.ConditionalAccess'; Impact = 'Conditional Access write / CA Manager' }
+        [pscustomobject]@{ Id = '9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30'; Name = 'Application.Read.All'; Impact = 'App registrations report' }
+        [pscustomobject]@{ Id = '1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9'; Name = 'Application.ReadWrite.All'; Impact = 'App write, secret rotate, delete apps' }
+        [pscustomobject]@{ Id = '06b708a9-e830-4db3-a914-8e69da51d44f'; Name = 'AppRoleAssignment.ReadWrite.All'; Impact = 'Admin consent / scope self-heal' }
+        [pscustomobject]@{ Id = '230c1aed-a721-4c5d-9cb4-a90514e508ef'; Name = 'Reports.Read.All'; Impact = 'SPO/OD/Teams activity reports' }
+        [pscustomobject]@{ Id = '332a536c-c7ef-4017-ab91-336970924f0d'; Name = 'Sites.Read.All'; Impact = 'Sharing links' }
+        [pscustomobject]@{ Id = 'bf394140-e372-4bf9-a898-299cfc7564e5'; Name = 'SecurityEvents.Read.All'; Impact = 'Security events' }
+        [pscustomobject]@{ Id = '472e4a4d-bb4a-4026-98d1-0b0d74cb74a5'; Name = 'SecurityAlert.Read.All'; Impact = 'Defender alerts' }
+        [pscustomobject]@{ Id = '45cc0394-e837-488b-a098-1918f48d186c'; Name = 'SecurityIncident.Read.All'; Impact = 'Defender incidents' }
+        [pscustomobject]@{ Id = '38d9df27-64da-44fd-b7c5-a6fbac20248f'; Name = 'UserAuthenticationMethod.Read.All'; Impact = 'MFA coverage read' }
+        [pscustomobject]@{ Id = '50483e42-d915-4231-9639-7fdb7fd190e5'; Name = 'UserAuthenticationMethod.ReadWrite.All'; Impact = 'Containment: delete MFA methods' }
+        [pscustomobject]@{ Id = '1138cb37-bd11-4084-a2b7-9f71582aeddb'; Name = 'Device.ReadWrite.All'; Impact = 'Containment: delete Entra devices' }
+        [pscustomobject]@{ Id = '77f3a031-c388-4f99-b373-dc68676a979e'; Name = 'User.RevokeSessions.All'; Impact = 'Containment: revoke sessions / quick lock' }
+        [pscustomobject]@{ Id = '3011c876-62b7-4ada-afa2-506cbbecc68c'; Name = 'User.EnableDisableAccount.All'; Impact = 'Containment: block / unblock' }
+        [pscustomobject]@{ Id = 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7'; Name = 'User-PasswordProfile.ReadWrite.All'; Impact = 'Containment: password reset (also needs User Administrator on the app)' }
+        [pscustomobject]@{ Id = '8e8e4742-1d95-4f68-9d56-6ee75648c72a'; Name = 'DelegatedPermissionGrant.ReadWrite.All'; Impact = 'Containment: revoke OAuth grants' }
+        [pscustomobject]@{ Id = '9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8'; Name = 'RoleManagement.ReadWrite.Directory'; Impact = 'Containment: directory role changes' }
+        [pscustomobject]@{ Id = 'dbaae8cf-10b5-4b86-a4a1-f871c94c6695'; Name = 'GroupMember.ReadWrite.All'; Impact = 'Containment: group membership changes' }
+        [pscustomobject]@{ Id = '2f51be20-0bb4-4fed-bf7b-db946066c75e'; Name = 'DeviceManagementManagedDevices.Read.All'; Impact = 'Intune device read' }
+        [pscustomobject]@{ Id = '243333ab-4d21-40cb-a475-36241daa0842'; Name = 'DeviceManagementManagedDevices.ReadWrite.All'; Impact = 'Intune device write' }
+        [pscustomobject]@{ Id = '5b07b0dd-2377-4e44-a38d-703f09a0dc3c'; Name = 'DeviceManagementManagedDevices.PrivilegedOperations.All'; Impact = 'Intune wipe / retire' }
+    )
+}
+
+function _Get-GraphAppJwtPayload {
+    param([string]$Token)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return $null }
+    $parts = $Token.Split('.')
+    if ($parts.Count -lt 2) { return $null }
+    $p = $parts[1].Replace('-', '+').Replace('_', '/')
+    switch ($p.Length % 4) {
+        2 { $p += '==' }
+        3 { $p += '=' }
+    }
+    try {
+        return ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Test-GraphAppPermissionStatusFromWCM {
+    <#
+    .SYNOPSIS
+        Compare a WCM app-only token's roles claim to the expected River Run investigator set.
+    .DESCRIPTION
+        Uses client_credentials (fresh token). Missing roles usually mean Update Graph App scopes + admin consent.
+        Tries EOA then ESR when -Prefix is omitted.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix
+    )
+
+    $expected = @(Get-RiverRunInvestigatorExpectedAppRoles)
+    $prefixes = if ($PSBoundParameters.ContainsKey('Prefix') -and $Prefix) { @($Prefix) } else { @('EOA', 'ESR') }
+    $token = $null
+    $usedPrefix = $null
+    $tokenError = $null
+    foreach ($pfx in $prefixes) {
+        $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $pfx
+        if ($token) {
+            $usedPrefix = $pfx
+            break
+        }
+        if ($script:_GraphAppTokenLastFailureMessage) {
+            $tokenError = [string]$script:_GraphAppTokenLastFailureMessage
+        }
+    }
+
+    if (-not $token) {
+        return [pscustomobject]@{
+            TenantId       = $TenantId
+            Status         = 'tokenFailed'
+            WcmPrefix      = $null
+            ExpectedCount  = $expected.Count
+            PresentCount   = 0
+            MissingCount   = $expected.Count
+            MissingRoles   = @($expected | ForEach-Object { $_.Name })
+            PresentRoles   = @()
+            Impacts        = @($expected | ForEach-Object { $_.Impact } | Select-Object -Unique)
+            Error          = if ($tokenError) { $tokenError } else { 'Could not acquire app-only token from WCM.' }
+            CheckedAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
+        }
+    }
+
+    $payload = _Get-GraphAppJwtPayload -Token $token
+    if (-not $payload) {
+        return [pscustomobject]@{
+            TenantId       = $TenantId
+            Status         = 'tokenFailed'
+            WcmPrefix      = $usedPrefix
+            ExpectedCount  = $expected.Count
+            PresentCount   = 0
+            MissingCount   = $expected.Count
+            MissingRoles   = @($expected | ForEach-Object { $_.Name })
+            PresentRoles   = @()
+            Impacts        = @()
+            Error          = 'Token acquired but JWT roles claim could not be decoded.'
+            CheckedAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
+        }
+    }
+
+    $claimed = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($r in @($payload.roles)) {
+        if ($r) { [void]$claimed.Add([string]$r) }
+    }
+    if ($payload.scp) {
+        foreach ($s in ([string]$payload.scp -split '\s+')) {
+            if ($s) { [void]$claimed.Add($s) }
+        }
+    }
+
+    $present = [System.Collections.ArrayList]::new()
+    $missing = [System.Collections.ArrayList]::new()
+    $impacts = [System.Collections.ArrayList]::new()
+    foreach ($role in $expected) {
+        if ($claimed.Contains([string]$role.Name)) {
+            [void]$present.Add([string]$role.Name)
+        } else {
+            [void]$missing.Add([string]$role.Name)
+            if ($role.Impact) { [void]$impacts.Add([string]$role.Impact) }
+        }
+    }
+
+    $status = if ($missing.Count -eq 0) { 'current' } else { 'needsUpgrade' }
+    return [pscustomobject]@{
+        TenantId       = $TenantId
+        Status         = $status
+        WcmPrefix      = $usedPrefix
+        ExpectedCount  = $expected.Count
+        PresentCount   = $present.Count
+        MissingCount   = $missing.Count
+        MissingRoles   = @($missing)
+        PresentRoles   = @($present)
+        Impacts        = @($impacts | Select-Object -Unique)
+        Error          = $null
+        CheckedAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
+    }
+}
+
+function Get-GraphAppPermissionStatusesFromWCM {
+    <#
+    .SYNOPSIS
+        Permission status for every tenant in the App reg combo (or a supplied TenantId list).
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$TenantId
+    )
+    $ids = @()
+    if ($TenantId -and $TenantId.Count -gt 0) {
+        $ids = @($TenantId | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -Unique)
+    } else {
+        foreach ($row in @(Get-WCMTenantListWithNamesForAppRegCombo -SkipGraphLookup -ErrorAction SilentlyContinue)) {
+            if ($row.TenantId) { $ids += [string]$row.TenantId }
+        }
+        $ids = @($ids | Select-Object -Unique)
+    }
+    $out = [System.Collections.ArrayList]::new()
+    foreach ($tid in $ids) {
+        [void]$out.Add((Test-GraphAppPermissionStatusFromWCM -TenantId $tid))
+    }
+    return @($out)
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Connect-MgGraphWithWcmApp, Search-GraphUsersWithWcm, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, New-GraphAppCredentialsExportPayload, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Show-GraphAppCredentialSaveFileDialog, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage, Get-RiverRunInvestigatorExpectedAppRoles, Test-GraphAppPermissionStatusFromWCM, Get-GraphAppPermissionStatusesFromWCM
