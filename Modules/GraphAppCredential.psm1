@@ -143,13 +143,13 @@ function _Get-SecureStringAsPlainForKey {
     $bytes = $null
     try {
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
-        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        # PtrToStringAuto is wrong on Linux/Unix: BSTRs are UTF-16 and Auto stops at the first 0x00
+        # (first password char only) → export/import keys diverge and decryption looks like a bad password.
+        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)
         
-        # Zero out the plain string in memory if possible
-        if ($plain) {
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode([System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($plain))
-        }
+        # Zero the byte array when finished using it (caller's responsibility)
+        # Note: $plain remains in the managed string pool; best effort only
         
         return $bytes
     }
@@ -364,6 +364,123 @@ function _Get-ImportedCredProperty {
     return $null
 }
 
+function _Test-GraphAppCredentialOnWindows {
+    return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+}
+
+function _Get-GraphAppCredentialStorePath {
+    $override = [string]$env:EOA_CREDENTIAL_STORE
+    if (-not [string]::IsNullOrWhiteSpace($override)) { return $override }
+    $home = [string]$env:HOME
+    if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+    return (Join-Path (Join-Path $home '.exchangeonlineanalyzer') 'graph-apps.json')
+}
+
+function _Read-GraphAppCredentialStore {
+    $store = @{
+        EOA = @{}
+        ESR = @{}
+    }
+    $path = _Get-GraphAppCredentialStorePath
+    if (-not (Test-Path -LiteralPath $path)) { return $store }
+    $parsed = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json
+    foreach ($prefix in @('EOA', 'ESR')) {
+        $bucket = $parsed.$prefix
+        if (-not $bucket) { continue }
+        foreach ($prop in @($bucket.PSObject.Properties)) {
+            $store[$prefix][[string]$prop.Name] = @{
+                clientId     = [string]$prop.Value.clientId
+                clientSecret = [string]$prop.Value.clientSecret
+                displayName  = [string]$prop.Value.displayName
+            }
+        }
+    }
+    return $store
+}
+
+function Invoke-GraphAppCredentialFileLocked {
+    param([Parameter(Mandatory = $true)][scriptblock]$Action)
+    $mutex = New-Object System.Threading.Mutex($false, 'EOA-GraphAppCredentialStore')
+    $owned = $false
+    try {
+        $owned = $mutex.WaitOne(15000)
+        if (-not $owned) { throw 'Timed out waiting for the shared app registration store.' }
+        & $Action
+    }
+    finally {
+        if ($owned) {
+            try { $mutex.ReleaseMutex() } catch { }
+        }
+        $mutex.Dispose()
+    }
+}
+
+function _Write-GraphAppCredentialStore {
+    param($Store)
+    $path = _Get-GraphAppCredentialStorePath
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $json = $Store | ConvertTo-Json -Depth 6
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $tmp = $path + '.tmp'
+    [System.IO.File]::WriteAllText($tmp, $json, $utf8)
+    [System.IO.File]::Move($tmp, $path, $true)
+    if (-not (_Test-GraphAppCredentialOnWindows)) {
+        try { & chmod 700 $dir } catch { }
+        try { & chmod 600 $path } catch { }
+    }
+}
+
+function _Get-GraphAppCredentialFileRow {
+    param(
+        [string]$TenantId,
+        [ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+    )
+    $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
+    if ([string]::IsNullOrWhiteSpace($tid)) { return $null }
+    $store = _Read-GraphAppCredentialStore
+    $row = $store[$Prefix][$tid]
+    if (-not $row) { return $null }
+    return $row
+}
+
+function _Save-GraphAppCredentialFile {
+    param(
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$ClientSecret,
+        [string]$TenantDisplayName,
+        [ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+    )
+    $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
+    Invoke-GraphAppCredentialFileLocked {
+        $store = _Read-GraphAppCredentialStore
+        $store[$Prefix][$tid] = @{
+            clientId     = $ClientId
+            clientSecret = $ClientSecret
+            displayName  = [string]$TenantDisplayName
+        }
+        _Write-GraphAppCredentialStore -Store $store
+    }
+}
+
+function _Remove-GraphAppCredentialFile {
+    param(
+        [string]$TenantId,
+        [ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+    )
+    $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
+    Invoke-GraphAppCredentialFileLocked {
+        $store = _Read-GraphAppCredentialStore
+        if ($store[$Prefix].ContainsKey($tid)) {
+            $store[$Prefix].Remove($tid) | Out-Null
+            _Write-GraphAppCredentialStore -Store $store
+        }
+    }
+}
+
 function Get-GraphAppCredentialFromWCM {
     <#
     .SYNOPSIS
@@ -381,6 +498,16 @@ function Get-GraphAppCredentialFromWCM {
         [ValidateSet('EOA', 'ESR')]
         [string]$Prefix = 'EOA'
     )
+    if (-not (_Test-GraphAppCredentialOnWindows)) {
+        $row = _Get-GraphAppCredentialFileRow -TenantId $TenantId -Prefix $Prefix
+        if (-not $row -or [string]::IsNullOrWhiteSpace([string]$row.clientSecret)) { return $null }
+        $tid = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
+        return [pscustomobject]@{
+            TenantId     = $tid
+            ClientId     = [string]$row.clientId
+            ClientSecret = [string]$row.clientSecret
+        }
+    }
     $credPrefix = _Get-CredPrefixString -Prefix $Prefix
     foreach ($tidCand in (_Get-WcmGraphAppTenantIdSuffixVariants -TenantId $TenantId)) {
         $baseTarget = "$credPrefix$tidCand"
@@ -446,6 +573,16 @@ function Save-GraphAppCredentialToWCM {
         [string]$Prefix = 'EOA'
     )
     $TenantId = _Normalize-GraphAppTenantIdForWcm -TenantId $TenantId
+    if (-not (_Test-GraphAppCredentialOnWindows)) {
+        _Save-GraphAppCredentialFile -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret -TenantDisplayName $TenantDisplayName -Prefix $Prefix
+        $readBack = Get-GraphAppCredentialFromWCM -TenantId $TenantId -Prefix $Prefix
+        if (-not $readBack -or [string]::IsNullOrWhiteSpace($readBack.ClientSecret)) {
+            throw "Graph app credential could not be read back for tenant $TenantId."
+        }
+        [void]$script:tenantOrgDisplayNameCache.Remove("${Prefix}|$TenantId")
+        [void]$script:tenantOrgDisplayNameCache.Remove($TenantId)
+        return
+    }
     $credPrefix = _Get-CredPrefixString -Prefix $Prefix
     $target = "$credPrefix$TenantId"
     $userName = "${TenantId}|${ClientId}"
@@ -528,6 +665,13 @@ function _Get-StoredDisplayName {
         [ValidateSet('EOA', 'ESR')]
         [string]$Prefix = 'EOA'
     )
+    if (-not (_Test-GraphAppCredentialOnWindows)) {
+        $row = _Get-GraphAppCredentialFileRow -TenantId $TenantId -Prefix $Prefix
+        if ($row -and -not [string]::IsNullOrWhiteSpace([string]$row.displayName)) {
+            return [string]$row.displayName
+        }
+        return $null
+    }
     $credPrefix = _Get-CredPrefixString -Prefix $Prefix
     foreach ($tidCand in (_Get-WcmGraphAppTenantIdSuffixVariants -TenantId $TenantId)) {
         $base = "${credPrefix}${tidCand}-DisplayName"
@@ -557,6 +701,12 @@ function Remove-GraphAppCredentialFromWCM {
         [Parameter(Mandatory = $true)][string]$TenantId,
         [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
     )
+    if (-not (_Test-GraphAppCredentialOnWindows)) {
+        _Remove-GraphAppCredentialFile -TenantId $TenantId -Prefix $Prefix
+        [void]$script:tenantOrgDisplayNameCache.Remove("${Prefix}|$TenantId")
+        [void]$script:tenantOrgDisplayNameCache.Remove($TenantId)
+        return
+    }
     $credPrefix = _Get-CredPrefixString -Prefix $Prefix
     foreach ($tidCand in (_Get-WcmGraphAppTenantIdSuffixVariants -TenantId $TenantId)) {
         $targets = @("$credPrefix$tidCand", "${credPrefix}${tidCand}-DisplayName")
@@ -671,6 +821,10 @@ function Get-WCMTenantIds {
         [ValidateSet('EOA', 'ESR')]
         [string]$Prefix = 'EOA'
     )
+    if (-not (_Test-GraphAppCredentialOnWindows)) {
+        $store = _Read-GraphAppCredentialStore
+        return @($store[$Prefix].Keys | Sort-Object)
+    }
     $credPrefix = _Get-CredPrefixString -Prefix $Prefix
     $tenantIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     try {
@@ -792,8 +946,10 @@ function Get-WCMTenantListWithNames {
     )
     $result = [System.Collections.ArrayList]::new()
     $ids = Get-WCMTenantIds -Prefix $Prefix
+    $guidNamePattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
     foreach ($tid in $ids) {
         $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
+        if ($name -and $name -match $guidNamePattern) { $name = $null }
         if (-not $SkipGraphLookup) {
             if ($ForceRefreshFromGraph) {
                 $g = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
@@ -838,14 +994,18 @@ function Get-WCMTenantListWithNamesForAppRegCombo {
         name from Graph. Merges duplicate tenant IDs (prefers EOA row unless EOA has no DisplayName and ESR does).
     .PARAMETER ForceRefreshFromGraph
         Passed through to Get-WCMTenantListWithNames (e.g. after Refresh tenant names in the auth console).
+    .PARAMETER SkipGraphLookup
+        When set, uses WCM *-DisplayName entries only (fast; no per-tenant Graph token calls).
     #>
     param(
         [Parameter(Mandatory = $false)]
-        [switch]$ForceRefreshFromGraph
+        [switch]$ForceRefreshFromGraph,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipGraphLookup
     )
     $merged = @{}
     foreach ($pfx in @('EOA', 'ESR')) {
-        foreach ($row in @(Get-WCMTenantListWithNames -Prefix $pfx -ForceRefreshFromGraph:$ForceRefreshFromGraph -ErrorAction SilentlyContinue)) {
+        foreach ($row in @(Get-WCMTenantListWithNames -Prefix $pfx -ForceRefreshFromGraph:$ForceRefreshFromGraph -SkipGraphLookup:$SkipGraphLookup -ErrorAction SilentlyContinue)) {
             $tid = [string]$row.TenantId
             if (-not $merged.ContainsKey($tid)) {
                 $merged[$tid] = $row
@@ -1051,24 +1211,16 @@ function _ReadCredentialViaCredRead {
     }
 }
 
-function Export-GraphAppCredentialsToFile {
+function New-GraphAppCredentialsExportPayload {
     <#
     .SYNOPSIS
-        Exports all Graph app credentials from WCM to an encrypted file.
-    .PARAMETER Path
-        Output file path (e.g. .eoa-creds). Will be overwritten.
-    .PARAMETER Password
-        SecureString password for encryption. Required for security.
-    .PARAMETER ResolveMissingDisplayNamesFromGraph
-        When WCM has no *-DisplayName entry for a tenant, resolve display name via Graph and embed TenantDisplayName
-        in the file so Import recreates friendly labels on PCs where Graph lookup fails.
+        Builds the encrypted .eoa-creds file body from WCM (does not write to disk).
+    .OUTPUTS
+        Hashtable with Count and Content (UTF-8 text of the export file).
     #>
     param(
-        [Parameter(Mandatory=$true)][string]$Path,
-        [Parameter(Mandatory=$true)][SecureString]$Password,
-        [Parameter(Mandatory=$false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
-        [Parameter(Mandatory=$false)]
-        [switch]$ResolveMissingDisplayNamesFromGraph
+        [Parameter(Mandatory = $true)][SecureString]$Password,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
     )
     $ids = Get-WCMTenantIds -Prefix $Prefix
     if ($ids.Count -eq 0) {
@@ -1083,7 +1235,8 @@ function Export-GraphAppCredentialsToFile {
                 $c | Add-Member -NotePropertyName TenantId -NotePropertyValue $normTid -Force
             }
             $dn = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
-            if (-not $dn -and $ResolveMissingDisplayNamesFromGraph) {
+            # Always fill a missing label from Graph so Import on another PC gets names, not raw GUIDs.
+            if (-not $dn) {
                 $dn = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix -ForceRefresh
                 if (-not $dn) {
                     $alt = if ($Prefix -eq 'EOA') { 'ESR' } else { 'EOA' }
@@ -1110,7 +1263,6 @@ function Export-GraphAppCredentialsToFile {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $key = $sha.ComputeHash($pwdBytes)[0..31]
-        # Zero password bytes after use
         if ($pwdBytes) { [Array]::Clear($pwdBytes, 0, $pwdBytes.Length) }
     }
     finally {
@@ -1118,10 +1270,44 @@ function Export-GraphAppCredentialsToFile {
     }
     $secure = ConvertTo-SecureString $json -AsPlainText -Force
     $encrypted = $secure | ConvertFrom-SecureString -Key $key
-    # Zero key after use
     if ($key) { [Array]::Clear($key, 0, $key.Length) }
-    $header = "EOA-CREDS-1`n"
-    [System.IO.File]::WriteAllText($Path, $header + $encrypted, [System.Text.Encoding]::UTF8)
+    return @{
+        Count   = $creds.Count
+        Content = "EOA-CREDS-1`n$encrypted"
+    }
+}
+
+function Export-GraphAppCredentialsToFile {
+    <#
+    .SYNOPSIS
+        Exports all Graph app credentials from WCM to an encrypted file.
+    .PARAMETER Path
+        Output file path (e.g. .eoa-creds). Will be overwritten. Must be a file path, not a folder.
+    .PARAMETER Password
+        SecureString password for encryption. Required for security.
+    .PARAMETER ResolveMissingDisplayNamesFromGraph
+        When WCM has no *-DisplayName entry for a tenant, resolve display name via Graph and embed TenantDisplayName
+        in the file so Import recreates friendly labels on PCs where Graph lookup fails.
+    #>
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][SecureString]$Password,
+        [Parameter(Mandatory=$false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
+        [Parameter(Mandatory=$false)]
+        [switch]$ResolveMissingDisplayNamesFromGraph
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Missing export path.' }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (Test-Path -LiteralPath $fullPath -PathType Container) {
+        throw "Export path is a folder, not a file: $fullPath. Choose a file such as $(Join-Path $fullPath 'GraphAppCredentials.eoa-creds')."
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($fullPath)
+    if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "Export folder does not exist: $parent"
+    }
+    $payload = New-GraphAppCredentialsExportPayload -Password $Password -Prefix $Prefix
+    [System.IO.File]::WriteAllText($fullPath, [string]$payload.Content, [System.Text.Encoding]::UTF8)
+    return [int]$payload.Count
 }
 
 function Get-GraphAppCredentialEncryptedFileSummary {
@@ -1155,7 +1341,7 @@ function Get-GraphAppCredentialEncryptedFileSummary {
     if ($key) { [Array]::Clear($key, 0, $key.Length) }
     $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try {
-        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
     }
     finally {
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
@@ -1198,12 +1384,21 @@ function Import-GraphAppCredentialsFromFile {
         Number of credentials imported.
     #>
     param(
-        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$false)][string]$Path,
+        [Parameter(Mandatory=$false)][string]$FileText,
         [Parameter(Mandatory=$true)][SecureString]$Password
     )
-    if (-not (Test-Path $Path)) { throw "File not found: $Path" }
-    $content = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-    if ($content -notmatch '^EOA-CREDS-1\r?\n(.+)$') { throw "Invalid file format. File must be exported by this tool." }
+    if (-not [string]::IsNullOrWhiteSpace($FileText)) {
+        $content = $FileText
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($Path)) {
+        if (-not (Test-Path -LiteralPath $Path)) { throw "File not found: $Path" }
+        $content = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    }
+    else {
+        throw 'Choose an .eoa-creds file.'
+    }
+    if ($content -notmatch '(?s)^EOA-CREDS-1\r?\n(.+?)\s*$') { throw "Invalid file format. File must be exported by this tool." }
     $encrypted = $Matches[1]
     $pwdBytes = _Get-SecureStringAsPlainForKey -SecureString $Password
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -1220,15 +1415,15 @@ function Import-GraphAppCredentialsFromFile {
         # Zero key after use
         if ($key) { [Array]::Clear($key, 0, $key.Length) }
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        $json = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     } catch {
         # Zero key on error path
         if ($key) { [Array]::Clear($key, 0, $key.Length) }
-        throw "Decryption failed. Wrong password?"
+        throw "Decryption failed. Wrong password, or the file was altered. On Linux runners, password keying must use PtrToStringBSTR (not Auto)."
     }
     $creds = $json | ConvertFrom-Json
-    if (-not $creds) { return 0 }
+    if (-not $creds) { throw 'No credentials were imported.' }
     if ($creds -isnot [Array]) { $creds = @($creds) }
     $withDisplayName = 0
     foreach ($ic in $creds) {
@@ -1239,6 +1434,7 @@ function Import-GraphAppCredentialsFromFile {
         Write-Warning "Import: no TenantDisplayName fields in this file  - export on a PC with 'Embed tenant display names' checked (or run Register-GraphAppTenantDisplayNamesInWCM before export). Dropdowns may show GUIDs until names are stored."
     }
     $count = 0
+    $failures = [System.Collections.Generic.List[string]]::new()
     foreach ($c in $creds) {
         $tid = [string](_Get-ImportedCredProperty -Object $c -Name 'TenantId')
         $cid = [string](_Get-ImportedCredProperty -Object $c -Name 'ClientId')
@@ -1254,7 +1450,11 @@ function Import-GraphAppCredentialsFromFile {
         try {
             Save-GraphAppCredentialToWCM -TenantId $tid -ClientId $cid -ClientSecret $secret -TenantDisplayName $displayName -Prefix $savePrefix
             $count++
-        } catch { Write-Warning "Failed to import $tid : $($_.Exception.Message)" }
+        } catch { [void]$failures.Add("Failed to import ${tid}: $($_.Exception.Message)") }
+    }
+    if ($count -eq 0) {
+        if ($failures.Count -gt 0) { throw ($failures -join ' ') }
+        throw 'No credentials were imported.'
     }
     return $count
 }
@@ -1361,7 +1561,7 @@ function Show-ClearLocalGraphWcmPicker {
 function Invoke-GraphAppCreateWithWcmSave {
     <#
     .SYNOPSIS
-        Runs Start-NewGraphInboxRulesApp.ps1 -SaveToWCM in the same PowerShell host family as the caller (pwsh stays pwsh).
+        Runs Start-NewGraphInboxRulesApp.ps1 (-SaveToWCM, or -UpdateExisting) in the same PowerShell host family as the caller.
     .OUTPUTS
         PSCustomObject with ExitCode, Result, LogPath
     #>
@@ -1370,7 +1570,14 @@ function Invoke-GraphAppCreateWithWcmSave {
         [string]$ProjectRoot,
 
         [Parameter(Mandatory = $false)]
-        [string]$TenantId
+        [string]$TenantId,
+
+        [Parameter(Mandatory = $false)]
+        [string]$JobId,
+
+        [switch]$UpdateExisting,
+
+        [switch]$NoWait
     )
     $launcherPath = Join-Path $ProjectRoot 'Start-NewGraphInboxRulesApp.ps1'
     if (-not (Test-Path -LiteralPath $launcherPath)) {
@@ -1379,24 +1586,65 @@ function Invoke-GraphAppCreateWithWcmSave {
     # Same executable as the GUI (pwsh when you launch from pwsh). Do not switch to Windows PowerShell 5.1:
     # -NoProfile there hides Microsoft.Graph modules installed for pwsh.
     $psExe = (Get-Process -Id $PID -ErrorAction Stop).Path
-    $resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
-    $logPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+    $jobToken = $null
+    if (-not [string]::IsNullOrWhiteSpace($JobId) -and $JobId -match '^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+        $jobToken = $JobId.ToLowerInvariant()
+    }
+    if ($jobToken) {
+        $resultPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-result.json"
+        $logPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-last.log"
+    } else {
+        $resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+        $logPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+    }
     foreach ($p in @($resultPath, $logPath, "${logPath}.err")) {
         if ($p -and (Test-Path -LiteralPath $p)) {
             Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
         }
     }
     $argList = [System.Collections.ArrayList]@(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherPath, '-SaveToWCM'
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherPath
     )
+    if ($UpdateExisting) {
+        [void]$argList.Add('-UpdateExisting')
+    } else {
+        [void]$argList.Add('-SaveToWCM')
+    }
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
         $tid = $TenantId.Trim()
         [void]$argList.Add('-TenantId')
         [void]$argList.Add($tid)
     }
     # Interactive console required for browser sign-in and Read-Host (Y/n). Redirecting stdout breaks both.
-    $proc = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru `
-        -WorkingDirectory $ProjectRoot
+    $prevJobEnv = $env:EOA_GRAPH_APP_JOB_ID
+    if ($jobToken) { $env:EOA_GRAPH_APP_JOB_ID = $jobToken } else { Remove-Item Env:EOA_GRAPH_APP_JOB_ID -ErrorAction SilentlyContinue }
+    try {
+        $startParams = @{
+            FilePath         = $psExe
+            ArgumentList     = [string[]]$argList
+            PassThru         = $true
+            WorkingDirectory = $ProjectRoot
+        }
+        if (-not $NoWait) { $startParams.Wait = $true }
+        $proc = Start-Process @startParams
+    } finally {
+        if ($null -ne $prevJobEnv -and $prevJobEnv -ne '') {
+            $env:EOA_GRAPH_APP_JOB_ID = $prevJobEnv
+        } else {
+            Remove-Item Env:EOA_GRAPH_APP_JOB_ID -ErrorAction SilentlyContinue
+        }
+    }
+    if ($NoWait) {
+        return [pscustomobject]@{
+            Started   = $true
+            ProcessId = $proc.Id
+            Process   = $proc
+            ResultPath = $resultPath
+            LogPath   = $logPath
+            ExitCode  = $null
+            Result    = $null
+        }
+    }
     $result = $null
     if (Test-Path -LiteralPath $resultPath) {
         try {
@@ -1464,4 +1712,403 @@ function Show-GraphAppCreateResultMessage {
     }
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage
+function Connect-MgGraphWithWcmApp {
+    <#
+    .SYNOPSIS
+        Connects to Microsoft Graph using app-only client secret credentials from WCM.
+    .NOTES
+        Prefer this over Connect-MgGraph -AccessToken; UserProvidedTokenCredential is broken in some Graph module versions.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    if (-not (Get-Command Connect-MgGraph -ErrorAction SilentlyContinue)) {
+        Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+    }
+    $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId -Prefix $Prefix
+    if (-not $cred) {
+        throw "No Graph app credentials in Windows Credential Manager for tenant $TenantId (prefix $Prefix)."
+    }
+    $tenantGuid = ($cred.TenantId -replace '[\{\}]', '').Trim()
+    if (-not $tenantGuid) { $tenantGuid = ($TenantId -replace '[\{\}]', '').Trim() }
+    $sec = ConvertTo-SecureString $cred.ClientSecret -AsPlainText -Force
+    $clientCred = New-Object System.Management.Automation.PSCredential($cred.ClientId, $sec)
+    $connectParams = @{
+        TenantId               = $tenantGuid
+        ClientSecretCredential = $clientCred
+        NoWelcome              = $true
+        ErrorAction            = 'Stop'
+    }
+    Connect-MgGraph @connectParams | Out-Null
+}
+
+function Search-GraphUsersWithWcm {
+    <#
+    .SYNOPSIS
+        Searches Graph users using app-only WCM token and REST (no Connect-MgGraph / Get-MgUser).
+    .OUTPUTS
+        @(@{ UserPrincipalName; DisplayName }, ...)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $true)]
+        [string[]]$SearchTerms,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA',
+        [Parameter(Mandatory = $false)]
+        [string]$AccessToken
+    )
+
+    $token = $AccessToken
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $Prefix
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "Could not obtain Graph app-only token for tenant $TenantId."
+    }
+
+    $baseHeaders = @{
+        Authorization = "Bearer $token"
+        Accept        = 'application/json'
+    }
+    $allUsers = [System.Collections.ArrayList]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($searchTerm in $SearchTerms) {
+        $term = $searchTerm.Trim()
+        if ([string]::IsNullOrWhiteSpace($term)) { continue }
+
+        Write-Host "  Searching for users matching: '$term'" -ForegroundColor Gray
+        $batch = @()
+
+        if ($term -match '@') {
+            try {
+                $enc = [Uri]::EscapeDataString($term)
+                $u = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/users/$enc`?$select=userPrincipalName,displayName,id" -Headers $baseHeaders -Method GET -ErrorAction Stop
+                if ($u -and $u.userPrincipalName) { $batch = @($u); Write-Host '    Found via direct UPN lookup' -ForegroundColor Gray }
+            } catch {
+                Write-Host "    Direct UPN lookup failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+            }
+        }
+
+        if ($batch.Count -eq 0) {
+            $escaped = $term.Replace("'", "''")
+            $filterAttempts = @(
+                "startswith(displayName,'$escaped') or startswith(userPrincipalName,'$escaped')",
+                "contains(displayName,'$escaped') or contains(userPrincipalName,'$escaped')"
+            )
+            foreach ($filter in $filterAttempts) {
+                if ($batch.Count -gt 0) { break }
+                try {
+                    $uri = 'https://graph.microsoft.com/v1.0/users?$filter=' + [Uri]::EscapeDataString($filter) + '&$select=userPrincipalName,displayName,id&$top=50'
+                    $headers = @{
+                        Authorization    = $baseHeaders.Authorization
+                        Accept           = $baseHeaders.Accept
+                        ConsistencyLevel = 'eventual'
+                    }
+                    $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method GET -ErrorAction Stop
+                    if ($resp.value -and $resp.value.Count -gt 0) {
+                        $batch = @($resp.value)
+                        Write-Host "    Found $($batch.Count) user(s) via Graph REST filter" -ForegroundColor Gray
+                    }
+                } catch {
+                    Write-Host "    Graph REST filter failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
+            }
+        }
+
+        foreach ($u in $batch) {
+            $upn = [string]$u.userPrincipalName
+            if (-not [string]::IsNullOrWhiteSpace($upn) -and $seen.Add($upn)) {
+                [void]$allUsers.Add([pscustomobject]@{
+                        UserPrincipalName = $upn
+                        DisplayName       = [string]$u.displayName
+                    })
+            }
+        }
+    }
+
+    return @($allUsers)
+}
+
+function Show-GraphAppCredentialSaveFileDialog {
+    <#
+    .SYNOPSIS
+        Windows Save File dialog for .eoa-creds export (STA-safe for web-runner HTTP threads).
+    .OUTPUTS
+        Selected full path, or $null if the user cancels / dialog unavailable.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$DefaultFileName = 'GraphAppCredentials.eoa-creds',
+        [string]$InitialDirectory = ''
+    )
+
+    $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    if (-not $onWindows) {
+        throw 'Save file dialog requires Windows.'
+    }
+
+    $dialogScript = {
+        param([string]$DefaultFileName, [string]$InitialDirectory)
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch { }
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.TopMost = $true
+        $owner.ShowInTaskbar = $false
+        $owner.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+        $owner.Opacity = 0
+        [void]$owner.Show()
+        try {
+            $sfd = New-Object System.Windows.Forms.SaveFileDialog
+            $sfd.Title = 'Export Graph app credentials'
+            $sfd.Filter = 'EOA Credentials (*.eoa-creds)|*.eoa-creds|All files (*.*)|*.*'
+            $sfd.DefaultExt = 'eoa-creds'
+            $sfd.AddExtension = $true
+            $sfd.OverwritePrompt = $true
+            $sfd.CheckPathExists = $true
+            $sfd.FileName = if ([string]::IsNullOrWhiteSpace($DefaultFileName)) { 'GraphAppCredentials.eoa-creds' } else { $DefaultFileName }
+            if ($InitialDirectory -and (Test-Path -LiteralPath $InitialDirectory)) {
+                $sfd.InitialDirectory = $InitialDirectory
+            } else {
+                try {
+                    $downloads = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+                    if ($downloads -and (Test-Path -LiteralPath $downloads)) {
+                        $sfd.InitialDirectory = $downloads
+                    } else {
+                        $docs = [Environment]::GetFolderPath('MyDocuments')
+                        if ($docs) { $sfd.InitialDirectory = $docs }
+                    }
+                } catch { }
+            }
+            $result = $sfd.ShowDialog($owner)
+            if ($result -eq [System.Windows.Forms.DialogResult]::OK -and -not [string]::IsNullOrWhiteSpace($sfd.FileName)) {
+                return [string]$sfd.FileName
+            }
+            return $null
+        } finally {
+            try { $owner.Close() } catch { }
+            try { $owner.Dispose() } catch { }
+        }
+    }
+
+    $isSta = ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq [System.Threading.ApartmentState]::STA)
+    if ($isSta) {
+        return & $dialogScript $DefaultFileName $InitialDirectory
+    }
+
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $rs.ApartmentState = [System.Threading.ApartmentState]::STA
+    $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+    $rs.Open()
+    try {
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($dialogScript.ToString()).AddArgument($DefaultFileName).AddArgument($InitialDirectory)
+        $out = $ps.Invoke()
+        if ($ps.HadErrors) {
+            $err = @($ps.Streams.Error | ForEach-Object { $_.ToString() }) -join '; '
+            throw "Save dialog failed: $err"
+        }
+        if ($null -eq $out -or $out.Count -eq 0) { return $null }
+        $picked = [string]$out[0]
+        if ([string]::IsNullOrWhiteSpace($picked)) { return $null }
+        return $picked
+    } finally {
+        try { $rs.Close() } catch { }
+        try { $rs.Dispose() } catch { }
+    }
+}
+
+function Get-RiverRunInvestigatorExpectedAppRoles {
+    <#
+    .SYNOPSIS
+        Canonical Microsoft Graph application roles for River Run Security Investigator.
+    .OUTPUTS
+        Objects with Id, Name, Impact (what fails or is limited without the role).
+    #>
+    @(
+        [pscustomobject]@{ Id = '810c84a8-4a9e-49e6-bf7d-12d183f40d01'; Name = 'Mail.Read'; Impact = 'Inbox rules via Graph' }
+        [pscustomobject]@{ Id = '89b20d8a-76e2-4057-867b-9961f800b9a4'; Name = 'ExchangeMessageTrace.Read.All'; Impact = 'Graph message trace' }
+        [pscustomobject]@{ Id = '40f97065-369a-49f4-947c-6a255697ae91'; Name = 'MailboxSettings.Read'; Impact = 'Mailbox settings / auto-reply' }
+        [pscustomobject]@{ Id = 'df021288-bdef-4463-88db-98f22de89214'; Name = 'User.Read.All'; Impact = 'User lookups' }
+        [pscustomobject]@{ Id = 'b0afded3-3588-46d8-8b3d-9842eff778da'; Name = 'AuditLog.Read.All'; Impact = 'Sign-in and directory audit logs' }
+        [pscustomobject]@{ Id = '7ab1d382-f21e-4acd-a863-ba3e13f7da61'; Name = 'Directory.Read.All'; Impact = 'Directory reads' }
+        [pscustomobject]@{ Id = '498476ce-e0fe-48b0-b801-37ba7e2685c6'; Name = 'Organization.Read.All'; Impact = 'Tenant display name' }
+        [pscustomobject]@{ Id = '246dd0d5-5bd0-4def-940b-0421030a5b68'; Name = 'Policy.Read.All'; Impact = 'Conditional Access read' }
+        [pscustomobject]@{ Id = '01c0a623-fc9b-48e9-b794-0756f8e8f067'; Name = 'Policy.ReadWrite.ConditionalAccess'; Impact = 'Conditional Access write / CA Manager' }
+        [pscustomobject]@{ Id = '9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30'; Name = 'Application.Read.All'; Impact = 'App registrations report' }
+        [pscustomobject]@{ Id = '1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9'; Name = 'Application.ReadWrite.All'; Impact = 'App write, secret rotate, delete apps' }
+        [pscustomobject]@{ Id = '06b708a9-e830-4db3-a914-8e69da51d44f'; Name = 'AppRoleAssignment.ReadWrite.All'; Impact = 'Admin consent / scope self-heal' }
+        [pscustomobject]@{ Id = '230c1aed-a721-4c5d-9cb4-a90514e508ef'; Name = 'Reports.Read.All'; Impact = 'SPO/OD/Teams activity reports' }
+        [pscustomobject]@{ Id = '332a536c-c7ef-4017-ab91-336970924f0d'; Name = 'Sites.Read.All'; Impact = 'Sharing links' }
+        [pscustomobject]@{ Id = 'bf394140-e372-4bf9-a898-299cfc7564e5'; Name = 'SecurityEvents.Read.All'; Impact = 'Security events' }
+        [pscustomobject]@{ Id = '472e4a4d-bb4a-4026-98d1-0b0d74cb74a5'; Name = 'SecurityAlert.Read.All'; Impact = 'Defender alerts' }
+        [pscustomobject]@{ Id = '45cc0394-e837-488b-a098-1918f48d186c'; Name = 'SecurityIncident.Read.All'; Impact = 'Defender incidents' }
+        [pscustomobject]@{ Id = '38d9df27-64da-44fd-b7c5-a6fbac20248f'; Name = 'UserAuthenticationMethod.Read.All'; Impact = 'MFA coverage read' }
+        [pscustomobject]@{ Id = '50483e42-d915-4231-9639-7fdb7fd190e5'; Name = 'UserAuthenticationMethod.ReadWrite.All'; Impact = 'Containment: delete MFA methods' }
+        [pscustomobject]@{ Id = '1138cb37-bd11-4084-a2b7-9f71582aeddb'; Name = 'Device.ReadWrite.All'; Impact = 'Containment: delete Entra devices' }
+        [pscustomobject]@{ Id = '77f3a031-c388-4f99-b373-dc68676a979e'; Name = 'User.RevokeSessions.All'; Impact = 'Containment: revoke sessions / quick lock' }
+        [pscustomobject]@{ Id = '3011c876-62b7-4ada-afa2-506cbbecc68c'; Name = 'User.EnableDisableAccount.All'; Impact = 'Containment: block / unblock' }
+        [pscustomobject]@{ Id = 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7'; Name = 'User-PasswordProfile.ReadWrite.All'; Impact = 'Containment: password reset (also needs User Administrator on the app)' }
+        [pscustomobject]@{ Id = '8e8e4742-1d95-4f68-9d56-6ee75648c72a'; Name = 'DelegatedPermissionGrant.ReadWrite.All'; Impact = 'Containment: revoke OAuth grants' }
+        [pscustomobject]@{ Id = '9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8'; Name = 'RoleManagement.ReadWrite.Directory'; Impact = 'Containment: directory role changes' }
+        [pscustomobject]@{ Id = 'dbaae8cf-10b5-4b86-a4a1-f871c94c6695'; Name = 'GroupMember.ReadWrite.All'; Impact = 'Containment: group membership changes' }
+        [pscustomobject]@{ Id = '2f51be20-0bb4-4fed-bf7b-db946066c75e'; Name = 'DeviceManagementManagedDevices.Read.All'; Impact = 'Intune device read' }
+        [pscustomobject]@{ Id = '243333ab-4d21-40cb-a475-36241daa0842'; Name = 'DeviceManagementManagedDevices.ReadWrite.All'; Impact = 'Intune device write' }
+        [pscustomobject]@{ Id = '5b07b0dd-2377-4e44-a38d-703f09a0dc3c'; Name = 'DeviceManagementManagedDevices.PrivilegedOperations.All'; Impact = 'Intune wipe / retire' }
+    )
+}
+
+function _Get-GraphAppJwtPayload {
+    param([string]$Token)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return $null }
+    $parts = $Token.Split('.')
+    if ($parts.Count -lt 2) { return $null }
+    $p = $parts[1].Replace('-', '+').Replace('_', '/')
+    switch ($p.Length % 4) {
+        2 { $p += '==' }
+        3 { $p += '=' }
+    }
+    try {
+        return ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Test-GraphAppPermissionStatusFromWCM {
+    <#
+    .SYNOPSIS
+        Compare a WCM app-only token's roles claim to the expected River Run investigator set.
+    .DESCRIPTION
+        Uses client_credentials (fresh token). Missing roles usually mean Update Graph App scopes + admin consent.
+        Tries EOA then ESR when -Prefix is omitted.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix
+    )
+
+    $expected = @(Get-RiverRunInvestigatorExpectedAppRoles)
+    $prefixes = if ($PSBoundParameters.ContainsKey('Prefix') -and $Prefix) { @($Prefix) } else { @('EOA', 'ESR') }
+    $token = $null
+    $usedPrefix = $null
+    $tokenError = $null
+    foreach ($pfx in $prefixes) {
+        $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $pfx
+        if ($token) {
+            $usedPrefix = $pfx
+            break
+        }
+        if ($script:_GraphAppTokenLastFailureMessage) {
+            $tokenError = [string]$script:_GraphAppTokenLastFailureMessage
+        }
+    }
+
+    if (-not $token) {
+        return [pscustomobject]@{
+            TenantId       = $TenantId
+            Status         = 'tokenFailed'
+            WcmPrefix      = $null
+            ExpectedCount  = $expected.Count
+            PresentCount   = 0
+            MissingCount   = $expected.Count
+            MissingRoles   = @($expected | ForEach-Object { $_.Name })
+            PresentRoles   = @()
+            Impacts        = @($expected | ForEach-Object { $_.Impact } | Select-Object -Unique)
+            Error          = if ($tokenError) { $tokenError } else { 'Could not acquire app-only token from WCM.' }
+            CheckedAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
+        }
+    }
+
+    $payload = _Get-GraphAppJwtPayload -Token $token
+    if (-not $payload) {
+        return [pscustomobject]@{
+            TenantId       = $TenantId
+            Status         = 'tokenFailed'
+            WcmPrefix      = $usedPrefix
+            ExpectedCount  = $expected.Count
+            PresentCount   = 0
+            MissingCount   = $expected.Count
+            MissingRoles   = @($expected | ForEach-Object { $_.Name })
+            PresentRoles   = @()
+            Impacts        = @()
+            Error          = 'Token acquired but JWT roles claim could not be decoded.'
+            CheckedAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
+        }
+    }
+
+    $claimed = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($r in @($payload.roles)) {
+        if ($r) { [void]$claimed.Add([string]$r) }
+    }
+    if ($payload.scp) {
+        foreach ($s in ([string]$payload.scp -split '\s+')) {
+            if ($s) { [void]$claimed.Add($s) }
+        }
+    }
+
+    $present = [System.Collections.ArrayList]::new()
+    $missing = [System.Collections.ArrayList]::new()
+    $impacts = [System.Collections.ArrayList]::new()
+    foreach ($role in $expected) {
+        if ($claimed.Contains([string]$role.Name)) {
+            [void]$present.Add([string]$role.Name)
+        } else {
+            [void]$missing.Add([string]$role.Name)
+            if ($role.Impact) { [void]$impacts.Add([string]$role.Impact) }
+        }
+    }
+
+    $status = if ($missing.Count -eq 0) { 'current' } else { 'needsUpgrade' }
+    return [pscustomobject]@{
+        TenantId       = $TenantId
+        Status         = $status
+        WcmPrefix      = $usedPrefix
+        ExpectedCount  = $expected.Count
+        PresentCount   = $present.Count
+        MissingCount   = $missing.Count
+        MissingRoles   = @($missing)
+        PresentRoles   = @($present)
+        Impacts        = @($impacts | Select-Object -Unique)
+        Error          = $null
+        CheckedAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
+    }
+}
+
+function Get-GraphAppPermissionStatusesFromWCM {
+    <#
+    .SYNOPSIS
+        Permission status for every tenant in the App reg combo (or a supplied TenantId list).
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$TenantId
+    )
+    $ids = @()
+    if ($TenantId -and $TenantId.Count -gt 0) {
+        $ids = @($TenantId | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -Unique)
+    } else {
+        foreach ($row in @(Get-WCMTenantListWithNamesForAppRegCombo -SkipGraphLookup -ErrorAction SilentlyContinue)) {
+            if ($row.TenantId) { $ids += [string]$row.TenantId }
+        }
+        $ids = @($ids | Select-Object -Unique)
+    }
+    $out = [System.Collections.ArrayList]::new()
+    foreach ($tid in $ids) {
+        [void]$out.Add((Test-GraphAppPermissionStatusFromWCM -TenantId $tid))
+    }
+    return @($out)
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Connect-MgGraphWithWcmApp, Search-GraphUsersWithWcm, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Get-WCMTenantListWithNamesForAppRegCombo, Register-GraphAppTenantDisplayNamesInWCM, New-GraphAppCredentialsExportPayload, Export-GraphAppCredentialsToFile, Import-GraphAppCredentialsFromFile, Get-GraphAppCredentialEncryptedFileSummary, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker, Show-GraphAppCredentialSaveFileDialog, Reset-GraphAppCredentialManagerImportCache, Invoke-GraphAppCreateWithWcmSave, Show-GraphAppCreateResultMessage, Get-RiverRunInvestigatorExpectedAppRoles, Test-GraphAppPermissionStatusFromWCM, Get-GraphAppPermissionStatusesFromWCM

@@ -8,13 +8,103 @@
 
 ## Executive Summary
 
-This security tool analyzes Exchange Online and Entra ID for malicious activity. A comprehensive review identified **15 critical/high priority issues** and **12 medium/low priority issues**. **11 critical/high fixes** were implemented in this PR (4 additional critical issues resolved in second commit), focusing on credential security, detection coverage gaps, pagination, and error handling. The remaining 16 issues require more extensive testing or architectural changes.
+This security tool analyzes Exchange Online and Entra ID for malicious activity. A comprehensive review identified critical security and reliability issues across credential handling, detection coverage, API reliability, and error handling. **Multiple rounds of fixes** have been implemented on dedicated branches:
 
-**Latest Update (Commit 2):** Added mailbox permission detection, enhanced inbox rule analysis (RedirectTo/delete rules), fixed Graph API pagination gaps, and removed cmdkey security vulnerability.
+- **Branch `cursor/security-reliability-improvements-80c2`** (PR #8): Initial 4 critical fixes (credential memory security, mailbox permissions, inbox rule detection, Graph API pagination, cmdkey removal)
+- **Branch `cursor/fix-review-issues-80c2`** (this branch): 8 follow-up review fixes addressing implementation gaps and edge cases
+
+**Latest Update (Review Fixes):** Unified Audit Log for mailbox permissions, risk-scored OAuth consent check, regex-based email parsing for inbox rules with scoring heuristics, restored backward-compatible Test-ExternalForwarding signature, weighted MFA change burst detection, removed useless memory allocations, updated documentation for CredentialManager requirement.
 
 ---
 
-## Implemented Fixes (In This PR)
+## Implemented Fixes (Branch: cursor/fix-review-issues-80c2)
+
+### ✅ CRITICAL - Mailbox Permission Detection Rewrite (SecurityAnalysis.psm1)
+**Issue:** Previous implementation used `Get-MgAuditLogDirectoryAudit` which doesn't log Exchange cmdlet operations; invalid `Operations eq` filter caused 0 results  
+**Risk:** Mailbox permission changes (FullAccess, SendAs, SendOnBehalf, folder permissions) completely undetected  
+**Fix:** Complete rewrite using `Search-UnifiedAuditLog -RecordType ExchangeAdmin`
+- Queries unified audit log for Add-MailboxPermission, Add-RecipientPermission, Set-Mailbox, folder permission cmdlets
+- Parses Parameters name/value pairs from AuditData JSON to extract permission details
+- Surfaces failures as warnings instead of swallowing with SilentlyContinue
+- Supports pagination (5000 records per call) with retry logic
+- **Breaking:** Requires Exchange Online connection (no longer uses Microsoft Graph)
+- **Compatibility:** Falls back gracefully if not connected
+
+### ✅ CRITICAL - OAuth Consent Risk Scoring (SecurityAnalysis.psm1)
+**Issue:** v1.0 oauth2PermissionGrant lacks reliable startTime; 30-day filter dropped all grants; every Principal consent flagged as suspicious  
+**Risk:** False negatives (no recent grants detected) and false positives (legitimate user consents flagged)  
+**Fix:** Directory audit event correlation and risk scoring
+- Correlates grants with 'Consent to application' / 'Add delegated permission grant' directory audit events for accurate dates
+- Risk scoring instead of blanket flagging: score >= 5 = suspicious (High), 3-4 = Medium, < 3 = Low
+- Fixed non-Microsoft app detection (checks publisher domain + display name)
+- Added high-risk scopes: Mail.Read, MailboxSettings.ReadWrite, EWS.AccessAsUser.All, full_access_as_user, offline_access + mail scopes
+- Caches `Get-MgServicePrincipal` lookups for performance
+- User consent adds +1 base risk; +2 if combined with high-risk permissions
+
+### ✅ HIGH - Inbox Rule Address Parsing with Regex (MailboxAnalysis.psm1)
+**Issue:** Callers passed `-InternalDomains @('dummy.local')`; `[Microsoft.Exchange.Data.SmtpAddress]` type check threw exceptions if assembly not loaded  
+**Risk:** All external forwarding rules incorrectly flagged or missed due to hardcoded dummy domain  
+**Fix:** Regex-based email parsing and real domain passing
+- Parses addresses with regex `SMTP:([^\]]+)` for SMTP: prefixed addresses
+- Handles `EX:/o=` Exchange internal recipient format (skips domain check)
+- Removed `[Microsoft.Exchange.Data.SmtpAddress]` type check to avoid assembly dependency
+- Updated all callers to pass real domains from `Get-AutoDetectedDomains` or fallback to empty array
+- **Backward Compatible:** Falls back gracefully when domains unavailable
+
+### ✅ HIGH - Test-ExternalForwarding Signature Restored (MailboxAnalysis.psm1)
+**Issue:** Breaking change - function changed from `-RecipientAddresses` to `-Rule` signature broke backward compatibility  
+**Risk:** Callers expecting original signature fail with parameter binding errors  
+**Fix:** Restored original signature and created new function
+- `Test-ExternalForwarding -RecipientAddresses -InternalDomains` (original signature restored)
+- `Test-InboxRuleRisk -Rule -InternalDomains` (new comprehensive risk evaluation)
+- Updated callers to use `Test-InboxRuleRisk` for rule risk scoring
+- **Backward Compatible:** Existing code using old signature works unchanged
+
+### ✅ HIGH - Inbox Rule Risk Scoring Heuristics (MailboxAnalysis.psm1)
+**Issue:** Blanket suspicious flag for delete/archive actions; $isSuspiciousVisible scoping error caused double-counting; duplicate reasons  
+**Risk:** High false positive rate (legitimate rules flagged) and inaccurate counts  
+**Fix:** Weighted risk scoring instead of binary flagging
+- RSS/Conversation History/non-printable folder + keyword condition = +4 score (high risk)
+- Non-printable or whitespace-only folder names = +4 score
+- Archive/Junk/Deleted folders = +2 score (medium risk)
+- Plain delete/move to normal folder = +1 score (low risk)
+- Delete + keyword condition = +3 additional score (evidence hiding)
+- Fixed `$isSuspiciousVisible` scoping (was being checked outside its declaration scope)
+- Removed duplicate reason messages
+- Score >= 5 = High risk (suspicious), 3-4 = Medium, < 3 = Low
+
+### ✅ MEDIUM - MFA Change Detection Improvements (SecurityAnalysis.psm1)
+**Issue:** 'Update user' and 'Change user password' are noisy generic events; missing admin events; unbounded burst window; permission errors swallowed  
+**Risk:** High false positive rate (routine updates flagged) and missed admin-initiated changes  
+**Fix:** Weighted event scoring and bounded burst detection
+- Downweighted 'Update user' and 'Change user password' to 0.3 weight (vs 1.0 for security info changes)
+- Added 'Admin registered security info' and 'Admin deleted security info' events (1.5 weight)
+- Bounded burst detection to +/-1 hour window (was unbounded past hour)
+- Weighted burst scoring: sum event weights instead of count
+- Warns on permission errors (`-ErrorAction Stop` instead of `SilentlyContinue`)
+- **Backward Compatible:** Returns same structure, improved detection accuracy
+
+### ✅ LOW - Remove Useless Memory Zeroing (GraphAppCredential.psm1)
+**Issue:** `ZeroFreeGlobalAllocUnicode(StringToHGlobalUni($plain))` allocated new unmanaged memory just to free it, doing nothing for `$plain`  
+**Risk:** Code smell; misleading security theater  
+**Fix:** Removed useless allocation
+- Removed `ZeroFreeGlobalAllocUnicode` call (allocated new memory, zeroed it, freed it - no effect on $plain)
+- Kept `[Array]::Clear` on byte buffers (actual security benefit)
+- Added comment explaining managed string pool limitation (best effort only)
+- **No Behavior Change:** $plain was never actually zeroed by this code
+
+### ✅ DOCUMENTATION - Updated Credential Manager Requirement (readme.md)
+**Issue:** Documentation still referenced cmdkey as fallback option after cmdkey removal  
+**Risk:** User confusion; attempts to use cmdkey fail with unclear errors  
+**Fix:** Updated installation instructions
+- Changed "Recommended: CredentialManager" to "Required: CredentialManager"
+- Noted that saving credentials is unavailable without CredentialManager (cmdkey removed for security)
+- Clarified error messages guide users to install secure alternative
+- **User Impact:** Clear expectations for credential storage requirements
+
+---
+
+## Implemented Fixes (Branch: cursor/security-reliability-improvements-80c2, PR #8)
 
 ### ✅ CRITICAL - Credential Memory Security (GraphAppCredential.psm1)
 **Issue:** Sensitive data (passwords, encryption keys) remained in memory after use  
@@ -24,7 +114,7 @@ This security tool analyzes Exchange Online and Entra ID for malicious activity.
 - `[Array]::Clear($key, 0, $key.Length)` after encryption/decryption
 - Added zeroing on both success and error paths
 
-### ✅ CRITICAL - Mailbox Permission Change Detection (SecurityAnalysis.psm1)
+### ✅ CRITICAL - Mailbox Permission Change Detection (SecurityAnalysis.psm1) [Initial Implementation]
 **Issue:** No detection of mailbox permission changes (FullAccess, SendAs, SendOnBehalf, folder permissions)  
 **Risk:** Attackers grant themselves access to mailboxes undetected  
 **Fix:** Added `Get-MailboxPermissionChanges` function
@@ -32,9 +122,9 @@ This security tool analyzes Exchange Online and Entra ID for malicious activity.
 - Detects FullAccess, SendAs, SendOnBehalf permission grants
 - Flags folder permissions (Owner/Editor rights)
 - Identifies grants to external principals or service/admin accounts
-- **Requires Live Testing:** Audit log queries need verification with real permission changes
+- **Note:** Rewritten in review fixes to use Search-UnifiedAuditLog correctly
 
-### ✅ CRITICAL - Inbox Rule RedirectTo Detection (MailboxAnalysis.psm1)
+### ✅ CRITICAL - Inbox Rule RedirectTo Detection (MailboxAnalysis.psm1) [Initial Implementation]
 **Issue:** Detection only checked ForwardTo, missed RedirectTo and other forwarding methods  
 **Risk:** Attackers use RedirectTo (harder to detect) or delete rules to hide evidence  
 **Fix:** Enhanced `Test-ExternalForwarding` function
@@ -42,8 +132,7 @@ This security tool analyzes Exchange Online and Entra ID for malicious activity.
 - Detects delete rules (DeleteMessage = true)
 - Flags moves to suspicious folders (RSS, Junk, hidden folders with special characters)
 - Identifies evidence-hiding patterns (delete + specific conditions)
-- Backward compatible: Added `Test-ExternalForwardingLegacy` wrapper
-- **Requires Live Testing:** Rule actions need verification with real inbox rules
+- **Note:** Enhanced further in review fixes with risk scoring
 
 ### ✅ CRITICAL - Graph API Pagination Gaps (ExportUtils.psm1, SecurityAnalysis.psm1)
 **Issue:** Some Graph calls lacked `-All` parameter or @odata.nextLink handling  
@@ -51,9 +140,8 @@ This security tool analyzes Exchange Online and Entra ID for malicious activity.
 **Fix:** Added pagination everywhere
 - Added `-All` to `Get-MgIdentityRiskDetection` (risk detection history)
 - Added `-All` to `Get-MgOauth2PermissionGrant` (OAuth consents)
-- Added @odata.nextLink loop to CA policies retrieval (line 146-157)
-- Added @odata.nextLink loop to authentication methods (line 203-215)
-- **Requires Live Testing:** Verify with tenants having >999 users, audit records, or risk detections
+- Added @odata.nextLink loop to CA policies retrieval
+- Added @odata.nextLink loop to authentication methods
 
 ### ✅ CRITICAL - cmdkey Secret Exposure Removed (GraphAppCredential.psm1)
 **Issue:** Fallback to cmdkey.exe exposed secrets in process arguments  
@@ -63,21 +151,29 @@ This security tool analyzes Exchange Online and Entra ID for malicious activity.
 - Clear error message guides users to install secure alternative
 - Prevents accidental secret exposure during app registration
 - **Breaking Change:** cmdkey fallback no longer available (security by design)
-- **Mitigation:** Users must install CredentialManager or use Windows PowerShell 5.1
 
-### ✅ HIGH - OAuth Consent Detection Gap (SecurityAnalysis.psm1)
+### ✅ HIGH - OAuth Consent Detection Gap (SecurityAnalysis.psm1) [Initial Implementation]
 **Issue:** No detection of user-level OAuth consents (phishing vector)  
 **Risk:** Attackers grant themselves delegated permissions via phishing  
 **Fix:** Added `Get-OAuthPermissionGrants` function
 - Detects user-level vs admin-consented OAuth grants
 - Flags high-risk permissions (Mail.ReadWrite, Files.ReadWrite.All, etc.)
 - Identifies external (non-Microsoft) apps with consents
-- Returns `AllGrants` and `SuspiciousGrants` for triage
+- **Note:** Enhanced in review fixes with directory audit correlation and risk scoring
 
-### ✅ HIGH - MFA/Authentication Method Change Detection (SecurityAnalysis.psm1)
+### ✅ HIGH - MFA/Authentication Method Change Detection (SecurityAnalysis.psm1) [Initial Implementation]
 **Issue:** No tracking of suspicious authentication method changes  
 **Risk:** Attackers modify MFA to maintain persistence  
 **Fix:** Added `Get-UserAuthenticationMethodChanges` function
+- Monitors user/admin security info registration, changes, deletions
+- Detects changes initiated by different users
+- Identifies burst patterns (>3 changes in 1 hour)
+- Flags failed attempts
+- **Note:** Enhanced in review fixes with weighted scoring and bounded windows
+
+---
+
+## Summary of Changes Across Branches
 - Monitors audit logs for auth method registrations/deletions
 - Flags changes initiated by different users (non self-service)
 - Detects multiple changes in short time windows (potential attack)

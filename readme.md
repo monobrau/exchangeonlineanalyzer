@@ -46,8 +46,9 @@ Start-Process 'firefox.exe' -ArgumentList (
 ## 🚀 Features
 
 ### Bulk Tenant Report Exporter
-- **📦 Single implementation**: `BulkTenantExporter.ps1` — run standalone, or from the main app (same script, `-Owner $mainForm` for a modal window centered on the main form)
-- **🔄 Integrated Mode**: "Bulk Tenant Report Exporter" button calls `BulkTenantExporter.ps1` in-process (no duplicate UI code)
+- **🌐 Web runner (recommended)**: `web-runner/Start-BulkWebRunner.ps1` — browser UI at http://127.0.0.1:8765/ (hidden workers, live log tabs, WCM lifecycle, full report matrix)
+- **📦 Legacy WinForms**: `BulkTenantExporter.ps1` — deprecated; still available standalone or via main app prompt (No = legacy)
+- **🔄 Integrated Mode**: "Bulk Tenant Report Exporter" button opens the web runner by default
 - **➕ Dynamic Tenant Management**: Add tenants on-the-fly during export (no fixed count required)
 - **🔐 Per-Tenant Authentication**: Isolated authentication sessions for each tenant
 - **👥 User Filtering**: Filter reports by specific users (name, email, or partial matches) per tenant
@@ -123,8 +124,8 @@ Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users -Scope CurrentUser -Force
 
-# Recommended: CredentialManager for app-only Graph + WCM (reports without interactive sign-in).
-# Without it, Add App / SaveToWCM uses cmdkey, which exposes secrets in process argv.
+# Required: CredentialManager for secure app-only Graph with Windows Credential Manager.
+# Without it, saving credentials is unavailable (cmdkey was removed for security).
 Install-Module CredentialManager -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Users.Actions -Scope CurrentUser -Force
 Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser -Force

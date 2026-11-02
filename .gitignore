@@ -1,5 +1,6 @@
 # Settings and Configuration Files (may contain API keys and sensitive data)
 settings.json
+web-runner/ai-review.settings.json
 settings-location.config
 *.config
 
@@ -75,4 +76,8 @@ BulkTenantWorker.ps1
 Release/
 
 # Archived: Python web API was removed from this repo (see C:\git\archives\exchangeonlineanalyzer-web-archive.tgz).
+
+# Email triage local notes and generated packs
+ClientNotes/
+Triage_*/
 

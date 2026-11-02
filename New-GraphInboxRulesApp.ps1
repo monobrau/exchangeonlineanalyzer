@@ -4,9 +4,15 @@
 .DESCRIPTION
     Creates app "River Run Security Investigator" with permissions for inbox rules, audit logs, sign-in logs,
     Conditional Access, app registrations, organization read (tenant display name via GET /organization), reports,
-    SharePoint, security alerts, and MFA. Saves to WCM when -SaveToWCM.
-    Requires: Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All (admin).
-    If an app with this name already exists, prompts to replace (delete and recreate) or cancel.
+    SharePoint, security alerts, MFA, and web-runner containment writes (User.RevokeSessions.All,
+    User.EnableDisableAccount.All, UserAuthenticationMethod.ReadWrite.All, Device.ReadWrite.All,
+    Application.ReadWrite.All, User-PasswordProfile.ReadWrite.All, DelegatedPermissionGrant.ReadWrite.All,
+    RoleManagement.ReadWrite.Directory, GroupMember.ReadWrite.All, DeviceManagementManagedDevices.ReadWrite.All,
+    DeviceManagementManagedDevices.PrivilegedOperations.All). Saves to WCM when -SaveToWCM.
+    Use -UpdateExisting to add missing application permissions and admin-consent them on the
+    current River Run Security Investigator app (or the WCM ClientId for this tenant) without
+    rotating the client secret. Create mode still prompts: Update scopes / Replace / Cancel.
+    Requires: Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All, Organization.Read.All (admin).
 .PARAMETER SaveToWCM
     Save TenantId, ClientId, ClientSecret to Windows Credential Manager for this tenant.
     Requires: Install-Module CredentialManager
@@ -14,6 +20,9 @@
     Optional. If set, passed to Connect-MgGraph for tenant-scoped sign-in.
 .PARAMETER UseDeviceCode
     Use device code sign-in instead of the default interactive/WAM flow.
+.PARAMETER UpdateExisting
+    Patch requiredResourceAccess and grant missing app-role assignments. Does not create a
+    new secret or rewrite WCM. After it finishes, run Graph Auth again for a new token.
 .EXAMPLE
     .\New-GraphInboxRulesApp.ps1 -SaveToWCM
 .EXAMPLE
@@ -25,18 +34,32 @@
 param(
     [switch]$SaveToWCM = $false,
     [string]$TenantId = $null,
-    [switch]$UseDeviceCode = $false
+    [switch]$UseDeviceCode = $false,
+    [switch]$UpdateExisting = $false
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+# Optional EOA_GRAPH_APP_JOB_ID (GUID) isolates result/log files when multiple browsers create apps in parallel.
+$graphAppJobId = [string]$env:EOA_GRAPH_APP_JOB_ID
+if ($graphAppJobId -and $graphAppJobId -match '^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+    $jobToken = $graphAppJobId.ToLowerInvariant()
+    $resultPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-result.json"
+    $script:graphAppCreateTranscriptPath = Join-Path $env:TEMP "EOA-GraphAppCreate-$jobToken-last.log"
+} else {
+    $resultPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-result.json'
+    $script:graphAppCreateTranscriptPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
+}
 $script:graphAppCreateTenantId = $null
 $script:graphAppCreateTenantDisplayName = $null
 $script:graphAppCreateClientId = $null
 $script:graphAppCreateScriptError = $null
 $script:graphAppCreateWcmSaved = $false
 $script:graphAppCreateWcmError = $null
+$script:graphAppCreateUpdatedExisting = $false
+$script:graphAppCreateRolesGranted = 0
+$script:graphAppCreateRolesAlready = 0
+$script:graphAppCreateRolesFailed = 0
 
 function Write-GraphAppCreateResultFile {
     try {
@@ -46,11 +69,38 @@ function Write-GraphAppCreateResultFile {
             ClientId          = $script:graphAppCreateClientId
             WcmSaved          = [bool]$script:graphAppCreateWcmSaved
             WcmError          = $script:graphAppCreateWcmError
+            UpdatedExisting   = [bool]$script:graphAppCreateUpdatedExisting
+            RolesGranted      = [int]$script:graphAppCreateRolesGranted
+            RolesAlready      = [int]$script:graphAppCreateRolesAlready
+            RolesFailed       = [int]$script:graphAppCreateRolesFailed
             ScriptError       = $script:graphAppCreateScriptError
             Timestamp         = (Get-Date).ToString('o')
         } | ConvertTo-Json | Set-Content -Path $resultPath -Encoding UTF8 -Force
     } catch {
         Write-Warning "Could not write result file $resultPath : $($_.Exception.Message)"
+    }
+}
+
+function Ensure-TransportDataPlatformServicePrincipal {
+    # Microsoft-managed app required before Graph messageTraces will authorize (see Graph message trace onboarding).
+    $tdpAppId = '8bd644d1-64a1-4d4b-ae52-2e0cbf64e373'
+    try {
+        $existing = @(Get-MgServicePrincipal -Filter "appId eq '$tdpAppId'" -ErrorAction SilentlyContinue)
+        if ($existing.Count -gt 0) {
+            Write-Host "Transport Data Platform service principal already present (Graph message trace)." -ForegroundColor DarkGray
+            return
+        }
+    } catch { }
+    try {
+        New-MgServicePrincipal -AppId $tdpAppId -ErrorAction Stop | Out-Null
+        Write-Host "Provisioned Transport Data Platform service principal (required for Graph messageTraces). Propagation can take a few hours." -ForegroundColor Green
+    } catch {
+        $msg = $_.Exception.Message
+        if ($msg -match 'already|ObjectConflict|duplicate|being provisioned') {
+            Write-Host "Transport Data Platform service principal already present." -ForegroundColor DarkGray
+        } else {
+            Write-Warning "Could not provision Transport Data Platform SP ($tdpAppId): $msg"
+        }
     }
 }
 
@@ -131,14 +181,18 @@ function Import-GraphAppCreateModuleStack {
     }
 }
 
-$script:graphAppCreateTranscriptPath = Join-Path $env:TEMP 'EOA-GraphAppCreate-last.log'
 try {
     Start-Transcript -Path $script:graphAppCreateTranscriptPath -Force -ErrorAction SilentlyContinue | Out-Null
 } catch { }
 
 try {
-Write-Host "`n=== Create Graph Inbox Rules App ===" -ForegroundColor Cyan
-Write-Host "Complete browser sign-in and answer the prompts below. Do not close this window until you see 'App Created' or an error." -ForegroundColor Yellow
+if ($UpdateExisting) {
+    Write-Host "`n=== Update Graph App scopes ===" -ForegroundColor Cyan
+    Write-Host "Complete browser sign-in. This adds missing application permissions on the existing app and does not rotate the secret." -ForegroundColor Yellow
+} else {
+    Write-Host "`n=== Create Graph Inbox Rules App ===" -ForegroundColor Cyan
+    Write-Host "Complete browser sign-in and answer the prompts below. Do not close this window until you see 'App Created' or an error." -ForegroundColor Yellow
+}
 Import-GraphAppCreateModuleStack
 
 $guidPattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
@@ -151,16 +205,14 @@ if ($TenantId -and $TenantId.Trim() -match $guidPattern) {
     Write-Host "Using -TenantId: $resolvedTenantId" -ForegroundColor Gray
 }
 
-$scopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
+$scopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All', 'Organization.Read.All')
 
-# Bypass WAM (mandatory since Graph SDK 2.34+) so MSAL uses the system browser with an
-# account picker instead of silently reusing the last-used Windows broker account.
+# Graph 2.37 uses the Windows account broker unless the broker is disabled here.
+# The broker can report a blank "InteractiveBrowserCredential authentication failed" after sign-in.
 $env:MSAL_FORCE_WAM = '0'
-
-# Clear inherited broker env vars from the parent process
-foreach ($k in @('AZURE_IDENTITY_DISABLE_BROKER', 'MSAL_DISABLE_BROKER', 'MSAL_EXPERIMENTAL_DISABLE_BROKER')) {
-    if (Test-Path "Env:\$k") { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
-}
+$env:AZURE_IDENTITY_DISABLE_BROKER = 'true'
+$env:MSAL_DISABLE_BROKER = '1'
+$env:MSAL_EXPERIMENTAL_DISABLE_BROKER = '1'
 
 # Isolated MSAL cache for this run (do not call Disconnect-MgGraph / GraphSession here - loading those
 # assemblies before Connect-MgGraph causes "assembly already loaded" version conflicts in pwsh).
@@ -213,20 +265,36 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             Connect-GraphWithScopes -Scopes $scopes -TenantId $resolvedTenantId -UseDeviceCode
         }
     } catch {
-        throw "Graph connect failed: $($_.Exception.Message)"
+        $detail = [string]$_.Exception.Message
+        $inner = $_.Exception.InnerException
+        while ($inner) {
+            if ($inner.Message -and $detail -notlike "*$($inner.Message)*") { $detail = "$detail $($inner.Message)" }
+            $inner = $inner.InnerException
+        }
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message -and $detail -notlike "*$($_.ErrorDetails.Message)*") {
+            $detail = "$detail $($_.ErrorDetails.Message)"
+        }
+        if ($attempt -ge $maxAttempts) { throw "Graph connect failed: $detail" }
+        Write-Host "Sign-in did not complete: $detail" -ForegroundColor Yellow
+        Write-Host "Retrying with a device code. Complete that prompt in the browser." -ForegroundColor Cyan
+        continue
     }
 
     $tenantId = (Get-MgContext).TenantId
     $script:graphAppCreateTenantId = $tenantId
-    $tenantDisplayName = $tenantId
-    $script:graphAppCreateTenantDisplayName = $tenantDisplayName
+    $tenantDisplayName = $null
     try {
         $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
         if ($org.value -and $org.value[0].displayName) {
-            $tenantDisplayName = $org.value[0].displayName
-            $script:graphAppCreateTenantDisplayName = $tenantDisplayName
+            $tenantDisplayName = [string]$org.value[0].displayName
         }
-    } catch {}
+    } catch {
+        Write-Warning "Could not read organization display name: $($_.Exception.Message)"
+    }
+    if ([string]::IsNullOrWhiteSpace($tenantDisplayName) -or $tenantDisplayName -eq $tenantId) {
+        $tenantDisplayName = $tenantId
+    }
+    $script:graphAppCreateTenantDisplayName = $tenantDisplayName
     Write-Host "Connected. Tenant: $tenantDisplayName ($tenantId)" -ForegroundColor Green
 
     Write-Host "`n>>> Is this the correct tenant? Type Y and press Enter (n = sign in to a different tenant): " -ForegroundColor Yellow -NoNewline
@@ -241,31 +309,17 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     }
 }
 
+Ensure-TransportDataPlatformServicePrincipal
+
 # Microsoft Graph resource app ID
 $graphAppId = '00000003-0000-0000-c000-000000000000'
 
-# App role IDs for security investigation report (inbox rules, audit, sign-in, CA, apps, reports, sites, alerts, MFA)
-# Plus Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All for Entra Secret Rotate (secret rotation + Add ATR)
-# Mail.Read required for Get-MgUserMailFolderMessageRule (inbox rules); MailboxSettings.Read is for auto-reply etc.
-# Organization.Read.All: explicit app-only read for GET /organization (tenant displayName); see Microsoft Graph permissions reference.
-$appRoleIds = @(
-    @{ id = '810c84a8-4a9e-49e6-bf7d-12d183f40d01'; name = 'Mail.Read' }
-    @{ id = '40f97065-369a-49f4-947c-6a255697ae91'; name = 'MailboxSettings.Read' }
-    @{ id = 'df021288-bdef-4463-88db-98f22de89214'; name = 'User.Read.All' }
-    @{ id = 'b0afded3-3588-46d8-8b3d-9842eff778da'; name = 'AuditLog.Read.All' }
-    @{ id = '7ab1d382-f21e-4acd-a863-ba3e13f7da61'; name = 'Directory.Read.All' }
-    @{ id = '498476ce-e0fe-48b0-b801-37ba7e2685c6'; name = 'Organization.Read.All' }
-    @{ id = '246dd0d5-5bd0-4def-940b-0421030a5b68'; name = 'Policy.Read.All' }
-    # Application permission required for CA Manager / app-only Conditional Access policy changes
-    @{ id = '01c0a623-fc9b-48e9-b794-0756f8e8f067'; name = 'Policy.ReadWrite.ConditionalAccess' }
-    @{ id = '9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30'; name = 'Application.Read.All' }
-    @{ id = '1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9'; name = 'Application.ReadWrite.All' }
-    @{ id = '06b708a9-e830-4db3-a914-8e69da51d44f'; name = 'AppRoleAssignment.ReadWrite.All' }
-    @{ id = '230c1aed-a721-4c5d-9cb4-a90514e508ef'; name = 'Reports.Read.All' }
-    @{ id = '332a536c-c7ef-4017-ab91-336970924f0d'; name = 'Sites.Read.All' }
-    @{ id = 'bf394140-e372-4bf9-a898-299cfc7564e5'; name = 'SecurityEvents.Read.All' }
-    @{ id = '38d9df27-64da-44fd-b7c5-a6fbac20248f'; name = 'UserAuthenticationMethod.Read.All' }
-)
+# Canonical role catalog: Get-RiverRunInvestigatorExpectedAppRoles in GraphAppCredential.psm1.
+# Existing River Run apps: Update scopes (-UpdateExisting or U at the prompt) or replace (Y).
+Import-Module (Join-Path $projectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction Stop
+$appRoleIds = @(Get-RiverRunInvestigatorExpectedAppRoles | ForEach-Object {
+    @{ id = [string]$_.Id; name = [string]$_.Name }
+})
 $requiredResourceAccess = @{
     resourceAccess = $appRoleIds | ForEach-Object { @{ id = $_.id; type = 'Role' } }
     resourceAppId = $graphAppId
@@ -273,23 +327,140 @@ $requiredResourceAccess = @{
 
 $displayName = 'River Run Security Investigator'
 
-# Check for existing app(s) with same display name
-$existingApps = @()
-try {
-    $filter = "displayName eq 'River Run Security Investigator'"
-    $found = Get-MgApplication -Filter $filter -ErrorAction SilentlyContinue
-    if ($found) {
-        $existingApps = @($found)
+function Get-ExistingInvestigatorApps {
+    $apps = @()
+    try {
+        $found = Get-MgApplication -Filter "displayName eq '$displayName'" -ErrorAction SilentlyContinue
+        if ($found) { $apps = @($found) }
+    } catch {}
+    $wcmClientId = $null
+    try {
+        Import-Module (Join-Path $projectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction Stop
+        $wcm = Get-GraphAppCredentialFromWCM -TenantId $tenantId
+        if ($wcm -and $wcm.ClientId) { $wcmClientId = [string]$wcm.ClientId }
+    } catch {}
+    if ($wcmClientId) {
+        try {
+            $byId = Get-MgApplication -Filter "appId eq '$wcmClientId'" -ErrorAction SilentlyContinue
+            if ($byId) { return @($byId) }
+        } catch {}
     }
-} catch {}
+    return @($apps)
+}
+
+function Update-ExistingInvestigatorAppRoles {
+    param([Parameter(Mandatory = $true)]$TargetApps)
+
+    foreach ($app in @($TargetApps)) {
+        Write-Host "`nUpdating requiredResourceAccess on $($app.DisplayName) ($($app.AppId))..." -ForegroundColor Yellow
+        $payloadAccess = @()
+        foreach ($r in @($app.RequiredResourceAccess)) {
+            $rid = [string]$r.ResourceAppId
+            if (-not $rid -or $rid -eq $graphAppId) { continue }
+            $payloadAccess += @{
+                resourceAppId  = $rid
+                resourceAccess = @($r.ResourceAccess | ForEach-Object { @{ id = [string]$_.Id; type = [string]$_.Type } })
+            }
+        }
+        $payloadAccess += @{
+            resourceAppId  = $graphAppId
+            resourceAccess = @($appRoleIds | ForEach-Object { @{ id = $_.id; type = 'Role' } })
+        }
+        Invoke-MgGraphRequest -Method PATCH -Uri "https://graph.microsoft.com/v1.0/applications/$($app.Id)" -Body @{
+            requiredResourceAccess = @($payloadAccess)
+        } -ErrorAction Stop
+        Write-Host "  Manifest updated." -ForegroundColor Green
+
+        $graphSp = Get-MgServicePrincipal -Filter "appId eq '$graphAppId'"
+        $sp = @(Get-MgServicePrincipal -Filter "appId eq '$($app.AppId)'" -ErrorAction SilentlyContinue) | Select-Object -First 1
+        if (-not $sp) {
+            Write-Host "Creating service principal..." -ForegroundColor Yellow
+            $sp = New-MgServicePrincipal -AppId $app.AppId
+        }
+
+        $existingRole = @{}
+        try {
+            $uri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($sp.Id)/appRoleAssignments?`$top=999"
+            do {
+                $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                foreach ($a in @($page.value)) {
+                    if ([string]$a.resourceId -eq [string]$graphSp.Id) {
+                        $existingRole[[string]$a.appRoleId] = $true
+                    }
+                }
+                $uri = $page.'@odata.nextLink'
+            } while ($uri)
+        } catch {}
+
+        Write-Host "Granting missing admin consent (app role assignments)..." -ForegroundColor Yellow
+        foreach ($role in $appRoleIds) {
+            if ($existingRole.ContainsKey([string]$role.id)) {
+                Write-Host "  $($role.name) - already consented" -ForegroundColor DarkGray
+                $script:graphAppCreateRolesAlready++
+                continue
+            }
+            try {
+                New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $sp.Id -PrincipalId $sp.Id -AppRoleId $role.id -ResourceId $graphSp.Id -ErrorAction Stop | Out-Null
+                Write-Host "  $($role.name) - granted" -ForegroundColor Green
+                $script:graphAppCreateRolesGranted++
+            } catch {
+                $msg = $_.Exception.Message
+                if ($msg -match 'already|PermissionGrant') {
+                    Write-Host "  $($role.name) - already consented" -ForegroundColor DarkGray
+                    $script:graphAppCreateRolesAlready++
+                } else {
+                    Write-Warning "  $($role.name) - $msg"
+                    $script:graphAppCreateRolesFailed++
+                }
+            }
+        }
+        $script:graphAppCreateClientId = $app.AppId
+    }
+    $script:graphAppCreateUpdatedExisting = $true
+}
+
+function Write-GraphAppUpdateComplete {
+    Write-GraphAppCreateResultFile
+    Write-Host "`n=== App scopes updated ===" -ForegroundColor Cyan
+    Write-Host "TenantId:  $tenantId"
+    Write-Host "ClientId:  $($script:graphAppCreateClientId)"
+    Write-Host "Granted:   $($script:graphAppCreateRolesGranted)  already: $($script:graphAppCreateRolesAlready)  failed: $($script:graphAppCreateRolesFailed)"
+    Write-Host "`nClient secret and WCM credentials were not changed." -ForegroundColor Green
+    Write-Host "Run Graph Auth again on this tenant so the worker gets a token with the new roles." -ForegroundColor Yellow
+    Write-Host "App-only password reset still needs the User Administrator directory role on this app." -ForegroundColor Yellow
+    Write-Host ""
+}
+
+$existingApps = Get-ExistingInvestigatorApps
+
+if ($UpdateExisting) {
+    if ($existingApps.Count -eq 0) {
+        throw "No River Run Security Investigator app (and no matching WCM ClientId) in tenant $tenantId. Use Create Graph App instead."
+    }
+    Write-Host "`nUpdating $($existingApps.Count) existing app(s):" -ForegroundColor Yellow
+    foreach ($a in $existingApps) {
+        Write-Host "  - AppId: $($a.AppId)" -ForegroundColor Gray
+    }
+    Update-ExistingInvestigatorAppRoles -TargetApps $existingApps
+    Write-GraphAppUpdateComplete
+    exit 0
+}
 
 if ($existingApps.Count -gt 0) {
     Write-Host "`nFound $($existingApps.Count) existing app(s) named '$displayName':" -ForegroundColor Yellow
     foreach ($a in $existingApps) {
         Write-Host "  - AppId: $($a.AppId)" -ForegroundColor Gray
     }
-    Write-Host "`nReplace (delete existing and create new)? (y/n): " -ForegroundColor Yellow -NoNewline
+    Write-Host "`nU = update scopes on the existing app (keeps the client secret and WCM entry)" -ForegroundColor Yellow
+    Write-Host "Y = replace (delete and create a new secret — re-export .eoa-creds)" -ForegroundColor Yellow
+    Write-Host "N = cancel" -ForegroundColor Yellow
+    Write-Host "Choice (U/Y/N): " -ForegroundColor Yellow -NoNewline
     $reply = Read-Host
+    if ($reply -ieq 'u') {
+        Update-ExistingInvestigatorAppRoles -TargetApps $existingApps
+        Write-GraphAppUpdateComplete
+        exit 0
+    }
     if ($reply -ne 'y' -and $reply -ne 'Y') {
         Write-Host "Cancelled." -ForegroundColor Gray
         exit 0
@@ -344,16 +515,20 @@ if ($SaveToWCM) {
     }
     Write-Host "`nSaving to Windows Credential Manager..." -ForegroundColor Yellow
     try {
-        $tenantDisplayName = $null
-        try {
-            $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
-            if ($org.value -and $org.value[0].displayName) {
-                $tenantDisplayName = $org.value[0].displayName
-                $script:graphAppCreateTenantDisplayName = $tenantDisplayName
+        if ([string]::IsNullOrWhiteSpace($tenantDisplayName) -or $tenantDisplayName -eq $tenantId) {
+            try {
+                $org = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/organization' -ErrorAction Stop
+                if ($org.value -and $org.value[0].displayName) {
+                    $tenantDisplayName = [string]$org.value[0].displayName
+                    $script:graphAppCreateTenantDisplayName = $tenantDisplayName
+                }
+            } catch {
+                Write-Warning "Could not read organization display name before WCM save: $($_.Exception.Message)"
             }
-        } catch {}
+        }
         Import-Module (Join-Path $projectRoot 'Modules\GraphAppCredential.psm1') -Force -ErrorAction Stop
-        Save-GraphAppCredentialToWCM -TenantId $tenantId -ClientId $app.AppId -ClientSecret $cred.secretText -TenantDisplayName $tenantDisplayName
+        $nameToStore = if ($tenantDisplayName -and $tenantDisplayName -ne $tenantId) { $tenantDisplayName } else { $null }
+        Save-GraphAppCredentialToWCM -TenantId $tenantId -ClientId $app.AppId -ClientSecret $cred.secretText -TenantDisplayName $nameToStore
         if (Get-GraphAppCredentialFromWCM -TenantId $tenantId) {
             $script:graphAppCreateWcmSaved = $true
             Write-Host "  Saved and verified in Credential Manager." -ForegroundColor Green
@@ -387,9 +562,13 @@ Write-Host ""
 catch {
     $script:graphAppCreateScriptError = $_.Exception.Message
     Write-GraphAppCreateResultFile
-    Write-Error $_
+    Write-Host ""
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
 finally {
     try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+    Write-Host ""
+    Write-Host "Press Enter to close this window." -ForegroundColor Yellow
+    try { [void](Read-Host) } catch { }
 }

@@ -1,10 +1,14 @@
 <#
 .SYNOPSIS
-Bulk Tenant Report Exporter - Standalone Application
+Bulk Tenant Report Exporter - Standalone Application (legacy WinForms)
 
 .DESCRIPTION
 Standalone PowerShell GUI application for exporting security investigation reports for multiple tenants.
 Allows dynamic tenant addition and sequential authentication for bulk report generation.
+
+**Deprecated:** Prefer the web runner at `web-runner/Start-BulkWebRunner.ps1` (http://127.0.0.1:8765/).
+The main app Bulk Tenant Report Exporter button opens the web UI by default; this script remains
+available as a fallback for one release.
 
 .NOTES
 Version: 1.0
@@ -26,6 +30,30 @@ param(
     [Parameter(Mandatory = $false)]
     $Owner = $null
 )
+
+function ConvertTo-TicketNumbersJsonArray {
+    param([string]$Json)
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $Json }
+    # Char codes avoid PS 5.1 treating [ or " as type/string delimiters in the regex source
+    $q = [char]34
+    $lb = [char]91
+    $rb = [char]93
+    $openGroup = [char]40
+    $closeGroup = [char]41
+    $plus = [char]43
+    $caret = [char]94
+    $colon = [char]58
+    $scalarPat = $q + 'TicketNumbers' + $q + '\s*:\s*' + $q + $openGroup + $lb + $caret + $q + $rb + $plus + $closeGroup + $q
+    $arrayRepl = $q + 'TicketNumbers' + $q + $colon + $lb + $q + '$1' + $q + $rb
+    return $Json -replace $scalarPat, $arrayRepl
+}
+
+function Get-TruncatedPreview {
+    param([string]$Text, [int]$MaxChars = 200)
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    if ($Text.Length -le $MaxChars) { return $Text }
+    return $Text.Substring(0, $MaxChars)
+}
 
 # Windows Forms expects STA. PowerShell 7 defaults to MTA; self-restart does not run when launched
 # in-process from Exchange Online Analyzer (already STA and $Owner is not cross-process).
@@ -156,8 +184,6 @@ function Search-AndValidateUsers {
 # Import required modules
 Write-Host "Loading required modules..." -ForegroundColor Cyan
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\ExportUtils.psm1"
-$reportAnalysisPath = Join-Path $script:scriptRoot 'Modules\ReportAnalysis.psm1'
-if (Test-Path $reportAnalysisPath) { Safe-ImportModule -ModulePath $reportAnalysisPath }
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\GraphOnline.psm1"
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\BrowserIntegration.psm1"
 Safe-ImportModule -ModulePath "$script:scriptRoot\Modules\Settings.psm1"
@@ -241,7 +267,7 @@ $bulkPresetComboBox.Size = New-Object System.Drawing.Size(240, 20)
 $bulkPresetComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $presets = Get-ExportPresets
 foreach ($name in $presets.Keys) { $bulkPresetComboBox.Items.Add($name) | Out-Null }
-$bulkPresetComboBox.SelectedIndex = 0  # Custom
+$bulkPresetComboBox.SelectedIndex = 0  # BEC / Business Email Compromise (first preset)
 
 # Days Back
 $bulkDaysLabel = New-Object System.Windows.Forms.Label
@@ -261,7 +287,7 @@ $bulkConfigGroupBox.Controls.AddRange(@($bulkPresetLabel, $bulkPresetComboBox, $
 # Report Selection section
 $bulkReportsGroupBox = New-Object System.Windows.Forms.GroupBox
 $bulkReportsGroupBox.Text = "Select Reports to Export"
-# Width 400 so right edge is 15+400=415; status/log column starts at 430 (15px gap — was 420 wide and overlapped at 435)
+# Width 400 so right edge is 15+400=415; status/log column starts at 430 (15px gap -- was 420 wide and overlapped at 435)
 $bulkReportsGroupBox.Location = New-Object System.Drawing.Point(15, 230)
 $bulkReportsGroupBox.Size = New-Object System.Drawing.Size(400, 360)
 
@@ -296,6 +322,17 @@ $bulkUnifiedAuditLogsCheckBox.Text = "Unified Audit Logs"
 $bulkUnifiedAuditLogsCheckBox.Location = New-Object System.Drawing.Point(10, 65)
 $bulkUnifiedAuditLogsCheckBox.Size = New-Object System.Drawing.Size(360, 20)
 $bulkUnifiedAuditLogsCheckBox.Checked = $false
+
+$bulkExchangeItemAggregatedCheckBox = New-Object System.Windows.Forms.CheckBox
+$bulkExchangeItemAggregatedCheckBox.Text = "Incl. Aggregated (opt-in)"
+$bulkExchangeItemAggregatedCheckBox.Location = New-Object System.Drawing.Point(220, 65)
+$bulkExchangeItemAggregatedCheckBox.Size = New-Object System.Drawing.Size(200, 20)
+$bulkExchangeItemAggregatedCheckBox.Checked = $false
+$bulkExchangeItemAggregatedCheckBox.Enabled = $false
+$bulkUnifiedAuditLogsCheckBox.add_CheckedChanged({
+    $bulkExchangeItemAggregatedCheckBox.Enabled = $bulkUnifiedAuditLogsCheckBox.Checked
+    if (-not $bulkUnifiedAuditLogsCheckBox.Checked) { $bulkExchangeItemAggregatedCheckBox.Checked = $false }
+})
 
 $bulkInboxRulesCheckBox = New-Object System.Windows.Forms.CheckBox
 $bulkInboxRulesCheckBox.Text = "Inbox Rules"
@@ -450,6 +487,8 @@ $bulkPresetComboBox.add_SelectedIndexChanged({
     if (-not $preset) { return }  # Custom - no change
     $bulkMessageTraceCheckBox.Checked = $preset.IncludeMessageTrace
     $bulkUnifiedAuditLogsCheckBox.Checked = $preset.IncludeUnifiedAuditLogs
+    $bulkExchangeItemAggregatedCheckBox.Checked = if ($null -ne $preset.IncludeExchangeItemAggregated) { [bool]$preset.IncludeExchangeItemAggregated } else { $false }
+    $bulkExchangeItemAggregatedCheckBox.Enabled = $bulkUnifiedAuditLogsCheckBox.Checked
     $bulkInboxRulesCheckBox.Checked = $preset.IncludeInboxRules
     $bulkTransportRulesCheckBox.Checked = $preset.IncludeTransportRules
     $bulkMailFlowCheckBox.Checked = $preset.IncludeMailFlowConnectors
@@ -472,6 +511,12 @@ $bulkPresetComboBox.add_SelectedIndexChanged({
     $bulkSharePointOneDriveFileActionsCheckBox.Checked = $preset.IncludeSharePointOneDriveFileActions
 })
 
+# Apply default BEC preset now that the change handler is wired (SelectedIndex was set earlier).
+if ($bulkPresetComboBox.Items.Count -gt 0) {
+    $bulkPresetComboBox.SelectedIndex = -1
+    $bulkPresetComboBox.SelectedIndex = 0
+}
+
 # Select All button click handler
 $bulkSelectAllBtn.add_Click({
     $bulkMessageTraceCheckBox.Checked = $true
@@ -493,6 +538,7 @@ $bulkSelectAllBtn.add_Click({
     $bulkIntuneDevicesCheckBox.Checked = $true
     $bulkUnifiedAuditLogsCheckBox.Checked = $true
     $bulkSharePointOneDriveFileActionsCheckBox.Checked = $true
+    # Leave Aggregated unchecked (opt-in)
 })
 
 # Deselect All button click handler
@@ -518,6 +564,7 @@ $bulkDeselectAllBtn.add_Click({
     $bulkDLPViolationsCheckBox.Checked = $false
     $bulkIntuneDevicesCheckBox.Checked = $false
     $bulkUnifiedAuditLogsCheckBox.Checked = $false
+    $bulkExchangeItemAggregatedCheckBox.Checked = $false
     $bulkSharePointOneDriveFileActionsCheckBox.Checked = $false
 })
 
@@ -525,7 +572,7 @@ $bulkDeselectAllBtn.add_Click({
 $bulkReportsScrollPanel.Controls.AddRange(@(
     $bulkSelectAllBtn, $bulkDeselectAllBtn,
     # Exchange Online / Email Reports
-    $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
+    $bulkMessageTraceCheckBox, $bulkUnifiedAuditLogsCheckBox, $bulkExchangeItemAggregatedCheckBox, $bulkInboxRulesCheckBox, $bulkTransportRulesCheckBox,
     $bulkMailFlowCheckBox, $bulkMailboxForwardingCheckBox,
     # Entra ID / Identity & Access Reports
     $bulkAuditLogsCheckBox, $bulkSignInLogsCheckBox, $bulkMfaCoverageCheckBox, $bulkCaPoliciesCheckBox, $bulkAppRegistrationsCheckBox,
@@ -579,81 +626,10 @@ $bulkCloseButton.add_Click({
     $bulkForm.Close()
 })
 
-# Analyze Single Report button (rule-based analysis on one report folder)
-$bulkAnalyzeSingleBtn = New-Object System.Windows.Forms.Button
-$bulkAnalyzeSingleBtn.Text = "Analyze Single Report"
-$bulkAnalyzeSingleBtn.Location = New-Object System.Drawing.Point(720, 110)
-$bulkAnalyzeSingleBtn.Size = New-Object System.Drawing.Size(160, 24)
-$bulkAnalyzeSingleBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-$bulkAnalyzeSingleBtn.ForeColor = [System.Drawing.Color]::White
-$bulkAnalyzeSingleBtn.add_Click({
-    $defaultPath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select a single report folder (e.g. SecurityInvestigation\TenantName\2024-03-09_123456)"
-    $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        try {
-            if (Get-Command Invoke-ReportFolderAnalysis -ErrorAction SilentlyContinue) {
-                $result = Invoke-ReportFolderAnalysis -Path $fbd.SelectedPath -WriteOutputFiles
-                $analysisResultForm = New-Object System.Windows.Forms.Form
-                $analysisResultForm.Text = "Rule-Based Analysis Results"
-                $analysisResultForm.Size = New-Object System.Drawing.Size(900, 600)
-                $analysisResultForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                $tb = New-Object System.Windows.Forms.RichTextBox
-                $tb.Dock = 'Fill'
-                $tb.ReadOnly = $true
-                $tb.Font = New-Object System.Drawing.Font('Consolas', 9)
-                $tb.Text = $result.Summary
-                $analysisResultForm.Controls.Add($tb)
-                $analysisResultForm.ShowDialog()
-            } else {
-                [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            }
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        }
-    }
-})
-
-# Analyze All Reports button (rule-based analysis on existing report folders)
-$bulkAnalyzeAllBtn = New-Object System.Windows.Forms.Button
-$bulkAnalyzeAllBtn.Text = "Analyze All Reports"
-$bulkAnalyzeAllBtn.Location = New-Object System.Drawing.Point(720, 138)
-$bulkAnalyzeAllBtn.Size = New-Object System.Drawing.Size(160, 24)
-$bulkAnalyzeAllBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-$bulkAnalyzeAllBtn.ForeColor = [System.Drawing.Color]::White
-$bulkAnalyzeAllBtn.add_Click({
-    $defaultPath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
-    $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        try {
-            if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                $rankForm = New-Object System.Windows.Forms.Form
-                $rankForm.Text = "Bulk Tenant Risk Ranking"
-                $rankForm.Size = New-Object System.Drawing.Size(850, 500)
-                $rankForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                $dg = New-Object System.Windows.Forms.DataGridView
-                $dg.Dock = 'Fill'
-                $dg.AutoGenerateColumns = $true
-                $dg.DataSource = $results
-                $rankForm.Controls.Add($dg)
-                $rankForm.ShowDialog()
-            } else {
-                [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            }
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        }
-    }
-})
-
 # Add controls to main panel
 $bulkMainPanel.Controls.AddRange(@(
     $bulkTitleLabel, $bulkDescLabel, $bulkConfigGroupBox, $bulkReportsGroupBox,
-    $bulkProgressLabel, $bulkStatusTextBox, $bulkStartButton, $bulkAnalyzeSingleBtn, $bulkAnalyzeAllBtn, $bulkCloseButton
+    $bulkProgressLabel, $bulkStatusTextBox, $bulkStartButton, $bulkCloseButton
 ))
 
 # Add panel to form
@@ -703,6 +679,7 @@ $bulkStartButton.add_Click({
         IncludeDLPViolations = $bulkDLPViolationsCheckBox.Checked
         IncludeIntuneDevices = $bulkIntuneDevicesCheckBox.Checked
         IncludeUnifiedAuditLogs = $bulkUnifiedAuditLogsCheckBox.Checked
+        IncludeExchangeItemAggregated = $bulkExchangeItemAggregatedCheckBox.Checked
         IncludeSharePointOneDriveFileActions = $bulkSharePointOneDriveFileActionsCheckBox.Checked
         SignInLogsDaysBack = $signInLogsDays
         MessageTraceDaysBack = $days
@@ -768,7 +745,8 @@ $bulkStartButton.add_Click({
         try {
             $null = [System.Management.Automation.PSParser]::Tokenize($workerScriptContent, [ref]$syntaxErrors)
             if ($syntaxErrors.Count -gt 0) {
-                $errorMsg = "Worker script has syntax errors:`n$($syntaxErrors | ForEach-Object { "Line $($_.Token.StartLine): $($_.Message)" } | Out-String)"
+                $syntaxErrorLines = $syntaxErrors | ForEach-Object { "Line $($_.Token.StartLine): $($_.Message)" }
+                $errorMsg = "Worker script has syntax errors:`n$($syntaxErrorLines | Out-String)"
                 Write-Host $errorMsg -ForegroundColor Red
                 [System.Windows.Forms.MessageBox]::Show($errorMsg, "Syntax Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                 $bulkForm.ShowDialog() | Out-Null
@@ -1174,42 +1152,6 @@ $bulkStartButton.add_Click({
         }
     })
 
-    # Analyze All Reports button - rule-based bulk analysis (no LLM)
-    $analyzeAllReportsBtn = New-Object System.Windows.Forms.Button
-    $analyzeAllReportsBtn.Text = "Analyze All Reports"
-    $analyzeAllReportsBtn.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $analyzeAllReportsBtn.Location = New-Object System.Drawing.Point(795, 98)
-    $analyzeAllReportsBtn.Size = New-Object System.Drawing.Size(160, 35)
-    $analyzeAllReportsBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
-    $analyzeAllReportsBtn.ForeColor = [System.Drawing.Color]::White
-    $analyzeAllReportsBtn.add_Click({
-        $defaultPath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
-        $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fbd.Description = "Select parent folder with tenant subfolders (e.g. SecurityInvestigation)"
-        $fbd.SelectedPath = if (Test-Path $defaultPath) { $defaultPath } else { [Environment]::GetFolderPath('MyDocuments') }
-        if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            try {
-                if (Get-Command Get-BulkTenantAnalysis -ErrorAction SilentlyContinue) {
-                    $results = Get-BulkTenantAnalysis -ParentFolder $fbd.SelectedPath -WriteOutputFiles
-                    $bulkForm = New-Object System.Windows.Forms.Form
-                    $bulkForm.Text = "Bulk Tenant Risk Ranking"
-                    $bulkForm.Size = New-Object System.Drawing.Size(850, 500)
-                    $bulkForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-                    $dg = New-Object System.Windows.Forms.DataGridView
-                    $dg.Dock = 'Fill'
-                    $dg.AutoGenerateColumns = $true
-                    $dg.DataSource = $results
-                    $bulkForm.Controls.Add($dg)
-                    $bulkForm.ShowDialog()
-                } else {
-                    [System.Windows.Forms.MessageBox]::Show("ReportAnalysis module not loaded.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-                }
-            } catch {
-                [System.Windows.Forms.MessageBox]::Show("Analysis failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
-        }
-    })
-
     # Create Panel for client authentication rows
     $authPanel = New-Object System.Windows.Forms.Panel
     $authPanel.Location = New-Object System.Drawing.Point(15, 180)
@@ -1225,7 +1167,7 @@ $bulkStartButton.add_Click({
     $clientRowSpacing = 10  # Increased spacing between rows
 
     # Add controls to form
-    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $refreshTenantNamesBtn, $analyzeAllReportsBtn, $authPanel))
+    $authConsoleForm.Controls.AddRange(@($authTitleLabel, $authInstructionsLabel, $addTenantBtn, $expandAllBtn, $collapseAllBtn, $createGraphAppBtn, $deleteGraphAppBtn, $clearLocalWcmBtn, $exportAppCredsBtn, $importAppCredsBtn, $refreshTenantNamesBtn, $authPanel))
 
     # Close button
     $authCloseBtn = New-Object System.Windows.Forms.Button
@@ -1469,7 +1411,8 @@ $bulkStartButton.add_Click({
         if ($script:selectedUsers -and $script:selectedUsers.Count -gt 0) {
             # Escape single quotes in UPNs and build array argument
             $escapedUsers = $script:selectedUsers | ForEach-Object { $_.Replace("'", "''") }
-            $selectedUsersArg = " -SelectedUsers @('$($escapedUsers -join "','")')"
+            $joinedUsers = $escapedUsers -join "','"
+            $selectedUsersArg = " -SelectedUsers @('$joinedUsers')"
         }
         # SECURITY: Escape all user-controlled arguments
         if (Get-Command Escape-PowerShellArgument -ErrorAction SilentlyContinue) {
@@ -1676,7 +1619,8 @@ try {
                     try {
                         $statusContent = Get-Content $statusFile -Tail 10 -ErrorAction SilentlyContinue
                         if ($statusContent) {
-                            $script:authStatusTextBox.AppendText("Last status messages:`r`n$($statusContent -join "`r`n")`r`n")
+                            $statusJoined = $statusContent -join [Environment]::NewLine
+                            $script:authStatusTextBox.AppendText("Last status messages:`r`n$statusJoined`r`n")
                             Write-Host "Last status messages:" -ForegroundColor Yellow
                             $statusContent | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
                         }
@@ -1948,7 +1892,7 @@ try {
 
         # Graph Status Indicator (for minimized view)
         $graphStatusLabel = New-Object System.Windows.Forms.Label
-        $graphStatusLabel.Text = "Graph: ○"
+        $graphStatusLabel.Text = "Graph: -"
         $graphStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
         $graphStatusLabel.Location = New-Object System.Drawing.Point(480, 15)
         $graphStatusLabel.Size = New-Object System.Drawing.Size(100, 20)
@@ -1957,7 +1901,7 @@ try {
 
         # Exchange Status Indicator (for minimized view)
         $exchangeStatusLabel = New-Object System.Windows.Forms.Label
-        $exchangeStatusLabel.Text = "Exchange: ○"
+        $exchangeStatusLabel.Text = "Exchange: -"
         $exchangeStatusLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
         $exchangeStatusLabel.Location = New-Object System.Drawing.Point(590, 15)
         $exchangeStatusLabel.Size = New-Object System.Drawing.Size(120, 20)
@@ -2310,7 +2254,8 @@ try {
             }
 
             if (-not $emails -or $emails.Count -eq 0) {
-                [System.Windows.Forms.MessageBox]::Show("No emails matching tenant domains found in ticket content.`n`nTenant domains: $($state.TenantDomains -join ', ')", "No Emails Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                $domainsLabel = $state.TenantDomains -join ', '
+                [System.Windows.Forms.MessageBox]::Show("No emails matching tenant domains found in ticket content.`n`nTenant domains: $domainsLabel", "No Emails Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                 return
             }
 
@@ -2679,7 +2624,8 @@ try {
                             $controls.UserValidationLabel.Text = "Validated: $($validatedUsers.Count) user(s)"
                             $controls.UserValidationLabel.ForeColor = [System.Drawing.Color]::Green
                             $script:authStatusTextBox.AppendText("Client $clientNum : Found $($validatedUsers.Count) user(s)`r`n")
-                            [System.Windows.Forms.MessageBox]::Show("Found and validated $($validatedUsers.Count) user(s) for Client $clientNum :`n`n$($validatedUsers -join "`n")", "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                            $validatedUsersLabel = $validatedUsers -join [Environment]::NewLine
+                            [System.Windows.Forms.MessageBox]::Show("Found and validated $($validatedUsers.Count) user(s) for Client $clientNum :`n`n$validatedUsersLabel", "Validation Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                         } else {
                             if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
                                 $script:clientValidatedUsers.Remove($clientNum)
@@ -2819,7 +2765,7 @@ try {
                     $script:authStatusTextBox.AppendText("Client ${clientNum}: Response file does not exist. Checking if command file exists...`r`n")
                     if (Test-Path $commandFile) {
                         $cmdContent = Get-Content $commandFile -Raw -ErrorAction SilentlyContinue
-                        $script:authStatusTextBox.AppendText("Client ${clientNum}: Command file still exists with content: '$cmdContent'`r`n")
+                        $script:authStatusTextBox.AppendText(('Client ' + $clientNum + ' - Command file still exists with content: ' + $cmdContent + "`r`n"))
                         $script:authStatusTextBox.AppendText("Client ${clientNum}: Worker script may not be polling. Check PowerShell window.`r`n")
                     } else {
                         $script:authStatusTextBox.AppendText("Client ${clientNum}: Command file was removed (worker script should have received it).`r`n")
@@ -2936,7 +2882,7 @@ try {
                     if ($script:clientAuthControls[$clientNum].DateRangeToLabel) { $script:clientAuthControls[$clientNum].DateRangeToLabel.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeToLabel.Enabled = $true }
                     if ($script:clientAuthControls[$clientNum].DateRangeEndPicker) { $script:clientAuthControls[$clientNum].DateRangeEndPicker.Visible = $true; $script:clientAuthControls[$clientNum].DateRangeEndPicker.Enabled = $true }
                 }
-                $this.Text = "Graph Auth [OK]"
+                $this.Text = 'Graph Auth [OK]'
                 
                 # Hide app reg tenant selector and interactive checkbox, show user filtering controls after Graph Auth
                 if ($script:clientAuthControls[$clientNum].AppRegTenantLabel) { $script:clientAuthControls[$clientNum].AppRegTenantLabel.Visible = $false }
@@ -3056,7 +3002,7 @@ try {
                 $script:clientAuthStates[$clientNum].ExchangeAuthenticated = $true
                 $script:clientAuthControls[$clientNum].StatusLabel.Text = "Exchange Auth Complete - Ready to Generate Reports"
                 $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Green
-                $this.Text = "Exchange Auth [OK]"
+                $this.Text = 'Exchange Auth [OK]'
                 $this.Enabled = $false
                 $script:authStatusTextBox.AppendText("Client $clientNum Exchange Online authentication successful!`r`n")
                 $script:authStatusTextBox.AppendText("Client $clientNum Ready to generate reports. Click 'Generate Reports' button when ready.`r`n")
@@ -3173,15 +3119,18 @@ try {
             $filteredTicketContent = ''
             
             Write-Host "Generate Reports: Processing ticket content (length: $($ticketContent.Length))" -ForegroundColor Cyan
-            Write-Host "Generate Reports: Ticket textbox exists: $($null -ne $script:clientAuthControls[$clientNum].TicketTextBox)" -ForegroundColor Gray
-            Write-Host "Generate Reports: Ticket textbox text length: $($script:clientAuthControls[$clientNum].TicketTextBox.Text.Length)" -ForegroundColor Gray
+            $ticketBoxPresent = $null -ne $script:clientAuthControls[$clientNum].TicketTextBox
+            $ticketBoxLen = $script:clientAuthControls[$clientNum].TicketTextBox.Text.Length
+            Write-Host "Generate Reports: Ticket textbox exists: $ticketBoxPresent" -ForegroundColor Gray
+            Write-Host "Generate Reports: Ticket textbox text length: $ticketBoxLen" -ForegroundColor Gray
             if (-not [string]::IsNullOrWhiteSpace($ticketContent)) {
                 Write-Host "Generate Reports: Ticket content is not empty, extracting..." -ForegroundColor Green
                 try {
                     Import-Module "$script:scriptRoot\Modules\Settings.psm1" -Force -ErrorAction SilentlyContinue
                     if (Get-Command Extract-TicketNumbers -ErrorAction SilentlyContinue) {
                         $ticketNumbers = Extract-TicketNumbers -TicketContent $ticketContent
-                        Write-Host "Generate Reports: Extracted $($ticketNumbers.Count) ticket number(s): $($ticketNumbers -join ', ')" -ForegroundColor Cyan
+                        $ticketNumbersLabel = $ticketNumbers -join ', '
+                        Write-Host "Generate Reports: Extracted $($ticketNumbers.Count) ticket number(s): $ticketNumbersLabel" -ForegroundColor Cyan
                     } else {
                         Write-Warning "Extract-TicketNumbers function not found"
                     }
@@ -3204,10 +3153,12 @@ try {
                 }
             } else {
                 Write-Host "Generate Reports: No ticket content provided (textbox is empty or whitespace)" -ForegroundColor Yellow
-                Write-Host "Generate Reports: Ticket content check - IsNullOrWhiteSpace: $([string]::IsNullOrWhiteSpace($ticketContent))" -ForegroundColor Yellow
+                $ticketContentEmpty = [string]::IsNullOrWhiteSpace($ticketContent)
+                Write-Host "Generate Reports: Ticket content check - IsNullOrWhiteSpace: $ticketContentEmpty" -ForegroundColor Yellow
             }
             
-            Write-Host "Generate Reports: After extraction - TicketNumbers=$($ticketNumbers.Count) ($($ticketNumbers -join ', ')), FilteredContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
+            $ticketNumbersLabel = $ticketNumbers -join ', '
+            Write-Host "Generate Reports: After extraction - TicketNumbers=$($ticketNumbers.Count) ($ticketNumbersLabel), FilteredContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
             
             # Store ticket data
             if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
@@ -3218,7 +3169,7 @@ try {
             }
             
             # Get validated users or search terms only when user filtering is ON.
-            # If the filter is OFF, leave $selectedUsers empty so sign-in logs and other Graph calls use tenant-wide (all-users) scope — stale validated users must not apply.
+            # If the filter is OFF, leave $selectedUsers empty so sign-in logs and other Graph calls use tenant-wide (all-users) scope -- stale validated users must not apply.
             $selectedUsers = @()
             if ($controls.UserFilterCheckBox.Checked) {
             if ($script:clientValidatedUsers.ContainsKey($clientNum)) {
@@ -3244,36 +3195,32 @@ try {
                     # Convert to JSON array for proper parsing (ensure it's always an array, not a string)
                     $searchTermsJson = ($searchTermsArray | ConvertTo-Json -Compress)
                     # Ensure it's a JSON array (not a string) - if ConvertTo-Json returned a string, wrap it
-                    if ($searchTermsJson -notmatch '^\[') {
-                        $searchTermsJson = "[$searchTermsJson]"
+                    if (-not $searchTermsJson.StartsWith([string][char]91)) {
+                        $searchTermsJson = ([string][char]91) + $searchTermsJson + ([string][char]93)
                     }
                     $command = "GENERATE_REPORTS_SEARCH:$searchTermsJson"
                     # Include ticket data if we have ticket numbers OR ticket content
-                    Write-Host "Generate Reports (SEARCH): Checking ticket data - TicketNumbers.Count=$($ticketNumbers.Count), FilteredContent length=$($filteredTicketContent.Length), IsNullOrWhiteSpace=$([string]::IsNullOrWhiteSpace($filteredTicketContent))" -ForegroundColor Cyan
+                    $filteredEmpty = [string]::IsNullOrWhiteSpace($filteredTicketContent)
+                    Write-Host "Generate Reports (SEARCH): Checking ticket data - TicketNumbers.Count=$($ticketNumbers.Count), FilteredContent length=$($filteredTicketContent.Length), IsNullOrWhiteSpace=$filteredEmpty" -ForegroundColor Cyan
                     if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
                         Write-Host "Generate Reports (SEARCH): Ticket data condition met, including in command" -ForegroundColor Green
                         # Ensure ticketNumbers is always an array for JSON serialization
                         $ticketNumsArray = if ($ticketNumbers -is [array]) { $ticketNumbers } else { @($ticketNumbers) }
-                        Write-Host "Generate Reports (SEARCH): TicketNumbers array: $($ticketNumsArray -join ', ')" -ForegroundColor Gray
+                        $ticketNumsLabel = $ticketNumsArray -join ', '
+                        Write-Host "Generate Reports (SEARCH): TicketNumbers array: $ticketNumsLabel" -ForegroundColor Gray
                         # Force TicketNumbers to be serialized as an array by ensuring it's always an array type
                         $ticketDataObj = [PSCustomObject]@{
                             TicketNumbers = [array]$ticketNumsArray
                             TicketContent = [string]$filteredTicketContent
                         }
                         $ticketDataJson = ($ticketDataObj | ConvertTo-Json -Compress -Depth 10)
-                        Write-Host "Generate Reports (SEARCH): Ticket data JSON before verification: $($ticketDataJson.Substring(0, [Math]::Min(300, $ticketDataJson.Length)))..." -ForegroundColor Gray
-                        # Verify TicketNumbers is an array in JSON (should be ["1811523"], not "1811523")
-                        if ($ticketDataJson -notmatch '"TicketNumbers"\s*:\s*\[') {
-                            Write-Warning "TicketNumbers was not serialized as an array, fixing..."
-                            # Manually fix the JSON if needed
-                            $ticketDataJson = $ticketDataJson -replace '"TicketNumbers"\s*:\s*"([^"]+)"', '"TicketNumbers":["$1"]'
-                            Write-Host "Generate Reports (SEARCH): Ticket data JSON after fix: $($ticketDataJson.Substring(0, [Math]::Min(300, $ticketDataJson.Length)))..." -ForegroundColor Yellow
-                        }
+                        Write-Host "Generate Reports (SEARCH): Ticket data JSON before verification: $(Get-TruncatedPreview $ticketDataJson 300)..." -ForegroundColor Gray
+                        $ticketDataJson = ConvertTo-TicketNumbersJsonArray -Json $ticketDataJson
                         $command += "|TICKET_DATA:$ticketDataJson"
-                        Write-Host "Generate Reports (SEARCH): Including ticket data - TicketNumbers=$($ticketNumsArray.Count) ($($ticketNumsArray -join ', ')), TicketContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
-                        Write-Host "Generate Reports (SEARCH): Ticket data JSON preview: $($ticketDataJson.Substring(0, [Math]::Min(200, $ticketDataJson.Length)))..." -ForegroundColor Gray
+                        Write-Host "Generate Reports (SEARCH): Including ticket data - TicketNumbers=$($ticketNumsArray.Count) ($ticketNumsLabel), TicketContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
+                        Write-Host "Generate Reports (SEARCH): Ticket data JSON preview: $(Get-TruncatedPreview $ticketDataJson 200)..." -ForegroundColor Gray
                     } else {
-                        Write-Host "Generate Reports (SEARCH): No ticket data to include (TicketNumbers.Count=$($ticketNumbers.Count), FilteredContent empty=$([string]::IsNullOrWhiteSpace($filteredTicketContent)))" -ForegroundColor Yellow
+                        Write-Host "Generate Reports (SEARCH): No ticket data to include (TicketNumbers.Count=$($ticketNumbers.Count), FilteredContent empty=$filteredEmpty)" -ForegroundColor Yellow
                     }
                     # Append date range if valid (End >= Start)
                     if ($controls.DateRangeStartPicker -and $controls.DateRangeEndPicker) {
@@ -3289,7 +3236,7 @@ try {
                             Write-Host "Generate Reports (SEARCH): Including date range $($drStart.ToString('yyyy-MM-dd')) to $($drEnd.ToString('yyyy-MM-dd'))" -ForegroundColor Cyan
                         }
                     }
-                    Write-Host "Generate Reports (SEARCH): Final command being sent: $($command.Substring(0, [Math]::Min(500, $command.Length)))..." -ForegroundColor Cyan
+                    Write-Host "Generate Reports (SEARCH): Final command being sent: $(Get-TruncatedPreview $command 500)..." -ForegroundColor Cyan
                     $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 300
 
                     # Auto-minimize when report generation starts
@@ -3313,7 +3260,7 @@ try {
                 }
             }
             } else {
-                Write-Host "Generate Reports: User filter disabled — using tenant-wide scope (e.g. all users for sign-in logs)" -ForegroundColor Cyan
+                Write-Host "Generate Reports: User filter disabled -- using tenant-wide scope (e.g. all users for sign-in logs)" -ForegroundColor Cyan
             }
             
             # Build GENERATE_REPORTS command
@@ -3321,7 +3268,8 @@ try {
             if ($selectedUsers.Count -gt 0) {
                 $usersJson = ($selectedUsers | ConvertTo-Json -Compress)
                 $command += "|SelectedUsers:$usersJson"
-                Write-Host "Generate Reports: Adding SelectedUsers ($($selectedUsers.Count)): $($selectedUsers -join ', ')" -ForegroundColor Green
+                $selectedUsersLabel = $selectedUsers -join ', '
+                Write-Host "Generate Reports: Adding SelectedUsers ($($selectedUsers.Count)): $selectedUsersLabel" -ForegroundColor Green
             }
             # Include ticket data if we have ticket numbers OR ticket content
             if ($ticketNumbers.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
@@ -3333,15 +3281,11 @@ try {
                     TicketContent = [string]$filteredTicketContent
                 }
                 $ticketDataJson = ($ticketDataObj | ConvertTo-Json -Compress -Depth 10)
-                # Verify TicketNumbers is an array in JSON (should be ["1811523"], not "1811523")
-                if ($ticketDataJson -notmatch '"TicketNumbers"\s*:\s*\[') {
-                    Write-Warning "TicketNumbers was not serialized as an array, fixing..."
-                    # Manually fix the JSON if needed
-                    $ticketDataJson = $ticketDataJson -replace '"TicketNumbers"\s*:\s*"([^"]+)"', '"TicketNumbers":["$1"]'
-                }
+                $ticketDataJson = ConvertTo-TicketNumbersJsonArray -Json $ticketDataJson
                 $command += "|TICKET_DATA:$ticketDataJson"
-                Write-Host "Generate Reports: Including ticket data - TicketNumbers=$($ticketNumsArray.Count) ($($ticketNumsArray -join ', ')), TicketContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
-                Write-Host "Generate Reports: Ticket data JSON preview: $($ticketDataJson.Substring(0, [Math]::Min(200, $ticketDataJson.Length)))..." -ForegroundColor Gray
+                $ticketNumsLabel = $ticketNumsArray -join ', '
+                Write-Host "Generate Reports: Including ticket data - TicketNumbers=$($ticketNumsArray.Count) ($ticketNumsLabel), TicketContent length=$($filteredTicketContent.Length)" -ForegroundColor Cyan
+                Write-Host "Generate Reports: Ticket data JSON preview: $(Get-TruncatedPreview $ticketDataJson 200)..." -ForegroundColor Gray
             }
             # Append date range if valid (End >= Start)
             if ($controls.DateRangeStartPicker -and $controls.DateRangeEndPicker) {
@@ -3365,16 +3309,18 @@ try {
             $this.Text = "Generating..."
             $script:authStatusTextBox.AppendText("Client $($clientNum): Sending generate reports command...`r`n")
             if ($ticketNumbers.Count -gt 0) {
-                $script:authStatusTextBox.AppendText("Client $($clientNum): Ticket numbers detected: $(($ticketNumbers | ForEach-Object { "#$_" }) -join ', ')`r`n")
+                $ticketNumsLabel = ($ticketNumbers | ForEach-Object { "#$_" }) -join ', '
+                $script:authStatusTextBox.AppendText("Client $($clientNum): Ticket numbers detected: $ticketNumsLabel`r`n")
             }
             if (-not [string]::IsNullOrWhiteSpace($filteredTicketContent)) {
-                $script:authStatusTextBox.AppendText("Client $($clientNum): Ticket content included ($($filteredTicketContent.Length) characters)`r`n")
+                $ticketLen = $filteredTicketContent.Length
+                $script:authStatusTextBox.AppendText("Client $($clientNum): Ticket content included, $ticketLen characters`r`n")
             }
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
             
             # Use longer timeout for report generation (reports can take several minutes, but we just need GENERATE_REPORTS_STARTED response)
-            Write-Host "Generate Reports: Final command being sent: $($command.Substring(0, [Math]::Min(500, $command.Length)))..." -ForegroundColor Cyan
+            Write-Host "Generate Reports: Final command being sent: $(Get-TruncatedPreview $command 500)..." -ForegroundColor Cyan
             $reportResponse = Send-CommandToSession -ClientNumber $clientNum -Command $command -TimeoutSeconds 300
 
             # Auto-minimize when report generation starts
@@ -3402,7 +3348,7 @@ try {
             $clientNum = $this.Tag
             if (-not $clientNum) { $clientNum = $capturedClientNum }
             if (-not $clientNum -or -not $script:clientAuthStates[$clientNum].GraphAuthenticated) { return }
-            $script:authStatusTextBox.AppendText("Client ${clientNum}: Signing out Microsoft Graph in worker session...`r`n")
+            $script:authStatusTextBox.AppendText(('Client ' + $clientNum + ' - Signing out Microsoft Graph in worker session...' + "`r`n"))
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
             $resp = Send-CommandToSession -ClientNumber $clientNum -Command "GRAPH_DISCONNECT" -TimeoutSeconds 30
@@ -3412,10 +3358,12 @@ try {
                 if ($script:clientAuthControls[$clientNum].GraphButton) { $script:clientAuthControls[$clientNum].GraphButton.Text = "Graph Auth" }
                 $required = Get-CurrentRequiredAuth
                 if ($required.NeedsExchange -and $script:clientAuthStates[$clientNum].ExchangeAuthenticated) {
-                    $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph signed out — sign in to Graph again for reports that need it"
+                    $script:clientAuthControls[$clientNum].StatusLabel.Text = "Graph signed out - sign in to Graph again for reports that need it"
                     $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Orange
                 } else {
-                    $script:clientAuthControls[$clientNum].StatusLabel.Text = if ($required.NeedsGraph) { "Ready for Graph Auth" } else { $script:clientAuthControls[$clientNum].StatusLabel.Text }
+                    if ($required.NeedsGraph) {
+                        $script:clientAuthControls[$clientNum].StatusLabel.Text = "Ready for Graph Auth"
+                    }
                     $script:clientAuthControls[$clientNum].StatusLabel.ForeColor = [System.Drawing.Color]::Blue
                 }
                 if ($script:clientAuthControls[$clientNum].AppRegTenantLabel) { $script:clientAuthControls[$clientNum].AppRegTenantLabel.Visible = $required.NeedsGraph }
@@ -3427,9 +3375,9 @@ try {
                 $script:clientAuthControls[$clientNum].UserValidationLabel.Visible = $false
                 Update-AuthButtonVisibilityForClient -ClientNumber $clientNum
                 Update-GenerateReportsButtonForClient -ClientNumber $clientNum
-                $script:authStatusTextBox.AppendText("Client ${clientNum}: Graph signed out. Click Graph Auth to sign in again.`r`n")
+                $script:authStatusTextBox.AppendText(('Client ' + $clientNum + ' - Graph signed out. Use Graph Auth to sign in again.' + "`r`n"))
             } else {
-                $script:authStatusTextBox.AppendText("Client ${clientNum}: Graph sign-out failed or timed out (response: $resp). Try Reset Auth.`r`n")
+                $script:authStatusTextBox.AppendText(('Client ' + $clientNum + ' - Graph sign-out failed or timed out (response: ' + $resp + '). Try Reset Auth.' + "`r`n"))
             }
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
@@ -3671,13 +3619,13 @@ try {
                 } else {
                     $fileContent = Get-Content $commandFile -Raw -ErrorAction SilentlyContinue
                 }
-                Write-Host "Send-CommandToSession: Verified file exists, content: '$fileContent'" -ForegroundColor Gray
+                Write-Host ('Send-CommandToSession: Verified file exists, content: ' + $fileContent) -ForegroundColor Gray
             } else {
-                Write-Host "Send-CommandToSession: WARNING - File was written but doesn't exist!" -ForegroundColor Red
+                Write-Host "Send-CommandToSession: WARNING - File was written but does not exist!" -ForegroundColor Red
             }
             
-            $script:authStatusTextBox.AppendText("Client ${ClientNumber}: Sent command '$Command'`r`n")
-            $script:authStatusTextBox.AppendText("Client ${ClientNumber}: Command file: $commandFile`r`n")
+            $script:authStatusTextBox.AppendText(('Client ' + $ClientNumber + ' - Sent command ' + $Command + "`r`n"))
+            $script:authStatusTextBox.AppendText(('Client ' + $ClientNumber + ' - Command file: ' + $commandFile + "`r`n"))
             $script:authStatusTextBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
         } catch {
@@ -3695,7 +3643,8 @@ try {
         while (((Get-Date) - $startTime).TotalSeconds -lt $TimeoutSeconds) {
             $pollCount++
             if ($pollCount % 50 -eq 0) {
-                Write-Host "Send-CommandToSession: Still waiting... ($pollCount polls, $(([int]((Get-Date) - $startTime).TotalSeconds))s elapsed)" -ForegroundColor Gray
+                $elapsedSec = [int]((Get-Date) - $startTime).TotalSeconds
+                Write-Host "Send-CommandToSession: Still waiting... ($pollCount polls, ${elapsedSec}s elapsed)" -ForegroundColor Gray
             }
             
             if (Test-Path $responseFile) {
@@ -3718,7 +3667,7 @@ try {
         }
         
         Write-Host "Send-CommandToSession: Timeout waiting for response after $TimeoutSeconds seconds" -ForegroundColor Red
-        $script:authStatusTextBox.AppendText("Client ${ClientNumber}: Timeout waiting for response to '$Command'`r`n")
+        $script:authStatusTextBox.AppendText(('Client ' + $ClientNumber + ' - Timeout waiting for response to ' + $Command + "`r`n"))
         return $null
     }
 
@@ -3804,8 +3753,8 @@ try {
                         # Show/hide warning label based on license warning
                         if ($signInLogsWarning -and $controls.WarningLabel -and -not $controls.WarningLabel.IsDisposed) {
                             try {
-                                if (-not $controls.WarningLabel.Visible -or $controls.WarningLabel.Text -ne "⚠ WARNING: $warningText") {
-                                    $controls.WarningLabel.Text = "⚠ WARNING: Sign-in logs require Azure AD Premium license - pull manually"
+                                if (-not $controls.WarningLabel.Visible -or $controls.WarningLabel.Text -ne "WARNING: $warningText") {
+                                    $controls.WarningLabel.Text = "WARNING: Sign-in logs require Azure AD Premium license - pull manually"
                                     $controls.WarningLabel.ForeColor = [System.Drawing.Color]::Orange
                                     $controls.WarningLabel.Visible = $true
                                 }
@@ -3885,10 +3834,10 @@ try {
                                     }
                                 }
                                 if ($isGraphAuth) {
-                                    $controls.GraphStatusLabel.Text = "Graph: [OK]"
+                                    $controls.GraphStatusLabel.Text = 'Graph: OK'
                                     $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Green
                                 } else {
-                                    $controls.GraphStatusLabel.Text = "Graph: ○"
+                                    $controls.GraphStatusLabel.Text = 'Graph: -'
                                     $controls.GraphStatusLabel.ForeColor = [System.Drawing.Color]::Gray
                                 }
                             } catch {
@@ -3906,10 +3855,10 @@ try {
                                     }
                                 }
                                 if ($isExchangeAuth) {
-                                    $controls.ExchangeStatusLabel.Text = "Exchange: [OK]"
+                                    $controls.ExchangeStatusLabel.Text = 'Exchange: OK'
                                     $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Green
                                 } else {
-                                    $controls.ExchangeStatusLabel.Text = "Exchange: ○"
+                                    $controls.ExchangeStatusLabel.Text = 'Exchange: -'
                                     $controls.ExchangeStatusLabel.ForeColor = [System.Drawing.Color]::Gray
                                 }
                             } catch {
