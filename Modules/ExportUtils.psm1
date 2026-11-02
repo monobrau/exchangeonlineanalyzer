@@ -7590,7 +7590,10 @@ function New-SecurityInvestigationZip {
         [Parameter(Mandatory=$false)]
         [string]$ZipFileName,
         [Parameter(Mandatory=$false)]
-        [hashtable]$MemberberrySlimPackage = $null
+        [hashtable]$MemberberrySlimPackage = $null,
+
+        # When set, keep CSV/JSON/txt after zipping. Default: remove on Linux/lab (zip download only); keep on Windows.
+        [switch]$KeepSourceFiles
     )
 
     try {
@@ -7710,6 +7713,48 @@ function New-SecurityInvestigationZip {
                 
                 $zipPaths += $zipPath
             }
+        }
+
+        $removeSources = -not $KeepSourceFiles
+        if ($removeSources -and [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+                [System.Runtime.InteropServices.OSPlatform]::Windows)) {
+            $removeSources = $false
+        }
+        # Linux/lab: only the zip is downloaded from the web UI — drop loose report files after a successful zip.
+        if ($removeSources -and $zipPaths.Count -gt 0 -and $filesToZip.Count -gt 0) {
+            $outFull = [System.IO.Path]::GetFullPath($OutputFolder)
+            $removed = 0
+            foreach ($f in $filesToZip) {
+                try {
+                    $fp = [System.IO.Path]::GetFullPath($f.FullName)
+                    if (-not $fp.StartsWith($outFull, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                    if ($fp.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) { continue }
+                    Remove-Item -LiteralPath $fp -Force -ErrorAction Stop
+                    $removed++
+                } catch {
+                    Write-Warning "Could not remove zipped source $($f.Name): $($_.Exception.Message)"
+                }
+            }
+            # Also drop empty CSV/JSON that were skipped from the zip
+            foreach ($file in $csvJsonFiles) {
+                try {
+                    if (-not (Test-Path -LiteralPath $file.FullName)) { continue }
+                    $fp = [System.IO.Path]::GetFullPath($file.FullName)
+                    if (-not $fp.StartsWith($outFull, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                    Remove-Item -LiteralPath $fp -Force -ErrorAction Stop
+                    $removed++
+                } catch { }
+            }
+            Get-ChildItem -LiteralPath $OutputFolder -Directory -Recurse -ErrorAction SilentlyContinue |
+                Sort-Object { $_.FullName.Length } -Descending |
+                ForEach-Object {
+                    try {
+                        if (-not (Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue)) {
+                            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch { }
+                }
+            Write-Host "Removed $removed uncompressed report file(s); zip(s) kept in $OutputFolder" -ForegroundColor DarkGray
         }
 
         # Return the first zip path for backward compatibility (or comma-separated list)

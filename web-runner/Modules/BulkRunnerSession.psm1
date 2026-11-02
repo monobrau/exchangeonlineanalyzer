@@ -1922,4 +1922,76 @@ function Get-BulkRunnerKnownReportFolderHints {
     return @($list)
 }
 
-Export-ModuleMember -Function Set-BulkRunnerWorkerVisibility, New-BulkRunnerSession, Add-BulkRunnerTenant, Remove-BulkRunnerTenant, Restart-BulkRunnerTenant, Stop-BulkRunnerSessionTenants, Test-BulkRunnerTenantWorkerAlive, Get-BulkRunnerTenantWorkerState, Ensure-BulkRunnerTenantWorker, Send-BulkRunnerCommand, Get-BulkRunnerTenantStatus, Get-BulkRunnerAppRegistrations, Get-BulkRunnerSessionSummary, Get-BulkRunnerDefaultSettings, Get-BulkRunnerDefaultReportSelections, ConvertTo-BulkRunnerReportSelectionsHashtable, Merge-BulkRunnerReportSelections, Set-BulkRunnerSessionReportSelections, Get-BulkRunnerTenantReportSelectionsOverride, Test-BulkRunnerTenantUsesSessionReportDefaults, Get-BulkRunnerEffectiveReportSelections, Write-BulkRunnerTenantReportSelectionsFile, Expand-BulkRunnerGenerateReportsCommand, Sync-BulkRunnerSessionManifest, Sync-BulkRunnerSessionManifestIfMissing, Sync-BulkRunnerTenantResponseFromFile, Sync-BulkRunnerSessionResponsesFromFiles, Set-BulkRunnerTenantUiState, Save-BulkRunnerSessionManifest, Get-BulkRunnerSessionHistory, Archive-BulkRunnerSessionHistory, Unarchive-BulkRunnerSessionHistory, Remove-BulkRunnerSessionHistory, Get-BulkRunnerSessionManifest, New-BulkRunnerSessionFromManifest, Export-BulkRunnerContainmentPacks, Copy-BulkRunnerContainmentZips, Get-BulkRunnerKnownReportFolderHints
+function Get-BulkRunnerTenantReportZipFiles {
+    <#
+    .SYNOPSIS
+        SecurityInvestigation / Containment zip files in the tenant's report output folder.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)][int]$ClientNumber
+    )
+    $key = [string]$ClientNumber
+    if (-not $Session.Tenants.ContainsKey($key)) {
+        throw "Unknown tenant client number: $ClientNumber"
+    }
+    $folder = [string]$Session.Tenants[$key].OutputFolder
+    if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder)) {
+        return @()
+    }
+    $folderFull = [System.IO.Path]::GetFullPath($folder)
+    return @(Get-ChildItem -LiteralPath $folder -Filter '*.zip' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        ForEach-Object {
+            $full = [System.IO.Path]::GetFullPath($_.FullName)
+            if (-not $full.StartsWith($folderFull, [StringComparison]::OrdinalIgnoreCase)) { return }
+            [pscustomobject]@{
+                name         = $_.Name
+                sizeBytes    = [long]$_.Length
+                lastWriteUtc = $_.LastWriteTimeUtc.ToString('o')
+            }
+        })
+}
+
+function Resolve-BulkRunnerTenantReportZipPath {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)][int]$ClientNumber,
+        [string]$Name
+    )
+    $key = [string]$ClientNumber
+    if (-not $Session.Tenants.ContainsKey($key)) {
+        throw "Unknown tenant client number: $ClientNumber"
+    }
+    $folder = [string]$Session.Tenants[$key].OutputFolder
+    if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder)) {
+        throw 'No report output folder for this tenant. Generate reports first.'
+    }
+    $folderFull = [System.IO.Path]::GetFullPath($folder)
+    $zips = @(Get-ChildItem -LiteralPath $folder -Filter '*.zip' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+    if ($zips.Count -eq 0) {
+        throw 'No zip files in the report folder yet.'
+    }
+    $pick = $null
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        # Prefer SecurityInvestigation*.zip over Containment_*.zip
+        $pick = @($zips | Where-Object { $_.Name -like 'SecurityInvestigation*.zip' } | Select-Object -First 1)
+        if (-not $pick -or $pick.Count -eq 0) { $pick = @($zips | Select-Object -First 1) }
+        $pick = $pick[0]
+    } else {
+        $leaf = [System.IO.Path]::GetFileName($Name)
+        if ($leaf -ne $Name -or $leaf -match '[\\/]' -or $leaf -match '\.\.') {
+            throw 'Invalid zip name.'
+        }
+        $pick = @($zips | Where-Object { $_.Name -eq $leaf } | Select-Object -First 1)
+        if (-not $pick -or $pick.Count -eq 0) { throw "Zip not found: $leaf" }
+        $pick = $pick[0]
+    }
+    $full = [System.IO.Path]::GetFullPath($pick.FullName)
+    if (-not $full.StartsWith($folderFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Zip path is outside the report folder.'
+    }
+    return $full
+}
+
+Export-ModuleMember -Function Set-BulkRunnerWorkerVisibility, New-BulkRunnerSession, Add-BulkRunnerTenant, Remove-BulkRunnerTenant, Restart-BulkRunnerTenant, Stop-BulkRunnerSessionTenants, Test-BulkRunnerTenantWorkerAlive, Get-BulkRunnerTenantWorkerState, Ensure-BulkRunnerTenantWorker, Send-BulkRunnerCommand, Get-BulkRunnerTenantStatus, Get-BulkRunnerAppRegistrations, Get-BulkRunnerSessionSummary, Get-BulkRunnerDefaultSettings, Get-BulkRunnerDefaultReportSelections, ConvertTo-BulkRunnerReportSelectionsHashtable, Merge-BulkRunnerReportSelections, Set-BulkRunnerSessionReportSelections, Get-BulkRunnerTenantReportSelectionsOverride, Test-BulkRunnerTenantUsesSessionReportDefaults, Get-BulkRunnerEffectiveReportSelections, Write-BulkRunnerTenantReportSelectionsFile, Expand-BulkRunnerGenerateReportsCommand, Sync-BulkRunnerSessionManifest, Sync-BulkRunnerSessionManifestIfMissing, Sync-BulkRunnerTenantResponseFromFile, Sync-BulkRunnerSessionResponsesFromFiles, Set-BulkRunnerTenantUiState, Save-BulkRunnerSessionManifest, Get-BulkRunnerSessionHistory, Archive-BulkRunnerSessionHistory, Unarchive-BulkRunnerSessionHistory, Remove-BulkRunnerSessionHistory, Get-BulkRunnerSessionManifest, New-BulkRunnerSessionFromManifest, Export-BulkRunnerContainmentPacks, Copy-BulkRunnerContainmentZips, Get-BulkRunnerKnownReportFolderHints, Get-BulkRunnerTenantReportZipFiles, Resolve-BulkRunnerTenantReportZipPath

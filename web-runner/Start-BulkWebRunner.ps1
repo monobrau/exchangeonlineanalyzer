@@ -35,6 +35,7 @@ if ([string]::IsNullOrWhiteSpace([string]$env:TEMP)) {
 if ([string]::IsNullOrWhiteSpace([string]$env:TMP)) { $env:TMP = [string]$env:TEMP }
 $script:RunnerRoot = $PSScriptRoot
 $script:ProjectRoot = Split-Path $PSScriptRoot -Parent
+. (Join-Path $script:RunnerRoot 'LabUsers.ps1')
 $script:ListenLan = [bool]$ListenLan
 $script:ListenPort = $Port
 Import-Module (Join-Path $script:RunnerRoot 'Modules\BulkRunnerSession.psm1') -Force
@@ -160,12 +161,20 @@ function Write-ByteResponse {
         [System.Net.HttpListenerResponse]$Response,
         [byte[]]$Bytes,
         [string]$ContentType,
-        [int]$StatusCode = 200
+        [int]$StatusCode = 200,
+        [string]$ContentDisposition = $null,
+        [string]$SetCookie = $null
     )
     try {
         if (-not $Response.OutputStream.CanWrite) { return }
         $Response.StatusCode = $StatusCode
         $Response.ContentType = $ContentType
+        if (-not [string]::IsNullOrWhiteSpace($ContentDisposition)) {
+            $Response.AddHeader('Content-Disposition', $ContentDisposition)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($SetCookie)) {
+            $Response.Headers.Add('Set-Cookie', $SetCookie)
+        }
         $Response.ContentLength64 = $Bytes.Length
         $Response.OutputStream.Write($Bytes, 0, $Bytes.Length)
     } finally {
@@ -225,6 +234,48 @@ function Get-TriageRequestQueryValue {
     return ''
 }
 
+function Get-GraphAppJobPublicView {
+    param([string]$LogPath)
+    $deviceCode = $null
+    $deviceUrl = 'https://login.microsoft.com/device'
+    $message = $null
+    $deviceFile = if ($LogPath) { $LogPath -replace '-last\.log$','-device.json' } else { $null }
+    if ($deviceFile -and (Test-Path -LiteralPath $deviceFile)) {
+        try {
+            $pending = Get-Content -LiteralPath $deviceFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($pending.user_code) { $deviceCode = [string]$pending.user_code }
+            if ($pending.verification_uri) { $deviceUrl = [string]$pending.verification_uri }
+        } catch { }
+    }
+    if ($LogPath -and (Test-Path -LiteralPath $LogPath)) {
+        try {
+            $lines = @(Get-Content -LiteralPath $LogPath -Tail 80 -ErrorAction Stop)
+        } catch {
+            $lines = @()
+        }
+        foreach ($line in $lines) {
+            $text = [string]$line
+            if ($text -match '(?i)Secret\s*:') { continue }
+            if ($text -match '(?i)enter the code\s+([A-Z0-9]{6,16})') {
+                $deviceCode = $Matches[1].ToUpperInvariant()
+            }
+            if ($text -match 'https?://\S+') {
+                $url = $Matches[0].TrimEnd('.,)')
+                if ($url -match '(?i)device|login\.microsoft') { $deviceUrl = $url }
+            }
+            $trim = $text.Trim()
+            if ($trim -and $trim -notmatch '^(?i)(transcript|windows powershell|\*+|start time|end time|machine:|username:)') {
+                $message = $trim
+            }
+        }
+    }
+    return [pscustomobject]@{
+        DeviceCode = $deviceCode
+        DeviceUrl  = $deviceUrl
+        Message    = $message
+    }
+}
+
 function Handle-ApiRequest {
     param(
         [string]$Method,
@@ -241,10 +292,24 @@ function Handle-ApiRequest {
         return @{ ok = $true; shuttingDown = $true }
     }
 
+    if ($Method -eq 'GET' -and $Path -eq '/api/lab-users') {
+        return @{ ok = $true; users = @(Get-LabUsers) }
+    }
+    if ($Method -eq 'POST' -and $Path -eq '/api/lab-users') {
+        if (-not $Body) { throw 'Missing person.' }
+        $saved = Save-LabUser -Name ([string]$Body.name) -Email ([string]$Body.email) -MemberIdentifier ([string]$Body.memberIdentifier) -Id ([string]$Body.id)
+        return @{ ok = $true; user = $saved; users = @(Get-LabUsers) }
+    }
+    if ($Method -eq 'POST' -and $Path -eq '/api/lab-users/delete') {
+        if (-not $Body) { throw 'Missing person.' }
+        Remove-LabUser -Id ([string]$Body.id)
+        return @{ ok = $true; users = @(Get-LabUsers) }
+    }
+
     if ($Method -eq 'GET' -and $Path -eq '/api/health') {
         return @{
             ok       = $true
-            version  = '0.5.1'
+            version  = '0.5.2'
             pid      = $PID
             projectRoot = $script:ProjectRoot
             hiddenWorkers = (-not $ShowWorkers)
@@ -260,6 +325,7 @@ function Handle-ApiRequest {
                 noWaitCommands        = $true
                 multiUserSessions     = $true
                 appRegPermissionCheck = $true
+                reportZipDownload     = $true
                 hiddenWorkers         = $true
                 wcmManagement         = $true
                 workerLogTabs         = $true
@@ -462,7 +528,7 @@ function Handle-ApiRequest {
             if (-not $Body) { throw 'Finish a review before writing the ticket note.' }
             $audience = [string]$Body.audience
             if ([string]::IsNullOrWhiteSpace($audience)) { $audience = 'all' }
-            return @{ ok = $true; result = (Invoke-TriageMemberberryNote -SettingsPath $aiSettingsPath -Review ([string]$Body.review) -Ticket ([string]$Body.ticket) -TicketNumber ([string]$Body.ticketNumber) -Company ([string]$Body.company) -Contact ([string]$Body.contact) -Audience $audience -Actions $Body.actions -Revision ([string]$Body.revision) -CurrentDrafts ([string]$Body.currentDrafts)) }
+            return @{ ok = $true; result = (Invoke-TriageMemberberryNote -SettingsPath $aiSettingsPath -Review ([string]$Body.review) -Ticket ([string]$Body.ticket) -TicketNumber ([string]$Body.ticketNumber) -Company ([string]$Body.company) -Contact ([string]$Body.contact) -Audience $audience -Actions $Body.actions -Revision ([string]$Body.revision) -CurrentDrafts ([string]$Body.currentDrafts) -TechnicianName ([string]$Body.technicianName)) }
         }
         if ($Method -eq 'POST' -and $Path -eq '/api/triage/memberberry-save') {
             if (-not $Body) { throw 'Enter the note to add before saving.' }
@@ -718,12 +784,16 @@ function Handle-ApiRequest {
             $proc = $script:GraphAppJob.Process
             $running = $false
             try { $running = ($null -ne $proc -and -not $proc.HasExited) } catch { $running = $false }
+            $jobView = Get-GraphAppJobPublicView -LogPath $script:GraphAppJob.LogPath
             if ($running) {
                 return @{
-                    running   = $true
-                    processId = $script:GraphAppJob.ProcessId
-                    logPath   = $script:GraphAppJob.LogPath
-                    updated   = [bool]$script:GraphAppJob.UpdateExisting
+                    running    = $true
+                    processId  = $script:GraphAppJob.ProcessId
+                    logPath    = $script:GraphAppJob.LogPath
+                    updated    = [bool]$script:GraphAppJob.UpdateExisting
+                    deviceCode = $jobView.DeviceCode
+                    deviceUrl  = $jobView.DeviceUrl
+                    message    = $jobView.Message
                 }
             }
             $result = $null
@@ -733,12 +803,15 @@ function Handle-ApiRequest {
             $exitCode = $null
             try { $exitCode = $proc.ExitCode } catch { }
             return @{
-                running   = $false
-                processId = $script:GraphAppJob.ProcessId
-                exitCode  = $exitCode
-                result    = $result
-                logPath   = $script:GraphAppJob.LogPath
-                updated   = [bool]$script:GraphAppJob.UpdateExisting
+                running    = $false
+                processId  = $script:GraphAppJob.ProcessId
+                exitCode   = $exitCode
+                result     = $result
+                logPath    = $script:GraphAppJob.LogPath
+                updated    = [bool]$script:GraphAppJob.UpdateExisting
+                deviceCode = $jobView.DeviceCode
+                deviceUrl  = $jobView.DeviceUrl
+                message    = $jobView.Message
             }
         }
 
@@ -747,13 +820,29 @@ function Handle-ApiRequest {
             if ($script:GraphAppJob -and $script:GraphAppJob.Process) {
                 $busy = $false
                 try { $busy = -not $script:GraphAppJob.Process.HasExited } catch { }
-                if ($busy) { throw 'A Graph app console is already open. Finish or close it, then retry.' }
+                if ($busy) {
+                    $jobView = Get-GraphAppJobPublicView -LogPath $script:GraphAppJob.LogPath
+                    return @{
+                        started        = $true
+                        alreadyRunning = $true
+                        processId      = $script:GraphAppJob.ProcessId
+                        deviceCode     = $jobView.DeviceCode
+                        deviceUrl      = $jobView.DeviceUrl
+                        message        = 'A sign-in is already waiting. Use the code at the top of this page.'
+                    }
+                }
             }
             $jobId = if ($script:RequestBrowserId) { [string]$script:RequestBrowserId } else { [guid]::NewGuid().ToString('D') }
             $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -NoWait -JobId $jobId
             $script:GraphAppJob = $outcome
             $script:GraphAppJob | Add-Member -NotePropertyName UpdateExisting -NotePropertyValue $false -Force
-            return @{ started = $true; processId = $outcome.ProcessId; logPath = $outcome.LogPath }
+            return @{
+                started    = $true
+                processId  = $outcome.ProcessId
+                logPath    = $outcome.LogPath
+                deviceCode = $outcome.UserCode
+                deviceUrl  = $outcome.VerificationUri
+            }
         }
 
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/update-graph-app-scopes') {
@@ -761,13 +850,31 @@ function Handle-ApiRequest {
             if ($script:GraphAppJob -and $script:GraphAppJob.Process) {
                 $busy = $false
                 try { $busy = -not $script:GraphAppJob.Process.HasExited } catch { }
-                if ($busy) { throw 'A Graph app console is already open. Finish or close it, then retry.' }
+                if ($busy) {
+                    $jobView = Get-GraphAppJobPublicView -LogPath $script:GraphAppJob.LogPath
+                    return @{
+                        started        = $true
+                        alreadyRunning = $true
+                        processId      = $script:GraphAppJob.ProcessId
+                        deviceCode     = $jobView.DeviceCode
+                        deviceUrl      = $jobView.DeviceUrl
+                        message        = 'A sign-in is already waiting. Use the code at the top of this page.'
+                        updated        = $true
+                    }
+                }
             }
             $jobId = if ($script:RequestBrowserId) { [string]$script:RequestBrowserId } else { [guid]::NewGuid().ToString('D') }
             $outcome = Invoke-GraphAppCreateWithWcmSave -ProjectRoot $script:ProjectRoot -TenantId $tid -UpdateExisting -NoWait -JobId $jobId
             $script:GraphAppJob = $outcome
             $script:GraphAppJob | Add-Member -NotePropertyName UpdateExisting -NotePropertyValue $true -Force
-            return @{ started = $true; processId = $outcome.ProcessId; logPath = $outcome.LogPath; updated = $true }
+            return @{
+                started    = $true
+                processId  = $outcome.ProcessId
+                logPath    = $outcome.LogPath
+                deviceCode = $outcome.UserCode
+                deviceUrl  = $outcome.VerificationUri
+                updated    = $true
+            }
         }
 
         if ($Method -eq 'POST' -and $Path -eq '/api/wcm/delete-graph-app') {
@@ -1197,6 +1304,40 @@ function Handle-ApiRequest {
                 tenantOverride     = $override
                 effective          = Get-BulkRunnerEffectiveReportSelections -Session $script:BulkSession -ClientNumber $clientNumber
             }
+        }
+    }
+
+    if ($Method -eq 'GET' -and $Path -match '^/api/tenants/(\d+)/report-zips$') {
+        if (-not $script:BulkSession) { throw 'No session.' }
+        $clientNumber = [int]$Matches[1]
+        $zips = @(Get-BulkRunnerTenantReportZipFiles -Session $script:BulkSession -ClientNumber $clientNumber)
+        $folder = $null
+        if ($script:BulkSession.Tenants.ContainsKey([string]$clientNumber)) {
+            $folder = $script:BulkSession.Tenants[[string]$clientNumber].OutputFolder
+        }
+        return @{
+            outputFolder = $folder
+            zips         = @($zips)
+            count        = $zips.Count
+        }
+    }
+
+    if ($Method -eq 'GET' -and $Path -match '^/api/tenants/(\d+)/report-zip$') {
+        if (-not $script:BulkSession) { throw 'No session.' }
+        $clientNumber = [int]$Matches[1]
+        $name = ''
+        if ($RequestUrl -and -not [string]::IsNullOrWhiteSpace($RequestUrl.Query)) {
+            if ($RequestUrl.Query -match '[?&]name=([^&]*)') {
+                $name = [System.Net.WebUtility]::UrlDecode($Matches[1])
+            }
+        }
+        $zipPath = Resolve-BulkRunnerTenantReportZipPath -Session $script:BulkSession -ClientNumber $clientNumber -Name $name
+        $leaf = [System.IO.Path]::GetFileName($zipPath)
+        return @{
+            __fileDownload = $true
+            path           = $zipPath
+            contentType    = 'application/zip'
+            fileName       = $leaf
         }
     }
 
@@ -1757,8 +1898,20 @@ try {
                     }
                 }
 
-                $jsonDepth = if ($path -like '/api/curate/*' -or $path -like '/api/investigate/*' -or $path -like '/api/triage/*') { 12 } else { 8 }
-                Write-JsonResponse -Response $response -Body $result -Depth $jsonDepth -SetCookie $setCookie
+                if ($result -and $result.__fileDownload -eq $true) {
+                    $filePath = [string]$result.path
+                    if (-not $filePath -or -not (Test-Path -LiteralPath $filePath)) {
+                        throw "Download file not found: $filePath"
+                    }
+                    $bytes = [System.IO.File]::ReadAllBytes($filePath)
+                    $ctype = if ($result.contentType) { [string]$result.contentType } else { 'application/octet-stream' }
+                    $fname = if ($result.fileName) { [string]$result.fileName } else { [System.IO.Path]::GetFileName($filePath) }
+                    $disp = 'attachment; filename="{0}"' -f ($fname -replace '"', '')
+                    Write-ByteResponse -Response $response -Bytes $bytes -ContentType $ctype -ContentDisposition $disp -SetCookie $setCookie
+                } else {
+                    $jsonDepth = if ($path -like '/api/curate/*' -or $path -like '/api/investigate/*' -or $path -like '/api/triage/*') { 12 } else { 8 }
+                    Write-JsonResponse -Response $response -Body $result -Depth $jsonDepth -SetCookie $setCookie
+                }
                 if ($script:ShutdownRequested) {
                     Write-Host "Shutdown requested - stopping listener." -ForegroundColor Yellow
                     try { $listener.Stop() } catch { }

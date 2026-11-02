@@ -58,7 +58,7 @@ function resolveContainmentState(clientNumber, existing = {}) {
   if (hasContainmentPayload(existing.containment)) return existing.containment;
   return readContainmentFromSessionStorage(clientNumber);
 }
-let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, multiUserSessions: false, appRegPermissionCheck: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false, deviceCodeAuth: false, isWindowsHost: true };
+let serverFeatures = { sessionHistory: false, sessionHistoryActions: false, reportSelections: false, exportPresets: false, noWaitCommands: false, multiUserSessions: false, appRegPermissionCheck: false, reportZipDownload: false, hiddenWorkers: true, wcmManagement: false, workerLogTabs: false, liongardIntegration: false, huntressIntegration: false, sentinelOneIntegration: false, deviceCodeAuth: false, isWindowsHost: true };
 const uiStateSyncTimers = new Map();
 const sessionReportSyncTimer = { id: null };
 const HISTORY_SORT_STORAGE = { saved: 'bulkRunnerHistorySort.saved', archived: 'bulkRunnerHistorySort.archived' };
@@ -2204,16 +2204,43 @@ async function ensureWorkerForCommands(clientNumber, { restartIfDead = true, sho
   }, 60000);
 }
 
+function showGraphAppDeviceCode(status) {
+  if (!status?.deviceCode) return;
+  const url = status.deviceUrl || 'https://login.microsoft.com/device';
+  const prev = pendingDeviceLogins.get('Graph app');
+  if (prev && prev.code === status.deviceCode && prev.url === url) return;
+  pendingDeviceLogins.set('Graph app', { code: status.deviceCode, url });
+  renderDeviceLoginBanner();
+  log(`Graph app sign-in code ${status.deviceCode}. Use the box at the top of this page.`);
+}
+
 async function waitForGraphAppJob(started) {
   if (!started?.started) return started;
-  log(`Graph app console opened (PID ${started.processId}). Finish sign-in there — other runner actions stay available.`);
+  showGraphAppDeviceCode(started);
+  if (started.alreadyRunning && !started.deviceCode) {
+    log('A sign-in is already waiting. Looking for its code...');
+  } else if (!started.deviceCode) {
+    log(serverFeatures.deviceCodeAuth
+      ? 'Graph app sign-in started. The code will show at the top of this page.'
+      : `Graph app sign-in started (PID ${started.processId}). Finish it in the browser.`);
+  }
   const deadline = Date.now() + 10 * 60 * 1000;
+  let lastMessage = '';
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const st = await api('/api/wcm/graph-app-job', {}, 10000);
-    if (!st?.running) return st;
+    showGraphAppDeviceCode(st);
+    if (st?.message && st.message !== lastMessage && !/secret\s*:/i.test(st.message)) {
+      lastMessage = st.message;
+      log(`Graph app: ${st.message}`);
+    }
+    if (!st?.running) {
+      pendingDeviceLogins.delete('Graph app');
+      renderDeviceLoginBanner();
+      return st;
+    }
   }
-  throw new Error('Graph app console is still open after 10 minutes. Finish or close that window, then retry.');
+  throw new Error('Graph app sign-in is still running after 10 minutes. Finish the device code prompt, then retry.');
 }
 
 async function requireLiveWorker(clientNumber, { restartIfDead = true, showConsole = false, actionLabel = 'continue' } = {}) {
@@ -7068,7 +7095,7 @@ function renderDeviceLoginBanner() {
   for (const [client, info] of pendingDeviceLogins) {
     parts.push(
       `<div class="deviceRow" data-code="${escapeHtml(info.code)}" data-url="${escapeHtml(info.url)}">` +
-      `<div>Client ${escapeHtml(client)}</div>` +
+      `<div>${escapeHtml(/^\d+$/.test(String(client)) ? `Client ${client}` : String(client))}</div>` +
       `<div class="code">${escapeHtml(info.code)}</div>` +
       `<div class="muted">Open ${escapeHtml(info.url)} and enter this code.</div>` +
       `<div class="row">` +
@@ -7490,6 +7517,8 @@ function renderTenants(session) {
 
         <button class="openReports success" ${t.outputFolder ? '' : 'disabled'}>Open Reports</button>
 
+        <button type="button" class="downloadReportZip success" ${t.outputFolder ? '' : 'disabled'} title="Download SecurityInvestigation zip(s) from this report pack">Download zip</button>
+
         <button class="restartWorker">Restart worker</button>
 
         <button class="showConsoleRestart">Show console</button>
@@ -7581,6 +7610,7 @@ function renderTenants(session) {
     div.querySelector('.generateReports').addEventListener('click', () => generateReports(t.clientNumber, div));
 
     div.querySelector('.openReports').addEventListener('click', () => openReports(t.outputFolder));
+    div.querySelector('.downloadReportZip')?.addEventListener('click', () => downloadReportZips(t.clientNumber, div));
 
     div.querySelector('.restartWorker').addEventListener('click', () => restartWorker(t.clientNumber, div));
 
@@ -8935,9 +8965,11 @@ async function generateReports(clientNumber, div) {
         rememberReportFolder(clientNumber, path);
 
         const openBtn = div.querySelector('.openReports');
+        const downloadZipBtn = div.querySelector('.downloadReportZip');
         const investigateBtn = div.querySelector('.investigateLogs');
         const investigateSel = div.querySelector('.investigateFolderSelect');
         if (openBtn) openBtn.disabled = false;
+        if (downloadZipBtn) downloadZipBtn.disabled = false;
         if (investigateBtn) investigateBtn.disabled = false;
         if (investigateSel) investigateSel.disabled = false;
         fillInvestigateFolderSelect(div, { clientNumber, outputFolder: path });
@@ -8993,6 +9025,51 @@ async function openReports(folderPath) {
 
   });
 
+}
+
+async function downloadReportZipBlob(clientNumber, name) {
+  const qs = name ? `?name=${encodeURIComponent(name)}` : '';
+  const res = await fetch(`/api/tenants/${clientNumber}/report-zip${qs}`, {
+    credentials: 'same-origin',
+  });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.error) msg = body.error;
+    } catch { /* binary or plain */ }
+    throw new Error(msg || `Download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  let fileName = name || 'SecurityInvestigation.zip';
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="([^"]+)"/i.exec(cd) || /filename=([^;]+)/i.exec(cd);
+  if (m) fileName = m[1].trim();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return fileName;
+}
+
+async function downloadReportZips(clientNumber, div) {
+  await runAction(`Downloading report zip for Client ${clientNumber}…`, async () => {
+    const list = await api(`/api/tenants/${clientNumber}/report-zips`);
+    const zips = Array.isArray(list?.zips) ? list.zips : [];
+    if (!zips.length) {
+      throw new Error('No zip in the report folder yet. Generate reports first (on Linux the loose CSVs are removed after the zip is built).');
+    }
+    const security = zips.filter((z) => /^SecurityInvestigation/i.test(z.name || ''));
+    const toGet = security.length ? security : zips;
+    for (const z of toGet) {
+      const saved = await downloadReportZipBlob(clientNumber, z.name);
+      log(`Client ${clientNumber}: downloaded ${saved}`);
+    }
+  });
 }
 
 async function restartWorker(clientNumber, div, options = {}) {
@@ -9291,7 +9368,8 @@ document.getElementById('btnCreateGraphApp')?.addEventListener('click', () => ru
   if (data.result?.WcmSaved) {
     log(`Graph app created for ${data.result.TenantDisplayName || data.result.TenantId}. Select it in App reg tenant, then Graph Auth.`);
   } else {
-    log(`Create Graph App finished (exit ${data.exitCode}). See ${data.logPath || 'temp log'} if needed.`);
+    const detail = data.result?.ScriptError || data.message || '';
+    log(`Create Graph App finished (exit ${data.exitCode}).${detail ? ' ' + detail : ''}`);
   }
   await loadAppRegistrations({ quiet: true, forceRefreshFromGraph: true });
 }));
