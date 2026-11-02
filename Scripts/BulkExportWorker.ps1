@@ -555,9 +555,11 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 $tenantIdsToTry = @()
                 $graphAuthExplicitTenantId = $null
                 $useInteractiveOnly = ($command -match 'INTERACTIVE:1')
+                if ($command -match '\|TENANT_ID:([a-fA-F0-9\-]{36})') {
+                    $graphAuthExplicitTenantId = $matches[1]
+                }
                 if (-not $useInteractiveOnly) {
-                    if ($command -match '\|TENANT_ID:([a-fA-F0-9\-]{36})') {
-                        $graphAuthExplicitTenantId = $matches[1]
+                    if ($graphAuthExplicitTenantId) {
                         $tenantIdsToTry = @($graphAuthExplicitTenantId)
                     } else {
                         Write-Host "No tenant ID on GRAPH_AUTH — not trying every WCM entry. Run Exchange Auth first or pick App reg tenant." -ForegroundColor Yellow
@@ -658,13 +660,16 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     $exoLoaded = $exchangeAuthenticated -or [bool](Get-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue)
                     $preferDevice = (-not $onWindowsHost)
 
-                    # After EXO on Windows, isolate to avoid MSAL WithLogging clash. On Linux prefer in-process device code
-                    # so the code streams into the worker log the operator is watching.
+                    # After EXO, sign in from a fresh process. In-process Graph uses the common
+                    # audience and Exchange's MSAL state, which rejects this scope list (AADSTS70011).
                     $usedIsolated = $false
-                    if ($exoLoaded -and $onWindowsHost -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
-                        Write-Host "Exchange Online is already loaded in this worker. Using a fresh PowerShell process for Graph sign-in (avoids MSAL WithLogging clash)..." -ForegroundColor Cyan
-                        Write-Status "Waiting for Graph sign-in (isolated process; device code if browser fails)..."
-                        $iso = Connect-MgGraphInteractiveIsolated -Scopes $scopes
+                    if ($exoLoaded -and (Get-Command Connect-MgGraphInteractiveIsolated -ErrorAction SilentlyContinue)) {
+                        Write-Host "Exchange Online is already loaded in this worker. Using a fresh PowerShell process for Graph sign-in..." -ForegroundColor Cyan
+                        Write-Status "Waiting for Graph sign-in. The device code will show in this log and at the top of the page."
+                        $isoArgs = @{ Scopes = $scopes }
+                        if ($graphAuthExplicitTenantId) { $isoArgs.TenantId = $graphAuthExplicitTenantId }
+                        if (-not $onWindowsHost) { $isoArgs.PreferDeviceCode = $true }
+                        $iso = Connect-MgGraphInteractiveIsolated @isoArgs
                         $usedIsolated = $true
                         $graphAuthenticated = $true
                         $script:graphTokenFromWCM = [string]$iso.token
@@ -688,7 +693,13 @@ function Read-BulkWorkerReportSelectionsFromFile {
                     } else {
                         Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
                         if (Get-Command Connect-MgGraphDelegatedAuth -ErrorAction SilentlyContinue) {
-                            Connect-MgGraphDelegatedAuth -Scopes $scopes -PreferDeviceCode:$preferDevice -StatusCallback $statusCb
+                            $delegatedArgs = @{
+                                Scopes           = $scopes
+                                PreferDeviceCode = [bool]$preferDevice
+                                StatusCallback   = $statusCb
+                            }
+                            if ($graphAuthExplicitTenantId) { $delegatedArgs.TenantId = $graphAuthExplicitTenantId }
+                            Connect-MgGraphDelegatedAuth @delegatedArgs
                         } else {
                             $connectParams = @{
                                 Scopes       = $scopes
@@ -696,6 +707,8 @@ function Read-BulkWorkerReportSelectionsFromFile {
                                 NoWelcome    = $true
                                 ErrorAction  = 'Stop'
                             }
+                            if ($graphAuthExplicitTenantId) { $connectParams.TenantId = $graphAuthExplicitTenantId }
+                            else { $connectParams.Audience = 'organizations' }
                             if ($preferDevice) { $connectParams.UseDeviceCode = $true }
                             Connect-MgGraph @connectParams
                         }
@@ -763,6 +776,7 @@ function Read-BulkWorkerReportSelectionsFromFile {
                             Write-Host "In-process Graph sign-in failed. Retrying in an isolated PowerShell process (device code on Linux / browser failback)..." -ForegroundColor Yellow
                             Write-Status "Waiting for Graph sign-in in isolated process (check this worker log for device code)..."
                             $isoParams = @{ Scopes = $scopes }
+                            if ($graphAuthExplicitTenantId) { $isoParams.TenantId = $graphAuthExplicitTenantId }
                             if (-not $onWindowsHost) { $isoParams.PreferDeviceCode = $true }
                             $iso = Connect-MgGraphInteractiveIsolated @isoParams
                             $graphAuthenticated = $true
@@ -1593,7 +1607,16 @@ function Read-BulkWorkerReportSelectionsFromFile {
                 } else {
                     Write-Status "Warning: Report generation returned no data"
                     Write-Host "Warning: Report generation returned no data" -ForegroundColor Yellow
-                    $defaultOutput = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
+                    $docsRoot = if (Get-Command Get-EoaDocumentsFolder -ErrorAction SilentlyContinue) { Get-EoaDocumentsFolder } else {
+                        $d = [Environment]::GetFolderPath('MyDocuments')
+                        if ([string]::IsNullOrWhiteSpace($d)) {
+                            $home = [string]$env:HOME
+                            if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+                            $d = Join-Path $home 'Documents'
+                        }
+                        $d
+                    }
+                    $defaultOutput = Join-Path $docsRoot "ExchangeOnlineAnalyzer\SecurityInvestigation"
                     "NO_DATA: $defaultOutput" | Out-File -FilePath $ResultFile -Encoding UTF8
                     Write-CommandResponse "GENERATE_REPORTS_NO_DATA:$defaultOutput"
                 }

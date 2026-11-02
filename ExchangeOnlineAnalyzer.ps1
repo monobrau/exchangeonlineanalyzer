@@ -8259,7 +8259,16 @@ try {
                 } else {
                     Write-Status "Warning: Report generation returned no data"
                     Write-Host "Warning: Report generation returned no data" -ForegroundColor Yellow
-                    `$defaultOutput = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation"
+                    `$docsRoot = if (Get-Command Get-EoaDocumentsFolder -ErrorAction SilentlyContinue) { Get-EoaDocumentsFolder } else {
+                        `$d = [Environment]::GetFolderPath('MyDocuments')
+                        if ([string]::IsNullOrWhiteSpace(`$d)) {
+                            `$home = [string]`$env:HOME
+                            if ([string]::IsNullOrWhiteSpace(`$home)) { `$home = '/var/lib/exchangeonlineanalyzer' }
+                            `$d = Join-Path `$home 'Documents'
+                        }
+                        `$d
+                    }
+                    `$defaultOutput = Join-Path `$docsRoot "ExchangeOnlineAnalyzer\SecurityInvestigation"
                     "NO_DATA: `$defaultOutput" | Out-File -FilePath `$ResultFile -Encoding UTF8
                     Write-CommandResponse "GENERATE_REPORTS_NO_DATA:`$defaultOutput"
                 }

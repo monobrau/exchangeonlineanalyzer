@@ -890,7 +890,19 @@ function New-SecurityInvestigationReport {
     # Resolve output folder (tenant-scoped/timestamped)
     try {
         if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
-            $root = Join-Path -Path ([Environment]::GetFolderPath('MyDocuments')) -ChildPath "ExchangeOnlineAnalyzer\SecurityInvestigation"
+            # MyDocuments is empty on Linux; Get-EoaDocumentsFolder falls back to $HOME/Documents.
+            $docsRoot = if (Get-Command Get-EoaDocumentsFolder -ErrorAction SilentlyContinue) {
+                Get-EoaDocumentsFolder
+            } else {
+                $d = [Environment]::GetFolderPath('MyDocuments')
+                if ([string]::IsNullOrWhiteSpace($d)) {
+                    $home = [string]$env:HOME
+                    if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+                    $d = Join-Path $home 'Documents'
+                }
+                $d
+            }
+            $root = Join-Path -Path $docsRoot -ChildPath "ExchangeOnlineAnalyzer\SecurityInvestigation"
 
             # Try to get tenant display name for folder scoping
             $tenantName = $null
@@ -920,7 +932,9 @@ function New-SecurityInvestigationReport {
         }
         if (-not (Test-Path $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null }
         $report.OutputFolder = $OutputFolder
-    } catch {}
+    } catch {
+        Write-Warning "Could not create report output folder: $($_.Exception.Message)"
+    }
 
     # Check connections (robust detection outside UI context)
     $exchangeConnected = $false
@@ -3664,7 +3678,18 @@ function Export-EoaHistoricalMessageTraceCsv {
                 if ($org.DisplayName) { $tenantName = [string]$org.DisplayName } elseif ($org.Name) { $tenantName = [string]$org.Name }
             } catch { }
             $safeTenant = ($tenantName -replace '[\\/:*?"<>|]', '_')
-            $OutputFolder = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "ExchangeOnlineAnalyzer\SecurityInvestigation\$safeTenant\HistoricalMessageTrace"
+            $docsRoot = if (Get-Command Get-EoaDocumentsFolder -ErrorAction SilentlyContinue) {
+                Get-EoaDocumentsFolder
+            } else {
+                $d = [Environment]::GetFolderPath('MyDocuments')
+                if ([string]::IsNullOrWhiteSpace($d)) {
+                    $home = [string]$env:HOME
+                    if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+                    $d = Join-Path $home 'Documents'
+                }
+                $d
+            }
+            $OutputFolder = Join-Path $docsRoot "ExchangeOnlineAnalyzer\SecurityInvestigation\$safeTenant\HistoricalMessageTrace"
         }
         if (-not (Test-Path $OutputFolder)) { $null = New-Item -ItemType Directory -Path $OutputFolder -Force }
         $path = Join-Path $OutputFolder ("HistoricalMessageTrace_{0}.csv" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))

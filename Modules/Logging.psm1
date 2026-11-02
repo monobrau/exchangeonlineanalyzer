@@ -33,8 +33,20 @@ function Get-LogLevelValue {
     return $v
 }
 
+function Get-EoaDocumentsFolder {
+    <#
+    .SYNOPSIS
+        Documents folder for report/log output. On Linux, SpecialFolder.MyDocuments is empty.
+    #>
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    if (-not [string]::IsNullOrWhiteSpace($docs)) { return $docs }
+    $home = [string]$env:HOME
+    if ([string]::IsNullOrWhiteSpace($home)) { $home = '/var/lib/exchangeonlineanalyzer' }
+    return (Join-Path $home 'Documents')
+}
+
 function Get-DefaultLogPath {
-    $base = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'ExchangeOnlineAnalyzer'
+    $base = Join-Path (Get-EoaDocumentsFolder) 'ExchangeOnlineAnalyzer'
     return Join-Path $base 'Logs'
 }
 
@@ -370,4 +382,4 @@ function Safe-ImportModule {
     }
 }
 
-Export-ModuleMember -Function Initialize-Logger, Write-Log, Set-LogLevel, Set-LogComponent, Set-LogSession, Set-LogContext, Close-Logger, Get-LogPath, Get-DefaultLogPath, Safe-ImportModule
+Export-ModuleMember -Function Initialize-Logger, Write-Log, Set-LogLevel, Set-LogComponent, Set-LogSession, Set-LogContext, Close-Logger, Get-LogPath, Get-DefaultLogPath, Get-EoaDocumentsFolder, Safe-ImportModule
